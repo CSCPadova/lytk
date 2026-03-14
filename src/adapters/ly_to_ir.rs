@@ -231,7 +231,7 @@ impl<'src> WalkState<'src> {
         }
         self.parts.push((context.to_string(), part));
         self.measure_num = 0;
-        self.prev_pitch = self.relative_ref.clone();
+        self.prev_pitch = self.relative_ref;
     }
 
     /// Resolve a pitch from a symbol node, handling relative mode.
@@ -242,7 +242,7 @@ impl<'src> WalkState<'src> {
                 let inferred_octave = find_relative_octave(prev, step);
                 let octave = inferred_octave + octave_marks;
                 let pitch = Pitch::with_alter(step, alter, octave);
-                self.prev_pitch = Some(pitch.clone());
+                self.prev_pitch = Some(pitch);
                 pitch
             } else {
                 // First note after \relative: use the reference pitch's octave
@@ -253,7 +253,7 @@ impl<'src> WalkState<'src> {
                     .unwrap_or(4);
                 let octave = base_oct + octave_marks;
                 let pitch = Pitch::with_alter(step, alter, octave);
-                self.prev_pitch = Some(pitch.clone());
+                self.prev_pitch = Some(pitch);
                 pitch
             }
         } else {
@@ -611,8 +611,8 @@ fn walk_context_body(
 ) -> usize {
     // Remember old relative state
     let was_relative = state.in_relative;
-    let old_ref = state.relative_ref.clone();
-    let old_prev = state.prev_pitch.clone();
+    let old_ref = state.relative_ref;
+    let old_prev = state.prev_pitch;
 
     state.new_part(context, name);
 
@@ -695,7 +695,7 @@ fn consume_relative(state: &mut WalkState, children: &[Node], mut i: usize) -> u
                         }
                     }
                     rp.octave = 3 + octave_marks;
-                    state.relative_ref = Some(rp.clone());
+                    state.relative_ref = Some(rp);
                     state.prev_pitch = Some(rp);
                     continue;
                 } else {
@@ -716,7 +716,7 @@ fn consume_relative(state: &mut WalkState, children: &[Node], mut i: usize) -> u
                 if state.relative_ref.is_none() {
                     // No reference pitch given; default to middle C
                     state.relative_ref = Some(Pitch::new(PitchStep::C, 4));
-                    state.prev_pitch = state.relative_ref.clone();
+                    state.prev_pitch = state.relative_ref;
                 }
                 walk_music_block(state, node);
                 i += 1;
@@ -836,7 +836,7 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 let pitch = state.resolve_pitch(step, alter, octave_marks);
                 let mut note = Note::new(pitch, dur);
                 apply_note_attachments(state, &mut note, &attachments);
-                state.current_voice.push(VoiceElement::Note(note));
+                state.current_voice.push(VoiceElement::Note(Box::new(note)));
             }
             // If not a pitch name, ignore (could be a context name etc.)
         }
@@ -948,7 +948,7 @@ fn handle_escaped_word(
                     let grace_notes = parse_grace_block(state, *block_node);
                     for mut note in grace_notes {
                         note.is_grace = true;
-                        state.current_voice.push(VoiceElement::Note(note));
+                        state.current_voice.push(VoiceElement::Note(Box::new(note)));
                     }
                     i += 1;
                 }
@@ -1660,7 +1660,7 @@ mod tests {
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
-                VoiceElement::Note(n) => Some(n),
+                VoiceElement::Note(n) => Some(n.as_ref()),
                 _ => None,
             })
             .collect();
@@ -1722,7 +1722,7 @@ mod tests {
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
-                VoiceElement::Note(n) => Some(n),
+                VoiceElement::Note(n) => Some(n.as_ref()),
                 _ => None,
             })
             .collect();
@@ -1821,7 +1821,7 @@ mod tests {
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
-                VoiceElement::Note(n) => Some(n),
+                VoiceElement::Note(n) => Some(n.as_ref()),
                 _ => None,
             })
             .collect();
@@ -1851,7 +1851,7 @@ mod tests {
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
-                VoiceElement::Note(n) => Some(n),
+                VoiceElement::Note(n) => Some(n.as_ref()),
                 _ => None,
             })
             .collect();

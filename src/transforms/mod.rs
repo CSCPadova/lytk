@@ -12,9 +12,10 @@
 
 use crate::ir::score::Score;
 
-// Sub-modules for individual transforms will go here:
-// pub mod transpose;
-// pub mod language;
+pub mod invert;
+pub mod language;
+pub mod retrograde;
+pub mod transpose;
 
 // ---------------------------------------------------------------------------
 // Transform trait

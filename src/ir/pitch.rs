@@ -128,7 +128,7 @@ pub type Alter = Ratio<i32>;
 /// The pitch is language-agnostic — the LilyPond pitch-name language
 /// (nederlands, english, italiano, …) is handled by adapters at parse/emit time,
 /// not stored here. This follows quickly's `PitchProcessor` pattern.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Pitch {
     pub step: PitchStep,
     /// Chromatic alteration in semitones (e.g. 1 = sharp, −1 = flat).

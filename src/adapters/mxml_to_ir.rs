@@ -455,7 +455,7 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                         let voice_num = note.voice;
                         let elements = voice_elements.entry(voice_num).or_default();
                         if is_chord {
-                            merge_chord(elements, note);
+                            merge_chord(elements, *note);
                         } else {
                             elements.push(VoiceElement::Note(note));
                         }
@@ -549,24 +549,24 @@ fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note) {
                 // Convert the previous Note into a Chord.
                 let prev = std::mem::replace(
                     prev_note,
-                    Note::new(note.pitch.clone(), note.duration.clone()),
+                    Box::new(Note::new(note.pitch, note.duration.clone())),
                 );
                 let chord = Chord {
                     duration: prev.duration.clone(),
                     voice: prev.voice,
                     staff: prev.staff,
-                    notes: vec![prev, note],
+                    notes: vec![*prev, note],
                 };
                 *last = VoiceElement::Chord(chord);
             }
             _ => {
                 // If previous element isn't a note/chord, just append as note.
-                elements.push(VoiceElement::Note(note));
+                elements.push(VoiceElement::Note(Box::new(note)));
             }
         }
     } else {
         // Empty list — just push as a note.
-        elements.push(VoiceElement::Note(note));
+        elements.push(VoiceElement::Note(Box::new(note)));
     }
 }
 
@@ -664,7 +664,7 @@ fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttribute
 // ---------------------------------------------------------------------------
 
 enum NoteOrRest {
-    Note(Note),
+    Note(Box<Note>),
     Rest(Rest),
 }
 
@@ -814,7 +814,7 @@ fn parse_note(elem: &XmlNode, divisions: i64) -> Option<NoteOrRest> {
         note.beams.push(BeamEvent { beam_type, number });
     }
 
-    Some(NoteOrRest::Note(note))
+    Some(NoteOrRest::Note(Box::new(note)))
 }
 
 fn parse_pitch(elem: &XmlNode) -> Option<Pitch> {

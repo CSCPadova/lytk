@@ -861,7 +861,7 @@ mod tests {
         );
         let voice = Voice {
             number: 1,
-            elements: vec![VoiceElement::Note(note)],
+            elements: vec![VoiceElement::Note(Box::new(note))],
         };
         let measure = crate::ir::measure::Measure {
             number: 1,
@@ -1047,7 +1047,7 @@ mod tests {
         });
         let voice = Voice {
             number: 1,
-            elements: vec![VoiceElement::Note(note)],
+            elements: vec![VoiceElement::Note(Box::new(note))],
         };
         let measure = crate::ir::measure::Measure {
             number: 1,
@@ -1085,7 +1085,7 @@ mod tests {
         });
         let voice = Voice {
             number: 1,
-            elements: vec![VoiceElement::Note(note)],
+            elements: vec![VoiceElement::Note(Box::new(note))],
         };
         let measure = crate::ir::measure::Measure {
             number: 1,
@@ -1189,7 +1189,7 @@ mod tests {
         });
         let voice = Voice {
             number: 1,
-            elements: vec![VoiceElement::Note(note)],
+            elements: vec![VoiceElement::Note(Box::new(note))],
         };
         let measure = crate::ir::measure::Measure {
             number: 1,
@@ -1218,11 +1218,11 @@ mod tests {
         let n2 = Note::new(Pitch::new(PitchStep::E, 4), Duration::quarter());
         let v1 = Voice {
             number: 1,
-            elements: vec![VoiceElement::Note(n1)],
+            elements: vec![VoiceElement::Note(Box::new(n1))],
         };
         let v2 = Voice {
             number: 2,
-            elements: vec![VoiceElement::Note(n2)],
+            elements: vec![VoiceElement::Note(Box::new(n2))],
         };
         let measure = crate::ir::measure::Measure {
             number: 1,

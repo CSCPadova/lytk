@@ -212,7 +212,7 @@ impl Backup {
 /// Python prototype with a typed Rust enum, making pattern matching exhaustive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VoiceElement {
-    Note(Note),
+    Note(Box<Note>),
     Rest(Rest),
     Chord(Chord),
     Forward(Forward),
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn voice_element_pattern_match() {
-        let elem = VoiceElement::Note(Note::new(Pitch::new(PitchStep::A, 4), Duration::quarter()));
+        let elem = VoiceElement::Note(Box::new(Note::new(Pitch::new(PitchStep::A, 4), Duration::quarter())));
         match elem {
             VoiceElement::Note(n) => assert_eq!(n.pitch.step, PitchStep::A),
             _ => panic!("expected Note"),

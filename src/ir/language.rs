@@ -25,8 +25,9 @@ use super::pitch::{Alter, PitchStep};
 /// Supported LilyPond note-name languages.
 ///
 /// Each variant corresponds to a `\language "…"` value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum PitchLanguage {
+    #[default]
     Nederlands,
     English,
     Deutsch,
@@ -98,11 +99,7 @@ impl fmt::Display for PitchLanguage {
     }
 }
 
-impl Default for PitchLanguage {
-    fn default() -> Self {
-        Self::Nederlands
-    }
-}
+// Default is derived via #[default] on PitchLanguage::Nederlands.
 
 /// Pitch-entry mode: relative or absolute.
 ///

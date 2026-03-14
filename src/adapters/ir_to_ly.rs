@@ -558,7 +558,7 @@ fn emit_voice_elements(
         match elem {
             VoiceElement::Note(note) => {
                 let token = note_to_ly(note, lang, mode, prev_pitch.as_ref());
-                prev_pitch = Some(note.pitch.clone());
+                prev_pitch = Some(note.pitch);
                 tokens.push(token);
             }
             VoiceElement::Rest(rest) => {
@@ -660,7 +660,7 @@ fn chord_to_ly(
     for n in &chord.notes {
         let p = pitch_to_ly(&n.pitch, lang, last_pitch.as_ref(), mode);
         pitch_strs.push(p);
-        last_pitch = Some(n.pitch.clone());
+        last_pitch = Some(n.pitch);
     }
 
     let d = duration_to_ly(&chord.duration);
@@ -939,10 +939,10 @@ mod tests {
     fn make_simple_score() -> Score {
         // C4 quarter, D4 quarter, E4 quarter, F4 quarter
         let notes: Vec<VoiceElement> = vec![
-            VoiceElement::Note(make_note(PitchStep::C, 4, Duration::quarter())),
-            VoiceElement::Note(make_note(PitchStep::D, 4, Duration::quarter())),
-            VoiceElement::Note(make_note(PitchStep::E, 4, Duration::quarter())),
-            VoiceElement::Note(make_note(PitchStep::F, 4, Duration::quarter())),
+            VoiceElement::Note(Box::new(make_note(PitchStep::C, 4, Duration::quarter()))),
+            VoiceElement::Note(Box::new(make_note(PitchStep::D, 4, Duration::quarter()))),
+            VoiceElement::Note(Box::new(make_note(PitchStep::E, 4, Duration::quarter()))),
+            VoiceElement::Note(Box::new(make_note(PitchStep::F, 4, Duration::quarter()))),
         ];
         let voice = Voice {
             number: 1,
