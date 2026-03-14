@@ -18,6 +18,11 @@ pub mod ly_to_ir;
 pub mod mxl_zip;
 pub mod mxml_to_ir;
 
+#[cfg(feature = "midi")]
+pub mod ir_to_midi;
+#[cfg(feature = "midi")]
+pub mod midi_to_ir;
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
