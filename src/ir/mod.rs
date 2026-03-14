@@ -40,6 +40,7 @@ pub mod part;
 pub mod score;
 pub mod articulation;
 pub mod direction;
+pub mod language;
 
 // Re-export all public types for convenience.
 pub use articulation::*;
@@ -51,3 +52,4 @@ pub use part::Part;
 pub use pitch::*;
 pub use score::*;
 pub use voice::Voice;
+pub use language::{PitchLanguage, PitchMode};

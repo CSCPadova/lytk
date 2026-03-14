@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::language::{PitchLanguage, PitchMode};
 use super::part::Part;
 
 /// Score identification and metadata.
@@ -24,6 +25,10 @@ pub struct ScoreMetadata {
     pub rights: Vec<(String, String)>,
     /// Additional metadata fields.
     pub extra: HashMap<String, String>,
+    /// LilyPond note-name language. `None` means unset (defaults to Nederlands).
+    pub pitch_language: Option<PitchLanguage>,
+    /// Pitch-entry mode for LilyPond emission.
+    pub pitch_mode: PitchMode,
 }
 
 /// An entry in a score's child list: either a bare Part or a PartGroup.

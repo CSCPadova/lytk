@@ -1,7 +1,9 @@
 use pyo3::prelude::*;
 
+pub mod adapters;
 pub mod ir;
 pub mod parser;
+pub mod transforms;
 
 #[pyfunction]
 fn hello_from_bin() -> String {

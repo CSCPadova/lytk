@@ -67,12 +67,12 @@
 - Adapter modules are **optional Cargo features** to keep the binary lean.
 - Round-trip tests are required for every adapter (MusicXML test suite in `musicxmlTestSuite/`).
 
-### 5 — CLI + library (`src/lib.rs`, `src/lytk/cli.py`)
+### 5 — CLI + library (`src/lib.rs`, `src/main.rs`)
 - **Reference CLI** (read-only): `lytk-py/cli.py` — Python prototype using Typer.
-- **Build target**: Rust CLI via `clap` in `src/main.rs`; Python entry point in `src/lytk/cli.py`.
-- CLI supports streaming and multi-threaded batch processing via `rayon`.
-- Python package entry point: `lytk` → `lytk.cli:main` (resolved from `src/lytk/cli.py`).
+- **Build target**: Rust CLI via `clap` in `src/main.rs` (stub — not yet implemented).
+- CLI will support streaming and multi-threaded batch processing via `rayon`.
 - Public Rust crate exposes a clean API that PyO3 binds; use `abi3-py39` stable ABI.
+- Python bindings are not yet implemented beyond a stub `hello_from_bin()` function.
 
 ---
 

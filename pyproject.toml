@@ -9,9 +9,6 @@ authors = [
 requires-python = ">=3.10"
 dependencies = []
 
-[project.scripts]
-lytk = "lytk:main"
-
 [tool.maturin]
 module-name = "lytk._core"
 python-packages = ["lytk"]
