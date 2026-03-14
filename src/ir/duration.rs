@@ -86,6 +86,32 @@ impl Duration {
         }
     }
 
+    /// MusicXML note-type-value name for this duration's base.
+    ///
+    /// Reverse of [`from_musicxml_type`](Self::from_musicxml_type).
+    /// Returns `None` for non-standard base values.
+    pub fn musicxml_type(&self) -> Option<&'static str> {
+        let n = *self.base.numer();
+        let d = *self.base.denom();
+        match (n, d) {
+            (8, 1) => Some("maxima"),
+            (4, 1) => Some("long"),
+            (2, 1) => Some("breve"),
+            (1, 1) => Some("whole"),
+            (1, 2) => Some("half"),
+            (1, 4) => Some("quarter"),
+            (1, 8) => Some("eighth"),
+            (1, 16) => Some("16th"),
+            (1, 32) => Some("32nd"),
+            (1, 64) => Some("64th"),
+            (1, 128) => Some("128th"),
+            (1, 256) => Some("256th"),
+            (1, 512) => Some("512th"),
+            (1, 1024) => Some("1024th"),
+            _ => None,
+        }
+    }
+
     // -- Factory methods --
 
     /// Create from a MusicXML duration type name.
