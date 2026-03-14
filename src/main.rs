@@ -59,7 +59,7 @@ enum Command {
         output: PathBuf,
 
         /// Semitones to transpose (positive = up, negative = down).
-        #[arg(short, long)]
+        #[arg(short, long, allow_negative_numbers = true)]
         semitones: i32,
 
         /// Force output format.

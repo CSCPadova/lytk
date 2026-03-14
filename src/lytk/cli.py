@@ -1,0 +1,280 @@
+"""lytk CLI — batch music notation conversion and augmentation.
+
+This module provides the ``lytk`` console command.  It is a thin Python
+wrapper around the compiled Rust extension (``lytk._core``), matching
+the interface of the Rust ``main.rs`` binary.
+
+Subcommands::
+
+    lytk convert  <input> -o <output> [--format ly|xml|midi] [--jobs N]
+    lytk transpose <input> -o <output> --semitones N [--format ly|xml|midi]
+    lytk info     <input>
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+import lytk
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_SUPPORTED_EXTS: set[str] = {".ly", ".ily", ".xml", ".musicxml", ".mxl"}
+_has_midi = hasattr(lytk, "to_midi")
+if _has_midi:
+    _SUPPORTED_EXTS |= {".mid", ".midi"}
+
+
+def _parse_input(path: Path) -> lytk.Score:
+    ext = path.suffix.lower()
+    if ext in {".ly", ".ily"}:
+        return lytk.from_lilypond(str(path))
+    if ext in {".xml", ".musicxml", ".mxl"}:
+        return lytk.from_musicxml(str(path))
+    if _has_midi and ext in {".mid", ".midi"}:
+        return lytk.from_midi(str(path))
+    print(f"error: unsupported input format: {ext}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _invert_ext(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in {".ly", ".ily"}:
+        return ".xml"
+    if ext in {".xml", ".musicxml", ".mxl"}:
+        return ".ly"
+    if ext in {".mid", ".midi"}:
+        return ".ly"
+    return ".ly"
+
+
+def _write_output(
+    score: lytk.Score,
+    path: Path,
+    fmt: str | None,
+) -> None:
+    if fmt is None:
+        ext = path.suffix.lower()
+    else:
+        ext = f".{fmt}"
+
+    if ext in {".ly", ".ily"}:
+        lang = score.language
+        lytk.to_lilypond(score, str(path), language=lang)
+    elif ext in {".xml", ".musicxml"}:
+        lytk.to_musicxml(score, str(path))
+    elif _has_midi and ext in {".mid", ".midi"}:
+        lytk.to_midi(score, str(path))
+    else:
+        print(
+            f"error: cannot infer output format from {path.suffix}; use --format",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _collect_input_files(directory: Path) -> list[Path]:
+    files: list[Path] = []
+    for root, _dirs, names in os.walk(directory):
+        for name in names:
+            p = Path(root) / name
+            if p.suffix.lower() in _SUPPORTED_EXTS:
+                files.append(p)
+    files.sort()
+    return files
+
+
+# ---------------------------------------------------------------------------
+# Subcommand implementations
+# ---------------------------------------------------------------------------
+
+
+def _run_convert(args: argparse.Namespace) -> None:
+    inp = Path(args.input)
+    out = Path(args.output)
+    fmt = args.format
+
+    if inp.is_dir():
+        _run_batch(inp, out, fmt)
+    else:
+        score = _parse_input(inp)
+        if fmt is None and out.suffix == "":
+            out = out.with_suffix(_invert_ext(inp))
+        _write_output(score, out, fmt)
+
+
+def _run_batch(
+    input_dir: Path,
+    output_dir: Path,
+    fmt: str | None,
+) -> None:
+    files = _collect_input_files(input_dir)
+    if not files:
+        print(
+            f"No supported files found in {input_dir}",
+            file=sys.stderr,
+        )
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for file in files:
+        try:
+            relative = file.relative_to(input_dir)
+        except ValueError:
+            relative = Path(file.name)
+
+        if fmt is None:
+            out_ext = _invert_ext(file)
+        else:
+            out_ext = f".{fmt}"
+        out_path = (output_dir / relative).with_suffix(out_ext)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            score = _parse_input(file)
+            _write_output(score, out_path, fmt)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{file}: {exc}", file=sys.stderr)
+
+    print(f"Processed {len(files)} files", file=sys.stderr)
+
+
+def _run_transpose(args: argparse.Namespace) -> None:
+    inp = Path(args.input)
+    out = Path(args.output)
+    score = _parse_input(inp)
+    transposed = lytk.transpose(score, args.semitones)
+    _write_output(transposed, out, args.format)
+
+
+def _run_info(args: argparse.Namespace) -> None:
+    inp = Path(args.input)
+    score = _parse_input(inp)
+
+    if score.title:
+        print(f"Title:    {score.title}")
+    if score.composer:
+        print(f"Composer: {score.composer}")
+    if score.subtitle:
+        print(f"Subtitle: {score.subtitle}")
+    if score.arranger:
+        print(f"Arranger: {score.arranger}")
+    if score.language:
+        print(f"Language: {score.language}")
+
+    parts = score.parts
+    print(f"Parts:    {len(parts)}")
+    for name in parts:
+        print(f"  - {name}")
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lytk",
+        description="lytk — music notation conversion and augmentation toolkit.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"lytk {_get_version()}",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # -- convert -------------------------------------------------------------
+    fmt_choices = ["ly", "xml"]
+    if _has_midi:
+        fmt_choices.append("midi")
+
+    p_convert = sub.add_parser(
+        "convert",
+        help="Convert files between LilyPond, MusicXML, and MXL formats.",
+    )
+    p_convert.add_argument("input", help="Input file or directory.")
+    p_convert.add_argument("-o", "--output", required=True, help="Output file or directory.")
+    p_convert.add_argument(
+        "-f",
+        "--format",
+        choices=fmt_choices,
+        default=None,
+        help="Force output format (auto-detected from extension by default).",
+    )
+    p_convert.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=0,
+        help="Number of parallel threads for batch mode (0 = auto). Currently ignored; reserved for future use.",
+    )
+    p_convert.set_defaults(func=_run_convert)
+
+    # -- transpose -----------------------------------------------------------
+    p_transpose = sub.add_parser(
+        "transpose",
+        help="Transpose all pitches by a number of semitones.",
+    )
+    p_transpose.add_argument("input", help="Input file.")
+    p_transpose.add_argument("-o", "--output", required=True, help="Output file.")
+    p_transpose.add_argument(
+        "-s",
+        "--semitones",
+        type=int,
+        required=True,
+        help="Semitones to transpose (positive = up, negative = down).",
+    )
+    p_transpose.add_argument(
+        "-f",
+        "--format",
+        choices=fmt_choices,
+        default=None,
+        help="Force output format.",
+    )
+    p_transpose.set_defaults(func=_run_transpose)
+
+    # -- info ----------------------------------------------------------------
+    p_info = sub.add_parser(
+        "info",
+        help="Print score metadata (title, composer, parts, measures).",
+    )
+    p_info.add_argument("input", help="Input file.")
+    p_info.set_defaults(func=_run_info)
+
+    return parser
+
+
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("lytk")
+    except Exception:
+        return "0.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    try:
+        args.func(args)
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
