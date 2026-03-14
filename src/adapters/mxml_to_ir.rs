@@ -1470,7 +1470,7 @@ mod tests {
         for entry in std::fs::read_dir(&fixture_dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "xml") {
+            if path.extension().is_some_and(|e| e == "xml") {
                 let xml = std::fs::read_to_string(&path).unwrap();
                 match adapter.convert_str(&xml) {
                     Ok(score) => {
