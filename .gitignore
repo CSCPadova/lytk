@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+lily/
+lytk-py/
+target/
+lilybert/
+lilypond/
+lilypond-export/
+MEILER/
+lilypond-midi-input/
+PDMX/
+lilypond-musicxml2ly-dev/
+oll-core/
+openlilylib/
+tree-sitter-lilypond/
+abjad/
+hum2ly/
+lilypond-rs/
+quickly/
+python-ly/
+musicxmlTestSuite/
