@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use crate::ir::Score;
 
+pub mod ir_to_ly;
 pub mod mxl_zip;
 pub mod mxml_to_ir;
 

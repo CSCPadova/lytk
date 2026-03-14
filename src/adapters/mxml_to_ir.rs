@@ -165,7 +165,9 @@ fn parse_xml(xml: &str) -> Result<XmlNode> {
                 }
             }
             Ok(Event::Text(ref e)) => {
-                let text = e.unescape().map_err(|err| AdapterError::Parse(err.to_string()))?;
+                let text = e
+                    .unescape()
+                    .map_err(|err| AdapterError::Parse(err.to_string()))?;
                 if let Some(parent) = stack.last_mut() {
                     parent.text.push_str(&text);
                 }
@@ -545,7 +547,10 @@ fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note) {
             }
             VoiceElement::Note(prev_note) => {
                 // Convert the previous Note into a Chord.
-                let prev = std::mem::replace(prev_note, Note::new(note.pitch.clone(), note.duration.clone()));
+                let prev = std::mem::replace(
+                    prev_note,
+                    Note::new(note.pitch.clone(), note.duration.clone()),
+                );
                 let chord = Chord {
                     duration: prev.duration.clone(),
                     voice: prev.voice,
@@ -607,7 +612,10 @@ fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttribute
 
     let mut clefs: HashMap<u8, Clef> = HashMap::new();
     for clef_elem in elem.find_all("clef") {
-        let staff_num: u8 = clef_elem.attr("number").and_then(|s| s.parse().ok()).unwrap_or(1);
+        let staff_num: u8 = clef_elem
+            .attr("number")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
         let sign_str = clef_elem.child_text("sign").unwrap_or("G");
         let sign = ClefSign::from_str_loose(sign_str);
         let line = clef_elem.child_i64("line", 2) as u8;
@@ -676,9 +684,8 @@ fn parse_note(elem: &XmlNode, divisions: i64) -> Option<NoteOrRest> {
     } else if let Some(dur_elem) = elem.find("duration") {
         let dur_val = dur_elem.text_i64(0);
         if let Some(tn) = type_name {
-            Duration::from_musicxml_type(tn, dots).unwrap_or_else(|| {
-                Duration::from_divisions(dur_val, divisions, dots)
-            })
+            Duration::from_musicxml_type(tn, dots)
+                .unwrap_or_else(|| Duration::from_divisions(dur_val, divisions, dots))
         } else {
             Duration::from_divisions(dur_val, divisions, dots)
         }
@@ -793,9 +800,15 @@ fn parse_note(elem: &XmlNode, divisions: i64) -> Option<NoteOrRest> {
 
     // Beams
     for beam_elem in elem.find_all("beam") {
-        let number: u8 = beam_elem.attr("number").and_then(|s| s.parse().ok()).unwrap_or(1);
+        let number: u8 = beam_elem
+            .attr("number")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
         let beam_type = beam_elem.text_content().to_string();
-        if !matches!(beam_type.as_str(), "begin" | "continue" | "end" | "forward hook" | "backward hook") {
+        if !matches!(
+            beam_type.as_str(),
+            "begin" | "continue" | "end" | "forward hook" | "backward hook"
+        ) {
             continue;
         }
         note.beams.push(BeamEvent { beam_type, number });
@@ -831,8 +844,12 @@ fn parse_notations(notations: &XmlNode, note: &mut Note) {
     for tied in notations.find_all("tied") {
         let tie_type = tied.attr("type").unwrap_or("");
         let event = match tie_type {
-            "start" => TieEvent { tie_type: StartStop::Start },
-            "stop" => TieEvent { tie_type: StartStop::Stop },
+            "start" => TieEvent {
+                tie_type: StartStop::Start,
+            },
+            "stop" => TieEvent {
+                tie_type: StartStop::Stop,
+            },
             _ => continue,
         };
         note.ties.push(event);
@@ -841,12 +858,18 @@ fn parse_notations(notations: &XmlNode, note: &mut Note) {
     // Slurs
     for slur in notations.find_all("slur") {
         let slur_type = slur.attr("type").unwrap_or("");
-        let number: u8 = slur.attr("number").and_then(|s| s.parse().ok()).unwrap_or(1);
-        let placement = slur.attr("placement").map(|p| match p {
-            "above" => Placement::Above,
-            "below" => Placement::Below,
-            _ => Placement::Unspecified,
-        }).unwrap_or(Placement::Unspecified);
+        let number: u8 = slur
+            .attr("number")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        let placement = slur
+            .attr("placement")
+            .map(|p| match p {
+                "above" => Placement::Above,
+                "below" => Placement::Below,
+                _ => Placement::Unspecified,
+            })
+            .unwrap_or(Placement::Unspecified);
         let event = match slur_type {
             "start" => SlurEvent {
                 slur_type: StartStop::Start,
@@ -872,11 +895,14 @@ fn parse_notations(notations: &XmlNode, note: &mut Note) {
                 | "caesura" | "portato" => child.tag.as_str(),
                 _ => continue,
             };
-            let placement = child.attr("placement").map(|p| match p {
-                "above" => Placement::Above,
-                "below" => Placement::Below,
-                _ => Placement::Unspecified,
-            }).unwrap_or(Placement::Unspecified);
+            let placement = child
+                .attr("placement")
+                .map(|p| match p {
+                    "above" => Placement::Above,
+                    "below" => Placement::Below,
+                    _ => Placement::Unspecified,
+                })
+                .unwrap_or(Placement::Unspecified);
             note.articulations.push(Articulation {
                 name: name.to_string(),
                 placement,
@@ -888,15 +914,18 @@ fn parse_notations(notations: &XmlNode, note: &mut Note) {
     if let Some(orns) = notations.find("ornaments") {
         for child in &orns.children {
             let name = match child.tag.as_str() {
-                "trill-mark" | "mordent" | "inverted-mordent" | "turn"
-                | "inverted-turn" | "tremolo" => child.tag.as_str(),
+                "trill-mark" | "mordent" | "inverted-mordent" | "turn" | "inverted-turn"
+                | "tremolo" => child.tag.as_str(),
                 _ => continue,
             };
-            let placement = child.attr("placement").map(|p| match p {
-                "above" => Placement::Above,
-                "below" => Placement::Below,
-                _ => Placement::Unspecified,
-            }).unwrap_or(Placement::Unspecified);
+            let placement = child
+                .attr("placement")
+                .map(|p| match p {
+                    "above" => Placement::Above,
+                    "below" => Placement::Below,
+                    _ => Placement::Unspecified,
+                })
+                .unwrap_or(Placement::Unspecified);
             note.ornaments.push(Ornament {
                 name: name.to_string(),
                 placement,
@@ -908,11 +937,9 @@ fn parse_notations(notations: &XmlNode, note: &mut Note) {
     if let Some(techs) = notations.find("technical") {
         for child in &techs.children {
             let (name, value) = match child.tag.as_str() {
-                "up-bow" | "down-bow" | "harmonic" | "open-string"
-                | "stopped" | "snap-pizzicato" => (child.tag.as_str(), ""),
-                "fingering" | "fret" | "string" => {
-                    (child.tag.as_str(), child.text_content())
-                }
+                "up-bow" | "down-bow" | "harmonic" | "open-string" | "stopped"
+                | "snap-pizzicato" => (child.tag.as_str(), ""),
+                "fingering" | "fret" | "string" => (child.tag.as_str(), child.text_content()),
                 _ => continue,
             };
             note.technicals.push(Technical {
@@ -924,15 +951,19 @@ fn parse_notations(notations: &XmlNode, note: &mut Note) {
 
     // Dynamics (inside notations)
     if let Some(dyn_elem) = notations.find("dynamics") {
-        let placement = dyn_elem.attr("placement").map(|p| match p {
-            "above" => Placement::Above,
-            "below" => Placement::Below,
-            _ => Placement::Unspecified,
-        }).unwrap_or(Placement::Unspecified);
+        let placement = dyn_elem
+            .attr("placement")
+            .map(|p| match p {
+                "above" => Placement::Above,
+                "below" => Placement::Below,
+                _ => Placement::Unspecified,
+            })
+            .unwrap_or(Placement::Unspecified);
         for child in &dyn_elem.children {
             let sign = match child.tag.as_str() {
-                "ppp" | "pp" | "p" | "mp" | "mf" | "f" | "ff" | "fff"
-                | "sf" | "sfz" | "fp" => child.tag.as_str(),
+                "ppp" | "pp" | "p" | "mp" | "mf" | "f" | "ff" | "fff" | "sf" | "sfz" | "fp" => {
+                    child.tag.as_str()
+                }
                 _ => continue,
             };
             note.dynamics.push(DynamicMark {
@@ -987,7 +1018,10 @@ fn parse_lyric(elem: &XmlNode) -> Option<LyricSyllable> {
         "end" => SyllabicType::End,
         _ => SyllabicType::Single,
     };
-    let number: u8 = elem.attr("number").and_then(|s| s.parse().ok()).unwrap_or(1);
+    let number: u8 = elem
+        .attr("number")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
     let extend = elem.find("extend").is_some();
     let elision = elem.find("elision").is_some();
 
@@ -1022,8 +1056,8 @@ fn parse_direction(elem: &XmlNode) -> Option<Direction> {
                     // Take the first dynamic child element.
                     for dyn_child in &child.children {
                         let sign = match dyn_child.tag.as_str() {
-                            "ppp" | "pp" | "p" | "mp" | "mf" | "f" | "ff" | "fff"
-                            | "sf" | "sfz" | "fp" => dyn_child.tag.as_str(),
+                            "ppp" | "pp" | "p" | "mp" | "mf" | "f" | "ff" | "fff" | "sf"
+                            | "sfz" | "fp" => dyn_child.tag.as_str(),
                             _ => continue,
                         };
                         dir.dynamic = Some(DynamicMark {
@@ -1073,20 +1107,17 @@ fn parse_direction(elem: &XmlNode) -> Option<Direction> {
                 }
                 "octave-shift" => {
                     let shift_type = child.attr("type").unwrap_or("up").to_string();
-                    let size = child.attr("size").and_then(|s| s.parse::<i8>().ok()).unwrap_or(8);
-                    dir.octave_shift = Some(OctaveShift {
-                        shift_type,
-                        size,
-                    });
+                    let size = child
+                        .attr("size")
+                        .and_then(|s| s.parse::<i8>().ok())
+                        .unwrap_or(8);
+                    dir.octave_shift = Some(OctaveShift { shift_type, size });
                 }
                 "pedal" => {
                     let pedal_type = child.attr("type").unwrap_or("").to_string();
                     let line = child.attr("line") == Some("yes");
                     if !pedal_type.is_empty() {
-                        dir.pedal = Some(PedalEvent {
-                            pedal_type,
-                            line,
-                        });
+                        dir.pedal = Some(PedalEvent { pedal_type, line });
                     }
                 }
                 _ => {}
@@ -1127,20 +1158,20 @@ fn parse_barline(elem: &XmlNode) -> Barline {
         _ => BarlineType::Regular,
     };
 
-    let repeat_direction = elem.find("repeat").and_then(|r| {
-        match r.attr("direction").unwrap_or("") {
-            "forward" => Some(RepeatDirection::Forward),
-            "backward" => Some(RepeatDirection::Backward),
-            _ => None,
-        }
-    });
+    let repeat_direction =
+        elem.find("repeat")
+            .and_then(|r| match r.attr("direction").unwrap_or("") {
+                "forward" => Some(RepeatDirection::Forward),
+                "backward" => Some(RepeatDirection::Backward),
+                _ => None,
+            });
 
-    let ending_number = elem.find("ending").and_then(|e| {
-        e.attr("number").and_then(|s| s.parse::<u8>().ok())
-    });
-    let ending_type = elem.find("ending").and_then(|e| {
-        e.attr("type").map(|s| s.to_string())
-    });
+    let ending_number = elem
+        .find("ending")
+        .and_then(|e| e.attr("number").and_then(|s| s.parse::<u8>().ok()));
+    let ending_type = elem
+        .find("ending")
+        .and_then(|e| e.attr("type").map(|s| s.to_string()));
 
     let location = elem.attr("location").unwrap_or("right").to_string();
 
@@ -1444,11 +1475,7 @@ mod tests {
                 match adapter.convert_str(&xml) {
                     Ok(score) => {
                         // Sanity: the score should have at least one part.
-                        assert!(
-                            !score.parts().is_empty(),
-                            "no parts in {}",
-                            path.display()
-                        );
+                        assert!(!score.parts().is_empty(), "no parts in {}", path.display());
                         success_count += 1;
                     }
                     Err(e) => {
