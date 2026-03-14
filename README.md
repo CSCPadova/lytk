@@ -51,13 +51,15 @@ See [docs/design.md](docs/design.md) for detailed architecture and [docs/roadmap
 
 ## Build & Test
 
+See [docs/development.md](docs/development.md) for the full guide including prerequisites, debug vs release builds, test filtering, fixture tests, and CLI usage.
+
 ```bash
-# Rust tests
+# Rust — compile and test
+cargo build
 cargo test
 
-# Python dev install (rebuilds Rust on change)
-uv sync
-maturin develop
+# Python extension — dev install (rebuilds Rust on change)
+uv sync && maturin develop
 
 # Python tests
 pytest tests/ -v
