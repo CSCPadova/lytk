@@ -2,7 +2,7 @@
 
 What needs to be implemented, roughly in priority order.
 
-## 1. IR → LilyPond Emitter
+## 1. IR → LilyPond Emitter ✅
 
 **Module:** `src/adapters/ir_to_ly.rs`
 
@@ -25,7 +25,7 @@ Key tasks:
 
 Reference: `lytk-py/converters/ir_to_ly.py`
 
-## 2. LilyPond → IR Parser
+## 2. LilyPond → IR Parser ✅
 
 **Module:** `src/adapters/ly_to_ir.rs`
 
@@ -47,7 +47,7 @@ This is the most complex adapter due to LilyPond's flexible syntax. Consider imp
 
 Reference: `python-ly/` (tokenizer), `quickly/` (improved tokenizer), `lytk-py/converters/ly_to_ir.py`
 
-## 3. IR → MusicXML Emitter
+## 3. IR → MusicXML Emitter ✅
 
 **Module:** `src/adapters/ir_to_mxml.rs`
 
@@ -66,7 +66,7 @@ Key tasks:
 
 Reference: `lytk-py/converters/ir_to_mxml.py`
 
-## 4. Core Transforms
+## 4. Core Transforms ✅
 
 **Module:** `src/transforms/` (one file per transform or small group)
 
@@ -87,7 +87,7 @@ Each transform implements the `Transform` trait. Planned transforms:
 
 Start with `Transpose` and `ChangeLanguage` — they are most useful for data augmentation and exercise the pitch/language system.
 
-## 5. CLI Implementation
+## 5. CLI Implementation ✅
 
 **Module:** `src/main.rs`
 
@@ -107,7 +107,7 @@ Key tasks:
 - Progress reporting for batch mode
 - Error reporting with file paths
 
-## 6. MIDI Adapter
+## 6. MIDI Adapter ✅
 
 **Modules:** `src/adapters/midi_to_ir.rs`, `src/adapters/ir_to_midi.rs`
 
@@ -121,7 +121,7 @@ Key tasks:
 
 MIDI is lossy — it doesn't carry key signatures, articulations, lyrics, or notation details. The adapter should preserve what it can and mark unknowns.
 
-## 7. Python Bindings
+## 7. Python Bindings ✅
 
 **Modules:** `src/lib.rs` (PyO3 exports), `src/lytk/__init__.py`, `src/lytk/_core.pyi`
 
@@ -135,12 +135,12 @@ score = lytk.transpose(score, semitones=3)
 lytk.to_lilypond(score, "output.ly")
 ```
 
-Key tasks:
-- Wrap `Score` as a Python class (read-only view or serialized to dict)
-- Expose adapter functions: `from_musicxml()`, `to_lilypond()`, `from_lilypond()`, `to_musicxml()`
-- Expose transforms: `transpose()`, `change_language()`, etc.
-- Keep the Python API thin — heavy logic stays in Rust
-- Update `_core.pyi` stubs for every exported function/class
+Implemented:
+- `Score` pyclass with metadata properties, JSON/dict serialisation, `__repr__`/`__str__`/`__eq__`
+- Adapter functions: `from_musicxml`, `from_musicxml_string`, `from_lilypond`, `from_lilypond_string`, `to_lilypond`, `to_musicxml`, `from_midi`, `to_midi`
+- Transform functions: `transpose`, `change_language`, `invert`, `retrograde`
+- `_core.pyi` type stubs, `__init__.py` re-exports with MIDI feature guard
+- 26 Python tests (pytest)
 
 ## 8. Criterion Benchmarks
 
