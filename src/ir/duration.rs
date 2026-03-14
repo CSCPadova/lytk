@@ -61,8 +61,7 @@ impl Duration {
     /// `duration()` function.
     pub fn actual_duration(&self) -> Frac {
         // Dot formula: base * (2 - 1/2^dots)
-        let dot_multiplier =
-            Frac::from_integer(2) - Frac::new(1, 1_i64 << self.dots as u32);
+        let dot_multiplier = Frac::from_integer(2) - Frac::new(1, 1_i64 << self.dots as u32);
         let dotted = self.base * dot_multiplier;
         // Tuplet scaling
         dotted * Frac::new(self.tuplet_normal as i64, self.tuplet_actual as i64)

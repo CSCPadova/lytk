@@ -92,11 +92,7 @@ impl Default for Score {
 
 impl std::fmt::Display for Score {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let title = self
-            .metadata
-            .title
-            .as_deref()
-            .unwrap_or("untitled");
+        let title = self.metadata.title.as_deref().unwrap_or("untitled");
         write!(f, "<Score {:?} parts={}>", title, self.parts().len())
     }
 }

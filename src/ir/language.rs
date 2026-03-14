@@ -334,9 +334,18 @@ mod tests {
         let sharp = Alter::from_integer(1);
         let flat = Alter::from_integer(-1);
 
-        assert_eq!(pitch_name(c, nat, PitchLanguage::Nederlands), Some("c".into()));
-        assert_eq!(pitch_name(c, sharp, PitchLanguage::Nederlands), Some("cis".into()));
-        assert_eq!(pitch_name(c, flat, PitchLanguage::Nederlands), Some("ces".into()));
+        assert_eq!(
+            pitch_name(c, nat, PitchLanguage::Nederlands),
+            Some("c".into())
+        );
+        assert_eq!(
+            pitch_name(c, sharp, PitchLanguage::Nederlands),
+            Some("cis".into())
+        );
+        assert_eq!(
+            pitch_name(c, flat, PitchLanguage::Nederlands),
+            Some("ces".into())
+        );
     }
 
     #[test]
@@ -346,9 +355,18 @@ mod tests {
         let flat = Alter::from_integer(-1);
         let dsharp = Alter::from_integer(2);
 
-        assert_eq!(pitch_name(a, sharp, PitchLanguage::English), Some("as".into()));
-        assert_eq!(pitch_name(a, flat, PitchLanguage::English), Some("af".into()));
-        assert_eq!(pitch_name(a, dsharp, PitchLanguage::English), Some("ass".into()));
+        assert_eq!(
+            pitch_name(a, sharp, PitchLanguage::English),
+            Some("as".into())
+        );
+        assert_eq!(
+            pitch_name(a, flat, PitchLanguage::English),
+            Some("af".into())
+        );
+        assert_eq!(
+            pitch_name(a, dsharp, PitchLanguage::English),
+            Some("ass".into())
+        );
     }
 
     #[test]
@@ -358,8 +376,14 @@ mod tests {
         let nat = Alter::from_integer(0);
         let sharp = Alter::from_integer(1);
 
-        assert_eq!(pitch_name(c, nat, PitchLanguage::Italiano), Some("do".into()));
-        assert_eq!(pitch_name(g, sharp, PitchLanguage::Italiano), Some("sold".into()));
+        assert_eq!(
+            pitch_name(c, nat, PitchLanguage::Italiano),
+            Some("do".into())
+        );
+        assert_eq!(
+            pitch_name(g, sharp, PitchLanguage::Italiano),
+            Some("sold".into())
+        );
     }
 
     #[test]
@@ -370,9 +394,15 @@ mod tests {
         let flat = Alter::from_integer(-1);
 
         assert_eq!(pitch_name(b, nat, PitchLanguage::Deutsch), Some("h".into()));
-        assert_eq!(pitch_name(b, flat, PitchLanguage::Deutsch), Some("hes".into()));
+        assert_eq!(
+            pitch_name(b, flat, PitchLanguage::Deutsch),
+            Some("hes".into())
+        );
         // The short form of "hes" is "b" in Deutsch:
-        assert_eq!(pitch_name_short(b, flat, PitchLanguage::Deutsch), Some("b".into()));
+        assert_eq!(
+            pitch_name_short(b, flat, PitchLanguage::Deutsch),
+            Some("b".into())
+        );
     }
 
     #[test]
@@ -382,8 +412,14 @@ mod tests {
         let flat = Alter::from_integer(-1);
 
         // "ees" → short "es", "aes" → short "as"
-        assert_eq!(pitch_name_short(e, flat, PitchLanguage::Nederlands), Some("es".into()));
-        assert_eq!(pitch_name_short(a, flat, PitchLanguage::Nederlands), Some("as".into()));
+        assert_eq!(
+            pitch_name_short(e, flat, PitchLanguage::Nederlands),
+            Some("es".into())
+        );
+        assert_eq!(
+            pitch_name_short(a, flat, PitchLanguage::Nederlands),
+            Some("as".into())
+        );
     }
 
     #[test]
@@ -391,8 +427,14 @@ mod tests {
         let c = PitchStep::C;
         let qsharp = Ratio::new(1, 2); // quarter-sharp
 
-        assert_eq!(pitch_name(c, qsharp, PitchLanguage::Nederlands), Some("cih".into()));
-        assert_eq!(pitch_name(c, qsharp, PitchLanguage::English), Some("cqs".into()));
+        assert_eq!(
+            pitch_name(c, qsharp, PitchLanguage::Nederlands),
+            Some("cih".into())
+        );
+        assert_eq!(
+            pitch_name(c, qsharp, PitchLanguage::English),
+            Some("cqs".into())
+        );
         // Espanol doesn't support quarter-tones:
         assert_eq!(pitch_name(c, qsharp, PitchLanguage::Espanol), None);
     }
@@ -459,7 +501,11 @@ mod tests {
         // Catalan uses same data as Italiano.
         assert_eq!(
             pitch_name(PitchStep::C, Alter::from_integer(1), PitchLanguage::Catalan),
-            pitch_name(PitchStep::C, Alter::from_integer(1), PitchLanguage::Italiano),
+            pitch_name(
+                PitchStep::C,
+                Alter::from_integer(1),
+                PitchLanguage::Italiano
+            ),
         );
     }
 
@@ -475,8 +521,13 @@ mod tests {
             Ratio::new(2, 1),
         ];
         let steps = [
-            PitchStep::C, PitchStep::D, PitchStep::E, PitchStep::F,
-            PitchStep::G, PitchStep::A, PitchStep::B,
+            PitchStep::C,
+            PitchStep::D,
+            PitchStep::E,
+            PitchStep::F,
+            PitchStep::G,
+            PitchStep::A,
+            PitchStep::B,
         ];
 
         for lang in PitchLanguage::ALL {
@@ -487,14 +538,18 @@ mod tests {
                         assert!(
                             parsed.is_some(),
                             "Failed to parse '{}' back in {:?}",
-                            name, lang
+                            name,
+                            lang
                         );
                         let (ps, pa) = parsed.unwrap();
                         assert_eq!(
                             (ps, pa),
                             (step, alter),
                             "Roundtrip mismatch for '{}' in {:?}: got ({:?}, {})",
-                            name, lang, ps, pa
+                            name,
+                            lang,
+                            ps,
+                            pa
                         );
                     }
                 }

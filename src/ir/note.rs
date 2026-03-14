@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::articulation::{
-    Articulation, BeamEvent, DynamicMark, Fermata, LyricSyllable, Ornament,
-    SlurEvent, Technical, TieEvent, TupletDisplay, Wedge,
+    Articulation, BeamEvent, DynamicMark, Fermata, LyricSyllable, Ornament, SlurEvent, Technical,
+    TieEvent, TupletDisplay, Wedge,
 };
 use super::duration::Duration;
 use super::pitch::Pitch;
@@ -257,10 +257,7 @@ mod tests {
 
     #[test]
     fn voice_element_pattern_match() {
-        let elem = VoiceElement::Note(Note::new(
-            Pitch::new(PitchStep::A, 4),
-            Duration::quarter(),
-        ));
+        let elem = VoiceElement::Note(Note::new(Pitch::new(PitchStep::A, 4), Duration::quarter()));
         match elem {
             VoiceElement::Note(n) => assert_eq!(n.pitch.step, PitchStep::A),
             _ => panic!("expected Note"),

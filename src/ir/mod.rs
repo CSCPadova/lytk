@@ -31,25 +31,25 @@
 //! - Conversion traits (Note ↔ MIDI ↔ LilyPond string) from lilypond-rs
 //! - Integer time steps and annotation model from PDMX
 
-pub mod pitch;
-pub mod duration;
-pub mod note;
-pub mod measure;
-pub mod voice;
-pub mod part;
-pub mod score;
 pub mod articulation;
 pub mod direction;
+pub mod duration;
 pub mod language;
+pub mod measure;
+pub mod note;
+pub mod part;
+pub mod pitch;
+pub mod score;
+pub mod voice;
 
 // Re-export all public types for convenience.
 pub use articulation::*;
 pub use direction::*;
 pub use duration::Duration;
+pub use language::{PitchLanguage, PitchMode};
 pub use measure::*;
 pub use note::*;
 pub use part::Part;
 pub use pitch::*;
 pub use score::*;
 pub use voice::Voice;
-pub use language::{PitchLanguage, PitchMode};

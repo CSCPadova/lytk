@@ -254,12 +254,7 @@ impl Measure {
 
 impl std::fmt::Display for Measure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "<Measure {} voices={}>",
-            self.number,
-            self.voices.len()
-        )
+        write!(f, "<Measure {} voices={}>", self.number, self.voices.len())
     }
 }
 

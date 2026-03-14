@@ -53,7 +53,9 @@ impl LilyPondParser {
 
     /// Parse LilyPond source text into a tree-sitter [`Tree`].
     pub fn parse(&mut self, source: &str) -> Result<Tree, ParseError> {
-        self.parser.parse(source, None).ok_or(ParseError::ParseFailed)
+        self.parser
+            .parse(source, None)
+            .ok_or(ParseError::ParseFailed)
     }
 
     /// Parse with an existing tree for incremental re-parsing.
@@ -83,21 +85,17 @@ mod tree_sitter_lilypond {
     }
 
     /// The tree-sitter [`LanguageFn`] for LilyPond.
-    pub const LANGUAGE_LILYPOND: LanguageFn =
-        unsafe { LanguageFn::from_raw(tree_sitter_lilypond) };
+    pub const LANGUAGE_LILYPOND: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_lilypond) };
 
     /// The tree-sitter [`LanguageFn`] for LilyPond Scheme.
     pub const LANGUAGE_LILYPOND_SCHEME: LanguageFn =
         unsafe { LanguageFn::from_raw(tree_sitter_lilypond_scheme) };
 
-    pub const LILYPOND_NODE_TYPES: &str =
-        include_str!("tree-sitter/src/node-types.json");
+    pub const LILYPOND_NODE_TYPES: &str = include_str!("tree-sitter/src/node-types.json");
 
-    pub const HIGHLIGHTS_QUERY: &str =
-        include_str!("tree-sitter/queries/highlights.scm");
+    pub const HIGHLIGHTS_QUERY: &str = include_str!("tree-sitter/queries/highlights.scm");
 
-    pub const INJECTIONS_QUERY: &str =
-        include_str!("tree-sitter/queries/injections.scm");
+    pub const INJECTIONS_QUERY: &str = include_str!("tree-sitter/queries/injections.scm");
 }
 
 #[cfg(test)]
