@@ -35,9 +35,9 @@ use crate::ir::direction::{Barline, BarlineType, Direction, TempoDirection};
 use crate::ir::duration::Duration;
 use crate::ir::language::{parse_pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
-use crate::ir::note::{Chord, Note, Rest, VoiceElement};
+use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
 use crate::ir::pitch::{Pitch, PitchStep};
-use crate::ir::score::{Score, ScoreChild, ScoreMetadata};
+use crate::ir::score::{PageLayout, Score, ScoreChild, ScoreMetadata};
 use crate::ir::voice::Voice;
 use crate::ir::Part;
 use crate::parser::LilyPondParser;
@@ -153,6 +153,16 @@ struct WalkState<'src> {
     prev_pitch: Option<Pitch>,
     relative_ref: Option<Pitch>, // The pitch given after \relative
     in_relative: bool,
+
+    // Pending overrides
+    /// Arpeggio direction set by `\arpeggioArrowUp/Down`, `\arpeggioBracket`.
+    pending_arpeggio_type: Option<ArpeggioType>,
+    /// Glissando line style set by `\once \override Glissando.style = #'...`.
+    pending_glissando_style: Option<String>,
+    /// Whether pending glissando style is "trill" (→ slide instead of glissando).
+    pending_slide: bool,
+    /// Page layout accumulated from `\paper { ... }`.
+    page_layout: Option<PageLayout>,
 }
 
 impl<'src> WalkState<'src> {
@@ -172,6 +182,10 @@ impl<'src> WalkState<'src> {
             prev_pitch: None,
             relative_ref: None,
             in_relative: false,
+            pending_arpeggio_type: None,
+            pending_glissando_style: None,
+            pending_slide: false,
+            page_layout: None,
         }
     }
 
@@ -351,6 +365,7 @@ impl LyToIrAdapter {
         score.metadata = state.metadata;
         score.metadata.pitch_mode = state.mode;
         score.metadata.pitch_language = Some(state.language);
+        score.page_layout = state.page_layout;
         for (_, part) in state.parts {
             score.children.push(ScoreChild::Part(part));
         }
@@ -450,6 +465,15 @@ fn walk_program(state: &mut WalkState, root: Node) {
                         i += 1;
                         i = consume_relative(state, &children, i);
                         continue;
+                    }
+                    "\\paper" => {
+                        // Top-level \paper { ... }
+                        if let Some(next) = children.get(i + 1) {
+                            if next.kind() == "expression_block" {
+                                parse_paper_block(state, *next);
+                                i += 1;
+                            }
+                        }
                     }
                     _ => {
                         // Top-level escaped words we don't handle
@@ -588,6 +612,15 @@ fn walk_score_block(state: &mut WalkState, block: Node) {
                         // Skip these blocks
                         if let Some(next) = children.get(i + 1) {
                             if next.kind() == "expression_block" {
+                                i += 1;
+                            }
+                        }
+                    }
+                    "\\paper" => {
+                        // \paper { ... } inside \score
+                        if let Some(next) = children.get(i + 1) {
+                            if next.kind() == "expression_block" {
+                                parse_paper_block(state, *next);
                                 i += 1;
                             }
                         }
@@ -1156,6 +1189,59 @@ fn handle_escaped_word(
                 }
             }
         }
+        "\\partial" => {
+            // \partial <dur>  → anacrusis / pickup
+            let dur = consume_duration(state, children, &mut i);
+            state.metadata.partial_duration = Some(dur);
+        }
+        "\\afterGrace" => {
+            // \afterGrace { notes }
+            if let Some(block_node) = children.get(i) {
+                if block_node.kind() == "expression_block" {
+                    let grace_notes = parse_grace_block(state, *block_node);
+                    for mut note in grace_notes {
+                        note.is_grace = true;
+                        note.after_grace = true;
+                        state.current_voice.push(VoiceElement::Note(Box::new(note)));
+                    }
+                    i += 1;
+                }
+            }
+        }
+        "\\arpeggioArrowUp" => {
+            state.pending_arpeggio_type = Some(ArpeggioType::Up);
+        }
+        "\\arpeggioArrowDown" => {
+            state.pending_arpeggio_type = Some(ArpeggioType::Down);
+        }
+        "\\arpeggioBracket" => {
+            state.pending_arpeggio_type = Some(ArpeggioType::NonArpeggio);
+        }
+        "\\arpeggioNormal" => {
+            state.pending_arpeggio_type = None;
+        }
+        "\\mark" => {
+            // \mark \markup { \musicglyph "scripts.coda" }
+            // \mark "D.C."  /  \mark "D.S. al Coda"
+            i = consume_mark(state, children, i);
+        }
+        "\\once" => {
+            // \once — usually followed by \override; just skip it
+            // The \override handler will consume the property setting
+        }
+        "\\override" => {
+            // \override Glissando.style = #'<style>
+            i = consume_override(state, children, i);
+        }
+        "\\paper" => {
+            // \paper { ... } — page layout
+            if let Some(next) = children.get(i) {
+                if next.kind() == "expression_block" {
+                    parse_paper_block(state, *next);
+                    i += 1;
+                }
+            }
+        }
         _ => {
             // Unknown escaped word — may be a variable reference or dynamic
             let var_name = text.trim_start_matches('\\');
@@ -1352,6 +1438,8 @@ fn is_post_note_command(text: &str) -> bool {
             | "\\marcato"
             | "\\portato"
             | "\\espressivo"
+            | "\\glissando"
+            | "\\arpeggio"
     ) || is_dynamic_name(text)
 }
 
@@ -1453,6 +1541,215 @@ fn extract_string_value(state: &WalkState, node: Node) -> String {
     String::new()
 }
 
+/// Consume a `\mark` command with its argument.
+/// Handles:
+///   `\mark \markup { \musicglyph "scripts.coda" }`   → coda
+///   `\mark \markup { \musicglyph "scripts.segno" }`  → segno
+///   `\mark "D.C."` / `\mark "D.S. al Coda"` etc.     → da_capo / dal_segno
+fn consume_mark(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
+    if i >= children.len() {
+        return i;
+    }
+    let node = children[i];
+    if node.kind() == "string" {
+        // \mark "D.C." or \mark "D.S. al Coda"
+        let text = extract_string_value(state, node);
+        i += 1;
+        let dir = if text.starts_with("D.S.") {
+            Direction {
+                dal_segno: Some(text),
+                ..Default::default()
+            }
+        } else if text.starts_with("D.C.") {
+            Direction {
+                da_capo: Some(text),
+                ..Default::default()
+            }
+        } else {
+            // Generic text mark — ignore for now
+            return i;
+        };
+        let measure = state.ensure_measure();
+        measure.directions.push(dir);
+    } else if node.kind() == "escaped_word" && state.text(node) == "\\markup" {
+        // \mark \markup { ... }
+        i += 1;
+        if let Some(block) = children.get(i) {
+            if block.kind() == "expression_block" {
+                // Walk the markup block looking for \musicglyph "scripts.coda" etc.
+                let block_text = state.text(*block);
+                let dir = if block_text.contains("scripts.coda") {
+                    Some(Direction {
+                        coda: true,
+                        ..Default::default()
+                    })
+                } else if block_text.contains("scripts.segno") {
+                    Some(Direction {
+                        segno: true,
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                };
+                if let Some(d) = dir {
+                    let measure = state.ensure_measure();
+                    measure.directions.push(d);
+                }
+                i += 1;
+            }
+        }
+    }
+    i
+}
+
+/// Consume a `\override` command.
+/// Recognises `Glissando.style = #'<style>` and sets pending state.
+fn consume_override(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
+    // Collect tokens to build property path and value
+    // Expected pattern: <symbol>.<symbol> = <scheme_value>
+    // We read the raw text span from the first symbol through a few tokens.
+    let start_i = i;
+    let mut symbols: Vec<String> = Vec::new();
+    let mut value = String::new();
+    let mut saw_eq = false;
+
+    // Consume up to ~10 tokens looking for the pattern
+    let limit = (i + 10).min(children.len());
+    while i < limit {
+        let node = children[i];
+        match node.kind() {
+            "symbol" if !saw_eq => {
+                symbols.push(state.text(node).to_string());
+                i += 1;
+            }
+            "punctuation" => {
+                let pt = punct_text(state, node);
+                if pt == "." && !saw_eq {
+                    i += 1; // skip dot in property path
+                } else if pt == "=" {
+                    saw_eq = true;
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            _ if saw_eq => {
+                // Whatever follows the "=" is the value — grab its raw text
+                value = state.text(node).to_string();
+                i += 1;
+                break;
+            }
+            _ => break,
+        }
+    }
+
+    // Check for known Glissando.style overrides
+    if symbols.len() >= 2 && symbols[0] == "Glissando" && symbols[1] == "style" && saw_eq {
+        // value is e.g. "#'dashed-line", "#'dotted-line", "#'trill"
+        let style = value
+            .trim_start_matches("#'")
+            .trim_start_matches("#\u{2018}"); // curly quote edge case
+        match style {
+            "dashed-line" => {
+                state.pending_glissando_style = Some("dashed".to_string());
+            }
+            "dotted-line" => {
+                state.pending_glissando_style = Some("dotted".to_string());
+            }
+            "trill" => {
+                state.pending_slide = true;
+            }
+            _ => {
+                state.pending_glissando_style = Some(style.to_string());
+            }
+        }
+    }
+
+    // If we didn't consume anything useful, at least advance past start
+    if i == start_i {
+        // Skip unknown override — try to jump past expression_block or next statement
+        while i < children.len() {
+            let node = children[i];
+            if node.kind() == "escaped_word" || node.kind() == "symbol" {
+                break;
+            }
+            i += 1;
+        }
+    }
+    i
+}
+
+/// Parse a `\paper { ... }` block and populate `state.page_layout`.
+fn parse_paper_block(state: &mut WalkState, block: Node) {
+    let mut layout = state.page_layout.take().unwrap_or(PageLayout {
+        page_height: None,
+        page_width: None,
+        left_margin: None,
+        right_margin: None,
+        top_margin: None,
+        bottom_margin: None,
+        system_distance: None,
+        top_system_distance: None,
+        staff_size: None,
+    });
+
+    let mut cursor = block.walk();
+    let children: Vec<Node> = block.children(&mut cursor).collect();
+    let mut i = 0;
+
+    while i < children.len() {
+        let node = children[i];
+        if node.kind() == "assignment_lhs" {
+            // Extract the property name (may be compound like
+            // "system-system-spacing.basic-distance")
+            let key = state.text(node).trim().to_string();
+            // Skip "=" punctuation and find the value
+            let mut j = i + 1;
+            while j < children.len() {
+                let val_node = children[j];
+                if val_node.kind() == "punctuation" && punct_text(state, val_node) == "=" {
+                    j += 1;
+                    continue;
+                }
+                // The value could be an unsigned_integer, a number with \cm suffix,
+                // or a scheme expression like #15.0
+                // Grab the raw text of the remaining tokens on this "line"
+                let raw = state.text(val_node).to_string();
+                // Try to extract a float — strip \cm, \mm, #, etc.
+                let cleaned = raw
+                    .replace("\\cm", "")
+                    .replace("\\mm", "")
+                    .replace("\\in", "")
+                    .trim_start_matches('#')
+                    .trim()
+                    .to_string();
+                if let Ok(v) = cleaned.parse::<f64>() {
+                    match key.as_str() {
+                        "paper-height" => layout.page_height = Some(v),
+                        "paper-width" => layout.page_width = Some(v),
+                        "left-margin" => layout.left_margin = Some(v),
+                        "right-margin" => layout.right_margin = Some(v),
+                        "top-margin" => layout.top_margin = Some(v),
+                        "bottom-margin" => layout.bottom_margin = Some(v),
+                        _ => {
+                            if key.contains("system-system-spacing") {
+                                layout.system_distance = Some(v);
+                            } else if key.contains("top-system-spacing") {
+                                layout.top_system_distance = Some(v);
+                            }
+                        }
+                    }
+                }
+                i = j;
+                break;
+            }
+        }
+        i += 1;
+    }
+
+    state.page_layout = Some(layout);
+}
+
 /// Parse a fraction string like "4/4" into (numerator, denominator).
 fn parse_fraction(text: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = text.split('/').collect();
@@ -1547,6 +1844,20 @@ fn apply_note_attachments(_state: &mut WalkState, note: &mut Note, attachments: 
                     shape: "normal".to_string(),
                     inverted: false,
                 });
+            }
+            "\\glissando" => {
+                if _state.pending_slide {
+                    note.slide = Some(StartStop::Start);
+                    _state.pending_slide = false;
+                } else {
+                    note.glissando = Some(StartStop::Start);
+                    if let Some(style) = _state.pending_glissando_style.take() {
+                        note.glissando_line_type = Some(style);
+                    }
+                }
+            }
+            "\\arpeggio" => {
+                // Arpeggio on a single note — unusual but valid in LilyPond
             }
             s if is_dynamic_name(s) => {
                 let sign = s.trim_start_matches('\\').to_string();
@@ -1659,10 +1970,37 @@ fn apply_chord_attachments(
     chord: &mut Chord,
     attachments: &[String],
 ) {
+    for att in attachments {
+        match att.as_str() {
+            "\\arpeggio" => {
+                // Apply pending arpeggio type, defaulting to Up
+                chord.arpeggio = Some(
+                    _state.pending_arpeggio_type.take().unwrap_or(ArpeggioType::Up),
+                );
+                continue;
+            }
+            "\\glissando" => {
+                // Glissando on a chord — apply to first note
+                if !chord.notes.is_empty() {
+                    if _state.pending_slide {
+                        chord.notes[0].slide = Some(StartStop::Start);
+                        _state.pending_slide = false;
+                    } else {
+                        chord.notes[0].glissando = Some(StartStop::Start);
+                        if let Some(style) = _state.pending_glissando_style.take() {
+                            chord.notes[0].glissando_line_type = Some(style);
+                        }
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+    }
     if chord.notes.is_empty() {
         return;
     }
-    // Apply attachments to first note only (as is convention)
+    // Apply remaining attachments to first note only (as is convention)
     let first = &mut chord.notes[0];
     for att in attachments {
         match att.as_str() {
@@ -2281,6 +2619,235 @@ pB = { g4 a b c' }
             }
             _ => panic!("expected Note"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Section 10: Extended feature parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_partial() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \partial 4 c'4 | d'2 e'2 }"#)
+            .unwrap();
+
+        assert!(score.metadata.partial_duration.is_some());
+        let partial = score.metadata.partial_duration.as_ref().unwrap();
+        assert_eq!(partial.actual_duration(), Ratio::new(1i64, 4));
+    }
+
+    #[test]
+    fn test_parse_glissando() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ c'4\glissando d'4 }"#)
+            .unwrap();
+
+        let notes: Vec<&Note> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].glissando, Some(StartStop::Start));
+        assert!(notes[0].slide.is_none());
+    }
+
+    #[test]
+    fn test_parse_arpeggio_up() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \arpeggioArrowUp <c' e' g'>4\arpeggio }"#)
+            .unwrap();
+
+        let chords: Vec<&Chord> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Chord(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(chords.len(), 1);
+        assert_eq!(chords[0].arpeggio, Some(ArpeggioType::Up));
+    }
+
+    #[test]
+    fn test_parse_arpeggio_down() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \arpeggioArrowDown <c' e' g'>4\arpeggio }"#)
+            .unwrap();
+
+        let chords: Vec<&Chord> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Chord(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(chords.len(), 1);
+        assert_eq!(chords[0].arpeggio, Some(ArpeggioType::Down));
+    }
+
+    #[test]
+    fn test_parse_arpeggio_bracket() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \arpeggioBracket <c' e' g'>4\arpeggio }"#)
+            .unwrap();
+
+        let chords: Vec<&Chord> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Chord(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(chords.len(), 1);
+        assert_eq!(chords[0].arpeggio, Some(ArpeggioType::NonArpeggio));
+    }
+
+    #[test]
+    fn test_parse_after_grace() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ c'4 \afterGrace { d'16 } }"#)
+            .unwrap();
+
+        let notes: Vec<&Note> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(notes.len(), 2);
+        // First note is normal
+        assert!(!notes[0].is_grace);
+        // Second note is after-grace
+        assert!(notes[1].is_grace);
+        assert!(notes[1].after_grace);
+        assert_eq!(notes[1].pitch.step, PitchStep::D);
+    }
+
+    #[test]
+    fn test_parse_mark_da_capo() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ c'4 d' e' f' \mark "D.C." }"#)
+            .unwrap();
+
+        let dirs: Vec<&Direction> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.directions)
+            .collect();
+
+        assert!(!dirs.is_empty());
+        let dc_dir = dirs.iter().find(|d| d.da_capo.is_some()).expect("expected D.C. direction");
+        assert_eq!(dc_dir.da_capo.as_deref(), Some("D.C."));
+    }
+
+    #[test]
+    fn test_parse_mark_dal_segno() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ c'4 d' e' f' \mark "D.S. al Coda" }"#)
+            .unwrap();
+
+        let dirs: Vec<&Direction> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.directions)
+            .collect();
+
+        assert!(!dirs.is_empty());
+        let ds_dir = dirs.iter().find(|d| d.dal_segno.is_some()).expect("expected D.S. direction");
+        assert_eq!(ds_dir.dal_segno.as_deref(), Some("D.S. al Coda"));
+    }
+
+    #[test]
+    fn test_parse_mark_coda() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"{ c'4 \mark \markup { \musicglyph "scripts.coda" } d'4 }"#,
+            )
+            .unwrap();
+
+        let dirs: Vec<&Direction> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.directions)
+            .collect();
+
+        assert!(!dirs.is_empty());
+        assert!(dirs.iter().any(|d| d.coda), "expected coda direction");
+    }
+
+    #[test]
+    fn test_parse_mark_segno() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"{ c'4 \mark \markup { \musicglyph "scripts.segno" } d'4 }"#,
+            )
+            .unwrap();
+
+        let dirs: Vec<&Direction> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.directions)
+            .collect();
+
+        assert!(!dirs.is_empty());
+        assert!(dirs.iter().any(|d| d.segno), "expected segno direction");
+    }
+
+    #[test]
+    fn test_parse_paper_block() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\paper {
+  paper-height = 29.70\cm
+  paper-width = 21.00\cm
+  left-margin = 2.00\cm
+}
+{ c'4 d' e' f' }"#,
+            )
+            .unwrap();
+
+        let layout = score.page_layout.as_ref().expect("expected page_layout");
+        assert!((layout.page_height.unwrap() - 29.70).abs() < 0.01);
+        assert!((layout.page_width.unwrap() - 21.00).abs() < 0.01);
+        assert!((layout.left_margin.unwrap() - 2.00).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_arpeggio_default_up() {
+        // Without explicit direction, \arpeggio should default to Up
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ <c' e' g'>4\arpeggio }"#)
+            .unwrap();
+
+        let chords: Vec<&Chord> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Chord(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(chords.len(), 1);
+        assert_eq!(chords[0].arpeggio, Some(ArpeggioType::Up));
     }
 }
 
