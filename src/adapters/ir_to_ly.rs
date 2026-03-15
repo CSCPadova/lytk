@@ -8,8 +8,8 @@
 
 use num::rational::Ratio;
 
-use crate::ir::articulation::StartStop;
-use crate::ir::direction::{BarlineType, Direction};
+use crate::ir::articulation::{StartStop, TupletDisplay};
+use crate::ir::direction::BarlineType;
 use crate::ir::duration::Duration;
 use crate::ir::language::{pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
@@ -269,11 +269,45 @@ fn part_var_name(part: &Part) -> String {
         "part"
     };
 
-    let clean: String = raw.chars().filter(|c| c.is_alphanumeric()).collect();
-    if clean.is_empty() || clean.starts_with(|c: char| c.is_ascii_digit()) {
-        format!("part{clean}")
-    } else {
-        clean
+    // LilyPond variable names must be all-letter (no digits) so the
+    // tree-sitter grammar produces an `assignment_lhs` node. Convert any
+    // trailing numeric index to an alphabetic suffix.
+    let alpha: String = raw.chars().filter(|c| c.is_alphabetic()).collect();
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    let base = if alpha.is_empty() { "part".to_string() } else { alpha };
+    let mut name = camel_to_lower(&base);
+
+    if !digits.is_empty() {
+        if let Ok(n) = digits.parse::<usize>() {
+            name.push_str(&index_to_alpha(n));
+        }
+    }
+
+    name
+}
+
+/// Convert a 1-based index to alphabetic suffix: 1→A, 2→B, 26→Z, 27→AA
+fn index_to_alpha(n: usize) -> String {
+    if n == 0 {
+        return "A".to_string();
+    }
+    let mut result = String::new();
+    let mut val = n;
+    while val > 0 {
+        val -= 1;
+        result.insert(0, (b'A' + (val % 26) as u8) as char);
+        val /= 26;
+    }
+    result
+}
+
+/// Lowercase the first character of single-word names (e.g. "P" → "p").
+fn camel_to_lower(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().to_string() + chars.as_str(),
+        None => String::new(),
     }
 }
 
@@ -352,7 +386,7 @@ impl FromIrAdapter for IrToLyAdapter {
             .metadata
             .pitch_language
             .unwrap_or(self.language);
-        let mode = self.mode;
+        let mode = score.metadata.pitch_mode;
 
         let mut lines: Vec<String> = Vec::new();
 
@@ -424,17 +458,46 @@ fn emit_part_variable(
     lines: &mut Vec<String>,
 ) {
     let var = part_var_name(part);
+    let relative_prefix = if mode == PitchMode::Relative {
+        // Find the first pitch to use as the reference pitch
+        let first_pitch = part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .find_map(|e| match e {
+                VoiceElement::Note(n) => Some(&n.pitch),
+                _ => None,
+            });
+        if let Some(p) = first_pitch {
+            let name = pitch_name(p.step, p.alter, lang)
+                .unwrap_or_else(|| p.step.name().to_lowercase());
+            let oct = p.octave - 3;
+            let oct_marks = if oct > 0 {
+                "'".repeat(oct as usize)
+            } else if oct < 0 {
+                ",".repeat((-oct) as usize)
+            } else {
+                String::new()
+            };
+            format!("\\relative {name}{oct_marks} ")
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
 
     if part.staves > 1 {
         for staff_num in 1..=part.staves {
             let staff_var = format!("{}Staff{}", var, roman(staff_num));
-            lines.push(format!("{staff_var} = {{"));
+            lines.push(format!("{staff_var} = {relative_prefix}{{"));
             emit_measures(part, lang, mode, Some(staff_num), 2, lines);
             lines.push("}".to_string());
             lines.push(String::new());
         }
     } else {
-        lines.push(format!("{var} = {{"));
+        lines.push(format!("{var} = {relative_prefix}{{"));
         emit_measures(part, lang, mode, None, 2, lines);
         lines.push("}".to_string());
         lines.push(String::new());
@@ -473,11 +536,55 @@ fn emit_measures(
             }
         }
 
-        // Directions
+        // Separate directions into standalone (tempo, rehearsal) and note-attached (dynamics, wedges, markup)
+        let mut pending_dirs: Vec<String> = Vec::new();
         for dir in &measure.directions {
-            let dir_str = direction_to_ly(dir);
-            if !dir_str.is_empty() {
-                lines.push(format!("{pad}{dir_str}"));
+            // Tempo and rehearsal marks can stand alone
+            if let Some(tempo) = &dir.tempo {
+                lines.push(format!("{pad}{}", tempo_to_ly(tempo)));
+            }
+            if dir.rehearsal.is_some() {
+                lines.push(format!("{pad}\\mark \\default"));
+            }
+            // Dynamics, wedges, text, pedal, octave shifts must attach to a note
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(dyn_mark) = &dir.dynamic {
+                parts.push(format!("\\{}", dyn_mark.sign));
+            }
+            if let Some(wedge) = &dir.wedge {
+                let cmd = match wedge.wedge_type.as_str() {
+                    "crescendo" => "\\<",
+                    "diminuendo" => "\\>",
+                    "stop" => "\\!",
+                    _ => "",
+                };
+                if !cmd.is_empty() {
+                    parts.push(cmd.to_string());
+                }
+            }
+            if let Some(text) = &dir.text {
+                if !text.text.is_empty() {
+                    parts.push(format!("^\\markup {{ \"{}\" }}", text.text));
+                }
+            }
+            if let Some(pedal) = &dir.pedal {
+                match pedal.pedal_type.as_str() {
+                    "start" => parts.push("\\sustainOn".to_string()),
+                    "stop" => parts.push("\\sustainOff".to_string()),
+                    "change" => parts.push("\\sustainOff\\sustainOn".to_string()),
+                    _ => {}
+                }
+            }
+            if let Some(oct) = &dir.octave_shift {
+                match oct.shift_type.as_str() {
+                    "up" => parts.push(format!("\\ottava #{}", oct.size / 8)),
+                    "down" => parts.push(format!("\\ottava #-{}", oct.size / 8)),
+                    "stop" => parts.push("\\ottava #0".to_string()),
+                    _ => {}
+                }
+            }
+            if !parts.is_empty() {
+                pending_dirs.extend(parts);
             }
         }
 
@@ -501,7 +608,8 @@ fn emit_measures(
 
         if voices.len() <= 1 {
             if let Some(voice) = voices.first() {
-                prev_pitch = emit_voice_elements(voice, lang, mode, prev_pitch, &pad, lines);
+                prev_pitch =
+                    emit_voice_elements(voice, lang, mode, prev_pitch, &pad, &pending_dirs, lines);
             }
         } else {
             // Multi-voice: << \\ >> syntax
@@ -512,8 +620,10 @@ fn emit_measures(
                 }
                 lines.push(format!("{pad}  {{"));
                 let inner_pad = format!("{pad}    ");
+                // Only attach directions to the first voice
+                let dirs_for_voice = if i == 0 { &pending_dirs } else { &Vec::new() };
                 prev_pitch =
-                    emit_voice_elements(voice, lang, mode, prev_pitch, &inner_pad, lines);
+                    emit_voice_elements(voice, lang, mode, prev_pitch, &inner_pad, dirs_for_voice, lines);
                 lines.push(format!("{pad}  }}"));
             }
             lines.push(format!("{pad}>>"));
@@ -544,28 +654,74 @@ fn emit_measures(
     }
 }
 
+/// Extract the tuplet display hint from a voice element, if present.
+fn element_tuplet(elem: &VoiceElement) -> Option<&TupletDisplay> {
+    match elem {
+        VoiceElement::Note(n) => n.tuplet.as_ref(),
+        VoiceElement::Chord(c) => c.notes.first().and_then(|n| n.tuplet.as_ref()),
+        _ => None,
+    }
+}
+
+/// Extract the tuplet ratio (actual, normal) from a voice element's duration.
+fn element_tuplet_ratio(elem: &VoiceElement) -> (u8, u8) {
+    let dur = match elem {
+        VoiceElement::Note(n) => &n.duration,
+        VoiceElement::Rest(r) => &r.duration,
+        VoiceElement::Chord(c) => &c.duration,
+        VoiceElement::Forward(f) => &f.duration,
+        VoiceElement::Backup(b) => &b.duration,
+    };
+    (dur.tuplet_actual, dur.tuplet_normal)
+}
+
 fn emit_voice_elements(
     voice: &Voice,
     lang: PitchLanguage,
     mode: PitchMode,
     mut prev_pitch: Option<Pitch>,
     pad: &str,
+    pending_dirs: &[String],
     lines: &mut Vec<String>,
 ) -> Option<Pitch> {
     let mut tokens: Vec<String> = Vec::new();
+    let mut dirs_attached = false;
+    let mut in_tuplet = false;
 
     for elem in &voice.elements {
+        // Check for tuplet start
+        if let Some(td) = element_tuplet(elem) {
+            if td.tuplet_type == StartStop::Start && !in_tuplet {
+                let (actual, normal) = element_tuplet_ratio(elem);
+                tokens.push(format!("\\tuplet {actual}/{normal} {{"));
+                in_tuplet = true;
+            }
+        }
+
         match elem {
             VoiceElement::Note(note) => {
-                let token = note_to_ly(note, lang, mode, prev_pitch.as_ref());
+                let mut token = note_to_ly(note, lang, mode, prev_pitch.as_ref());
+                if !dirs_attached && !pending_dirs.is_empty() {
+                    token = format!("{token}{}", pending_dirs.join(""));
+                    dirs_attached = true;
+                }
                 prev_pitch = Some(note.pitch);
                 tokens.push(token);
             }
             VoiceElement::Rest(rest) => {
-                tokens.push(rest_to_ly(rest));
+                let mut token = rest_to_ly(rest);
+                if !dirs_attached && !pending_dirs.is_empty() {
+                    token = format!("{token}{}", pending_dirs.join(""));
+                    dirs_attached = true;
+                }
+                tokens.push(token);
             }
             VoiceElement::Chord(chord) => {
-                let (token, last) = chord_to_ly(chord, lang, mode, prev_pitch.as_ref());
+                let (mut token, last) = chord_to_ly(chord, lang, mode, prev_pitch.as_ref());
+                if !dirs_attached && !pending_dirs.is_empty() {
+                    token = format!("{token}{}", pending_dirs.join(""));
+                    dirs_attached = true;
+                }
                 prev_pitch = last;
                 tokens.push(token);
             }
@@ -576,6 +732,19 @@ fn emit_voice_elements(
                 // Backups are structural; they don't emit LilyPond tokens
             }
         }
+
+        // Check for tuplet stop
+        if let Some(td) = element_tuplet(elem) {
+            if td.tuplet_type == StartStop::Stop && in_tuplet {
+                tokens.push("}".to_string());
+                in_tuplet = false;
+            }
+        }
+    }
+
+    // Safety: close any unclosed tuplet
+    if in_tuplet {
+        tokens.push("}".to_string());
     }
 
     // Group tokens into lines of ~72 chars
@@ -623,7 +792,12 @@ fn grace_note_to_ly(
 ) -> String {
     let p = pitch_to_ly(&note.pitch, lang, prev, mode);
     let d = duration_to_ly(&note.duration);
-    format!("\\grace {p}{d}")
+    let cmd = if note.grace_slash {
+        "\\acciaccatura"
+    } else {
+        "\\grace"
+    };
+    format!("{cmd} {p}{d}")
 }
 
 fn rest_to_ly(rest: &Rest) -> String {
@@ -733,54 +907,6 @@ fn attachments_to_ly(note: &Note) -> String {
         result.push_str(o);
     }
     result
-}
-
-fn direction_to_ly(dir: &Direction) -> String {
-    let mut parts: Vec<String> = Vec::new();
-
-    if let Some(tempo) = &dir.tempo {
-        parts.push(tempo_to_ly(tempo));
-    }
-    if let Some(dyn_mark) = &dir.dynamic {
-        parts.push(format!("\\{}", dyn_mark.sign));
-    }
-    if let Some(wedge) = &dir.wedge {
-        let cmd = match wedge.wedge_type.as_str() {
-            "crescendo" => "\\<",
-            "diminuendo" => "\\>",
-            "stop" => "\\!",
-            _ => "",
-        };
-        if !cmd.is_empty() {
-            parts.push(cmd.to_string());
-        }
-    }
-    if let Some(text) = &dir.text {
-        if !text.text.is_empty() {
-            parts.push(format!("^\\markup {{ \"{}\" }}", text.text));
-        }
-    }
-    if dir.rehearsal.is_some() {
-        parts.push("\\mark \\default".to_string());
-    }
-    if let Some(pedal) = &dir.pedal {
-        match pedal.pedal_type.as_str() {
-            "start" => parts.push("\\sustainOn".to_string()),
-            "stop" => parts.push("\\sustainOff".to_string()),
-            "change" => parts.push("\\sustainOff\\sustainOn".to_string()),
-            _ => {}
-        }
-    }
-    if let Some(oct) = &dir.octave_shift {
-        match oct.shift_type.as_str() {
-            "up" => parts.push(format!("\\ottava #{}", oct.size / 8)),
-            "down" => parts.push(format!("\\ottava #-{}", oct.size / 8)),
-            "stop" => parts.push("\\ottava #0".to_string()),
-            _ => {}
-        }
-    }
-
-    parts.join(" ")
 }
 
 fn tempo_to_ly(tempo: &crate::ir::direction::TempoDirection) -> String {
@@ -1158,5 +1284,304 @@ mod tests {
         assert!(ly.contains("\\score {"));
         // Should have at least some notes
         assert!(ly.len() > 100);
+    }
+
+    #[test]
+    fn test_roundtrip_ly_to_ir_to_ly_with_variables() {
+        use crate::adapters::ly_to_ir::LyToIrAdapter;
+        use crate::adapters::ToIrAdapter;
+
+        let input = r#"\version "2.24.0"
+
+melody = {
+  \key g \major
+  \time 3/4
+  c'4 d' e' |
+  f' g' a' |
+}
+
+\score {
+  \new Staff \melody
+  \layout {}
+}
+"#;
+        let to_ir = LyToIrAdapter::new();
+        let score = to_ir.convert_str(input).unwrap();
+
+        // Score should have notes from the variable
+        let parts = score.parts();
+        assert!(!parts.is_empty());
+        let notes: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                crate::ir::note::VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert!(notes.len() >= 6, "Expected >= 6 notes, got {}", notes.len());
+
+        // Emit back to LilyPond
+        let from_ir = IrToLyAdapter::new();
+        let ly = from_ir.convert(&score).unwrap();
+
+        assert!(ly.contains("\\version"));
+        assert!(ly.contains("\\score {"));
+        // Should contain actual notes, not empty
+        assert!(ly.contains("c'") || ly.contains("d'") || ly.contains("e'"));
+    }
+
+    #[test]
+    fn test_roundtrip_ly_preserves_relative_mode() {
+        use crate::adapters::ly_to_ir::LyToIrAdapter;
+        use crate::adapters::ToIrAdapter;
+
+        let input = r#"\relative c' { c4 d e f }"#;
+        let to_ir = LyToIrAdapter::new();
+        let score = to_ir.convert_str(input).unwrap();
+
+        let from_ir = IrToLyAdapter::new();
+        let ly = from_ir.convert(&score).unwrap();
+
+        // Should emit \relative since the score used relative mode
+        assert!(
+            ly.contains("\\relative"),
+            "Output should contain \\relative when input used relative mode. Got:\n{}",
+            ly
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_all_xml_fixtures_to_ly() {
+        // MusicXML → IR → LilyPond for every fixture file; verify
+        // non-empty output with required structural elements.
+        use crate::adapters::mxml_to_ir::MxmlToIrAdapter;
+        use crate::adapters::ToIrAdapter;
+
+        let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("xml");
+        let to_ir = MxmlToIrAdapter::new();
+        let from_ir = IrToLyAdapter::new();
+
+        let mut failures: Vec<(String, String)> = Vec::new();
+        let mut success_count = 0;
+
+        for entry in std::fs::read_dir(&fixture_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "xml") {
+                let xml = std::fs::read_to_string(&path).unwrap();
+                let score = match to_ir.convert_str(&xml) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        failures.push((
+                            path.file_name().unwrap().to_string_lossy().to_string(),
+                            format!("parse: {e}"),
+                        ));
+                        continue;
+                    }
+                };
+
+                match from_ir.convert(&score) {
+                    Ok(ly) => {
+                        if !ly.contains("\\version") || !ly.contains("\\score {") {
+                            failures.push((
+                                path.file_name().unwrap().to_string_lossy().to_string(),
+                                "missing \\version or \\score block".to_string(),
+                            ));
+                        } else {
+                            success_count += 1;
+                        }
+                    }
+                    Err(e) => {
+                        failures.push((
+                            path.file_name().unwrap().to_string_lossy().to_string(),
+                            format!("emit: {e}"),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if !failures.is_empty() {
+            let report: Vec<String> = failures
+                .iter()
+                .map(|(f, e)| format!("  {f}: {e}"))
+                .collect();
+            panic!(
+                "{} of {} fixture files failed roundtrip:\n{}",
+                failures.len(),
+                success_count + failures.len(),
+                report.join("\n")
+            );
+        }
+
+        assert!(
+            success_count >= 100,
+            "expected at least 100 fixtures, got {success_count}"
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_musicxml_fixture_to_ly_and_back() {
+        // MusicXML → IR → LilyPond → IR (re-parse) → IR → MusicXML
+        // Verify the full round-trip produces non-empty output with
+        // matching part counts.
+        use crate::adapters::ir_to_mxml::IrToMxmlAdapter;
+        use crate::adapters::ly_to_ir::LyToIrAdapter;
+        use crate::adapters::mxml_to_ir::MxmlToIrAdapter;
+        use crate::adapters::{FromIrAdapter, ToIrAdapter};
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("musicxml")
+            .join("ross_32_Rossini_Duetto_for_Cello_and_Bass_mvt.1.musicxml");
+        if !fixture.exists() {
+            return;
+        }
+
+        // MusicXML → IR
+        let mxml_to_ir = MxmlToIrAdapter::new();
+        let score1 = mxml_to_ir.convert_file(&fixture).unwrap();
+        let part_count = score1.parts().len();
+
+        // IR → LilyPond
+        let ir_to_ly = IrToLyAdapter::new();
+        let ly = ir_to_ly.convert(&score1).unwrap();
+        assert!(ly.contains("\\version"));
+        assert!(ly.len() > 500, "LilyPond output unexpectedly short");
+
+        // LilyPond → IR (re-parse)
+        let ly_to_ir = LyToIrAdapter::new();
+        let score2 = ly_to_ir.convert_str(&ly).unwrap();
+        assert!(
+            !score2.parts().is_empty(),
+            "re-parsed IR should have parts"
+        );
+
+        // IR → MusicXML
+        let ir_to_mxml = IrToMxmlAdapter::new();
+        let mxml = ir_to_mxml.convert(&score2).unwrap();
+        assert!(mxml.contains("<score-partwise"));
+        assert!(mxml.contains("<part "));
+
+        // Part count should match
+        assert_eq!(
+            score2.parts().len(),
+            part_count,
+            "re-parsed score should have same number of parts"
+        );
+    }
+
+    #[test]
+    fn test_emit_tuplet() {
+        // Build a score with 3 notes in a 3/2 tuplet
+        let notes: Vec<VoiceElement> = (0..3)
+            .map(|i| {
+                let mut n = Note::new(
+                    Pitch::new(PitchStep::C, 4),
+                    Duration::quarter(),
+                );
+                n.duration.tuplet_actual = 3;
+                n.duration.tuplet_normal = 2;
+                if i == 0 {
+                    n.tuplet = Some(TupletDisplay {
+                        tuplet_type: StartStop::Start,
+                        bracket: true,
+                        show_number: "actual".to_string(),
+                    });
+                } else if i == 2 {
+                    n.tuplet = Some(TupletDisplay {
+                        tuplet_type: StartStop::Stop,
+                        bracket: true,
+                        show_number: String::new(),
+                    });
+                }
+                VoiceElement::Note(Box::new(n))
+            })
+            .collect();
+
+        let voice = Voice { number: 1, elements: notes };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\tuplet 3/2"), "should emit \\tuplet 3/2: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_acciaccatura() {
+        let mut n = Note::new(
+            Pitch::new(PitchStep::E, 5),
+            Duration::new(Ratio::new(1, 16)),
+        );
+        n.is_grace = true;
+        n.grace_slash = true;
+        let main = Note::new(
+            Pitch::new(PitchStep::C, 4),
+            Duration::quarter(),
+        );
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n)),
+                VoiceElement::Note(Box::new(main)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\acciaccatura"), "should emit \\acciaccatura: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_grace_not_acciaccatura() {
+        let mut n = Note::new(
+            Pitch::new(PitchStep::E, 5),
+            Duration::new(Ratio::new(1, 16)),
+        );
+        n.is_grace = true;
+        n.grace_slash = false;
+        let main = Note::new(
+            Pitch::new(PitchStep::C, 4),
+            Duration::quarter(),
+        );
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n)),
+                VoiceElement::Note(Box::new(main)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\grace"), "should emit \\grace: {}", ly);
+        assert!(!ly.contains("\\acciaccatura"), "should NOT emit \\acciaccatura: {}", ly);
     }
 }

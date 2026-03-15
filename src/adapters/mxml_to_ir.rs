@@ -316,6 +316,49 @@ fn parse_metadata(root: &XmlNode) -> ScoreMetadata {
         }
     }
 
+    // Fallback: <credit> elements (MuseScore exports title/composer here)
+    for credit in root.find_all("credit") {
+        let credit_type = credit
+            .child_text("credit-type")
+            .unwrap_or("")
+            .to_lowercase();
+        let words = credit
+            .child_text("credit-words")
+            .unwrap_or("")
+            .to_string();
+        if words.is_empty() {
+            continue;
+        }
+        match credit_type.as_str() {
+            "title" => {
+                if meta.title.is_none() {
+                    meta.title = Some(words);
+                }
+            }
+            "subtitle" => {
+                if meta.subtitle.is_none() {
+                    meta.subtitle = Some(words);
+                }
+            }
+            "composer" => {
+                if meta.composer.is_none() {
+                    meta.composer = Some(words);
+                }
+            }
+            "arranger" => {
+                if meta.arranger.is_none() {
+                    meta.arranger = Some(words);
+                }
+            }
+            "lyricist" | "poet" => {
+                if meta.lyricist.is_none() {
+                    meta.lyricist = Some(words);
+                }
+            }
+            _ => {}
+        }
+    }
+
     meta
 }
 
@@ -769,6 +812,10 @@ fn parse_note(elem: &XmlNode, divisions: i64) -> Option<NoteOrRest> {
     note.voice = voice_num;
     note.staff = staff_num;
     note.is_grace = is_grace;
+    note.grace_slash = elem
+        .find("grace")
+        .and_then(|g| g.attr("slash"))
+        == Some("yes");
     note.is_cue = elem.find("cue").is_some();
 
     // Stem direction
@@ -1505,5 +1552,85 @@ mod tests {
             success_count >= 100,
             "expected at least 100 fixtures, got {success_count}"
         );
+    }
+
+    #[test]
+    fn test_parse_credit_metadata() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <credit page="1">
+    <credit-type>title</credit-type>
+    <credit-words>My Title</credit-words>
+  </credit>
+  <credit page="1">
+    <credit-type>composer</credit-type>
+    <credit-words>A. Composer</credit-words>
+  </credit>
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let adapter = MxmlToIrAdapter::new();
+        let score = adapter.convert_str(xml).unwrap();
+        assert_eq!(score.metadata.title.as_deref(), Some("My Title"));
+        assert_eq!(score.metadata.composer.as_deref(), Some("A. Composer"));
+    }
+
+    #[test]
+    fn test_parse_grace_slash() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note>
+        <grace slash="yes"/>
+        <pitch><step>E</step><octave>5</octave></pitch>
+        <type>16th</type>
+      </note>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let adapter = MxmlToIrAdapter::new();
+        let score = adapter.convert_str(xml).unwrap();
+        let elems: Vec<_> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .collect();
+        match &elems[0] {
+            VoiceElement::Note(n) => {
+                assert!(n.is_grace, "should be grace note");
+                assert!(n.grace_slash, "slash=yes should set grace_slash");
+            }
+            _ => panic!("expected Note"),
+        }
     }
 }

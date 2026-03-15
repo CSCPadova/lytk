@@ -40,6 +40,8 @@ pub struct Note {
     pub lyrics: Vec<LyricSyllable>,
     // -- flags --
     pub is_grace: bool,
+    /// Whether the grace note has a slash (acciaccatura). Only meaningful when `is_grace` is true.
+    pub grace_slash: bool,
     pub is_cue: bool,
     pub stem_direction: String,
     pub notehead: String,
@@ -66,6 +68,7 @@ impl Note {
             fermata: None,
             lyrics: Vec::new(),
             is_grace: false,
+            grace_slash: false,
             is_cue: false,
             stem_direction: String::new(),
             notehead: String::new(),

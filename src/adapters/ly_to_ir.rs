@@ -21,13 +21,15 @@
 //! Python prototype: `lytk-py/converters/ly_to_ir.py` (uses python-ly,
 //! not tree-sitter, so the tree walk strategy differs).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use num::rational::Ratio;
 use tree_sitter::Node;
 
 use crate::ir::articulation::{
-    Articulation, DynamicMark, Fermata, Placement, SlurEvent, StartStop, TieEvent, Wedge,
+    Articulation, DynamicMark, Fermata, Placement, SlurEvent, StartStop, TieEvent, TupletDisplay,
+    Wedge,
 };
 use crate::ir::direction::{Barline, BarlineType, Direction, TempoDirection};
 use crate::ir::duration::Duration;
@@ -136,6 +138,9 @@ struct WalkState<'src> {
     parts: Vec<(String, Part)>, // (context_name, part)
     part_counter: u32,
 
+    // Variable definitions: name → measures collected from the definition body
+    definitions: HashMap<String, Vec<Measure>>,
+
     // Measure/voice state for the current part
     measure_num: u32,
     current_measure: Option<Measure>,
@@ -159,6 +164,7 @@ impl<'src> WalkState<'src> {
             metadata: ScoreMetadata::default(),
             parts: Vec::new(),
             part_counter: 0,
+            definitions: HashMap::new(),
             measure_num: 0,
             current_measure: None,
             current_voice: Vec::new(),
@@ -232,6 +238,19 @@ impl<'src> WalkState<'src> {
         self.parts.push((context.to_string(), part));
         self.measure_num = 0;
         self.prev_pitch = self.relative_ref;
+    }
+
+    /// Resolve a variable reference: look up stored measures and add them
+    /// to the current part.
+    fn resolve_variable(&mut self, name: &str) -> bool {
+        if let Some(measures) = self.definitions.get(name) {
+            let measures = measures.clone();
+            let part = self.ensure_part();
+            part.measures.extend(measures);
+            true
+        } else {
+            false
+        }
     }
 
     /// Resolve a pitch from a symbol node, handling relative mode.
@@ -330,6 +349,8 @@ impl LyToIrAdapter {
         // Build the Score
         let mut score = Score::new();
         score.metadata = state.metadata;
+        score.metadata.pitch_mode = state.mode;
+        score.metadata.pitch_language = Some(state.language);
         for (_, part) in state.parts {
             score.children.push(ScoreChild::Part(part));
         }
@@ -422,6 +443,14 @@ fn walk_program(state: &mut WalkState, root: Node) {
                             }
                         }
                     }
+                    "\\relative" => {
+                        // Top-level \relative c' { ... }
+                        state.in_relative = true;
+                        state.mode = PitchMode::Relative;
+                        i += 1;
+                        i = consume_relative(state, &children, i);
+                        continue;
+                    }
                     _ => {
                         // Top-level escaped words we don't handle
                     }
@@ -430,6 +459,47 @@ fn walk_program(state: &mut WalkState, root: Node) {
             "expression_block" => {
                 // Bare { ... } at top level: treat as a single anonymous part
                 walk_music_block(state, node);
+            }
+            "assignment_lhs" => {
+                // Variable definition: name = { ... }
+                // Extract the variable name from the assignment_lhs node
+                let var_name = {
+                    let mut c = node.walk();
+                    let result = node
+                        .children(&mut c)
+                        .find(|n| n.kind() == "symbol")
+                        .map(|n| state.text(n).to_string())
+                        .unwrap_or_default();
+                    result
+                };
+                if !var_name.is_empty() {
+                    // Skip the "=" punctuation, then capture the expression_block
+                    if let Some(eq) = children.get(i + 1) {
+                        if eq.kind() == "punctuation" && state.text(*eq) == "=" {
+                            if let Some(block) = children.get(i + 2) {
+                                if block.kind() == "expression_block" {
+                                    // Walk the block but capture the parts it creates
+                                    let parts_before = state.parts.len();
+                                    let old_measure_num = state.measure_num;
+                                    state.measure_num = 0;
+                                    walk_music_block(state, *block);
+                                    state.flush_measure();
+                                    // Extract newly created parts' measures
+                                    let new_parts: Vec<_> =
+                                        state.parts.drain(parts_before..).collect();
+                                    let measures: Vec<Measure> = new_parts
+                                        .into_iter()
+                                        .flat_map(|(_, part)| part.measures)
+                                        .collect();
+                                    state.definitions.insert(var_name, measures);
+                                    state.measure_num = old_measure_num;
+                                    i += 3; // skip assignment_lhs, "=", expression_block
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -504,8 +574,8 @@ fn walk_score_block(state: &mut WalkState, block: Node) {
                 continue; // walk_context_body already advanced i
             }
             "escaped_word" => {
-                let text = state.text(node);
-                match text {
+                let text = state.text(node).to_string();
+                match text.as_str() {
                     "\\relative" => {
                         state.in_relative = true;
                         state.mode = PitchMode::Relative;
@@ -530,7 +600,10 @@ fn walk_score_block(state: &mut WalkState, block: Node) {
                             }
                         }
                     }
-                    _ => {}
+                    _ => {
+                        let var_name = text.trim_start_matches('\\');
+                        state.resolve_variable(var_name);
+                    }
                 }
             }
             "expression_block" => {
@@ -570,13 +643,16 @@ fn walk_parallel_music(state: &mut WalkState, node: Node) {
                 state.flush_measure();
             }
             "escaped_word" => {
-                let text = state.text(child);
+                let text = state.text(child).to_string();
                 if text == "\\relative" {
                     state.in_relative = true;
                     state.mode = PitchMode::Relative;
                     i += 1;
                     i = consume_relative(state, &children, i);
                     continue;
+                } else {
+                    let var_name = text.trim_start_matches('\\');
+                    state.resolve_variable(var_name);
                 }
             }
             _ => {}
@@ -620,8 +696,8 @@ fn walk_context_body(
         let node = children[i];
         match node.kind() {
             "escaped_word" => {
-                let text = state.text(node);
-                match text {
+                let text = state.text(node).to_string();
+                match text.as_str() {
                     "\\relative" => {
                         state.in_relative = true;
                         state.mode = PitchMode::Relative;
@@ -638,7 +714,13 @@ fn walk_context_body(
                             }
                         }
                     }
-                    _ => break,
+                    _ => {
+                        let var_name = text.trim_start_matches('\\');
+                        if state.resolve_variable(var_name) {
+                            i += 1;
+                        }
+                        break;
+                    }
                 }
             }
             "expression_block" => {
@@ -942,15 +1024,52 @@ fn handle_escaped_word(
         }
         "\\grace" | "\\acciaccatura" | "\\appoggiatura" => {
             // \grace { notes }
+            let is_slash = text == "\\acciaccatura";
             if let Some(block_node) = children.get(i) {
                 if block_node.kind() == "expression_block" {
                     // Parse grace notes from the block
                     let grace_notes = parse_grace_block(state, *block_node);
                     for mut note in grace_notes {
                         note.is_grace = true;
+                        note.grace_slash = is_slash;
                         state.current_voice.push(VoiceElement::Note(Box::new(note)));
                     }
                     i += 1;
+                }
+            }
+        }
+        "\\tuplet" | "\\times" => {
+            // \tuplet actual/normal { notes }  OR  \times normal/actual { notes }
+            if let Some(frac_node) = children.get(i) {
+                if frac_node.kind() == "fraction" {
+                    let frac_text = state.text(*frac_node);
+                    if let Some((num, denom)) = frac_text.split_once('/') {
+                        let n: u8 = num.parse().unwrap_or(1);
+                        let d: u8 = denom.parse().unwrap_or(1);
+                        let (actual, normal) = if text == "\\tuplet" {
+                            (n, d)
+                        } else {
+                            (d, n) // \times has reversed fraction
+                        };
+                        i += 1;
+                        if let Some(block) = children.get(i) {
+                            if block.kind() == "expression_block" {
+                                let before = state.current_voice.len();
+                                walk_music_block(state, *block);
+                                let after = state.current_voice.len();
+                                for idx in before..after {
+                                    apply_tuplet_to_element(
+                                        &mut state.current_voice[idx],
+                                        actual,
+                                        normal,
+                                        idx == before,
+                                        idx == after - 1,
+                                    );
+                                }
+                                i += 1;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1038,9 +1157,9 @@ fn handle_escaped_word(
             }
         }
         _ => {
-            // Unknown escaped word — may be an articulation shorthand
-            // Check for common ones: \f, \p, \ff, \pp, \mp, \mf, etc.
-            if is_dynamic_name(text) {
+            // Unknown escaped word — may be a variable reference or dynamic
+            let var_name = text.trim_start_matches('\\');
+            if !state.resolve_variable(var_name) && is_dynamic_name(text) {
                 attach_dynamic(state, text);
             }
         }
@@ -1923,5 +2042,300 @@ mod tests {
             "Expected >= 2 measures, got {}",
             part.measures.len()
         );
+    }
+
+    #[test]
+    fn test_parse_variable_definition_and_reference() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"
+melody = { c'4 d' e' f' }
+
+\score {
+  \new Staff \melody
+}
+"#,
+            )
+            .unwrap();
+
+        let parts = score.parts();
+        assert!(!parts.is_empty(), "Should have at least one part");
+        let part = &parts[0];
+
+        let notes: Vec<&Note> = part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes.len(), 4, "Variable \\melody should resolve to 4 notes");
+        assert_eq!(notes[0].pitch.step, PitchStep::C);
+        assert_eq!(notes[3].pitch.step, PitchStep::F);
+    }
+
+    #[test]
+    fn test_parse_multiple_variable_references() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"
+partA = { c'4 d' e' f' }
+partB = { g'4 a' b' c'' }
+
+\score {
+  <<
+    \new Staff \partA
+    \new Staff \partB
+  >>
+}
+"#,
+            )
+            .unwrap();
+
+        let parts = score.parts();
+        assert_eq!(parts.len(), 2, "Should have two parts from two \\new Staff");
+
+        let notes_a: Vec<&Note> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes_a.len(), 4);
+        assert_eq!(notes_a[0].pitch.step, PitchStep::C);
+
+        let notes_b: Vec<&Note> = parts[1]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes_b.len(), 4);
+        assert_eq!(notes_b[0].pitch.step, PitchStep::G);
+    }
+
+    #[test]
+    fn test_pitch_mode_preserved_in_metadata() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"\relative c' { c4 d e f }"#)
+            .unwrap();
+
+        assert_eq!(
+            score.metadata.pitch_mode,
+            PitchMode::Relative,
+            "PitchMode should be Relative when \\relative is used"
+        );
+    }
+
+    #[test]
+    fn test_pitch_language_preserved_in_metadata() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"\language "english" { cs'4 df' ef' fs' }"#)
+            .unwrap();
+
+        assert_eq!(
+            score.metadata.pitch_language,
+            Some(PitchLanguage::English),
+            "PitchLanguage should be English"
+        );
+    }
+
+    #[test]
+    fn test_parse_alphabetic_var_names() {
+        let input = r#"pA = { c'4 d' e' f' }
+pB = { g4 a b c' }
+\score {
+  <<
+    \new Staff \pA
+    \new Staff \pB
+  >>
+  \layout {}
+}
+"#;
+        let adapter = LyToIrAdapter::new();
+        let score = adapter.convert_str(input).unwrap();
+        assert_eq!(
+            score.parts().len(),
+            2,
+            "Expected 2 parts from 2 variable references in score block"
+        );
+    }
+
+    #[test]
+    fn test_parse_acciaccatura() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \acciaccatura { e'16 } c'4 }"#)
+            .unwrap();
+
+        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .collect();
+
+        assert!(elems.len() >= 2);
+        match &elems[0] {
+            VoiceElement::Note(n) => {
+                assert!(n.is_grace);
+                assert!(n.grace_slash, "acciaccatura should set grace_slash=true");
+            }
+            _ => panic!("expected grace Note"),
+        }
+    }
+
+    #[test]
+    fn test_parse_grace_not_slash() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \grace { d'16 } c'4 }"#)
+            .unwrap();
+
+        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .collect();
+
+        match &elems[0] {
+            VoiceElement::Note(n) => {
+                assert!(n.is_grace);
+                assert!(!n.grace_slash, "\\grace should set grace_slash=false");
+            }
+            _ => panic!("expected grace Note"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tuplet() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \tuplet 3/2 { c'4 d' e' } }"#)
+            .unwrap();
+
+        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .collect();
+
+        assert_eq!(elems.len(), 3, "tuplet should produce 3 elements");
+        for elem in &elems {
+            match elem {
+                VoiceElement::Note(n) => {
+                    assert_eq!(n.duration.tuplet_actual, 3);
+                    assert_eq!(n.duration.tuplet_normal, 2);
+                }
+                _ => panic!("expected Note in tuplet"),
+            }
+        }
+        // First element should have TupletDisplay::Start
+        match &elems[0] {
+            VoiceElement::Note(n) => {
+                let td = n.tuplet.as_ref().expect("first note should have tuplet display");
+                assert_eq!(td.tuplet_type, StartStop::Start);
+            }
+            _ => {}
+        }
+        // Last element should have TupletDisplay::Stop
+        match &elems[2] {
+            VoiceElement::Note(n) => {
+                let td = n.tuplet.as_ref().expect("last note should have tuplet display");
+                assert_eq!(td.tuplet_type, StartStop::Stop);
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn test_parse_times_old_syntax() {
+        let adapter = LyToIrAdapter::new();
+        // \times has reversed fraction: normal/actual
+        let score = adapter
+            .convert_str(r#"{ \times 2/3 { c'4 d' e' } }"#)
+            .unwrap();
+
+        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .collect();
+
+        assert_eq!(elems.len(), 3);
+        match &elems[0] {
+            VoiceElement::Note(n) => {
+                // \times 2/3 means normal=2, actual=3 → reversed to actual=3, normal=2
+                assert_eq!(n.duration.tuplet_actual, 3);
+                assert_eq!(n.duration.tuplet_normal, 2);
+            }
+            _ => panic!("expected Note"),
+        }
+    }
+}
+
+/// Set tuplet duration fields and display markers on a voice element.
+fn apply_tuplet_to_element(
+    elem: &mut VoiceElement,
+    actual: u8,
+    normal: u8,
+    is_first: bool,
+    is_last: bool,
+) {
+    // Set duration tuplet ratio
+    match elem {
+        VoiceElement::Note(n) => {
+            n.duration.tuplet_actual = actual;
+            n.duration.tuplet_normal = normal;
+            if is_first {
+                n.tuplet = Some(TupletDisplay {
+                    tuplet_type: StartStop::Start,
+                    bracket: true,
+                    show_number: "actual".to_string(),
+                });
+            } else if is_last {
+                n.tuplet = Some(TupletDisplay {
+                    tuplet_type: StartStop::Stop,
+                    bracket: true,
+                    show_number: String::new(),
+                });
+            }
+        }
+        VoiceElement::Rest(r) => {
+            r.duration.tuplet_actual = actual;
+            r.duration.tuplet_normal = normal;
+        }
+        VoiceElement::Chord(c) => {
+            c.duration.tuplet_actual = actual;
+            c.duration.tuplet_normal = normal;
+            if is_first {
+                if let Some(first_note) = c.notes.first_mut() {
+                    first_note.tuplet = Some(TupletDisplay {
+                        tuplet_type: StartStop::Start,
+                        bracket: true,
+                        show_number: "actual".to_string(),
+                    });
+                }
+            } else if is_last {
+                if let Some(first_note) = c.notes.first_mut() {
+                    first_note.tuplet = Some(TupletDisplay {
+                        tuplet_type: StartStop::Stop,
+                        bracket: true,
+                        show_number: String::new(),
+                    });
+                }
+            }
+        }
+        _ => {}
     }
 }
