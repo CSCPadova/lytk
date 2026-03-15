@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use num::rational::Ratio;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -16,6 +17,7 @@ use super::{AdapterError, Result, ToIrAdapter};
 use crate::ir::articulation::*;
 use crate::ir::direction::*;
 use crate::ir::duration::Duration;
+use crate::ir::harmony::{ChordDegree, ChordPitch, FiguredBass, Figure, Harmony};
 use crate::ir::measure::*;
 use crate::ir::note::*;
 use crate::ir::part::Part;
@@ -198,9 +200,10 @@ fn parse_score_partwise(xml: &str) -> Result<Score> {
     }
 
     let metadata = parse_metadata(&root);
+    let page_layout = parse_defaults(&root);
     let mut score = Score {
         metadata,
-        page_layout: None,
+        page_layout,
         children: Vec::new(),
     };
 
@@ -284,7 +287,49 @@ fn parse_score_partwise(xml: &str) -> Result<Score> {
         }
     }
 
+    // Detect anacrusis: check if the first measure is implicit (pickup)
+    detect_anacrusis(&mut score);
+
     Ok(score)
+}
+
+/// Detect anacrusis (pickup measure) and set `score.metadata.partial_duration`.
+///
+/// A measure is an anacrusis if it has `implicit="yes"`. We compute the
+/// pickup duration as the sum of actual note/rest durations in the first
+/// voice of the first part's first measure.
+fn detect_anacrusis(score: &mut Score) {
+    let first_measure = score
+        .parts()
+        .first()
+        .and_then(|p| p.measures.first());
+
+    if let Some(measure) = first_measure {
+        if !measure.implicit {
+            return;
+        }
+        // Sum the durations in the first voice
+        if let Some(voice) = measure.voices.first() {
+            let mut total = Ratio::new(0i64, 1);
+            for elem in &voice.elements {
+                let dur = match elem {
+                    VoiceElement::Note(n) => &n.duration,
+                    VoiceElement::Rest(r) => &r.duration,
+                    VoiceElement::Chord(c) => &c.duration,
+                    VoiceElement::Forward(f) => &f.duration,
+                    VoiceElement::Backup(_) => continue,
+                };
+                total += dur.actual_duration();
+            }
+            if total > Ratio::new(0i64, 1) {
+                // Find the score as mutable to set partial_duration.
+                // We need to find the first part mutably.
+                let partial = Duration::new(total);
+                // Since we have &mut Score, set it directly.
+                score.metadata.partial_duration = Some(partial);
+            }
+        }
+    }
 }
 
 fn parse_metadata(root: &XmlNode) -> ScoreMetadata {
@@ -361,6 +406,202 @@ fn parse_metadata(root: &XmlNode) -> ScoreMetadata {
     }
 
     meta
+}
+
+// ---------------------------------------------------------------------------
+// Defaults / page layout parsing
+// ---------------------------------------------------------------------------
+
+/// Parse `<defaults>` element for page layout and staff sizing.
+///
+/// MusicXML dimensions are in "tenths" (1/10 of a staff space). The
+/// `<scaling>` element provides the ratio: millimeters / tenths. We convert
+/// to cm and points for the IR.
+fn parse_defaults(root: &XmlNode) -> Option<PageLayout> {
+    let defaults = root.find("defaults")?;
+
+    // Scaling factor: millimeters per tenth
+    let (mm, tenths) = if let Some(scaling) = defaults.find("scaling") {
+        let mm_val: f64 = scaling
+            .child_text("millimeters")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(7.056);
+        let tenths_val: f64 = scaling
+            .child_text("tenths")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(40.0);
+        (mm_val, tenths_val)
+    } else {
+        return None;
+    };
+
+    let scale = mm / tenths; // mm per tenth
+    let to_cm = |val: f64| val * scale / 10.0;
+
+    // Staff size: 40 tenths (one staff height) converted to points
+    let staff_size = 40.0 * scale * 72.27 / 25.4;
+
+    let mut layout = PageLayout {
+        page_height: None,
+        page_width: None,
+        left_margin: None,
+        right_margin: None,
+        top_margin: None,
+        bottom_margin: None,
+        system_distance: None,
+        top_system_distance: None,
+        staff_size: Some(staff_size),
+    };
+
+    if let Some(pl) = defaults.find("page-layout") {
+        layout.page_height = pl
+            .child_text("page-height")
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(&to_cm);
+        layout.page_width = pl
+            .child_text("page-width")
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(&to_cm);
+
+        // Page margins (use first <page-margins> element)
+        if let Some(margins) = pl.find("page-margins") {
+            layout.left_margin = margins
+                .child_text("left-margin")
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(&to_cm);
+            layout.right_margin = margins
+                .child_text("right-margin")
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(&to_cm);
+            layout.top_margin = margins
+                .child_text("top-margin")
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(&to_cm);
+            layout.bottom_margin = margins
+                .child_text("bottom-margin")
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(&to_cm);
+        }
+    }
+
+    if let Some(sl) = defaults.find("system-layout") {
+        layout.system_distance = sl
+            .child_text("system-distance")
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(&to_cm);
+        layout.top_system_distance = sl
+            .child_text("top-system-distance")
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(&to_cm);
+    }
+
+    Some(layout)
+}
+
+// ---------------------------------------------------------------------------
+// Harmony / chord symbol parsing
+// ---------------------------------------------------------------------------
+
+fn parse_harmony_elem(elem: &XmlNode) -> Option<Harmony> {
+    let root_elem = elem.find("root")?;
+    let root_step = root_elem.child_text("root-step")?.to_string();
+    let root_alter: f64 = root_elem
+        .child_text("root-alter")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+
+    let kind = elem
+        .child_text("kind")
+        .unwrap_or("major")
+        .to_string();
+
+    let bass = elem.find("bass").and_then(|b| {
+        let step = b.child_text("bass-step")?.to_string();
+        let alter: f64 = b
+            .child_text("bass-alter")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        Some(ChordPitch { step, alter })
+    });
+
+    let degrees: Vec<ChordDegree> = elem
+        .find_all("degree")
+        .iter()
+        .filter_map(|d| {
+            let value: u8 = d.child_text("degree-value")?.parse().ok()?;
+            let alter: f64 = d
+                .child_text("degree-alter")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let degree_type = d
+                .child_text("degree-type")
+                .unwrap_or("add")
+                .to_string();
+            Some(ChordDegree {
+                value,
+                alter,
+                degree_type,
+            })
+        })
+        .collect();
+
+    let offset: i32 = elem
+        .child_text("offset")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    Some(Harmony {
+        root: ChordPitch {
+            step: root_step,
+            alter: root_alter,
+        },
+        kind,
+        bass,
+        degrees,
+        offset,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Figured bass parsing
+// ---------------------------------------------------------------------------
+
+fn parse_figured_bass_elem(elem: &XmlNode, divisions: i64) -> FiguredBass {
+    let figures: Vec<Figure> = elem
+        .find_all("figure")
+        .iter()
+        .map(|f| {
+            let number: Option<u8> = f
+                .child_text("figure-number")
+                .and_then(|s| s.parse().ok());
+            let prefix = f.child_text("prefix").map(|s| s.to_string());
+            let suffix = f.child_text("suffix").map(|s| s.to_string());
+            Figure {
+                number,
+                prefix,
+                suffix,
+            }
+        })
+        .collect();
+
+    let dur_val = elem.child_i64("duration", 0);
+    let duration = if dur_val > 0 {
+        Duration::from_divisions(dur_val, divisions, 0)
+    } else {
+        Duration::default()
+    };
+    let parentheses = elem.attr("parentheses") == Some("yes");
+    let offset: i32 = elem
+        .child_text("offset")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    FiguredBass {
+        figures,
+        duration,
+        parentheses,
+        offset,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +726,7 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
     };
 
     let mut voice_elements: HashMap<u8, Vec<VoiceElement>> = HashMap::new();
+    let mut pending_arpeggio: HashMap<u8, ArpeggioType> = HashMap::new();
 
     for child in &elem.children {
         match child.tag.as_str() {
@@ -495,15 +737,37 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
             }
             "note" => {
                 let is_chord = child.find("chord").is_some();
+                // Detect arpeggio from notations (applies to chord)
+                let arpeggio = child
+                    .find("notations")
+                    .and_then(|n| {
+                        if let Some(arp) = n.find("arpeggiate") {
+                            Some(match arp.attr("direction").unwrap_or("") {
+                                "up" => ArpeggioType::Up,
+                                "down" => ArpeggioType::Down,
+                                _ => ArpeggioType::Up,
+                            })
+                        } else if n.find("non-arpeggiate").is_some() {
+                            Some(ArpeggioType::NonArpeggio)
+                        } else {
+                            None
+                        }
+                    });
                 let result = parse_note(child, divisions);
                 match result {
                     Some(NoteOrRest::Note(note)) => {
                         let voice_num = note.voice;
                         let elements = voice_elements.entry(voice_num).or_default();
                         if is_chord {
-                            merge_chord(elements, *note);
+                            // Get pending arpeggio from the first note of this chord
+                            let pending = pending_arpeggio.remove(&voice_num);
+                            let arp = arpeggio.or(pending);
+                            merge_chord(elements, *note, arp);
                         } else {
                             elements.push(VoiceElement::Note(note));
+                            if let Some(arp) = arpeggio {
+                                pending_arpeggio.insert(voice_num, arp);
+                            }
                         }
                     }
                     Some(NoteOrRest::Rest(rest)) => {
@@ -550,6 +814,16 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                     measure.directions.push(dir);
                 }
             }
+            "harmony" => {
+                if let Some(harmony) = parse_harmony_elem(child) {
+                    measure.harmonies.push(harmony);
+                }
+            }
+            "figured-bass" => {
+                measure
+                    .figured_bass
+                    .push(parse_figured_bass_elem(child, divisions));
+            }
             "barline" => {
                 let barline = parse_barline(child);
                 if barline.location == "left" {
@@ -584,12 +858,22 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
 // ---------------------------------------------------------------------------
 
 /// When a `<chord/>` flag is present, merge the note into the previous note
-/// or chord in the voice element list.
-fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note) {
+/// or chord in the voice element list. If `arpeggio` is provided, it is
+/// applied when a new Chord is formed from Note→Chord conversion.
+fn merge_chord(
+    elements: &mut Vec<VoiceElement>,
+    note: Note,
+    arpeggio: Option<ArpeggioType>,
+) {
     if let Some(last) = elements.last_mut() {
         match last {
             VoiceElement::Chord(chord) => {
                 chord.notes.push(note);
+                if let Some(arp) = arpeggio {
+                    if chord.arpeggio.is_none() {
+                        chord.arpeggio = Some(arp);
+                    }
+                }
             }
             VoiceElement::Note(prev_note) => {
                 // Convert the previous Note into a Chord.
@@ -602,7 +886,7 @@ fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note) {
                     voice: prev.voice,
                     staff: prev.staff,
                     notes: vec![*prev, note],
-                    arpeggio: None,
+                    arpeggio,
                 };
                 *last = VoiceElement::Chord(chord);
             }
@@ -820,6 +1104,10 @@ fn parse_note(elem: &XmlNode, divisions: i64) -> Option<NoteOrRest> {
         .find("grace")
         .and_then(|g| g.attr("slash"))
         == Some("yes");
+    note.after_grace = elem
+        .find("grace")
+        .and_then(|g| g.attr("steal-time-previous"))
+        .is_some();
     note.is_cue = elem.find("cue").is_some();
 
     // Stem direction
@@ -1042,6 +1330,27 @@ fn parse_notations(notations: &XmlNode, note: &mut Note) {
 
     // Fermata
     note.fermata = parse_fermata(notations);
+
+    // Glissando
+    if let Some(gliss) = notations.find("glissando") {
+        let gliss_type = match gliss.attr("type").unwrap_or("") {
+            "start" => Some(StartStop::Start),
+            "stop" => Some(StartStop::Stop),
+            _ => None,
+        };
+        note.glissando = gliss_type;
+        note.glissando_line_type = gliss.attr("line-type").map(|s| s.to_string());
+    }
+
+    // Slide (portamento)
+    if let Some(slide) = notations.find("slide") {
+        let slide_type = match slide.attr("type").unwrap_or("") {
+            "start" => Some(StartStop::Start),
+            "stop" => Some(StartStop::Stop),
+            _ => None,
+        };
+        note.slide = slide_type;
+    }
 }
 
 fn parse_fermata(notations: &XmlNode) -> Option<Fermata> {
@@ -1171,7 +1480,27 @@ fn parse_direction(elem: &XmlNode) -> Option<Direction> {
                         dir.pedal = Some(PedalEvent { pedal_type, line });
                     }
                 }
+                "coda" => {
+                    dir.coda = true;
+                }
+                "segno" => {
+                    dir.segno = true;
+                }
                 _ => {}
+            }
+        }
+    }
+
+    // Check <sound> element for dacapo/dalsegno attributes
+    if let Some(sound) = elem.find("sound") {
+        if let Some(dc) = sound.attr("dacapo") {
+            if dc == "yes" {
+                dir.da_capo = Some("D.C.".to_string());
+            }
+        }
+        if let Some(ds) = sound.attr("dalsegno") {
+            if !ds.is_empty() {
+                dir.dal_segno = Some("D.S.".to_string());
             }
         }
     }
@@ -1184,6 +1513,10 @@ fn parse_direction(elem: &XmlNode) -> Option<Direction> {
         && dir.tempo.is_none()
         && dir.octave_shift.is_none()
         && dir.pedal.is_none()
+        && !dir.coda
+        && !dir.segno
+        && dir.da_capo.is_none()
+        && dir.dal_segno.is_none()
     {
         return None;
     }
@@ -1636,5 +1969,267 @@ mod tests {
             }
             _ => panic!("expected Note"),
         }
+    }
+
+    #[test]
+    fn test_parse_harmony() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <harmony>
+        <root><root-step>C</root-step></root>
+        <kind>major</kind>
+        <bass><bass-step>E</bass-step></bass>
+      </harmony>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let adapter = MxmlToIrAdapter::new();
+        let score = adapter.convert_str(xml).unwrap();
+        let m = &score.parts()[0].measures[0];
+        assert_eq!(m.harmonies.len(), 1);
+        assert_eq!(m.harmonies[0].root.step, "C");
+        assert_eq!(m.harmonies[0].kind, "major");
+        assert_eq!(m.harmonies[0].bass.as_ref().unwrap().step, "E");
+    }
+
+    #[test]
+    fn test_parse_figured_bass() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Bass</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <figured-bass>
+        <figure><figure-number>6</figure-number></figure>
+        <figure><figure-number>4</figure-number></figure>
+        <duration>4</duration>
+      </figured-bass>
+      <note>
+        <pitch><step>C</step><octave>3</octave></pitch>
+        <duration>4</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let adapter = MxmlToIrAdapter::new();
+        let score = adapter.convert_str(xml).unwrap();
+        let m = &score.parts()[0].measures[0];
+        assert_eq!(m.figured_bass.len(), 1);
+        assert_eq!(m.figured_bass[0].figures.len(), 2);
+        assert_eq!(m.figured_bass[0].figures[0].number, Some(6));
+        assert_eq!(m.figured_bass[0].figures[1].number, Some(4));
+    }
+
+    #[test]
+    fn test_parse_glissando() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>2</duration>
+        <type>half</type>
+        <notations>
+          <glissando type="start" line-type="dashed">gliss.</glissando>
+        </notations>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>2</duration>
+        <type>half</type>
+        <notations>
+          <glissando type="stop"/>
+        </notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let adapter = MxmlToIrAdapter::new();
+        let score = adapter.convert_str(xml).unwrap();
+        let elems: Vec<_> = score.parts()[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .collect();
+        match &elems[0] {
+            VoiceElement::Note(n) => {
+                assert_eq!(n.glissando, Some(StartStop::Start));
+                assert_eq!(n.glissando_line_type.as_deref(), Some("dashed"));
+            }
+            _ => panic!("expected Note"),
+        }
+        match &elems[1] {
+            VoiceElement::Note(n) => {
+                assert_eq!(n.glissando, Some(StartStop::Stop));
+            }
+            _ => panic!("expected Note"),
+        }
+    }
+
+    #[test]
+    fn test_parse_coda_segno() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <direction>
+        <direction-type><coda/></direction-type>
+      </direction>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+    <measure number="2">
+      <direction>
+        <direction-type><segno/></direction-type>
+        <sound dalsegno="D.S. al Coda"/>
+      </direction>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let adapter = MxmlToIrAdapter::new();
+        let score = adapter.convert_str(xml).unwrap();
+        let m1 = &score.parts()[0].measures[0];
+        assert!(m1.directions.iter().any(|d| d.coda), "measure 1 should have coda");
+        let m2 = &score.parts()[0].measures[1];
+        assert!(m2.directions.iter().any(|d| d.segno), "measure 2 should have segno");
+        assert!(
+            m2.directions.iter().any(|d| d.dal_segno.is_some()),
+            "measure 2 should have dal segno"
+        );
+    }
+
+    #[test]
+    fn test_parse_defaults_page_layout() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <defaults>
+    <scaling>
+      <millimeters>7.05556</millimeters>
+      <tenths>40</tenths>
+    </scaling>
+    <page-layout>
+      <page-height>1683.36</page-height>
+      <page-width>1190.88</page-width>
+    </page-layout>
+  </defaults>
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let adapter = MxmlToIrAdapter::new();
+        let score = adapter.convert_str(xml).unwrap();
+        let layout = score.page_layout.as_ref().expect("should have page layout");
+        assert!(layout.staff_size.is_some(), "should have staff size");
+        assert!(layout.page_height.is_some(), "should have page height");
+        assert!(layout.page_width.is_some(), "should have page width");
+        // 7.05556mm / 40 tenths = 0.1763889 mm/tenth
+        // page_height = 1683.36 * 0.1763889 / 10 ≈ 29.7 cm
+        let h = layout.page_height.unwrap();
+        assert!((h - 29.7).abs() < 0.1, "page height should be ~29.7cm, got {h}");
+    }
+
+    #[test]
+    fn test_parse_anacrusis() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="0" implicit="yes">
+      <attributes>
+        <divisions>1</divisions>
+        <time><beats>3</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note>
+        <pitch><step>G</step><octave>4</octave></pitch>
+        <duration>1</duration>
+        <type>quarter</type>
+      </note>
+    </measure>
+    <measure number="1">
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>3</duration>
+        <type>half</type>
+        <dot/>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let adapter = MxmlToIrAdapter::new();
+        let score = adapter.convert_str(xml).unwrap();
+        let partial = score.metadata.partial_duration.as_ref()
+            .expect("should detect anacrusis");
+        // 1 quarter note in a 3/4 measure → partial duration = 1/4
+        assert_eq!(partial.base, Ratio::new(1, 4), "partial should be a quarter note");
     }
 }

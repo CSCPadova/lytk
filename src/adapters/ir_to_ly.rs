@@ -11,9 +11,10 @@ use num::rational::Ratio;
 use crate::ir::articulation::{StartStop, TupletDisplay};
 use crate::ir::direction::BarlineType;
 use crate::ir::duration::Duration;
+use crate::ir::harmony::{ChordPitch, Figure};
 use crate::ir::language::{pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
-use crate::ir::note::{Chord, Note, Rest, VoiceElement};
+use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
 use crate::ir::pitch::Pitch;
 use crate::ir::score::{PartGroup, Score, ScoreChild};
 use crate::ir::voice::Voice;
@@ -259,6 +260,63 @@ fn beat_unit_to_ly(unit: &str) -> &str {
     }
 }
 
+/// ChordPitch → LilyPond note name (Nederlands).
+fn chord_pitch_to_ly(cp: &ChordPitch) -> String {
+    let base = cp.step.to_lowercase();
+    let alter = if cp.alter > 0.5 {
+        "is"
+    } else if cp.alter < -0.5 {
+        "es"
+    } else {
+        ""
+    };
+    format!("{base}{alter}")
+}
+
+/// Harmony kind → LilyPond chordmode suffix.
+fn harmony_kind_to_ly(kind: &str) -> &str {
+    match kind {
+        "major" => "",
+        "minor" => ":m",
+        "dominant" => ":7",
+        "major-seventh" => ":maj7",
+        "minor-seventh" => ":m7",
+        "diminished" => ":dim",
+        "augmented" => ":aug",
+        "half-diminished" => ":m7.5-",
+        "diminished-seventh" => ":dim7",
+        "major-sixth" => ":6",
+        "minor-sixth" => ":m6",
+        "dominant-ninth" => ":9",
+        "major-ninth" => ":maj9",
+        "minor-ninth" => ":m9",
+        "dominant-11th" => ":11",
+        "dominant-13th" => ":13",
+        "suspended-second" => ":sus2",
+        "suspended-fourth" => ":sus4",
+        "power" => ":5",
+        _ => "",
+    }
+}
+
+/// Single figured bass figure → LilyPond string.
+fn figure_to_ly(fig: &Figure) -> String {
+    let num = match fig.number {
+        Some(n) => n.to_string(),
+        None => "_".to_string(),
+    };
+    let alter = match (&fig.prefix, &fig.suffix) {
+        (_, Some(s)) | (Some(s), _) => match s.as_str() {
+            "sharp" | "cross" => "+",
+            "flat" => "-",
+            "natural" => "!",
+            _ => "",
+        },
+        _ => "",
+    };
+    format!("{num}{alter}")
+}
+
 /// Sanitise a part id/name into a valid LilyPond variable name.
 fn part_var_name(part: &Part) -> String {
     let raw = if !part.part_id.is_empty() {
@@ -395,7 +453,15 @@ impl FromIrAdapter for IrToLyAdapter {
 
         // Part variables
         for part in score.parts() {
-            emit_part_variable(part, lang, mode, &mut lines);
+            emit_part_variable(
+                part,
+                lang,
+                mode,
+                score.metadata.partial_duration.as_ref(),
+                &mut lines,
+            );
+            emit_harmony_variable(part, &mut lines);
+            emit_figured_bass_variable(part, &mut lines);
         }
 
         // Score block
@@ -449,12 +515,176 @@ fn emit_preamble(
         lines.push("}".to_string());
         lines.push(String::new());
     }
+
+    // Paper block / page layout
+    emit_paper(score, lines);
+}
+
+fn emit_paper(score: &Score, lines: &mut Vec<String>) {
+    let layout = match &score.page_layout {
+        Some(l) => l,
+        None => return,
+    };
+
+    if let Some(size) = layout.staff_size {
+        lines.push(format!("#(set-global-staff-size {size:.1})"));
+        lines.push(String::new());
+    }
+
+    let mut paper_lines: Vec<String> = Vec::new();
+    if let Some(h) = layout.page_height {
+        paper_lines.push(format!("  page-height = {h:.2}\\cm"));
+    }
+    if let Some(w) = layout.page_width {
+        paper_lines.push(format!("  page-width = {w:.2}\\cm"));
+    }
+    if let Some(v) = layout.left_margin {
+        paper_lines.push(format!("  left-margin = {v:.2}\\cm"));
+    }
+    if let Some(v) = layout.right_margin {
+        paper_lines.push(format!("  right-margin = {v:.2}\\cm"));
+    }
+    if let Some(v) = layout.top_margin {
+        paper_lines.push(format!("  top-margin = {v:.2}\\cm"));
+    }
+    if let Some(v) = layout.bottom_margin {
+        paper_lines.push(format!("  bottom-margin = {v:.2}\\cm"));
+    }
+    if let Some(v) = layout.system_distance {
+        paper_lines.push(format!("  system-system-spacing.basic-distance = #{v:.1}"));
+    }
+    if let Some(v) = layout.top_system_distance {
+        paper_lines.push(format!("  top-system-spacing.basic-distance = #{v:.1}"));
+    }
+
+    if !paper_lines.is_empty() {
+        lines.push("\\paper {".to_string());
+        lines.extend(paper_lines);
+        lines.push("}".to_string());
+        lines.push(String::new());
+    }
+}
+
+/// Emit a `\chordmode` variable if any measure has harmonies.
+fn emit_harmony_variable(part: &Part, lines: &mut Vec<String>) {
+    let has_any = part.measures.iter().any(|m| !m.harmonies.is_empty());
+    if !has_any {
+        return;
+    }
+
+    let var = format!("{}Chords", part_var_name(part));
+    lines.push(format!("{var} = \\chordmode {{"));
+
+    // Track time signature for measure durations
+    let mut ts_beats: i64 = 4;
+    let mut ts_beat_type: i64 = 4;
+
+    for measure in &part.measures {
+        if let Some(attrs) = &measure.attributes {
+            if let Some(ts) = &attrs.time {
+                // Parse beats (may be compound like "3+2")
+                ts_beats = ts
+                    .beats
+                    .split('+')
+                    .filter_map(|s| s.trim().parse::<i64>().ok())
+                    .sum::<i64>()
+                    .max(1);
+                ts_beat_type = ts.beat_type as i64;
+            }
+        }
+
+        if measure.harmonies.is_empty() {
+            // Spacer for full measure
+            let measure_frac = Ratio::new(ts_beats, ts_beat_type);
+            let dur = Duration::new(measure_frac);
+            lines.push(format!("  s{}", duration_to_ly(&dur)));
+        } else if measure.harmonies.len() == 1 {
+            let h = &measure.harmonies[0];
+            let root = chord_pitch_to_ly(&h.root);
+            let kind = harmony_kind_to_ly(&h.kind);
+            let bass = h
+                .bass
+                .as_ref()
+                .map(|b| format!("/{}", chord_pitch_to_ly(b)))
+                .unwrap_or_default();
+            let measure_frac = Ratio::new(ts_beats, ts_beat_type);
+            let dur = Duration::new(measure_frac);
+            lines.push(format!("  {root}{kind}{bass}{}", duration_to_ly(&dur)));
+        } else {
+            // Multiple harmonies: divide measure evenly
+            let n = measure.harmonies.len() as i64;
+            let each_frac = Ratio::new(ts_beats, ts_beat_type * n);
+            let dur = Duration::new(each_frac);
+            let mut tokens: Vec<String> = Vec::new();
+            for h in &measure.harmonies {
+                let root = chord_pitch_to_ly(&h.root);
+                let kind = harmony_kind_to_ly(&h.kind);
+                let bass = h
+                    .bass
+                    .as_ref()
+                    .map(|b| format!("/{}", chord_pitch_to_ly(b)))
+                    .unwrap_or_default();
+                tokens.push(format!("{root}{kind}{bass}{}", duration_to_ly(&dur)));
+            }
+            lines.push(format!("  {}", tokens.join(" ")));
+        }
+    }
+
+    lines.push("}".to_string());
+    lines.push(String::new());
+}
+
+/// Emit a `\figuremode` variable if any measure has figured bass.
+fn emit_figured_bass_variable(part: &Part, lines: &mut Vec<String>) {
+    let has_any = part.measures.iter().any(|m| !m.figured_bass.is_empty());
+    if !has_any {
+        return;
+    }
+
+    let var = format!("{}Figures", part_var_name(part));
+    lines.push(format!("{var} = \\figuremode {{"));
+
+    // Track time signature for spacer durations
+    let mut ts_beats: i64 = 4;
+    let mut ts_beat_type: i64 = 4;
+
+    for measure in &part.measures {
+        if let Some(attrs) = &measure.attributes {
+            if let Some(ts) = &attrs.time {
+                ts_beats = ts
+                    .beats
+                    .split('+')
+                    .filter_map(|s| s.trim().parse::<i64>().ok())
+                    .sum::<i64>()
+                    .max(1);
+                ts_beat_type = ts.beat_type as i64;
+            }
+        }
+
+        if measure.figured_bass.is_empty() {
+            let measure_frac = Ratio::new(ts_beats, ts_beat_type);
+            let dur = Duration::new(measure_frac);
+            lines.push(format!("  s{}", duration_to_ly(&dur)));
+        } else {
+            let mut tokens: Vec<String> = Vec::new();
+            for fb in &measure.figured_bass {
+                let figs: Vec<String> = fb.figures.iter().map(figure_to_ly).collect();
+                let d = duration_to_ly(&fb.duration);
+                tokens.push(format!("<{}>{d}", figs.join(" ")));
+            }
+            lines.push(format!("  {}", tokens.join(" ")));
+        }
+    }
+
+    lines.push("}".to_string());
+    lines.push(String::new());
 }
 
 fn emit_part_variable(
     part: &Part,
     lang: PitchLanguage,
     mode: PitchMode,
+    partial_dur: Option<&Duration>,
     lines: &mut Vec<String>,
 ) {
     let var = part_var_name(part);
@@ -492,13 +722,13 @@ fn emit_part_variable(
         for staff_num in 1..=part.staves {
             let staff_var = format!("{}Staff{}", var, roman(staff_num));
             lines.push(format!("{staff_var} = {relative_prefix}{{"));
-            emit_measures(part, lang, mode, Some(staff_num), 2, lines);
+            emit_measures(part, lang, mode, Some(staff_num), partial_dur, 2, lines);
             lines.push("}".to_string());
             lines.push(String::new());
         }
     } else {
         lines.push(format!("{var} = {relative_prefix}{{"));
-        emit_measures(part, lang, mode, None, 2, lines);
+        emit_measures(part, lang, mode, None, partial_dur, 2, lines);
         lines.push("}".to_string());
         lines.push(String::new());
     }
@@ -509,13 +739,23 @@ fn emit_measures(
     lang: PitchLanguage,
     mode: PitchMode,
     staff_filter: Option<u8>,
+    partial_dur: Option<&Duration>,
     indent: usize,
     lines: &mut Vec<String>,
 ) {
     let pad = " ".repeat(indent);
     let mut prev_pitch: Option<Pitch> = None;
+    let mut is_first_measure = true;
 
     for measure in &part.measures {
+        // Anacrusis: emit \partial before first measure
+        if is_first_measure {
+            if let Some(dur) = partial_dur {
+                lines.push(format!("{pad}\\partial {}", duration_to_ly(dur)));
+            }
+            is_first_measure = false;
+        }
+
         // Attributes
         if let Some(attrs) = &measure.attributes {
             if let Some(key) = &attrs.key {
@@ -545,6 +785,22 @@ fn emit_measures(
             }
             if dir.rehearsal.is_some() {
                 lines.push(format!("{pad}\\mark \\default"));
+            }
+            if dir.coda {
+                lines.push(format!(
+                    "{pad}\\mark \\markup {{ \\musicglyph \"scripts.coda\" }}"
+                ));
+            }
+            if dir.segno {
+                lines.push(format!(
+                    "{pad}\\mark \\markup {{ \\musicglyph \"scripts.segno\" }}"
+                ));
+            }
+            if let Some(text) = &dir.da_capo {
+                lines.push(format!("{pad}\\mark \"{text}\""));
+            }
+            if let Some(text) = &dir.dal_segno {
+                lines.push(format!("{pad}\\mark \"{text}\""));
             }
             // Dynamics, wedges, text, pedal, octave shifts must attach to a note
             let mut parts: Vec<String> = Vec::new();
@@ -700,6 +956,22 @@ fn emit_voice_elements(
 
         match elem {
             VoiceElement::Note(note) => {
+                // Glissando style override (must precede the note)
+                if note.glissando == Some(StartStop::Start) {
+                    if let Some(lt) = &note.glissando_line_type {
+                        let style = match lt.as_str() {
+                            "dashed" => Some("dashed-line"),
+                            "dotted" => Some("dotted-line"),
+                            "wavy" => Some("trill"),
+                            _ => None,
+                        };
+                        if let Some(s) = style {
+                            tokens.push(format!(
+                                "\\once \\override Glissando.style = #'{s}"
+                            ));
+                        }
+                    }
+                }
                 let mut token = note_to_ly(note, lang, mode, prev_pitch.as_ref());
                 if !dirs_attached && !pending_dirs.is_empty() {
                     token = format!("{token}{}", pending_dirs.join(""));
@@ -717,6 +989,20 @@ fn emit_voice_elements(
                 tokens.push(token);
             }
             VoiceElement::Chord(chord) => {
+                // Arpeggio direction / style override (must precede the chord)
+                if let Some(arp) = &chord.arpeggio {
+                    match arp {
+                        ArpeggioType::Up => {
+                            tokens.push("\\arpeggioArrowUp".to_string());
+                        }
+                        ArpeggioType::Down => {
+                            tokens.push("\\arpeggioArrowDown".to_string());
+                        }
+                        ArpeggioType::NonArpeggio => {
+                            tokens.push("\\arpeggioBracket".to_string());
+                        }
+                    }
+                }
                 let (mut token, last) = chord_to_ly(chord, lang, mode, prev_pitch.as_ref());
                 if !dirs_attached && !pending_dirs.is_empty() {
                     token = format!("{token}{}", pending_dirs.join(""));
@@ -792,6 +1078,11 @@ fn grace_note_to_ly(
 ) -> String {
     let p = pitch_to_ly(&note.pitch, lang, prev, mode);
     let d = duration_to_ly(&note.duration);
+    if note.after_grace {
+        // \afterGrace <main-note> { <grace-note> }
+        // The main note is emitted separately; we emit only the grace part.
+        return format!("\\afterGrace {{ {p}{d} }}");
+    }
     let cmd = if note.grace_slash {
         "\\acciaccatura"
     } else {
@@ -839,7 +1130,12 @@ fn chord_to_ly(
 
     let d = duration_to_ly(&chord.duration);
     let attach = attachments_to_ly(&chord.notes[0]);
-    let result = format!("<{}>{d}{attach}", pitch_strs.join(" "));
+    let arp = if chord.arpeggio.is_some() {
+        "\\arpeggio"
+    } else {
+        ""
+    };
+    let result = format!("<{}>{d}{attach}{arp}", pitch_strs.join(" "));
     (result, last_pitch)
 }
 
@@ -900,6 +1196,11 @@ fn attachments_to_ly(note: &Note) -> String {
         if !cmd.is_empty() {
             parts.push(cmd);
         }
+    }
+
+    // Glissando (the style override is emitted as a prefix in emit_voice_elements)
+    if note.glissando == Some(StartStop::Start) || note.slide == Some(StartStop::Start) {
+        parts.push("\\glissando");
     }
 
     let mut result: String = parts.join("");
@@ -990,6 +1291,20 @@ fn emit_part_group_ref(
 fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
     let pad = " ".repeat(indent);
     let var = part_var_name(part);
+
+    // ChordNames context (if harmonies exist)
+    let has_harmonies = part.measures.iter().any(|m| !m.harmonies.is_empty());
+    if has_harmonies {
+        let chords_var = format!("{var}Chords");
+        lines.push(format!("{pad}\\new ChordNames \\{chords_var}"));
+    }
+
+    // FiguredBass context (if figured bass exists)
+    let has_figures = part.measures.iter().any(|m| !m.figured_bass.is_empty());
+    if has_figures {
+        let figures_var = format!("{var}Figures");
+        lines.push(format!("{pad}\\new FiguredBass \\{figures_var}"));
+    }
 
     if part.staves > 1 {
         lines.push(format!("{pad}\\new PianoStaff <<"));
@@ -1583,5 +1898,356 @@ melody = {
         let ly = adapter.convert(&score).unwrap();
         assert!(ly.contains("\\grace"), "should emit \\grace: {}", ly);
         assert!(!ly.contains("\\acciaccatura"), "should NOT emit \\acciaccatura: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_glissando() {
+        let mut n = make_note(PitchStep::C, 4, Duration::quarter());
+        n.glissando = Some(StartStop::Start);
+        let n2 = make_note(PitchStep::E, 4, Duration::quarter());
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n)),
+                VoiceElement::Note(Box::new(n2)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\glissando"), "should emit \\glissando: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_glissando_dashed_style() {
+        let mut n = make_note(PitchStep::C, 4, Duration::quarter());
+        n.glissando = Some(StartStop::Start);
+        n.glissando_line_type = Some("dashed".to_string());
+        let n2 = make_note(PitchStep::E, 4, Duration::quarter());
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n)),
+                VoiceElement::Note(Box::new(n2)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(
+            ly.contains("Glissando.style = #'dashed-line"),
+            "should emit dashed-line override: {}",
+            ly
+        );
+    }
+
+    #[test]
+    fn test_emit_slide() {
+        let mut n = make_note(PitchStep::C, 4, Duration::quarter());
+        n.slide = Some(StartStop::Start);
+        let n2 = make_note(PitchStep::E, 4, Duration::quarter());
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n)),
+                VoiceElement::Note(Box::new(n2)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\glissando"), "slide should emit \\glissando: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_arpeggio() {
+        let notes = vec![
+            make_note(PitchStep::C, 4, Duration::quarter()),
+            make_note(PitchStep::E, 4, Duration::quarter()),
+            make_note(PitchStep::G, 4, Duration::quarter()),
+        ];
+        let mut chord = Chord::new(Duration::quarter(), notes);
+        chord.arpeggio = Some(ArpeggioType::Up);
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Chord(chord)],
+        };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\arpeggioArrowUp"), "should emit \\arpeggioArrowUp: {}", ly);
+        assert!(ly.contains("\\arpeggio"), "should emit \\arpeggio: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_non_arpeggio() {
+        let notes = vec![
+            make_note(PitchStep::C, 4, Duration::quarter()),
+            make_note(PitchStep::E, 4, Duration::quarter()),
+        ];
+        let mut chord = Chord::new(Duration::quarter(), notes);
+        chord.arpeggio = Some(ArpeggioType::NonArpeggio);
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Chord(chord)],
+        };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\arpeggioBracket"), "should emit \\arpeggioBracket: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_after_grace() {
+        let mut n = make_note(PitchStep::D, 5, Duration::sixteenth());
+        n.is_grace = true;
+        n.after_grace = true;
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(n))],
+        };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\afterGrace"), "should emit \\afterGrace: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_coda_segno() {
+        use crate::ir::direction::Direction;
+        let mut dir = Direction::default();
+        dir.coda = true;
+        let mut dir2 = Direction::default();
+        dir2.segno = true;
+        let mut measure = Measure::new(1);
+        measure.directions.push(dir);
+        measure.directions.push(dir2);
+        measure.voices.push(Voice { number: 1, elements: vec![] });
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("scripts.coda"), "should emit coda markup: {}", ly);
+        assert!(ly.contains("scripts.segno"), "should emit segno markup: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_da_capo_dal_segno() {
+        use crate::ir::direction::Direction;
+        let mut dir = Direction::default();
+        dir.da_capo = Some("D.C.".to_string());
+        let mut dir2 = Direction::default();
+        dir2.dal_segno = Some("D.S. al Coda".to_string());
+        let mut measure = Measure::new(1);
+        measure.directions.push(dir);
+        measure.directions.push(dir2);
+        measure.voices.push(Voice { number: 1, elements: vec![] });
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\mark \"D.C.\""), "should emit D.C.: {}", ly);
+        assert!(ly.contains("\\mark \"D.S. al Coda\""), "should emit D.S. al Coda: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_partial_anacrusis() {
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(make_note(PitchStep::G, 4, Duration::quarter()))),
+            ],
+        };
+        let mut measure = Measure::new(0);
+        measure.voices.push(voice);
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.metadata.partial_duration = Some(Duration::quarter());
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\partial 4"), "should emit \\partial 4: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_paper_block() {
+        use crate::ir::score::PageLayout;
+        let mut score = make_simple_score();
+        score.page_layout = Some(PageLayout {
+            page_height: Some(29.7),
+            page_width: Some(21.0),
+            left_margin: Some(1.5),
+            right_margin: None,
+            top_margin: None,
+            bottom_margin: None,
+            system_distance: None,
+            top_system_distance: None,
+            staff_size: Some(20.0),
+        });
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("#(set-global-staff-size 20.0)"), "should emit staff size: {}", ly);
+        assert!(ly.contains("\\paper {"), "should emit paper block: {}", ly);
+        assert!(ly.contains("page-height = 29.70\\cm"), "should emit page height: {}", ly);
+        assert!(ly.contains("page-width = 21.00\\cm"), "should emit page width: {}", ly);
+        assert!(ly.contains("left-margin = 1.50\\cm"), "should emit left margin: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_harmony_chordnames() {
+        use crate::ir::harmony::{ChordPitch, Harmony};
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            ..Default::default()
+        });
+        measure.harmonies.push(Harmony {
+            root: ChordPitch { step: "C".to_string(), alter: 0.0 },
+            kind: "major".to_string(),
+            bass: None,
+            degrees: vec![],
+            offset: 0,
+        });
+        measure.voices.push(Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(make_note(PitchStep::C, 4, Duration::whole()))),
+            ],
+        });
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\chordmode"), "should emit chordmode: {}", ly);
+        assert!(ly.contains("ChordNames"), "should emit ChordNames context: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_harmony_minor_with_bass() {
+        use crate::ir::harmony::{ChordPitch, Harmony};
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            ..Default::default()
+        });
+        measure.harmonies.push(Harmony {
+            root: ChordPitch { step: "D".to_string(), alter: 0.0 },
+            kind: "minor".to_string(),
+            bass: Some(ChordPitch { step: "F".to_string(), alter: 0.0 }),
+            degrees: vec![],
+            offset: 0,
+        });
+        measure.voices.push(Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(make_note(PitchStep::D, 4, Duration::whole()))),
+            ],
+        });
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("d:m/f"), "should emit d:m/f for Dm/F: {}", ly);
+    }
+
+    #[test]
+    fn test_emit_figured_bass() {
+        use crate::ir::harmony::{FiguredBass, Figure};
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            ..Default::default()
+        });
+        measure.figured_bass.push(FiguredBass {
+            figures: vec![
+                Figure { number: Some(6), prefix: None, suffix: None },
+                Figure { number: Some(4), prefix: None, suffix: None },
+            ],
+            duration: Duration::whole(),
+            parentheses: false,
+            offset: 0,
+        });
+        measure.voices.push(Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(make_note(PitchStep::C, 3, Duration::whole()))),
+            ],
+        });
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(ly.contains("\\figuremode"), "should emit figuremode: {}", ly);
+        assert!(ly.contains("FiguredBass"), "should emit FiguredBass context: {}", ly);
+        assert!(ly.contains("<6 4>"), "should emit <6 4> figures: {}", ly);
+    }
+
+    #[test]
+    fn test_helper_harmony_kind_to_ly() {
+        assert_eq!(harmony_kind_to_ly("major"), "");
+        assert_eq!(harmony_kind_to_ly("minor"), ":m");
+        assert_eq!(harmony_kind_to_ly("dominant"), ":7");
+        assert_eq!(harmony_kind_to_ly("major-seventh"), ":maj7");
+        assert_eq!(harmony_kind_to_ly("diminished"), ":dim");
+        assert_eq!(harmony_kind_to_ly("augmented"), ":aug");
+        assert_eq!(harmony_kind_to_ly("suspended-fourth"), ":sus4");
+    }
+
+    #[test]
+    fn test_helper_figure_to_ly() {
+        use crate::ir::harmony::Figure;
+        assert_eq!(
+            figure_to_ly(&Figure { number: Some(6), prefix: None, suffix: None }),
+            "6"
+        );
+        assert_eq!(
+            figure_to_ly(&Figure { number: Some(6), prefix: None, suffix: Some("sharp".to_string()) }),
+            "6+"
+        );
+        assert_eq!(
+            figure_to_ly(&Figure { number: None, prefix: None, suffix: None }),
+            "_"
+        );
     }
 }
