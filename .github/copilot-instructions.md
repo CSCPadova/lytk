@@ -8,16 +8,13 @@
 
 ---
 
-## Directory Layout (critical — two `lytk` namespaces exist)
+## Directory Layout
 
 | Path | What it is |
 |---|---|
-| `lytk-py/` *(repo root)* | **Python prototype** (read-only reference, also called *lytk-py*). Contains a working mxl↔ly pipeline in pure Python. Use as spec/reference — **do not modify**. |
 | `src/lib.rs`, `src/` | **Rust project** — the actual codebase being built. |
 | `src/lytk/` | **Python package** installed by maturin as `import lytk`. Contains `__init__.py`, `_core.pyi`, and any pure-Python glue code for the Rust extension. |
 | `src/tree-sitter/` | **Versioned tree-sitter files** — generated C sources, queries, and Rust bindings. These are the canonical build-time copies; see Parser layer below. |
-
-> **Rule of thumb**: when in doubt, files under `src/` belong to the Rust project; files under `lytk-py/` belong to the read-only Python prototype.
 
 ---
 
@@ -42,17 +39,16 @@
 - Precompile tree-sitter queries (`.scm` files) — cache compiled `Query` objects, never recompile per-file.
 - `tree-sitter-lilypond/` remains in the workspace as a read-only reference only; it is never imported or linked at build time.
 
-### 2 — IR (reference: `lytk-py/ir/`; target: `src/lytk/ir/` + Rust `src/ir/`)
-- **Reference implementation** (read-only): `lytk-py/ir/` — Python prototype with `IRNode`, `Score`, `Part`, `Voice`, `Measure`, `Pitch`, `Duration`, etc.
-- **Build target**: Rust IR in `src/ir/`; Python glue in `src/lytk/ir/` (to be created, mirroring the prototype's public API).
-- `IRNode` is the base tree node with parent↔child links (`node.py`).
+### 2 — IR (`src/ir/` + `src/lytk/ir/`)
+- Rust IR in `src/ir/`; Python glue in `src/lytk/ir/`.
+- `IRNode` is the base tree node with parent↔child links.
 - Structural nodes (`Score`, `PartGroup`, `Part`, `Voice`, `Measure`) subclass `IRNode`.
 - Leaf value objects (`Pitch`, `Duration`, `Articulation`, …) are **frozen dataclasses** — not nodes.
 - In Rust: use `Arc<Node>` (or arena-backed `&'arena Node`) for cheap clone; arena/bump allocation reduces per-node allocation cost.
 - IR must be **JSON-serializable** to support caching and round-trip test fixtures.
 - Visitor pattern (`visitors.py`) for read-only tree walks; explicit mutating passes return new trees for immutability.
 
-### 3 — Transform passes (reference: `lytk-py/transforms.py`; target: `src/transforms/` + `src/lytk/transforms.py`)
+### 3 — Transform passes (`src/transforms/` + `src/lytk/transforms.py`)
 - Each transform is **idempotent** and **composable**.
 - API dual style (follow `torchaudio` conventions):
   - OOP: `Transpose(semitones=2).apply(score) -> Score`
@@ -60,16 +56,14 @@
 - Planned transforms: pitch/key transposition, inversion, retrograde, language change, rel↔abs pitch mode, add/remove barlines, indent, reformat, inline variables, combine `\include` files.
 - Transforms must not mutate in-place; return new or copy-on-write IR.
 
-### 4 — Adapters (reference: `lytk-py/converters/`; target: `src/adapters/` + `src/lytk/converters/`)
-- **Reference implementation** (read-only): `lytk-py/converters/` — Python prototype with `MusicXMLToIRConverter`, `IRToLilyPondConverter`, etc.
-- **Build target**: Rust adapters in `src/adapters/`; Python-facing ABCs in `src/lytk/converters/`.
+### 4 — Adapters (`src/adapters/` + `src/lytk/converters/`)
+- Rust adapters in `src/adapters/`; Python-facing ABCs in `src/lytk/converters/`.
 - Each adapter implements `ToIRConverter` (`convert(path) -> Score`, `convert_string(text) -> Score`) and `FromIRConverter` (`convert(score) -> str`, `write(score, path)`).
 - Adapter modules are **optional Cargo features** to keep the binary lean.
 - Round-trip tests are required for every adapter (MusicXML test suite in `musicxmlTestSuite/`).
 
 ### 5 — CLI + library (`src/lib.rs`, `src/main.rs`)
-- **Reference CLI** (read-only): `lytk-py/cli.py` — Python prototype using Typer.
-- **Build target**: Rust CLI via `clap` in `src/main.rs` (stub — not yet implemented).
+- Rust CLI via `clap` in `src/main.rs` (stub — not yet implemented).
 - CLI will support streaming and multi-threaded batch processing via `rayon`.
 - Public Rust crate exposes a clean API that PyO3 binds; use `abi3-py39` stable ABI.
 - Python bindings are not yet implemented beyond a stub `hello_from_bin()` function.
@@ -112,7 +106,7 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 ### General
 - **TDD** — every feature must have tests before or alongside implementation.
 - **DRY / modularity / composability** — no ad-hoc one-offs; prefer extending the transform/adapter framework.
-- **Performance baseline first** — before rewriting Python in Rust, profile the Python implementation and record the baseline (time, memory). The Rust target must beat it.
+- **Performance baseline first** — profile `python-ly/` and record the baseline (time, memory). The Rust target must beat it.
 
 ### Rust specifics
 - `feature` flags in `Cargo.toml` for heavy adapters: `midi`, `mxl`, `abc`, etc.
@@ -125,7 +119,6 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 ### Python specifics
 - `pyproject.toml` uses `maturin` build backend; `uv` for env management.
 - `lytk._core` is the compiled Rust extension; the installable Python package lives in **`src/lytk/`** (`python-source = "src"` in `pyproject.toml`).
-- **Do not confuse** `src/lytk/` (the Rust project's Python package) with `lytk-py/` (the read-only Python prototype).
 - `.pyi` stub files alongside every `_core` sub-module.
 - `__slots__` on all `IRNode` subclasses.
 - `from __future__ import annotations` in every module.
@@ -141,8 +134,7 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 
 | Folder | What to take from it |
 |---|---|
-| `lytk-py/` | **Python prototype** (*lytk-py*) — working IR + mxl↔ly pipeline; primary spec for the Rust port |
-| `python-ly/` | Pitch language translation, indent, reformat, bar lines, rel↔abs, inversion, retrograde |
+| `python-ly/` | Pitch language translation, indent, reformat, bar lines, rel↔abs, inversion, retrograde — **primary Python baseline** for benchmarks |
 | `quickly/` | Successor to python-ly; improved tokenizer API |
 | `src/tree-sitter/` | **Versioned-in-project** grammar JS, generated C, queries, Rust bindings — the build-time source of truth |
 | `tree-sitter-lilypond/` | Reference copy of the upstream grammar — read-only; copy from here into `src/tree-sitter/` when updating |
@@ -150,7 +142,6 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 | `lilypond-rs/` | Rust types for LilyPond objects (inspired by abjad) |
 | `abjad/` | Python score-building API; visitor and IR patterns |
 | `lilybert/` | Tokenizer, data augmentation, Hydra config patterns |
-| `musicxmlTestSuite/` | Test corpus for MusicXML adapter validation |
 | `MEILER/` | MEI→LilyPond XSLT; useful edge-case scores |
 | `PDMX/` | Dataset IR for MusicXML + MSCZ; internal representation reference |
 | `lilypond-export/` | LilyPond→MusicXML/Humdrum Scheme plugin |
@@ -159,8 +150,7 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 
 ## Common Pitfalls
 
-- **`lytk-py/` vs `src/lytk/`**: `lytk-py/` is the *read-only Python prototype*. The Rust project's installable Python package lives in `src/lytk/`. Never edit `lytk-py/` as if it were the build target, and never confuse it with `src/lytk/`.
-- **Do not** modify files inside any reference subdirectory (`lytk-py/`, `python-ly/`, `abjad/`, `lilypond/`, `tree-sitter-lilypond/`, etc.) — treat them all as read-only references. The canonical tree-sitter files that are actually built live in `src/tree-sitter/`.
+- **Do not** modify files inside any reference subdirectory (`python-ly/`, `abjad/`, `lilypond/`, `tree-sitter-lilypond/`, etc.) — treat them all as read-only references. The canonical tree-sitter files that are actually built live in `src/tree-sitter/`.
 - **tree-sitter source of truth**: the Rust build reads only `src/tree-sitter/` (committed generated C + queries + bindings). `grammar.js` is not copied there — it stays in `tree-sitter-lilypond/` (read-only reference). To refresh after an upstream grammar change: regenerate C inside `tree-sitter-lilypond/`, copy to `src/tree-sitter/`, commit.
 - **ZipFile/MXL**: compressed `.mxl` files are ZIP archives; unzip before XML parsing.
 - **Relative vs absolute pitch mode**: LilyPond `\relative` changes note-name semantics; track mode explicitly through the IR.
@@ -185,7 +175,7 @@ tests/
 - **Adapters**: use `musicxmlTestSuite/xmlFiles/` as the corpus.
 - **Transforms**: test idempotency (`T(T(x)) == T(x)`) and inverses (`inverse_T(T(x)) == x`).
 - **Property tests**: use `hypothesis` (Python) / `proptest` (Rust).
-- **Benchmarks**: profile Python baseline first; gate Rust optimisation PRs on measured speedup.
+- **Benchmarks**: profile `python-ly/` as the Python baseline; gate Rust optimisation PRs on measured speedup.
 
 ---
 
@@ -202,12 +192,3 @@ tests/
 | `src/lytk/_core.pyi` | PyO3 stub — keep in sync with `lib.rs` |
 | `src/tree-sitter/` | Versioned grammar JS, generated C, `.scm` queries, and Rust bindings — edit and commit here |
 | `src/tree-sitter/queries/` | Precompile-able `.scm` highlight/injection queries |
-
-### Python prototype (read-only references — do not edit)
-
-| Path | What it shows |
-|---|---|
-| `lytk-py/ir/node.py` | `IRNode` base — tree structure, traversal, visitor hook |
-| `lytk-py/ir/score.py` | `Score`, `PartGroup` — IR root nodes |
-| `lytk-py/converters/base.py` | `ToIRConverter` / `FromIRConverter` ABCs |
-| `lytk-py/cli.py` | Typer CLI (`convert` command) — reference for `src/lytk/cli.py` |

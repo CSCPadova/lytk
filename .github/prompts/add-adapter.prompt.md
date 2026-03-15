@@ -9,7 +9,7 @@ tools: [run_in_terminal, read_file, create_file, replace_string_in_file]
 Scaffold a complete new **format adapter** for lytk following all conventions in
 [adapter-conventions.instructions.md](../instructions/adapter-conventions.instructions.md).
 
-The format to add is: **`$args`**  
+The format to add is: **`$args`**
 If `$args` is empty, ask the user which format before proceeding.
 
 ---
@@ -21,7 +21,7 @@ Read these files first to understand what already exists and avoid duplication:
 - [Cargo.toml](../../Cargo.toml) — check existing `[features]` and `[dependencies]`
 - [src/lib.rs](../../src/lib.rs) — check existing PyO3 module registrations
 - [src/lytk/_core.pyi](../../src/lytk/_core.pyi) — check existing stubs
-- `lytk-py/converters/` — locate the Python prototype for this format (read-only reference)
+- `src/adapters/` — check existing adapter implementations for patterns
 
 ---
 
@@ -126,7 +126,7 @@ Create `tests/adapters/test_${args}_adapter.py` with the full required test set:
 | `test_${args}_empty_score` | Empty/minimal score is handled gracefully |
 | `test_${args}_parse_error` | Invalid input raises `ValueError`, not a panic |
 
-For MusicXML: parametrize `test_${args}_roundtrip` over `musicxmlTestSuite/xmlFiles/*.xml`.  
+For MusicXML: parametrize `test_${args}_roundtrip` over `musicxmlTestSuite/xmlFiles/*.xml`.
 For other formats: use fixtures from `tests/fixtures/`.
 
 Also add a Rust unit test inside `src/adapters/$args.rs`:

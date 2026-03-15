@@ -79,7 +79,6 @@ ruff check . && ruff format .
 | `lilypond/` | The LilyPond compiler source |
 | `tree-sitter-lilypond/` | tree-sitter grammars for LilyPond |
 | `lily/` | Reference code from LilyPond's `musicxml2ly` plugin (legacy) |
-| `musicxmlTestSuite/` | Extensive MusicXML test suite for validation |
 | `lilypond-export/` | LilyPond plugin for MusicXML/Humdrum export |
 | `lilybert/` | BERT model with LilyPond tokenizer and data augmentations |
 | `MEILER/` | MEI to LilyPond converter |

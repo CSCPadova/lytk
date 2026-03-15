@@ -5,7 +5,7 @@ applyTo: ["src/transforms/**", "src/lytk/transforms.py", "tests/transforms/**"]
 
 # Transform Conventions
 
-> **Scope**: these conventions apply to the **Rust project** under `src/`. The `lytk-py/transforms.py` in the Python prototype is the read-only reference spec — never a build target.
+> **Scope**: these conventions apply to the **Rust project** under `src/`.
 
 ## Dual API (OOP + functional)
 

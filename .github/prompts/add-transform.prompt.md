@@ -9,7 +9,7 @@ tools: [run_in_terminal, read_file, create_file, replace_string_in_file]
 Scaffold a complete new **transform pass** for lytk following all conventions in
 [transform-conventions.instructions.md](../instructions/transform-conventions.instructions.md).
 
-The transform to add is: **`$args`**  
+The transform to add is: **`$args`**
 If `$args` is empty, ask the user for the transform name (snake_case) and its parameters before proceeding.
 
 ---
@@ -21,7 +21,7 @@ Read these files first to understand what already exists and avoid duplication:
 - [src/lib.rs](../../src/lib.rs) — check existing PyO3 registrations
 - [src/lytk/_core.pyi](../../src/lytk/_core.pyi) — check existing stubs
 - `src/transforms/` — check if a module file already exists for this transform
-- `lytk-py/transforms.py` — read-only Python prototype; use as the spec for behaviour
+- `src/transforms/` — check existing transform implementations for patterns
 
 ---
 

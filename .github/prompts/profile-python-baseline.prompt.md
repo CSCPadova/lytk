@@ -1,27 +1,28 @@
 ---
 name: profile-python-baseline
-description: "Profile the Python lytk converters to establish a time/memory baseline before Rust rewrite."
-argument-hint: "Which converter to profile? (mxml2ly, ly2mxml, or both)"
+description: "Profile python-ly to establish a time/memory baseline for comparison against the Rust implementation."
+argument-hint: "Which operation to profile? (mxml2ly, ly2mxml, or both)"
 agent: agent
 tools: [execute, read/terminalSelection, read/terminalLastCommand, edit, the0807.uv-toolkit/uv-init, the0807.uv-toolkit/uv-sync, the0807.uv-toolkit/uv-add, the0807.uv-toolkit/uv-add-dev, the0807.uv-toolkit/uv-upgrade, the0807.uv-toolkit/uv-clean, the0807.uv-toolkit/uv-lock, the0807.uv-toolkit/uv-venv, the0807.uv-toolkit/uv-run, the0807.uv-toolkit/uv-script-dep, the0807.uv-toolkit/uv-python-install, the0807.uv-toolkit/uv-python-pin, the0807.uv-toolkit/uv-tool-install, the0807.uv-toolkit/uvx-run, the0807.uv-toolkit/uv-activate-venv, the0807.uv-toolkit/uv-pep723, the0807.uv-toolkit/uv-install]
 ---
 
-Profile the **Python prototype** (`lytk-py/` at repo root) to establish a reproducible performance baseline.
-This baseline sets the speed and memory targets for the Rust port.
+Profile **python-ly** (`python-ly/` at repo root) to establish a reproducible performance baseline.
+This baseline sets the speed and memory targets that the Rust implementation must beat.
 
-> **Important**: `lytk-py/` is the read-only Python prototype. `src/lytk/` is the Rust project's Python package. This prompt profiles the **prototype** (`lytk-py/`), not the Rust project.
+> **Important**: `python-ly/` is the read-only reference library. `src/lytk/` is the Rust project's Python package. This prompt profiles the **reference** (`python-ly/`), not the Rust project.
 
 ## Inputs
 
 - Argument `$args` selects which pipeline(s) to profile: `mxml2ly`, `ly2mxml`, or `both` (default: `both`).
 - Corpus: the MusicXML files in `musicxmlTestSuite/xmlFiles/` — use all `.xml` files found there.
-- Prototype entry points: `lytk_py.converters.mxml_to_ir`, `lytk_py.converters.ir_to_ly` (from `lytk-py/` package).
+- Reference entry points: `ly.musicxml`, `ly.dom` (from `python-ly/` package).
 
 ## Steps
 
 ### 1 — Environment check
 Verify that `cProfile`, `pstats`, and `memray` (or fall back to `memory_profiler`) are importable.
 Install missing packages with `uv pip install memray` or `uv pip install memory-profiler` if needed.
+Ensure `python-ly` is importable (install from `python-ly/` with `pip install -e python-ly/` if needed).
 
 ### 2 — Time profiling (cProfile)
 Write and run a script `benchmarks/run_profile.py` that:
@@ -41,7 +42,7 @@ Extract **peak RSS** and **peak heap allocation**.
 Save results to `benchmarks/python_baseline.md` with this structure:
 
 ```markdown
-# Python Baseline — lytk-py (Python prototype)
+# Python Baseline — python-ly
 
 _Generated: <date>_
 _Corpus: <N> files from musicxmlTestSuite/xmlFiles/_

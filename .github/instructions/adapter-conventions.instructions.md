@@ -5,13 +5,13 @@ applyTo: ["src/adapters/**", "src/lytk/converters/**", "tests/adapters/**"]
 
 # Adapter Conventions
 
-> **Scope**: these conventions apply to the **Rust project** under `src/`. The `lytk-py/converters/` directory is the read-only Python prototype — use it as a reference spec, never as a build target.
+> **Scope**: these conventions apply to the **Rust project** under `src/`.
 
 ---
 
 ## Two required ABCs
 
-Every adapter must implement one or both of these interfaces (mirror the Python reference in `lytk-py/converters/base.py`):
+Every adapter must implement one or both of these interfaces (defined in `src/adapters/mod.rs`):
 
 ```python
 # src/lytk/converters/base.py  (Python-facing ABC)

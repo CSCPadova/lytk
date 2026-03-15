@@ -9,7 +9,6 @@ wheels/
 # Virtual environments
 .venv
 lily/
-lytk-py/
 target/
 lilybert/
 lilypond/
