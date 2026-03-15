@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::duration::Duration;
 use super::language::{PitchLanguage, PitchMode};
 use super::part::Part;
 
@@ -29,6 +30,33 @@ pub struct ScoreMetadata {
     pub pitch_language: Option<PitchLanguage>,
     /// Pitch-entry mode for LilyPond emission.
     pub pitch_mode: PitchMode,
+    /// Anacrusis / pickup duration (emitted as `\partial <dur>`).
+    pub partial_duration: Option<Duration>,
+}
+
+/// Page layout dimensions (all measurements in cm, staff-size in points).
+///
+/// Derived from MusicXML `<defaults>` / `<page-layout>` / `<system-layout>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageLayout {
+    /// Page height in cm.
+    pub page_height: Option<f64>,
+    /// Page width in cm.
+    pub page_width: Option<f64>,
+    /// Left margin in cm.
+    pub left_margin: Option<f64>,
+    /// Right margin in cm.
+    pub right_margin: Option<f64>,
+    /// Top margin in cm.
+    pub top_margin: Option<f64>,
+    /// Bottom margin in cm.
+    pub bottom_margin: Option<f64>,
+    /// Distance between systems in cm.
+    pub system_distance: Option<f64>,
+    /// Distance from top margin to first system in cm.
+    pub top_system_distance: Option<f64>,
+    /// Staff size in points.
+    pub staff_size: Option<f64>,
 }
 
 /// An entry in a score's child list: either a bare Part or a PartGroup.
@@ -47,6 +75,8 @@ pub enum ScoreChild {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Score {
     pub metadata: ScoreMetadata,
+    /// Page layout dimensions and staff sizing.
+    pub page_layout: Option<PageLayout>,
     /// Direct children: parts and/or part groups.
     pub children: Vec<ScoreChild>,
 }
@@ -55,6 +85,7 @@ impl Score {
     pub fn new() -> Self {
         Self {
             metadata: ScoreMetadata::default(),
+            page_layout: None,
             children: Vec::new(),
         }
     }

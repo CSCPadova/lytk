@@ -11,11 +11,19 @@
 use serde::{Deserialize, Serialize};
 
 use super::articulation::{
-    Articulation, BeamEvent, DynamicMark, Fermata, LyricSyllable, Ornament, SlurEvent, Technical,
-    TieEvent, TupletDisplay, Wedge,
+    Articulation, BeamEvent, DynamicMark, Fermata, LyricSyllable, Ornament, SlurEvent,
+    StartStop, Technical, TieEvent, TupletDisplay, Wedge,
 };
 use super::duration::Duration;
 use super::pitch::Pitch;
+
+/// Arpeggio direction for chords.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ArpeggioType {
+    Up,
+    Down,
+    NonArpeggio,
+}
 
 /// A single pitched note.
 ///
@@ -42,7 +50,15 @@ pub struct Note {
     pub is_grace: bool,
     /// Whether the grace note has a slash (acciaccatura). Only meaningful when `is_grace` is true.
     pub grace_slash: bool,
+    /// Whether this grace note steals time from the previous note (`\afterGrace`).
+    pub after_grace: bool,
     pub is_cue: bool,
+    /// Glissando start/stop.
+    pub glissando: Option<StartStop>,
+    /// Slide (portamento) start/stop.
+    pub slide: Option<StartStop>,
+    /// Glissando line type: "solid", "dashed", "dotted", "wavy".
+    pub glissando_line_type: Option<String>,
     pub stem_direction: String,
     pub notehead: String,
     pub print_object: bool,
@@ -69,7 +85,11 @@ impl Note {
             lyrics: Vec::new(),
             is_grace: false,
             grace_slash: false,
+            after_grace: false,
             is_cue: false,
+            glissando: None,
+            slide: None,
+            glissando_line_type: None,
             stem_direction: String::new(),
             notehead: String::new(),
             print_object: true,
@@ -150,6 +170,8 @@ pub struct Chord {
     pub voice: u8,
     pub staff: u8,
     pub notes: Vec<Note>,
+    /// Arpeggio indication.
+    pub arpeggio: Option<ArpeggioType>,
 }
 
 impl Chord {
@@ -159,6 +181,7 @@ impl Chord {
             voice: 1,
             staff: 1,
             notes,
+            arpeggio: None,
         }
     }
 }

@@ -107,6 +107,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![voice],
         };
         let mut part = Part::new("P1");

@@ -12,6 +12,7 @@ use num::rational::Ratio;
 use serde::{Deserialize, Serialize};
 
 use super::direction::{Barline, Direction};
+use super::harmony::{FiguredBass, Harmony};
 use super::voice::Voice;
 
 /// Key signature.
@@ -233,6 +234,10 @@ pub struct Measure {
     pub right_barline: Option<Barline>,
     /// Directions attached to this measure.
     pub directions: Vec<Direction>,
+    /// Chord symbols (harmony) in this measure.
+    pub harmonies: Vec<Harmony>,
+    /// Figured bass indications in this measure.
+    pub figured_bass: Vec<FiguredBass>,
     /// Voices within this measure.
     pub voices: Vec<Voice>,
 }
@@ -247,6 +252,8 @@ impl Measure {
             left_barline: None,
             right_barline: None,
             directions: Vec::new(),
+            harmonies: Vec::new(),
+            figured_bass: Vec::new(),
             voices: Vec::new(),
         }
     }

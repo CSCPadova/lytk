@@ -200,6 +200,7 @@ fn parse_score_partwise(xml: &str) -> Result<Score> {
     let metadata = parse_metadata(&root);
     let mut score = Score {
         metadata,
+        page_layout: None,
         children: Vec::new(),
     };
 
@@ -478,6 +479,8 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
         left_barline: None,
         right_barline: None,
         directions: Vec::new(),
+        harmonies: Vec::new(),
+        figured_bass: Vec::new(),
         voices: Vec::new(),
     };
 
@@ -599,6 +602,7 @@ fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note) {
                     voice: prev.voice,
                     staff: prev.staff,
                     notes: vec![*prev, note],
+                    arpeggio: None,
                 };
                 *last = VoiceElement::Chord(chord);
             }

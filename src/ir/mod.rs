@@ -34,6 +34,7 @@
 pub mod articulation;
 pub mod direction;
 pub mod duration;
+pub mod harmony;
 pub mod language;
 pub mod measure;
 pub mod note;
@@ -46,6 +47,7 @@ pub mod voice;
 pub use articulation::*;
 pub use direction::*;
 pub use duration::Duration;
+pub use harmony::*;
 pub use language::{PitchLanguage, PitchMode};
 pub use measure::*;
 pub use note::*;

@@ -130,6 +130,14 @@ pub struct Direction {
     pub pedal: Option<PedalEvent>,
     pub dynamic: Option<super::articulation::DynamicMark>,
     pub wedge: Option<super::articulation::Wedge>,
+    /// Coda sign.
+    pub coda: bool,
+    /// Segno sign.
+    pub segno: bool,
+    /// Da Capo text (e.g. "D.C.", "D.C. al Fine").
+    pub da_capo: Option<String>,
+    /// Dal Segno text (e.g. "D.S.", "D.S. al Coda").
+    pub dal_segno: Option<String>,
 }
 
 impl Default for Direction {
@@ -144,6 +152,10 @@ impl Default for Direction {
             pedal: None,
             dynamic: None,
             wedge: None,
+            coda: false,
+            segno: false,
+            da_capo: None,
+            dal_segno: None,
         }
     }
 }

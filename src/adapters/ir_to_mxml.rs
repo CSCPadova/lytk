@@ -871,6 +871,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![voice],
         };
 
@@ -891,6 +893,7 @@ mod tests {
                 composer: Some("Composer".to_string()),
                 ..Default::default()
             },
+            page_layout: None,
             children: vec![ScoreChild::Part(part)],
         }
     }
@@ -955,6 +958,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![voice],
         };
         let part = Part {
@@ -990,6 +995,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1021,6 +1028,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1057,6 +1066,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1095,6 +1106,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1130,6 +1143,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![dir],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![],
         };
         let mut part = Part::new("P1");
@@ -1165,6 +1180,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![dir],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![],
         };
         let mut part = Part::new("P1");
@@ -1199,6 +1216,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1232,6 +1251,8 @@ mod tests {
             left_barline: None,
             right_barline: None,
             directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
             voices: vec![v1, v2],
         };
         let mut part = Part::new("P1");
