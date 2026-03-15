@@ -1,7 +1,7 @@
 [project]
 name = "lytk"
 version = "0.1.0"
-description = "Add your description here"
+description = "LilyPond toolkit"
 readme = "README.md"
 authors = [
     { name = "Matteo Spanio", email = "spanio@dei.unipd.it" }
