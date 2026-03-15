@@ -25,4 +25,5 @@ hum2ly/
 lilypond-rs/
 quickly/
 python-ly/
-musicxmlTestSuite/
+musicxml/
+*.so
