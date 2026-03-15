@@ -12,9 +12,11 @@ use quick_xml::Writer;
 
 use crate::ir::articulation::{Placement, StartStop};
 use crate::ir::direction::{BarlineType, Direction};
+use crate::ir::harmony::{FiguredBass, Harmony};
 use crate::ir::measure::{ClefSign, Measure, MeasureAttributes};
-use crate::ir::note::{Chord, Note, Rest, VoiceElement};
-use crate::ir::score::{Score, ScoreChild};
+use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
+use crate::ir::pitch::AccidentalDisplay;
+use crate::ir::score::{PageLayout, Score, ScoreChild};
 use crate::ir::voice::Voice;
 
 use super::{FromIrAdapter, Result};
@@ -90,6 +92,11 @@ impl IrToMxmlAdapter {
 
         // Identification
         self.write_identification(w, score)?;
+
+        // Defaults (page layout / scaling)
+        if let Some(pl) = &score.page_layout {
+            self.write_defaults(w, pl)?;
+        }
 
         // Part list
         self.write_part_list(w, score)?;
@@ -257,6 +264,16 @@ impl IrToMxmlAdapter {
             self.write_direction(w, dir)?;
         }
 
+        // Harmony / chord symbols (before notes; offset positions within measure)
+        for harmony in &measure.harmonies {
+            self.write_harmony(w, harmony)?;
+        }
+
+        // Figured bass (before notes; offset positions within measure)
+        for fb in &measure.figured_bass {
+            self.write_figured_bass(w, fb)?;
+        }
+
         // Voices with backup between them
         let voices = &measure.voices;
         for (vi, voice) in voices.iter().enumerate() {
@@ -274,7 +291,7 @@ impl IrToMxmlAdapter {
             for elem in &voice.elements {
                 match elem {
                     VoiceElement::Note(n) => {
-                        self.write_note(w, n, voice.number, false)?;
+                        self.write_note(w, n, voice.number, false, None)?;
                     }
                     VoiceElement::Rest(r) => {
                         self.write_rest(w, r, voice.number)?;
@@ -431,6 +448,7 @@ impl IrToMxmlAdapter {
         note: &Note,
         voice_num: u8,
         is_chord: bool,
+        chord_arpeggio: Option<ArpeggioType>,
     ) -> Result<()> {
         w.write_event(Event::Start(BytesStart::new("note")))?;
 
@@ -438,7 +456,13 @@ impl IrToMxmlAdapter {
             w.write_event(Event::Empty(BytesStart::new("chord")))?;
         }
         if note.is_grace {
-            w.write_event(Event::Empty(BytesStart::new("grace")))?;
+            if note.after_grace {
+                let mut el = BytesStart::new("grace");
+                el.push_attribute(("steal-time-previous", "100"));
+                w.write_event(Event::Empty(el))?;
+            } else {
+                w.write_event(Event::Empty(BytesStart::new("grace")))?;
+            }
         }
         if note.is_cue {
             w.write_event(Event::Empty(BytesStart::new("cue")))?;
@@ -485,6 +509,24 @@ impl IrToMxmlAdapter {
             w.write_event(Event::Empty(BytesStart::new("dot")))?;
         }
 
+        // Accidental display
+        if note.pitch.accidental != AccidentalDisplay::None {
+            let acc_text = alter_to_accidental_name(note.pitch.alter);
+            let mut acc_el = BytesStart::new("accidental");
+            match note.pitch.accidental {
+                AccidentalDisplay::Cautionary => {
+                    acc_el.push_attribute(("cautionary", "yes"));
+                }
+                AccidentalDisplay::Editorial => {
+                    acc_el.push_attribute(("editorial", "yes"));
+                }
+                _ => {}
+            }
+            w.write_event(Event::Start(acc_el))?;
+            w.write_event(Event::Text(BytesText::new(acc_text)))?;
+            w.write_event(Event::End(BytesEnd::new("accidental")))?;
+        }
+
         // Time modification (tuplets)
         if note.duration.tuplet_actual != 1 || note.duration.tuplet_normal != 1 {
             w.write_event(Event::Start(BytesStart::new("time-modification")))?;
@@ -527,7 +569,10 @@ impl IrToMxmlAdapter {
             || !note.ornaments.is_empty()
             || !note.technicals.is_empty()
             || note.fermata.is_some()
-            || note.tuplet.is_some();
+            || note.tuplet.is_some()
+            || note.glissando.is_some()
+            || note.slide.is_some()
+            || chord_arpeggio.is_some();
 
         if has_notations {
             w.write_event(Event::Start(BytesStart::new("notations")))?;
@@ -605,6 +650,44 @@ impl IrToMxmlAdapter {
                     }
                 }
                 w.write_event(Event::End(BytesEnd::new("technical")))?;
+            }
+
+            // Glissando
+            if let Some(gliss) = &note.glissando {
+                let mut el = BytesStart::new("glissando");
+                el.push_attribute(("type", start_stop_str(gliss)));
+                el.push_attribute(("number", "1"));
+                if let Some(lt) = &note.glissando_line_type {
+                    el.push_attribute(("line-type", lt.as_str()));
+                }
+                w.write_event(Event::Empty(el))?;
+            }
+
+            // Slide (portamento)
+            if let Some(slide) = &note.slide {
+                let mut el = BytesStart::new("slide");
+                el.push_attribute(("type", start_stop_str(slide)));
+                el.push_attribute(("number", "1"));
+                w.write_event(Event::Empty(el))?;
+            }
+
+            // Arpeggiate / non-arpeggiate (from chord-level flag)
+            if let Some(arp) = chord_arpeggio {
+                match arp {
+                    ArpeggioType::Up => {
+                        let mut el = BytesStart::new("arpeggiate");
+                        el.push_attribute(("direction", "up"));
+                        w.write_event(Event::Empty(el))?;
+                    }
+                    ArpeggioType::Down => {
+                        let mut el = BytesStart::new("arpeggiate");
+                        el.push_attribute(("direction", "down"));
+                        w.write_event(Event::Empty(el))?;
+                    }
+                    ArpeggioType::NonArpeggio => {
+                        w.write_event(Event::Empty(BytesStart::new("non-arpeggiate")))?;
+                    }
+                }
             }
 
             w.write_event(Event::End(BytesEnd::new("notations")))?;
@@ -687,7 +770,7 @@ impl IrToMxmlAdapter {
 
     fn write_chord(&self, w: &mut W, chord: &Chord, voice_num: u8) -> Result<()> {
         for (i, note) in chord.notes.iter().enumerate() {
-            self.write_note(w, note, voice_num, i > 0)?;
+            self.write_note(w, note, voice_num, i > 0, chord.arpeggio)?;
         }
         Ok(())
     }
@@ -754,6 +837,26 @@ impl IrToMxmlAdapter {
             }
         }
 
+        if direction.coda {
+            w.write_event(Event::Empty(BytesStart::new("coda")))?;
+        }
+
+        if direction.segno {
+            w.write_event(Event::Empty(BytesStart::new("segno")))?;
+        }
+
+        if let Some(text) = &direction.da_capo {
+            w.write_event(Event::Start(BytesStart::new("words")))?;
+            w.write_event(Event::Text(BytesText::new(text)))?;
+            w.write_event(Event::End(BytesEnd::new("words")))?;
+        }
+
+        if let Some(text) = &direction.dal_segno {
+            w.write_event(Event::Start(BytesStart::new("words")))?;
+            w.write_event(Event::Text(BytesText::new(text)))?;
+            w.write_event(Event::End(BytesEnd::new("words")))?;
+        }
+
         w.write_event(Event::End(BytesEnd::new("direction-type")))?;
 
         // Sound element for tempo without beat-unit
@@ -767,7 +870,190 @@ impl IrToMxmlAdapter {
             }
         }
 
+        // Sound element for da capo / dal segno
+        if direction.da_capo.is_some() {
+            let mut sound = BytesStart::new("sound");
+            sound.push_attribute(("dacapo", "yes"));
+            w.write_event(Event::Empty(sound))?;
+        }
+        if direction.dal_segno.is_some() {
+            let mut sound = BytesStart::new("sound");
+            sound.push_attribute(("dalsegno", "yes"));
+            w.write_event(Event::Empty(sound))?;
+        }
+
         w.write_event(Event::End(BytesEnd::new("direction")))?;
+        Ok(())
+    }
+
+    // ── page layout defaults ──────────────────────────────────────────────
+
+    fn write_defaults(&self, w: &mut W, pl: &PageLayout) -> Result<()> {
+        w.write_event(Event::Start(BytesStart::new("defaults")))?;
+
+        // Compute mm-per-tenth from stored staff_size (points), falling back to
+        // the standard MusicXML value of 7.056 mm / 40 tenths.
+        let mm_per_tenth = if let Some(ss) = pl.staff_size {
+            ss * 25.4 / (40.0 * 72.27)
+        } else {
+            7.056 / 40.0
+        };
+
+        let has_dimensions = pl.page_height.is_some()
+            || pl.page_width.is_some()
+            || pl.left_margin.is_some()
+            || pl.system_distance.is_some();
+
+        if pl.staff_size.is_some() || has_dimensions {
+            w.write_event(Event::Start(BytesStart::new("scaling")))?;
+            text_element(w, "millimeters", &format_float(mm_per_tenth * 40.0))?;
+            text_element(w, "tenths", "40")?;
+            w.write_event(Event::End(BytesEnd::new("scaling")))?;
+        }
+
+        let cm_to_tenths = |cm: f64| cm * 10.0 / mm_per_tenth;
+
+        // page-layout
+        let has_page = pl.page_height.is_some()
+            || pl.page_width.is_some()
+            || pl.left_margin.is_some()
+            || pl.right_margin.is_some()
+            || pl.top_margin.is_some()
+            || pl.bottom_margin.is_some();
+        if has_page {
+            w.write_event(Event::Start(BytesStart::new("page-layout")))?;
+            if let Some(h) = pl.page_height {
+                text_element(w, "page-height", &format_float(cm_to_tenths(h)))?;
+            }
+            if let Some(wd) = pl.page_width {
+                text_element(w, "page-width", &format_float(cm_to_tenths(wd)))?;
+            }
+            let has_margins = pl.left_margin.is_some()
+                || pl.right_margin.is_some()
+                || pl.top_margin.is_some()
+                || pl.bottom_margin.is_some();
+            if has_margins {
+                let mut pm = BytesStart::new("page-margins");
+                pm.push_attribute(("type", "both"));
+                w.write_event(Event::Start(pm))?;
+                if let Some(v) = pl.left_margin {
+                    text_element(w, "left-margin", &format_float(cm_to_tenths(v)))?;
+                }
+                if let Some(v) = pl.right_margin {
+                    text_element(w, "right-margin", &format_float(cm_to_tenths(v)))?;
+                }
+                if let Some(v) = pl.top_margin {
+                    text_element(w, "top-margin", &format_float(cm_to_tenths(v)))?;
+                }
+                if let Some(v) = pl.bottom_margin {
+                    text_element(w, "bottom-margin", &format_float(cm_to_tenths(v)))?;
+                }
+                w.write_event(Event::End(BytesEnd::new("page-margins")))?;
+            }
+            w.write_event(Event::End(BytesEnd::new("page-layout")))?;
+        }
+
+        // system-layout
+        let has_system =
+            pl.system_distance.is_some() || pl.top_system_distance.is_some();
+        if has_system {
+            w.write_event(Event::Start(BytesStart::new("system-layout")))?;
+            w.write_event(Event::Start(BytesStart::new("system-margins")))?;
+            text_element(w, "left-margin", "0")?;
+            text_element(w, "right-margin", "0")?;
+            w.write_event(Event::End(BytesEnd::new("system-margins")))?;
+            if let Some(sd) = pl.system_distance {
+                text_element(w, "system-distance", &format_float(cm_to_tenths(sd)))?;
+            }
+            if let Some(tsd) = pl.top_system_distance {
+                text_element(
+                    w,
+                    "top-system-distance",
+                    &format_float(cm_to_tenths(tsd)),
+                )?;
+            }
+            w.write_event(Event::End(BytesEnd::new("system-layout")))?;
+        }
+
+        w.write_event(Event::End(BytesEnd::new("defaults")))?;
+        Ok(())
+    }
+
+    // ── harmony / chord symbols ───────────────────────────────────────────
+
+    fn write_harmony(&self, w: &mut W, harmony: &Harmony) -> Result<()> {
+        w.write_event(Event::Start(BytesStart::new("harmony")))?;
+
+        // Root
+        w.write_event(Event::Start(BytesStart::new("root")))?;
+        text_element(w, "root-step", &harmony.root.step)?;
+        if harmony.root.alter != 0.0 {
+            text_element(w, "root-alter", &format_float(harmony.root.alter))?;
+        }
+        w.write_event(Event::End(BytesEnd::new("root")))?;
+
+        // Kind
+        text_element(w, "kind", &harmony.kind)?;
+
+        // Bass (inversion / slash notation)
+        if let Some(bass) = &harmony.bass {
+            w.write_event(Event::Start(BytesStart::new("bass")))?;
+            text_element(w, "bass-step", &bass.step)?;
+            if bass.alter != 0.0 {
+                text_element(w, "bass-alter", &format_float(bass.alter))?;
+            }
+            w.write_event(Event::End(BytesEnd::new("bass")))?;
+        }
+
+        // Degree modifications
+        for deg in &harmony.degrees {
+            w.write_event(Event::Start(BytesStart::new("degree")))?;
+            text_element(w, "degree-value", &deg.value.to_string())?;
+            text_element(w, "degree-alter", &format_float(deg.alter))?;
+            text_element(w, "degree-type", &deg.degree_type)?;
+            w.write_event(Event::End(BytesEnd::new("degree")))?;
+        }
+
+        // Offset from measure start in divisions
+        if harmony.offset != 0 {
+            text_element(w, "offset", &harmony.offset.to_string())?;
+        }
+
+        w.write_event(Event::End(BytesEnd::new("harmony")))?;
+        Ok(())
+    }
+
+    // ── figured bass ──────────────────────────────────────────────────────
+
+    fn write_figured_bass(&self, w: &mut W, fb: &FiguredBass) -> Result<()> {
+        let mut el = BytesStart::new("figured-bass");
+        if fb.parentheses {
+            el.push_attribute(("parentheses", "yes"));
+        }
+        w.write_event(Event::Start(el))?;
+
+        for figure in &fb.figures {
+            w.write_event(Event::Start(BytesStart::new("figure")))?;
+            if let Some(prefix) = &figure.prefix {
+                text_element(w, "prefix", prefix)?;
+            }
+            if let Some(n) = figure.number {
+                text_element(w, "figure-number", &n.to_string())?;
+            }
+            if let Some(suffix) = &figure.suffix {
+                text_element(w, "suffix", suffix)?;
+            }
+            w.write_event(Event::End(BytesEnd::new("figure")))?;
+        }
+
+        let dur_val = self.duration_to_divisions(&fb.duration);
+        text_element(w, "duration", &dur_val.to_string())?;
+
+        if fb.offset != 0 {
+            text_element(w, "offset", &fb.offset.to_string())?;
+        }
+
+        w.write_event(Event::End(BytesEnd::new("figured-bass")))?;
         Ok(())
     }
 
@@ -820,6 +1106,36 @@ fn format_float(val: f64) -> String {
         format!("{}", val as i64)
     } else {
         format!("{val}")
+    }
+}
+
+/// Map a chromatic alteration (stored as `Alter = Ratio<i32>`) to the
+/// MusicXML accidental name used inside `<accidental>`.
+fn alter_to_accidental_name(alter: crate::ir::pitch::Alter) -> &'static str {
+    let num = *alter.numer();
+    let den = *alter.denom();
+    // Normalise to halves so we can match on small integers.
+    let halves = num * 2 / den; // rounds toward zero
+    match halves {
+        -4 => "double-flat",
+        -3 => "three-quarters-flat",
+        -2 => "flat",
+        -1 => "quarter-flat",
+        0 => "natural",
+        1 => "quarter-sharp",
+        2 => "sharp",
+        3 => "three-quarters-sharp",
+        4 => "double-sharp",
+        _ => "natural",
+    }
+}
+
+/// Convert a `StartStop` enum to its MusicXML attribute string.
+fn start_stop_str(ss: &StartStop) -> &'static str {
+    match ss {
+        StartStop::Start => "start",
+        StartStop::Stop => "stop",
+        StartStop::Continue => "continue",
     }
 }
 
@@ -1267,5 +1583,349 @@ mod tests {
         assert!(xml.contains("<backup>"));
         assert!(xml.contains("<voice>1</voice>"));
         assert!(xml.contains("<voice>2</voice>"));
+    }
+
+    // ── accidental display tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_emit_forced_accidental() {
+        use crate::ir::pitch::AccidentalDisplay;
+
+        let mut note = Note::new(Pitch::new(PitchStep::F, 4), Duration::quarter());
+        note.pitch.alter = crate::ir::pitch::Alter::new(1, 1); // sharp
+        note.pitch.accidental = AccidentalDisplay::Forced;
+
+        let xml = emit_single_note(note);
+        assert!(xml.contains("<accidental>sharp</accidental>"), "{xml}");
+    }
+
+    #[test]
+    fn test_emit_cautionary_accidental() {
+        use crate::ir::pitch::AccidentalDisplay;
+
+        let mut note = Note::new(Pitch::new(PitchStep::B, 4), Duration::quarter());
+        note.pitch.alter = crate::ir::pitch::Alter::new(-1, 1); // flat
+        note.pitch.accidental = AccidentalDisplay::Cautionary;
+
+        let xml = emit_single_note(note);
+        assert!(
+            xml.contains("<accidental cautionary=\"yes\">flat</accidental>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn test_emit_editorial_accidental() {
+        use crate::ir::pitch::AccidentalDisplay;
+
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        // natural – alter stays 0
+        note.pitch.accidental = AccidentalDisplay::Editorial;
+
+        let xml = emit_single_note(note);
+        assert!(
+            xml.contains("<accidental editorial=\"yes\">natural</accidental>"),
+            "{xml}"
+        );
+    }
+
+    // ── after-grace steal-time tests ──────────────────────────────────────
+
+    #[test]
+    fn test_emit_after_grace_steal_time() {
+        let mut note = Note::new(Pitch::new(PitchStep::D, 5), Duration::eighth());
+        note.is_grace = true;
+        note.after_grace = true;
+
+        let xml = emit_single_note(note);
+        assert!(
+            xml.contains("steal-time-previous=\"100\""),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn test_emit_regular_grace_has_no_steal_time() {
+        let mut note = Note::new(Pitch::new(PitchStep::D, 5), Duration::eighth());
+        note.is_grace = true;
+        note.after_grace = false;
+
+        let xml = emit_single_note(note);
+        assert!(!xml.contains("steal-time-previous"), "{xml}");
+        assert!(xml.contains("<grace/>"), "{xml}");
+    }
+
+    // ── glissando / slide tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_emit_glissando_start() {
+        use crate::ir::articulation::StartStop;
+
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.glissando = Some(StartStop::Start);
+        note.glissando_line_type = Some("wavy".to_string());
+
+        let xml = emit_single_note(note);
+        assert!(xml.contains("<glissando"), "{xml}");
+        assert!(xml.contains("type=\"start\""), "{xml}");
+        assert!(xml.contains("line-type=\"wavy\""), "{xml}");
+    }
+
+    #[test]
+    fn test_emit_slide_stop() {
+        use crate::ir::articulation::StartStop;
+
+        let mut note = Note::new(Pitch::new(PitchStep::G, 4), Duration::quarter());
+        note.slide = Some(StartStop::Stop);
+
+        let xml = emit_single_note(note);
+        assert!(xml.contains("<slide"), "{xml}");
+        assert!(xml.contains("type=\"stop\""), "{xml}");
+    }
+
+    // ── arpeggiate / non-arpeggiate tests ────────────────────────────────
+
+    #[test]
+    fn test_emit_arpeggiate_up() {
+        use crate::ir::note::ArpeggioType;
+
+        let note1 = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        let note2 = Note::new(Pitch::new(PitchStep::E, 4), Duration::quarter());
+        let mut chord = Chord::new(Duration::quarter(), vec![note1, note2]);
+        chord.arpeggio = Some(ArpeggioType::Up);
+
+        let xml = emit_chord(chord);
+        assert!(xml.contains("<arpeggiate"), "{xml}");
+        assert!(xml.contains("direction=\"up\""), "{xml}");
+    }
+
+    #[test]
+    fn test_emit_non_arpeggiate() {
+        use crate::ir::note::ArpeggioType;
+
+        let note1 = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        let note2 = Note::new(Pitch::new(PitchStep::G, 4), Duration::quarter());
+        let mut chord = Chord::new(Duration::quarter(), vec![note1, note2]);
+        chord.arpeggio = Some(ArpeggioType::NonArpeggio);
+
+        let xml = emit_chord(chord);
+        assert!(xml.contains("<non-arpeggiate/>"), "{xml}");
+    }
+
+    // ── harmony tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_emit_harmony_basic() {
+        use crate::ir::harmony::{ChordPitch, Harmony};
+
+        let harmony = Harmony {
+            root: ChordPitch { step: "C".to_string(), alter: 0.0 },
+            kind: "major".to_string(),
+            bass: None,
+            degrees: vec![],
+            offset: 0,
+        };
+
+        let xml = emit_measure_with_harmony(harmony);
+        assert!(xml.contains("<harmony>"), "{xml}");
+        assert!(xml.contains("<root-step>C</root-step>"), "{xml}");
+        assert!(xml.contains("<kind>major</kind>"), "{xml}");
+    }
+
+    #[test]
+    fn test_emit_harmony_with_bass() {
+        use crate::ir::harmony::{ChordPitch, Harmony};
+
+        let harmony = Harmony {
+            root: ChordPitch { step: "G".to_string(), alter: 0.0 },
+            kind: "major".to_string(),
+            bass: Some(ChordPitch { step: "B".to_string(), alter: 0.0 }),
+            degrees: vec![],
+            offset: 0,
+        };
+
+        let xml = emit_measure_with_harmony(harmony);
+        assert!(xml.contains("<bass-step>B</bass-step>"), "{xml}");
+    }
+
+    #[test]
+    fn test_emit_harmony_with_offset() {
+        use crate::ir::harmony::{ChordPitch, Harmony};
+
+        let harmony = Harmony {
+            root: ChordPitch { step: "F".to_string(), alter: 0.0 },
+            kind: "minor".to_string(),
+            bass: None,
+            degrees: vec![],
+            offset: 4,
+        };
+
+        let xml = emit_measure_with_harmony(harmony);
+        assert!(xml.contains("<offset>4</offset>"), "{xml}");
+    }
+
+    // ── figured bass tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_emit_figured_bass() {
+        use crate::ir::harmony::{Figure, FiguredBass};
+
+        let fb = FiguredBass {
+            figures: vec![
+                Figure { number: Some(6), prefix: None, suffix: None },
+                Figure { number: Some(4), prefix: None, suffix: None },
+            ],
+            duration: Duration::quarter(),
+            parentheses: false,
+            offset: 0,
+        };
+
+        let xml = emit_measure_with_figured_bass(fb);
+        assert!(xml.contains("<figured-bass>"), "{xml}");
+        assert!(xml.contains("<figure-number>6</figure-number>"), "{xml}");
+        assert!(xml.contains("<figure-number>4</figure-number>"), "{xml}");
+    }
+
+    // ── page layout / defaults tests ──────────────────────────────────────
+
+    #[test]
+    fn test_emit_page_layout_defaults() {
+        use crate::ir::score::PageLayout;
+
+        let layout = PageLayout {
+            page_height: Some(29.7),
+            page_width: Some(21.0),
+            left_margin: Some(1.5),
+            right_margin: Some(1.5),
+            top_margin: Some(1.5),
+            bottom_margin: Some(1.5),
+            system_distance: None,
+            top_system_distance: None,
+            staff_size: Some(20.0),
+        };
+
+        let mut score = make_simple_score();
+        score.page_layout = Some(layout);
+
+        let adapter = IrToMxmlAdapter::new();
+        let xml = adapter.convert(&score).unwrap();
+
+        assert!(xml.contains("<defaults>"), "{xml}");
+        assert!(xml.contains("<scaling>"), "{xml}");
+        assert!(xml.contains("<page-layout>"), "{xml}");
+        assert!(xml.contains("<page-height>"), "{xml}");
+        assert!(xml.contains("<page-margins"), "{xml}");
+    }
+
+    // ── coda / segno / da_capo / dal_segno tests ─────────────────────────
+
+    #[test]
+    fn test_emit_coda_direction() {
+        use crate::ir::direction::Direction;
+
+        let mut dir = Direction::default();
+        dir.coda = true;
+
+        let xml = emit_direction(dir);
+        assert!(xml.contains("<coda/>"), "{xml}");
+    }
+
+    #[test]
+    fn test_emit_segno_direction() {
+        use crate::ir::direction::Direction;
+
+        let mut dir = Direction::default();
+        dir.segno = true;
+
+        let xml = emit_direction(dir);
+        assert!(xml.contains("<segno/>"), "{xml}");
+    }
+
+    #[test]
+    fn test_emit_da_capo_direction() {
+        use crate::ir::direction::Direction;
+
+        let mut dir = Direction::default();
+        dir.da_capo = Some("D.C.".to_string());
+
+        let xml = emit_direction(dir);
+        assert!(xml.contains("<words>D.C.</words>"), "{xml}");
+        assert!(xml.contains("<sound dacapo=\"yes\"/>"), "{xml}");
+    }
+
+    #[test]
+    fn test_emit_dal_segno_direction() {
+        use crate::ir::direction::Direction;
+
+        let mut dir = Direction::default();
+        dir.dal_segno = Some("D.S.".to_string());
+
+        let xml = emit_direction(dir);
+        assert!(xml.contains("<words>D.S.</words>"), "{xml}");
+        assert!(xml.contains("<sound dalsegno=\"yes\"/>"), "{xml}");
+    }
+
+    // ── test helpers ──────────────────────────────────────────────────────
+
+    fn emit_single_note(note: Note) -> String {
+        let mut measure = make_empty_measure();
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(note))],
+        };
+        measure.voices = vec![voice];
+        emit_measure(measure)
+    }
+
+    fn emit_chord(chord: Chord) -> String {
+        let mut measure = make_empty_measure();
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Chord(chord)],
+        };
+        measure.voices = vec![voice];
+        emit_measure(measure)
+    }
+
+    fn emit_measure_with_harmony(harmony: crate::ir::harmony::Harmony) -> String {
+        let mut measure = make_empty_measure();
+        measure.harmonies = vec![harmony];
+        emit_measure(measure)
+    }
+
+    fn emit_measure_with_figured_bass(fb: crate::ir::harmony::FiguredBass) -> String {
+        let mut measure = make_empty_measure();
+        measure.figured_bass = vec![fb];
+        emit_measure(measure)
+    }
+
+    fn emit_direction(dir: crate::ir::direction::Direction) -> String {
+        let mut measure = make_empty_measure();
+        measure.directions = vec![dir];
+        emit_measure(measure)
+    }
+
+    fn emit_measure(measure: crate::ir::measure::Measure) -> String {
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToMxmlAdapter::new();
+        adapter.convert(&score).unwrap()
+    }
+
+    fn make_empty_measure() -> crate::ir::measure::Measure {
+        crate::ir::measure::Measure {
+            number: 1,
+            implicit: false,
+            width: None,
+            attributes: None,
+            left_barline: None,
+            right_barline: None,
+            directions: vec![],
+            harmonies: vec![],
+            figured_bass: vec![],
+            voices: vec![],
+        }
     }
 }

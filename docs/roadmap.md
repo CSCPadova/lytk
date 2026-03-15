@@ -188,3 +188,54 @@ The LilyPond → IR parser currently handles core notation. The following featur
 | Lyrics | `\lyricsto`, `\lyricmode`, `\addlyrics` | Lyrics on Voice |
 
 These are needed for full round-trip fidelity (LilyPond → IR → LilyPond).
+
+## 11. MusicXML 4.0 Completeness
+
+Cross-reference of the MusicXML 4.0 schema (`musicxml/schema/`) against the
+current parser (`src/adapters/mxml_to_ir.rs`) and emitter (`src/adapters/ir_to_mxml.rs`).
+
+### 11a. Emitter gaps (`ir_to_mxml.rs`)
+
+| Priority | Feature | Schema file | IR field | Status |
+|---|---|---|---|---|
+| HIGH | Accidental display (cautionary / forced / editorial) | `note.mod` | `Pitch.accidental: AccidentalDisplay` | ✅ |
+| HIGH | Glissando notation | `note.mod` | `Note.glissando`, `Note.glissando_line_type` | ✅ |
+| HIGH | Slide (portamento) notation | `note.mod` | `Note.slide` | ✅ |
+| HIGH | Arpeggiate (up / down) | `note.mod` | `Chord.arpeggio: ArpeggioType::Up/Down` | ✅ |
+| HIGH | Non-arpeggiate | `note.mod` | `Chord.arpeggio: ArpeggioType::NonArpeggio` | ✅ |
+| HIGH | After-grace `steal-time-previous` | `note.mod` | `Note.after_grace` | ✅ |
+| HIGH | Harmony / chord symbols (`<harmony>`) | `direction.mod` | `Measure.harmonies: Vec<Harmony>` | ✅ |
+| HIGH | Page layout (`<defaults>`) | `layout.mod` | `Score.page_layout: PageLayout` | ✅ |
+| MEDIUM | Coda / Segno marks | `direction.mod` | `Direction.coda`, `Direction.segno` | ✅ |
+| MEDIUM | Da Capo / Dal Segno (`<sound>`) | `direction.mod` | `Direction.da_capo`, `Direction.dal_segno` | ✅ |
+| MEDIUM | Figured bass (`<figured-bass>`) | `direction.mod` | `Measure.figured_bass: Vec<FiguredBass>` | ✅ |
+| LOW | Print-object on notes | `common.mod` | `Note.print_object` | 🔲 |
+
+### 11b. Parser gaps (`mxml_to_ir.rs`)
+
+| Priority | Feature | Schema file | Notes |
+|---|---|---|---|
+| MEDIUM | `<measure-style>` (multi-rest, slash, etc.) | `attributes.mod` | Needs `MeasureStyle` IR type |
+| MEDIUM | `<print>` element (new-system, new-page, blank-page) | `layout.mod` | Needs `PrintDirective` IR type |
+| MEDIUM | `<score-instrument>` MIDI program / channel | `score.mod` | Extend `Part` with `midi_program: Option<u8>` |
+| MEDIUM | `<sound>` `tempo` on nested-in-voice elements | `direction.mod` | Currently only top-level sound |
+| LOW | `<dashes>` / `<bracket>` spanners | `direction.mod` | Needs spanner tracking |
+| LOW | Non-traditional key signatures (`<key-step>` / `<key-alter>`) | `attributes.mod` | Rare; no IR target |
+| LOW | `<interchangeable>` / `<senza-misura>` time variants | `attributes.mod` | Rare edge case |
+| LOW | `<movement-number>` / `<work-number>` | `score.mod` | Extend `ScoreMetadata` |
+| LOW | Harmony `<inversion>` / `<function>` / `<frame>` | `direction.mod` | Extend `Harmony` struct |
+| LOW | Figured bass figure `<extend>` | `direction.mod` | Extend `Figure` struct |
+| LOW | `<part-symbol>` brace / bracket | `attributes.mod` | Cosmetic; extend `PartGroup` |
+
+### 11c. Out of scope (v1)
+
+These MusicXML elements have no planned IR representation for the initial
+release — they are too hardware-specific, too rare, or not relevant to the
+LilyPond round-trip use case:
+
+- `<harp-pedals>` / `<accordion-registration>` — hardware-specific notation
+- `<scordatura>` — tuning override notation
+- `<percussion>` pictogram elements — complex symbol table
+- `<image>` — embedded raster images
+- `<listen>` / `<listening>` — performance instructions (MusicXML 4.0 new)
+- `<staff-divide>` arrow — orchestral condensed score notation
