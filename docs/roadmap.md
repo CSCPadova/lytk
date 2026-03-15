@@ -23,7 +23,7 @@ Key tasks:
 - Emit directions: tempo, rehearsal, octave shifts, pedal, text
 - Handle multi-staff instruments (piano grand staff)
 
-Reference: `lytk-py/converters/ir_to_ly.py`
+Reference: `python-ly/` (output patterns)
 
 ## 2. LilyPond → IR Parser ✅
 
@@ -45,7 +45,7 @@ Key tasks:
 
 This is the most complex adapter due to LilyPond's flexible syntax. Consider implementing incrementally: simple single-voice scores first, then multi-voice, then variables/includes.
 
-Reference: `python-ly/` (tokenizer), `quickly/` (improved tokenizer), `lytk-py/converters/ly_to_ir.py`
+Reference: `python-ly/` (tokenizer), `quickly/` (improved tokenizer)
 
 ## 3. IR → MusicXML Emitter ✅
 
@@ -64,7 +64,7 @@ Key tasks:
 - Emit `<lyric>` elements
 - Emit grace notes, cue notes, tuplets
 
-Reference: `lytk-py/converters/ir_to_mxml.py`
+Reference: MusicXML 4.0 specification
 
 ## 4. Core Transforms ✅
 
@@ -142,7 +142,7 @@ Implemented:
 - `_core.pyi` type stubs, `__init__.py` re-exports with MIDI feature guard
 - 26 Python tests (pytest)
 
-## 8. Criterion Benchmarks
+## 8. Criterion Benchmarks ✅
 
 **Module:** `benches/`
 
@@ -153,7 +153,11 @@ Measure performance of hot paths:
 - Transform application (transpose on large score)
 - Round-trip conversion
 
-Profile Python baseline first (from `lytk-py/`), then gate Rust optimization on measured speedup.
+Implemented:
+- `benches/benchmarks.rs` — 25 Criterion benchmarks across 4 groups (parsing, emission, transforms, round-trips)
+- `benches/bench_python.py` — 16 pytest-benchmark tests comparing lytk (Rust) vs python-ly (pure Python)
+- python-ly used as the pure-Python baseline
+- Measured speedups: transpose ~52×, language change ~40× over python-ly
 
 ## 9. Further Adapters
 
@@ -162,3 +166,25 @@ Lower priority:
 - **ABC notation** — `src/adapters/abc_to_ir.rs`, `src/adapters/ir_to_abc.rs`
 - **MEI** — `src/adapters/mei_to_ir.rs` (reference: `MEILER/`)
 - **Humdrum** — `src/adapters/hum_to_ir.rs` (reference: `hum2ly/`, `lilypond-export/`)
+
+## 10. LilyPond Parser — Extended Feature Support
+
+**Module:** `src/adapters/ly_to_ir.rs`
+
+The LilyPond → IR parser currently handles core notation. The following features are parsed from MusicXML and emitted to LilyPond, but **not yet parsed back** from LilyPond input:
+
+| Feature | LilyPond syntax to recognise | IR target |
+|---|---|---|
+| Anacrusis (pickup) | `\partial <dur>` | `ScoreMetadata.partial_duration` |
+| Glissando | `\glissando`, `\once \override Glissando.style` | `Note.glissando`, `Note.glissando_line_type` |
+| Arpeggio | `\arpeggio`, `\arpeggioArrowUp/Down`, `\arpeggioBracket` | `Chord.arpeggio` |
+| After-grace | `\afterGrace { ... }` | `Note.after_grace` |
+| Chord names | `\chordmode { ... }` | `Measure.harmonies` |
+| Figured bass | `\figuremode { <...> }` | `Measure.figured_bass` |
+| Paper block | `\paper { ... }`, `#(set-global-staff-size N)` | `Score.page_layout` |
+| Coda / Segno marks | `\mark \markup { \musicglyph "scripts.coda" }` | `Direction.coda`, `Direction.segno` |
+| Da Capo / Dal Segno | `\mark "D.C."`, `\mark "D.S. al Coda"` | `Direction.da_capo`, `Direction.dal_segno` |
+| Slide | `\glissando` with `\override Glissando.style = #'trill` | `Note.slide` |
+| Lyrics | `\lyricsto`, `\lyricmode`, `\addlyrics` | Lyrics on Voice |
+
+These are needed for full round-trip fidelity (LilyPond → IR → LilyPond).
