@@ -1346,24 +1346,44 @@ impl IrToMxmlAdapter {
 // ---------------------------------------------------------------------------
 
 /// Compute divisions per quarter note that exactly represent all durations in
-/// the score (including tuplets).
+/// the score (including tuplets and short durations).
 ///
 /// Starting from `base` (typically 4), takes the LCM with every `tuplet_actual`
-/// value found in the score so that `duration_to_divisions` never truncates.
+/// value and every base-duration denominator (in quarter-note units) found in
+/// the score so that `duration_to_divisions` never truncates.
+///
+/// For example, a 32nd note has base = 1/32 of a whole note = 1/8 of a quarter,
+/// so divisions must be divisible by 8.  A 64th note needs divisible by 16.
 fn compute_score_divisions(score: &Score, base: u16) -> u16 {
     let mut result = base as u64;
     for part in score.parts() {
         for measure in &part.measures {
             for voice in &measure.voices {
                 for elem in &voice.elements {
-                    let actual = match elem {
-                        VoiceElement::Note(n) => n.duration.tuplet_actual,
-                        VoiceElement::Rest(r) => r.duration.tuplet_actual,
-                        VoiceElement::Chord(c) => c.duration.tuplet_actual,
-                        _ => 1,
+                    let dur = match elem {
+                        VoiceElement::Note(n) => &n.duration,
+                        VoiceElement::Rest(r) => &r.duration,
+                        VoiceElement::Chord(c) => &c.duration,
+                        VoiceElement::Forward(f) => &f.duration,
+                        VoiceElement::Backup(b) => &b.duration,
                     };
-                    if actual > 1 {
-                        result = lcm_u64(result, actual as u64);
+                    // Account for tuplet ratios
+                    if dur.tuplet_actual > 1 {
+                        result = lcm_u64(result, dur.tuplet_actual as u64);
+                    }
+                    // Account for short base durations: base = n/d of a whole
+                    // note, so in quarter-note units the denominator is d/4n.
+                    // divisions must be divisible by that denominator.
+                    let base_n = *dur.base.numer();
+                    let base_d = *dur.base.denom();
+                    // Quarter-note fraction = base * 4 = 4n/d.
+                    // For this to produce an integer when multiplied by
+                    // divisions, we need divisions * 4n / d to be integer,
+                    // i.e. divisions must be divisible by d / gcd(d, 4n).
+                    let g = gcd_u64(base_d.unsigned_abs(), (4 * base_n).unsigned_abs());
+                    let needed = base_d.unsigned_abs() / g;
+                    if needed > 1 {
+                        result = lcm_u64(result, needed);
                     }
                 }
             }
