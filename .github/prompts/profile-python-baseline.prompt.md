@@ -14,7 +14,7 @@ This baseline sets the speed and memory targets that the Rust implementation mus
 ## Inputs
 
 - Argument `$args` selects which pipeline(s) to profile: `mxml2ly`, `ly2mxml`, or `both` (default: `both`).
-- Corpus: the MusicXML files in `musicxmlTestSuite/xmlFiles/` — use all `.xml` files found there.
+- Corpus: the MusicXML files in `tests/fixtures/xml/` — use all `.xml` files found there.
 - Reference entry points: `ly.musicxml`, `ly.dom` (from `python-ly/` package).
 
 ## Steps
@@ -26,7 +26,7 @@ Ensure `python-ly` is importable (install from `python-ly/` with `pip install -e
 
 ### 2 — Time profiling (cProfile)
 Write and run a script `benchmarks/run_profile.py` that:
-1. Collects all `.xml` files from `musicxmlTestSuite/xmlFiles/` (skip `.mxl` zips for now).
+1. Collects all `.xml` files from `tests/fixtures/xml/` (skip `.mxl` zips for now).
 2. For each selected pipeline (`mxml2ly` and/or `ly2mxml`):
    - Wraps the call in `cProfile.Profile()`.
    - Runs the full corpus through the converter.
@@ -45,7 +45,7 @@ Save results to `benchmarks/python_baseline.md` with this structure:
 # Python Baseline — python-ly
 
 _Generated: <date>_
-_Corpus: <N> files from musicxmlTestSuite/xmlFiles/_
+_Corpus: <N> files from tests/fixtures/xml/_
 _Python: <version>_
 
 ## mxml2ly

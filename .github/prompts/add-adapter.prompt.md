@@ -126,7 +126,7 @@ Create `tests/adapters/test_${args}_adapter.py` with the full required test set:
 | `test_${args}_empty_score` | Empty/minimal score is handled gracefully |
 | `test_${args}_parse_error` | Invalid input raises `ValueError`, not a panic |
 
-For MusicXML: parametrize `test_${args}_roundtrip` over `musicxmlTestSuite/xmlFiles/*.xml`.
+For MusicXML: parametrize `test_${args}_roundtrip` over `tests/fixtures/xml/*.xml`.
 For other formats: use fixtures from `tests/fixtures/`.
 
 Also add a Rust unit test inside `src/adapters/$args.rs`:

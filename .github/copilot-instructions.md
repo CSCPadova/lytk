@@ -144,7 +144,7 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 | `lilybert/` | Tokenizer, data augmentation, Hydra config patterns |
 | `MEILER/` | MEI→LilyPond XSLT; useful edge-case scores |
 | `PDMX/` | Dataset IR for MusicXML + MSCZ; internal representation reference |
-| `lilypond-export/` | LilyPond→MusicXML/Humdrum Scheme plugin |
+| `MuseScore/src/importexport/` | C++ MusicXML, MEI, mscz, midi parsing and emitting reference (complex real-world codebase) |
 
 ---
 

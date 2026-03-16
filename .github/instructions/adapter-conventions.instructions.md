@@ -93,7 +93,7 @@ fn open_musicxml(path: &Path) -> Result<String> {
 
 ## Round-trip test requirement
 
-Every adapter must have a round-trip test. Use `musicxmlTestSuite/xmlFiles/` as the corpus for MusicXML adapters.
+Every adapter must have a round-trip test. Use `tests/fixtures/xml/` as the corpus for MusicXML adapters.
 
 **Do not test byte equality** — test *semantic equivalence* (pitches, durations, structure):
 
@@ -102,7 +102,7 @@ Every adapter must have a round-trip test. Use `musicxmlTestSuite/xmlFiles/` as 
 import pytest
 from pathlib import Path
 
-CORPUS = list(Path("musicxmlTestSuite/xmlFiles").glob("*.xml"))
+CORPUS = list(Path("tests/fixtures/xml").glob("*.xml"))
 
 @pytest.mark.parametrize("xml_file", CORPUS, ids=lambda p: p.name)
 def test_mxl_roundtrip(xml_file):
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn roundtrip_mxl_to_ir_to_mxl() {
-        let path = Path::new("musicxmlTestSuite/xmlFiles/01a-Pitches-Pitches.xml");
+        let path = Path::new("tests/fixtures/xml/01a-Pitches-Pitches.xml");
         let adapter = MxlToIrAdapter::new();
         let score   = adapter.convert_file(path).unwrap();
         let out     = IrToMxlAdapter::new().convert(&score).unwrap();

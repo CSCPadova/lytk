@@ -73,7 +73,6 @@ ruff check . && ruff format .
 
 | Folder | Description |
 |---|---|
-| `lytk-py/` | Python prototype — working IR + mxl↔ly pipeline (read-only reference) |
 | `python-ly/` | LilyPond library from Frescobaldi (lexer, tokenizer, transposer) |
 | `quickly/` | Successor of python-ly with improved API |
 | `lilypond/` | The LilyPond compiler source |
