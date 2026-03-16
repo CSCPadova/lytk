@@ -1140,12 +1140,22 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
             state.current_voice.push(VoiceElement::Rest(rest));
         }
         "R" => {
-            // Whole-measure rest
+            // Whole-measure rest, possibly with *N multiplier (e.g. R1*3)
             let dur = consume_duration(state, children, &mut i);
+            // Check for *N multiplier for multi-measure rests
+            let count = consume_duration_multiplier(state, children, &mut i);
             let attachments = consume_attachments(state, children, &mut i);
-            let mut rest = Rest::measure_rest(dur);
+            let mut rest = Rest::measure_rest(dur.clone());
             apply_rest_attachments(&mut rest, &attachments);
             state.current_voice.push(VoiceElement::Rest(rest));
+            // Expand R1*N into N separate measure rests with bar checks
+            if count > 1 {
+                for _ in 1..count {
+                    state.bar_check();
+                    let rest = Rest::measure_rest(dur.clone());
+                    state.current_voice.push(VoiceElement::Rest(rest));
+                }
+            }
         }
         "s" => {
             // Spacer rest
@@ -1397,6 +1407,8 @@ fn handle_escaped_word(
                     let measure = state.ensure_measure();
                     measure.right_barline = Some(barline);
                     i += 1;
+                    // \bar always acts as a measure boundary
+                    state.bar_check();
                 }
             }
         }
@@ -1680,6 +1692,40 @@ fn consume_duration(state: &mut WalkState, children: &[Node], i: &mut usize) -> 
         }
     }
     state.last_duration.clone()
+}
+
+/// Consume an optional `*N` or `*N/M` duration multiplier after a duration.
+/// Returns the integer multiplier count (1 if no multiplier found).
+/// For `R1*3` this returns 3; for `R1*3/4` this returns 1 (fraction multipliers
+/// are not used for multi-measure rest expansion).
+fn consume_duration_multiplier(state: &WalkState, children: &[Node], i: &mut usize) -> u32 {
+    if *i < children.len() && children[*i].kind() == "punctuation" {
+        let ptext = punct_text(state, children[*i]);
+        if ptext == "*" {
+            *i += 1;
+            // Read the integer multiplier
+            if *i < children.len() && children[*i].kind() == "unsigned_integer" {
+                let num_text = state.text(children[*i]).to_string();
+                *i += 1;
+                // Check for fraction: *N/M (skip the /M part)
+                if *i + 1 < children.len()
+                    && children[*i].kind() == "punctuation"
+                    && punct_text(state, children[*i]) == "/"
+                {
+                    // Fraction multiplier like *3/4 — skip it, not a multi-measure count
+                    *i += 1; // skip "/"
+                    if *i < children.len() && children[*i].kind() == "unsigned_integer" {
+                        *i += 1; // skip denominator
+                    }
+                    return 1;
+                }
+                if let Ok(n) = num_text.parse::<u32>() {
+                    return n;
+                }
+            }
+        }
+    }
+    1
 }
 
 /// Consume post-note attachments: dynamics, ties, slurs, articulations, etc.

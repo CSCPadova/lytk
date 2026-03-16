@@ -1009,21 +1009,31 @@ impl IrToMxmlAdapter {
         }
         w.write_event(Event::Start(dir_el))?;
 
-        w.write_event(Event::Start(BytesStart::new("direction-type")))?;
+        // Collect direction-type groups. Each group becomes its own
+        // <direction-type> element. We must never emit an empty one.
+        // A "group" is a set of related child elements.
 
+        // Group 1: dynamics
         if let Some(dyn_mark) = &direction.dynamic {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             w.write_event(Event::Start(BytesStart::new("dynamics")))?;
             w.write_event(Event::Empty(BytesStart::new(&dyn_mark.sign)))?;
             w.write_event(Event::End(BytesEnd::new("dynamics")))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 2: wedge (cresc/decresc hairpin)
         if let Some(wedge) = &direction.wedge {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             let mut el = BytesStart::new("wedge");
             el.push_attribute(("type", wedge.wedge_type.as_str()));
             w.write_event(Event::Empty(el))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 3: text direction (words)
         if let Some(text_dir) = &direction.text {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             let mut words_el = BytesStart::new("words");
             if let Some(ref fs) = text_dir.font_style {
                 words_el.push_attribute(("font-style", fs.as_str()));
@@ -1034,41 +1044,50 @@ impl IrToMxmlAdapter {
             w.write_event(Event::Start(words_el))?;
             w.write_event(Event::Text(BytesText::new(&text_dir.text)))?;
             w.write_event(Event::End(BytesEnd::new("words")))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 4: rehearsal mark
         if let Some(reh) = &direction.rehearsal {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             w.write_event(Event::Start(BytesStart::new("rehearsal")))?;
             w.write_event(Event::Text(BytesText::new(&reh.text)))?;
             w.write_event(Event::End(BytesEnd::new("rehearsal")))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 5: octave shift
         if let Some(os) = &direction.octave_shift {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             let mut el = BytesStart::new("octave-shift");
             el.push_attribute(("type", os.shift_type.as_str()));
             el.push_attribute(("size", os.size.to_string().as_str()));
             w.write_event(Event::Empty(el))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 6: pedal
         if let Some(ped) = &direction.pedal {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             let mut el = BytesStart::new("pedal");
             el.push_attribute(("type", ped.pedal_type.as_str()));
             if ped.line {
                 el.push_attribute(("line", "yes"));
             }
             w.write_event(Event::Empty(el))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 7: tempo (text label in one direction-type, metronome in another)
         if let Some(tempo) = &direction.tempo {
-            // Emit tempo text label as <words> in its own <direction-type>
             if let Some(ref label) = tempo.text {
-                w.write_event(Event::End(BytesEnd::new("direction-type")))?;
                 w.write_event(Event::Start(BytesStart::new("direction-type")))?;
                 w.write_event(Event::Start(BytesStart::new("words")))?;
                 w.write_event(Event::Text(BytesText::new(label)))?;
                 w.write_event(Event::End(BytesEnd::new("words")))?;
+                w.write_event(Event::End(BytesEnd::new("direction-type")))?;
             }
             if let (Some(beat_unit), Some(per_min)) = (&tempo.beat_unit, tempo.per_minute) {
-                w.write_event(Event::End(BytesEnd::new("direction-type")))?;
                 w.write_event(Event::Start(BytesStart::new("direction-type")))?;
                 w.write_event(Event::Start(BytesStart::new("metronome")))?;
                 text_element(w, "beat-unit", beat_unit)?;
@@ -1077,30 +1096,41 @@ impl IrToMxmlAdapter {
                 }
                 text_element(w, "per-minute", &format_float(per_min))?;
                 w.write_event(Event::End(BytesEnd::new("metronome")))?;
+                w.write_event(Event::End(BytesEnd::new("direction-type")))?;
             }
         }
 
+        // Group 8: coda
         if direction.coda {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             w.write_event(Event::Empty(BytesStart::new("coda")))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 9: segno
         if direction.segno {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             w.write_event(Event::Empty(BytesStart::new("segno")))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 10: da capo text
         if let Some(text) = &direction.da_capo {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             w.write_event(Event::Start(BytesStart::new("words")))?;
             w.write_event(Event::Text(BytesText::new(text)))?;
             w.write_event(Event::End(BytesEnd::new("words")))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
 
+        // Group 11: dal segno text
         if let Some(text) = &direction.dal_segno {
+            w.write_event(Event::Start(BytesStart::new("direction-type")))?;
             w.write_event(Event::Start(BytesStart::new("words")))?;
             w.write_event(Event::Text(BytesText::new(text)))?;
             w.write_event(Event::End(BytesEnd::new("words")))?;
+            w.write_event(Event::End(BytesEnd::new("direction-type")))?;
         }
-
-        w.write_event(Event::End(BytesEnd::new("direction-type")))?;
 
         // Merged <sound> element for tempo, dacapo, dalsegno
         {
