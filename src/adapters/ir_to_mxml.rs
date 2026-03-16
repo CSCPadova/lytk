@@ -105,6 +105,16 @@ impl IrToMxmlAdapter {
             self.write_defaults(w, pl)?;
         }
 
+        // Credit elements (subtitle)
+        if let Some(subtitle) = &score.metadata.subtitle {
+            w.write_event(Event::Start(BytesStart::new("credit")))?;
+            text_element(w, "credit-type", "subtitle")?;
+            w.write_event(Event::Start(BytesStart::new("credit-words")))?;
+            w.write_event(Event::Text(BytesText::new(subtitle)))?;
+            w.write_event(Event::End(BytesEnd::new("credit-words")))?;
+            w.write_event(Event::End(BytesEnd::new("credit")))?;
+        }
+
         // Part list
         self.write_part_list(w, score)?;
 
@@ -143,6 +153,19 @@ impl IrToMxmlAdapter {
             w.write_event(Event::End(BytesEnd::new("creator")))?;
         }
 
+        // Extra creators (sorted for deterministic output)
+        let mut extra_keys: Vec<&String> = meta.extra.keys().collect();
+        extra_keys.sort();
+        for key in extra_keys {
+            if let Some(value) = meta.extra.get(key) {
+                let mut el = BytesStart::new("creator");
+                el.push_attribute(("type", key.as_str()));
+                w.write_event(Event::Start(el))?;
+                w.write_event(Event::Text(BytesText::new(value)))?;
+                w.write_event(Event::End(BytesEnd::new("creator")))?;
+            }
+        }
+
         for (rtype, rtext) in &meta.rights {
             let mut el = BytesStart::new("rights");
             if !rtype.is_empty() {
@@ -165,19 +188,24 @@ impl IrToMxmlAdapter {
     fn write_part_list(&self, w: &mut W, score: &Score) -> Result<()> {
         w.write_event(Event::Start(BytesStart::new("part-list")))?;
 
-        let mut group_number: u8 = 0;
+        let mut auto_group_number: u8 = 0;
         for child in &score.children {
             match child {
                 ScoreChild::Part(part) => {
                     self.write_score_part(w, part)?;
                 }
                 ScoreChild::PartGroup(group) => {
-                    group_number += 1;
+                    let num = if group.number > 0 {
+                        group.number
+                    } else {
+                        auto_group_number += 1;
+                        auto_group_number
+                    };
 
                     // part-group start
                     let mut pg = BytesStart::new("part-group");
                     pg.push_attribute(("type", "start"));
-                    pg.push_attribute(("number", group_number.to_string().as_str()));
+                    pg.push_attribute(("number", num.to_string().as_str()));
                     w.write_event(Event::Start(pg))?;
                     if !group.name.is_empty() {
                         text_element(w, "group-name", &group.name)?;
@@ -201,7 +229,7 @@ impl IrToMxmlAdapter {
                     // part-group stop
                     let mut pg_stop = BytesStart::new("part-group");
                     pg_stop.push_attribute(("type", "stop"));
-                    pg_stop.push_attribute(("number", group_number.to_string().as_str()));
+                    pg_stop.push_attribute(("number", num.to_string().as_str()));
                     w.write_event(Event::Empty(pg_stop))?;
                 }
             }
@@ -224,6 +252,35 @@ impl IrToMxmlAdapter {
         if !part.abbreviation.is_empty() {
             text_element(w, "part-abbreviation", &part.abbreviation)?;
         }
+
+        // Score-instrument + MIDI instrument
+        let has_midi = part.midi_channel > 0
+            || part.midi_program > 0
+            || !part.midi_instrument.is_empty();
+        if has_midi {
+            let inst_id = format!("{}-I1", id);
+
+            let mut si = BytesStart::new("score-instrument");
+            si.push_attribute(("id", inst_id.as_str()));
+            w.write_event(Event::Start(si))?;
+            text_element(w, "instrument-name", if part.name.is_empty() { "Instrument" } else { &part.name })?;
+            w.write_event(Event::End(BytesEnd::new("score-instrument")))?;
+
+            let mut mi = BytesStart::new("midi-instrument");
+            mi.push_attribute(("id", inst_id.as_str()));
+            w.write_event(Event::Start(mi))?;
+            if part.midi_channel > 0 {
+                text_element(w, "midi-channel", &part.midi_channel.to_string())?;
+            }
+            if !part.midi_instrument.is_empty() {
+                text_element(w, "midi-name", &part.midi_instrument)?;
+            }
+            if part.midi_program > 0 {
+                text_element(w, "midi-program", &part.midi_program.to_string())?;
+            }
+            w.write_event(Event::End(BytesEnd::new("midi-instrument")))?;
+        }
+
         w.write_event(Event::End(BytesEnd::new("score-part")))?;
         Ok(())
     }
@@ -253,6 +310,10 @@ impl IrToMxmlAdapter {
         el.push_attribute(("number", measure.number.to_string().as_str()));
         if measure.implicit {
             el.push_attribute(("implicit", "yes"));
+        }
+        if let Some(w_val) = measure.width {
+            let w_str = format_float(w_val as f64);
+            el.push_attribute(("width", w_str.as_str()));
         }
         w.write_event(Event::Start(el))?;
 
@@ -518,19 +579,26 @@ impl IrToMxmlAdapter {
         is_chord: bool,
         chord_arpeggio: Option<ArpeggioType>,
     ) -> Result<()> {
-        w.write_event(Event::Start(BytesStart::new("note")))?;
+        if note.print_object {
+            w.write_event(Event::Start(BytesStart::new("note")))?;
+        } else {
+            let mut note_el = BytesStart::new("note");
+            note_el.push_attribute(("print-object", "no"));
+            w.write_event(Event::Start(note_el))?;
+        }
 
         if is_chord {
             w.write_event(Event::Empty(BytesStart::new("chord")))?;
         }
         if note.is_grace {
+            let mut el = BytesStart::new("grace");
             if note.after_grace {
-                let mut el = BytesStart::new("grace");
                 el.push_attribute(("steal-time-previous", "100"));
-                w.write_event(Event::Empty(el))?;
-            } else {
-                w.write_event(Event::Empty(BytesStart::new("grace")))?;
             }
+            if note.grace_slash {
+                el.push_attribute(("slash", "yes"));
+            }
+            w.write_event(Event::Empty(el))?;
         }
         if note.is_cue {
             w.write_event(Event::Empty(BytesStart::new("cue")))?;
@@ -575,6 +643,11 @@ impl IrToMxmlAdapter {
         // Dots
         for _ in 0..note.duration.dots {
             w.write_event(Event::Empty(BytesStart::new("dot")))?;
+        }
+
+        // Notehead
+        if !note.notehead.is_empty() && note.notehead != "normal" {
+            text_element(w, "notehead", &note.notehead)?;
         }
 
         // Accidental display
@@ -793,6 +866,9 @@ impl IrToMxmlAdapter {
             };
             text_element(w, "syllabic", syllabic)?;
             text_element(w, "text", &syllable.text)?;
+            if syllable.elision {
+                w.write_event(Event::Empty(BytesStart::new("elision")))?;
+            }
             if syllable.extend {
                 w.write_event(Event::Empty(BytesStart::new("extend")))?;
             }
@@ -948,7 +1024,14 @@ impl IrToMxmlAdapter {
         }
 
         if let Some(text_dir) = &direction.text {
-            w.write_event(Event::Start(BytesStart::new("words")))?;
+            let mut words_el = BytesStart::new("words");
+            if let Some(ref fs) = text_dir.font_style {
+                words_el.push_attribute(("font-style", fs.as_str()));
+            }
+            if let Some(ref fw) = text_dir.font_weight {
+                words_el.push_attribute(("font-weight", fw.as_str()));
+            }
+            w.write_event(Event::Start(words_el))?;
             w.write_event(Event::Text(BytesText::new(&text_dir.text)))?;
             w.write_event(Event::End(BytesEnd::new("words")))?;
         }
@@ -969,11 +1052,24 @@ impl IrToMxmlAdapter {
         if let Some(ped) = &direction.pedal {
             let mut el = BytesStart::new("pedal");
             el.push_attribute(("type", ped.pedal_type.as_str()));
+            if ped.line {
+                el.push_attribute(("line", "yes"));
+            }
             w.write_event(Event::Empty(el))?;
         }
 
         if let Some(tempo) = &direction.tempo {
+            // Emit tempo text label as <words> in its own <direction-type>
+            if let Some(ref label) = tempo.text {
+                w.write_event(Event::End(BytesEnd::new("direction-type")))?;
+                w.write_event(Event::Start(BytesStart::new("direction-type")))?;
+                w.write_event(Event::Start(BytesStart::new("words")))?;
+                w.write_event(Event::Text(BytesText::new(label)))?;
+                w.write_event(Event::End(BytesEnd::new("words")))?;
+            }
             if let (Some(beat_unit), Some(per_min)) = (&tempo.beat_unit, tempo.per_minute) {
+                w.write_event(Event::End(BytesEnd::new("direction-type")))?;
+                w.write_event(Event::Start(BytesStart::new("direction-type")))?;
                 w.write_event(Event::Start(BytesStart::new("metronome")))?;
                 text_element(w, "beat-unit", beat_unit)?;
                 for _ in 0..tempo.dots {
@@ -1006,16 +1102,27 @@ impl IrToMxmlAdapter {
 
         w.write_event(Event::End(BytesEnd::new("direction-type")))?;
 
-        // Sound element for tempo
-        if let Some(tempo) = &direction.tempo {
-            if let Some(per_min) = tempo.per_minute {
+        // Merged <sound> element for tempo, dacapo, dalsegno
+        {
+            let tempo_bpm = direction.tempo.as_ref().and_then(|t| t.per_minute);
+            let has_dacapo = direction.da_capo.is_some();
+            let has_dalsegno = direction.dal_segno.is_some();
+            if tempo_bpm.is_some() || has_dacapo || has_dalsegno {
                 let mut sound = BytesStart::new("sound");
-                sound.push_attribute(("tempo", format_float(per_min).as_str()));
+                if let Some(bpm) = tempo_bpm {
+                    sound.push_attribute(("tempo", format_float(bpm).as_str()));
+                }
+                if has_dacapo {
+                    sound.push_attribute(("dacapo", "yes"));
+                }
+                if has_dalsegno {
+                    sound.push_attribute(("dalsegno", "yes"));
+                }
                 w.write_event(Event::Empty(sound))?;
             }
         }
 
-        // Instrument change
+        // Instrument change (separate <sound> since it has child elements)
         if let Some(ref ic) = direction.instrument_change {
             w.write_event(Event::Start(BytesStart::new("sound")))?;
             let mut midi_el = BytesStart::new("midi-instrument");
@@ -1026,18 +1133,6 @@ impl IrToMxmlAdapter {
             }
             w.write_event(Event::End(BytesEnd::new("midi-instrument")))?;
             w.write_event(Event::End(BytesEnd::new("sound")))?;
-        }
-
-        // Sound element for da capo / dal segno
-        if direction.da_capo.is_some() {
-            let mut sound = BytesStart::new("sound");
-            sound.push_attribute(("dacapo", "yes"));
-            w.write_event(Event::Empty(sound))?;
-        }
-        if direction.dal_segno.is_some() {
-            let mut sound = BytesStart::new("sound");
-            sound.push_attribute(("dalsegno", "yes"));
-            w.write_event(Event::Empty(sound))?;
         }
 
         w.write_event(Event::End(BytesEnd::new("direction")))?;
@@ -2365,5 +2460,208 @@ mod tests {
         let xml = emit_measure(measure);
         assert!(xml.contains("<trill-mark/>"), "should emit trill-mark: {xml}");
         assert!(xml.contains("<wavy-line type=\"start\""), "should emit wavy-line with type: {xml}");
+    }
+
+    // ── Phase 5: tests for newly-added emission features ─────────────────
+
+    #[test]
+    fn grace_slash_attribute() {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::new(num::rational::Ratio::new(1, 16)));
+        note.is_grace = true;
+        note.grace_slash = true;
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(note))],
+        };
+        let mut measure = make_empty_measure();
+        measure.voices.push(voice);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("slash=\"yes\""), "should emit slash=yes on grace: {xml}");
+    }
+
+    #[test]
+    fn print_object_no() {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.print_object = false;
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(note))],
+        };
+        let mut measure = make_empty_measure();
+        measure.voices.push(voice);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("print-object=\"no\""), "should emit print-object=no: {xml}");
+    }
+
+    #[test]
+    fn notehead_emission() {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.notehead = "x".to_string();
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(note))],
+        };
+        let mut measure = make_empty_measure();
+        measure.voices.push(voice);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<notehead>x</notehead>"), "should emit notehead: {xml}");
+    }
+
+    #[test]
+    fn measure_width_attribute() {
+        let mut measure = make_empty_measure();
+        measure.width = Some(120.5);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("width=\"120.5\""), "should emit width: {xml}");
+    }
+
+    #[test]
+    fn text_direction_font_attrs() {
+        let dir = Direction {
+            text: Some(crate::ir::direction::TextDirection {
+                text: "pizz.".to_string(),
+                placement: Placement::Above,
+                font_style: Some("italic".to_string()),
+                font_weight: Some("bold".to_string()),
+            }),
+            ..Direction::default()
+        };
+        let xml = emit_direction(dir);
+        assert!(xml.contains("font-style=\"italic\""), "should emit font-style: {xml}");
+        assert!(xml.contains("font-weight=\"bold\""), "should emit font-weight: {xml}");
+    }
+
+    #[test]
+    fn pedal_line_attribute() {
+        let dir = Direction {
+            pedal: Some(crate::ir::direction::PedalEvent {
+                pedal_type: "start".to_string(),
+                line: true,
+            }),
+            ..Direction::default()
+        };
+        let xml = emit_direction(dir);
+        assert!(xml.contains("line=\"yes\""), "should emit line=yes: {xml}");
+    }
+
+    #[test]
+    fn lyric_elision() {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.lyrics.push(crate::ir::articulation::LyricSyllable {
+            text: "la".to_string(),
+            syllabic: crate::ir::articulation::SyllabicType::Single,
+            number: 1,
+            extend: false,
+            elision: true,
+        });
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(note))],
+        };
+        let mut measure = make_empty_measure();
+        measure.voices.push(voice);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<elision/>"), "should emit elision: {xml}");
+    }
+
+    #[test]
+    fn midi_instrument_in_score_part() {
+        let part = Part {
+            name: "Cello".to_string(),
+            abbreviation: "Vc.".to_string(),
+            part_id: "P1".to_string(),
+            midi_instrument: "Cello".to_string(),
+            midi_channel: 1,
+            midi_program: 43,
+            staves: 1,
+            measures: vec![make_empty_measure()],
+        };
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToMxmlAdapter::new();
+        let xml = adapter.convert(&score).unwrap();
+        assert!(xml.contains("<midi-instrument"), "should emit midi-instrument: {xml}");
+        assert!(xml.contains("<midi-channel>1</midi-channel>"), "should emit midi-channel: {xml}");
+        assert!(xml.contains("<midi-program>43</midi-program>"), "should emit midi-program: {xml}");
+        assert!(xml.contains("<midi-name>Cello</midi-name>"), "should emit midi-name: {xml}");
+        assert!(xml.contains("<score-instrument"), "should emit score-instrument: {xml}");
+    }
+
+    #[test]
+    fn subtitle_credit() {
+        let mut score = Score::new();
+        score.metadata.subtitle = Some("Op. 1".to_string());
+        score.children.push(ScoreChild::Part(Part::new("P1")));
+        let adapter = IrToMxmlAdapter::new();
+        let xml = adapter.convert(&score).unwrap();
+        assert!(xml.contains("<credit>"), "should emit credit: {xml}");
+        assert!(xml.contains("<credit-type>subtitle</credit-type>"), "should emit credit-type: {xml}");
+        assert!(xml.contains("Op. 1"), "should contain subtitle text: {xml}");
+    }
+
+    #[test]
+    fn extra_creators() {
+        let mut score = Score::new();
+        score.metadata.extra.insert("editor".to_string(), "John".to_string());
+        score.children.push(ScoreChild::Part(Part::new("P1")));
+        let adapter = IrToMxmlAdapter::new();
+        let xml = adapter.convert(&score).unwrap();
+        assert!(xml.contains("type=\"editor\""), "should emit extra creator type: {xml}");
+        assert!(xml.contains("John"), "should emit extra creator value: {xml}");
+    }
+
+    #[test]
+    fn part_group_number_preserved() {
+        let mut group = crate::ir::score::PartGroup::new("StaffGroup");
+        group.number = 3;
+        group.children.push(ScoreChild::Part(Part::new("P1")));
+        let mut score = Score::new();
+        score.children.push(ScoreChild::PartGroup(group));
+        let adapter = IrToMxmlAdapter::new();
+        let xml = adapter.convert(&score).unwrap();
+        assert!(xml.contains("number=\"3\""), "should preserve group number: {xml}");
+    }
+
+    #[test]
+    fn tempo_text_as_words() {
+        let dir = Direction {
+            tempo: Some(TempoDirection {
+                text: Some("Allegro".to_string()),
+                beat_unit: Some("quarter".to_string()),
+                per_minute: Some(120.0),
+                dots: 0,
+                placement: Placement::Above,
+            }),
+            ..Direction::default()
+        };
+        let xml = emit_direction(dir);
+        assert!(xml.contains("<words>Allegro</words>"), "should emit tempo text as words: {xml}");
+        assert!(xml.contains("<metronome>"), "should emit metronome: {xml}");
+        // Words should come before metronome
+        let words_pos = xml.find("<words>Allegro</words>").unwrap();
+        let metro_pos = xml.find("<metronome>").unwrap();
+        assert!(words_pos < metro_pos, "words should precede metronome: {xml}");
+    }
+
+    #[test]
+    fn sound_element_merged() {
+        let dir = Direction {
+            tempo: Some(TempoDirection {
+                text: None,
+                beat_unit: Some("quarter".to_string()),
+                per_minute: Some(120.0),
+                dots: 0,
+                placement: Placement::Above,
+            }),
+            da_capo: Some("D.C.".to_string()),
+            ..Direction::default()
+        };
+        let xml = emit_direction(dir);
+        // Should have a single <sound with both tempo and dacapo
+        assert!(xml.contains("tempo=\"120\""), "should emit tempo in sound: {xml}");
+        assert!(xml.contains("dacapo=\"yes\""), "should emit dacapo in sound: {xml}");
+        // Count <sound occurrences — should be exactly 1
+        let sound_count = xml.matches("<sound ").count();
+        assert_eq!(sound_count, 1, "should merge into single sound element: {xml}");
     }
 }

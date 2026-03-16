@@ -215,7 +215,19 @@ current parser (`src/adapters/mxml_to_ir.rs`) and emitter (`src/adapters/ir_to_m
 | MEDIUM | Coda / Segno marks | `direction.mod` | `Direction.coda`, `Direction.segno` | ✅ |
 | MEDIUM | Da Capo / Dal Segno (`<sound>`) | `direction.mod` | `Direction.da_capo`, `Direction.dal_segno` | ✅ |
 | MEDIUM | Figured bass (`<figured-bass>`) | `direction.mod` | `Measure.figured_bass: Vec<FiguredBass>` | ✅ |
-| LOW | Print-object on notes | `common.mod` | `Note.print_object` | 🔲 |
+| LOW | Print-object on notes | `common.mod` | `Note.print_object` | ✅ |
+| MEDIUM | Grace note `slash` attribute | `note.mod` | `Note.grace_slash` | ✅ |
+| MEDIUM | Notehead element | `note.mod` | `Note.notehead` | ✅ |
+| MEDIUM | Measure `width` attribute | `common.mod` | `Measure.width` | ✅ |
+| MEDIUM | Text direction font attributes | `direction.mod` | `TextDirection.font_style/font_weight` | ✅ |
+| MEDIUM | Pedal `line` attribute | `direction.mod` | `PedalEvent.line` | ✅ |
+| MEDIUM | Lyric `<elision>` element | `note.mod` | `LyricSyllable.elision` | ✅ |
+| MEDIUM | MIDI instrument in `<score-part>` | `score.mod` | `Part.midi_channel/program/instrument` | ✅ |
+| MEDIUM | Subtitle as `<credit>` | `score.mod` | `ScoreMetadata.subtitle` | ✅ |
+| LOW | Extra creator metadata | `identity.mod` | `ScoreMetadata.extra` | ✅ |
+| LOW | PartGroup number preservation | `score.mod` | `PartGroup.number` | ✅ |
+| MEDIUM | Tempo text as `<words>` with `<metronome>` | `direction.mod` | `TempoDirection.text` | ✅ |
+| LOW | Merged `<sound>` element (tempo + dacapo/dalsegno) | `direction.mod` | Single `<sound>` with all attrs | ✅ |
 
 ### 11b. Parser gaps (`mxml_to_ir.rs`)
 
@@ -223,7 +235,6 @@ current parser (`src/adapters/mxml_to_ir.rs`) and emitter (`src/adapters/ir_to_m
 |---|---|---|---|
 | MEDIUM | `<measure-style>` (multi-rest, slash, etc.) | `attributes.mod` | Needs `MeasureStyle` IR type |
 | MEDIUM | `<print>` element (new-system, new-page, blank-page) | `layout.mod` | Needs `PrintDirective` IR type |
-| MEDIUM | `<score-instrument>` MIDI program / channel | `score.mod` | Extend `Part` with `midi_program: Option<u8>` |
 | MEDIUM | `<sound>` `tempo` on nested-in-voice elements | `direction.mod` | Currently only top-level sound |
 | LOW | `<dashes>` / `<bracket>` spanners | `direction.mod` | Needs spanner tracking |
 | LOW | Non-traditional key signatures (`<key-step>` / `<key-alter>`) | `attributes.mod` | Rare; no IR target |
