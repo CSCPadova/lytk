@@ -976,8 +976,8 @@ impl IrToMxmlAdapter {
 
     // ── note-level dynamics → direction ───────────────────────────────────
 
-    /// Emit `<direction>` elements for dynamics and wedges attached directly
-    /// to a [`Note`] (populated by the LY→IR path).
+    /// Emit `<direction>` elements for dynamics, wedges, and text directions
+    /// attached directly to a [`Note`] (populated by the LY→IR path).
     fn emit_note_directions(&self, w: &mut W, note: &Note) -> Result<()> {
         for dyn_mark in &note.dynamics {
             let dir = Direction {
@@ -991,6 +991,14 @@ impl IrToMxmlAdapter {
             let dir = Direction {
                 wedge: Some(wedge.clone()),
                 placement: Placement::Below,
+                ..Direction::default()
+            };
+            self.write_direction(w, &dir)?;
+        }
+        for td in &note.text_directions {
+            let dir = Direction {
+                text: Some(td.clone()),
+                placement: td.placement,
                 ..Direction::default()
             };
             self.write_direction(w, &dir)?;

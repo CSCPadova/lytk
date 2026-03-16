@@ -31,7 +31,7 @@ use crate::ir::articulation::{
     Articulation, DynamicMark, Fermata, LyricSyllable, Placement, SlurEvent, StartStop,
     SyllabicType, TieEvent, TupletDisplay, Wedge,
 };
-use crate::ir::direction::{Barline, BarlineType, Direction, TempoDirection};
+use crate::ir::direction::{Barline, BarlineType, Direction, TempoDirection, TextDirection};
 use crate::ir::duration::Duration;
 use crate::ir::language::{parse_pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
@@ -1598,8 +1598,13 @@ fn handle_punctuation(state: &mut WalkState, punc: &str) {
             state.bar_check();
         }
         "(" => {
-            // Slur start: attach to most recent note
-            if let Some(VoiceElement::Note(note)) = state.current_voice.last_mut() {
+            // Slur start: attach to most recent note or chord
+            let target = match state.current_voice.last_mut() {
+                Some(VoiceElement::Note(note)) => Some(note.as_mut()),
+                Some(VoiceElement::Chord(chord)) => chord.notes.first_mut(),
+                _ => None,
+            };
+            if let Some(note) = target {
                 note.slurs.push(SlurEvent {
                     slur_type: StartStop::Start,
                     number: 1,
@@ -1608,8 +1613,13 @@ fn handle_punctuation(state: &mut WalkState, punc: &str) {
             }
         }
         ")" => {
-            // Slur stop: attach to most recent note
-            if let Some(VoiceElement::Note(note)) = state.current_voice.last_mut() {
+            // Slur stop: attach to most recent note or chord
+            let target = match state.current_voice.last_mut() {
+                Some(VoiceElement::Note(note)) => Some(note.as_mut()),
+                Some(VoiceElement::Chord(chord)) => chord.notes.first_mut(),
+                _ => None,
+            };
+            if let Some(note) = target {
                 note.slurs.push(SlurEvent {
                     slur_type: StartStop::Stop,
                     number: 1,
@@ -1618,8 +1628,13 @@ fn handle_punctuation(state: &mut WalkState, punc: &str) {
             }
         }
         "~" => {
-            // Tie: attach to most recent note
-            if let Some(VoiceElement::Note(note)) = state.current_voice.last_mut() {
+            // Tie: attach to most recent note or chord
+            let target = match state.current_voice.last_mut() {
+                Some(VoiceElement::Note(note)) => Some(note.as_mut()),
+                Some(VoiceElement::Chord(chord)) => chord.notes.first_mut(),
+                _ => None,
+            };
+            if let Some(note) = target {
                 note.ties.push(TieEvent {
                     tie_type: StartStop::Start,
                 });
@@ -1756,6 +1771,29 @@ fn consume_attachments(state: &WalkState, children: &[Node], i: &mut usize) -> V
                         attachments.push(ptext);
                         *i += 1;
                     }
+                    "^" | "_" | "-" => {
+                        // Direction indicator: check for \markup { "text" }
+                        if let Some(next) = children.get(*i + 1) {
+                            if next.kind() == "escaped_word" && state.text(*next) == "\\markup" {
+                                if let Some(block) = children.get(*i + 2) {
+                                    if block.kind() == "expression_block" {
+                                        let text = extract_markup_text(state, *block);
+                                        if !text.is_empty() {
+                                            let placement = match ptext.as_str() {
+                                                "^" => "above",
+                                                "_" => "below",
+                                                _ => "unspecified",
+                                            };
+                                            attachments.push(format!("text:{placement}:{text}"));
+                                        }
+                                        *i += 3;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
                     _ => break,
                 }
             }
@@ -1884,6 +1922,23 @@ fn extract_string_value(state: &WalkState, node: Node) -> String {
         }
     }
     String::new()
+}
+
+/// Extract text content from a markup expression_block like `{ "pizz." }`.
+/// Walks children looking for string nodes and returns the concatenated text.
+fn extract_markup_text(state: &WalkState, block: Node) -> String {
+    let mut result = String::new();
+    let mut cursor = block.walk();
+    for child in block.children(&mut cursor) {
+        if child.kind() == "string" {
+            let s = extract_string_value(state, child);
+            if !result.is_empty() {
+                result.push(' ');
+            }
+            result.push_str(&s);
+        }
+    }
+    result
 }
 
 /// Consume a `\mark` command with its argument.
@@ -2447,6 +2502,23 @@ fn apply_note_attachments(_state: &mut WalkState, note: &mut Note, attachments: 
                     placement: Placement::Unspecified,
                 });
             }
+            s if s.starts_with("text:") => {
+                // "text:above:pizz." or "text:below:arco"
+                let rest = &s[5..];
+                if let Some((placement_str, text)) = rest.split_once(':') {
+                    let placement = match placement_str {
+                        "above" => Placement::Above,
+                        "below" => Placement::Below,
+                        _ => Placement::Unspecified,
+                    };
+                    note.text_directions.push(TextDirection {
+                        text: text.to_string(),
+                        placement,
+                        font_style: None,
+                        font_weight: None,
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -2527,15 +2599,122 @@ fn apply_chord_attachments(
                     inverted: false,
                 });
             }
+            s if is_dynamic_name(s) => {
+                let sign = s.trim_start_matches('\\').to_string();
+                first.dynamics.push(DynamicMark {
+                    sign,
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\<" | "\\crescendo" => {
+                first.wedges.push(Wedge {
+                    wedge_type: "crescendo".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\>" | "\\diminuendo" | "\\decrescendo" => {
+                first.wedges.push(Wedge {
+                    wedge_type: "diminuendo".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\!" => {
+                first.wedges.push(Wedge {
+                    wedge_type: "stop".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\trill" => {
+                first.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "trill-mark".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\mordent" => {
+                first.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "mordent".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\prall" => {
+                first.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "inverted-mordent".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\turn" => {
+                first.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "turn".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\reverseturn" => {
+                first.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "inverted-turn".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\staccato" => {
+                first.articulations.push(Articulation {
+                    name: "staccato".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\tenuto" => {
+                first.articulations.push(Articulation {
+                    name: "tenuto".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\accent" => {
+                first.articulations.push(Articulation {
+                    name: "accent".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\marcato" => {
+                first.articulations.push(Articulation {
+                    name: "strong-accent".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\breathe" => {
+                first.articulations.push(Articulation {
+                    name: "breath-mark".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            s if s.starts_with("text:") => {
+                // "text:above:pizz." or "text:below:arco"
+                let rest = &s[5..];
+                if let Some((placement_str, text)) = rest.split_once(':') {
+                    let placement = match placement_str {
+                        "above" => Placement::Above,
+                        "below" => Placement::Below,
+                        _ => Placement::Unspecified,
+                    };
+                    first.text_directions.push(TextDirection {
+                        text: text.to_string(),
+                        placement,
+                        font_style: None,
+                        font_weight: None,
+                    });
+                }
+            }
             _ => {}
         }
     }
 }
 
-/// Attach a dynamic mark to the most recent note in the current voice.
+/// Attach a dynamic mark to the most recent note or chord in the current voice.
 fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
     let sign = dyn_text.trim_start_matches('\\').to_string();
-    if let Some(VoiceElement::Note(note)) = state.current_voice.last_mut() {
+    let target = match state.current_voice.last_mut() {
+        Some(VoiceElement::Note(note)) => Some(note.as_mut()),
+        Some(VoiceElement::Chord(chord)) => chord.notes.first_mut(),
+        _ => None,
+    };
+    if let Some(note) = target {
         if sign == "<" {
             note.wedges.push(Wedge {
                 wedge_type: "crescendo".to_string(),

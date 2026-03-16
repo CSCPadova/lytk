@@ -14,6 +14,7 @@ use super::articulation::{
     Articulation, BeamEvent, DynamicMark, Fermata, LyricSyllable, Ornament, SlurEvent,
     StartStop, Technical, TieEvent, TupletDisplay, Wedge,
 };
+use super::direction::TextDirection;
 use super::duration::Duration;
 use super::pitch::Pitch;
 
@@ -42,6 +43,7 @@ pub struct Note {
     pub technicals: Vec<Technical>,
     pub dynamics: Vec<DynamicMark>,
     pub wedges: Vec<Wedge>,
+    pub text_directions: Vec<TextDirection>,
     pub beams: Vec<BeamEvent>,
     pub tuplet: Option<TupletDisplay>,
     pub fermata: Option<Fermata>,
@@ -85,6 +87,7 @@ impl Note {
             technicals: Vec::new(),
             dynamics: Vec::new(),
             wedges: Vec::new(),
+            text_directions: Vec::new(),
             beams: Vec::new(),
             tuplet: None,
             fermata: None,
