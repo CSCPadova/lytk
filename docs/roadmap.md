@@ -184,16 +184,25 @@ features, enabling round-trip fidelity (LilyPond → IR → LilyPond):
 | Coda / Segno marks | `\mark \markup { \musicglyph "scripts.coda" }` | `Direction.coda`, `Direction.segno` | ✅ |
 | Da Capo / Dal Segno | `\mark "D.C."`, `\mark "D.S. al Coda"` | `Direction.da_capo`, `Direction.dal_segno` | ✅ |
 | Slide | `\glissando` with `\override Glissando.style = #'trill` | `Note.slide` | ✅ |
+| Lyrics | `\lyricsto`, `\lyricmode`, `\context Lyrics` | `Note.lyrics` | ✅ |
+| `\set Staff.instrumentName` | `\set Staff.instrumentName="..."` | `Part.name` | ✅ |
+| `\set Staff.midiInstrument` | `\set Staff.midiInstrument="..."` | `Part.midi_instrument` | ✅ |
+| Named voices | `\context Voice = "name"` | Voice name for lyrics | ✅ |
+| Staff variables | `varName = \new Staff { ... }` | Full `Part` preservation | ✅ |
 | Chord names | `\chordmode { ... }` | `Measure.harmonies` | 🔲 |
 | Figured bass | `\figuremode { <...> }` | `Measure.figured_bass` | 🔲 |
-| Lyrics | `\lyricsto`, `\lyricmode`, `\addlyrics` | Lyrics on Voice | 🔲 |
 
 Implemented:
-- 8 of 11 features fully parsing; 12 new tests (172 total)
+- 13 of 16 features fully parsing; 19 new tests (215 total)
 - `\once \override Glissando.style = #'<style>` → dashed/dotted/wavy/trill
 - `\arpeggioArrowUp/Down/Bracket` direction state tracking
 - `\paper { ... }` block → `PageLayout` with page/margin/spacing fields
 - `\mark` dispatcher: text strings for D.C./D.S., markup blocks for coda/segno glyphs
+- `\set Staff.instrumentName/midiInstrument` → Part metadata
+- `\lyricsto/\lyricmode/\context Lyrics` → lyrics attached to notes
+- Staff variable definitions (`name = \new Staff { }`) preserve full Part metadata
+- `\context Voice = "name"` for named voice tracking (lyrics attachment)
+- `\cadenzaOn/Off`, `\melisma/End`, `\autoBeamOff`, `\dynamicUp/Down` gracefully handled
 
 ## 11. MusicXML 4.0 Completeness
 

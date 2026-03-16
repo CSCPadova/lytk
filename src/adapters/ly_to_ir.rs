@@ -28,8 +28,8 @@ use num::rational::Ratio;
 use tree_sitter::Node;
 
 use crate::ir::articulation::{
-    Articulation, DynamicMark, Fermata, Placement, SlurEvent, StartStop, TieEvent, TupletDisplay,
-    Wedge,
+    Articulation, DynamicMark, Fermata, LyricSyllable, Placement, SlurEvent, StartStop,
+    SyllabicType, TieEvent, TupletDisplay, Wedge,
 };
 use crate::ir::direction::{Barline, BarlineType, Direction, TempoDirection};
 use crate::ir::duration::Duration;
@@ -127,6 +127,15 @@ fn pitch_to_fifths(step: PitchStep, alter: Ratio<i32>, mode: KeyMode) -> i32 {
 // Parser state
 // ---------------------------------------------------------------------------
 
+/// What a variable definition expands to.
+#[derive(Clone)]
+enum VarDef {
+    /// Variable contained `\new Staff { ... }` — stores the full part(s).
+    Parts(Vec<(String, Part)>),
+    /// Variable contained bare music — stores just the measures.
+    Measures(Vec<Measure>),
+}
+
 /// State accumulated while walking tree-sitter nodes.
 struct WalkState<'src> {
     source: &'src str,
@@ -138,8 +147,16 @@ struct WalkState<'src> {
     parts: Vec<(String, Part)>, // (context_name, part)
     part_counter: u32,
 
-    // Variable definitions: name → measures collected from the definition body
-    definitions: HashMap<String, Vec<Measure>>,
+    // Variable definitions: name → either full parts (from \new Staff) or bare measures
+    definitions: HashMap<String, VarDef>,
+    // Lyric variable definitions: name → list of syllables
+    lyric_definitions: HashMap<String, Vec<LyricSyllable>>,
+    // Pending lyrics: voice_name → syllables (from \lyricsto)
+    pending_lyrics: HashMap<String, Vec<LyricSyllable>>,
+    // Voice name → part index mapping (for attaching lyrics)
+    voice_part_map: HashMap<String, usize>,
+    // Per-variable voice maps: var_name → { voice_name → local_part_index }
+    var_voice_maps: HashMap<String, HashMap<String, usize>>,
 
     // Measure/voice state for the current part
     measure_num: u32,
@@ -175,6 +192,10 @@ impl<'src> WalkState<'src> {
             parts: Vec::new(),
             part_counter: 0,
             definitions: HashMap::new(),
+            lyric_definitions: HashMap::new(),
+            pending_lyrics: HashMap::new(),
+            voice_part_map: HashMap::new(),
+            var_voice_maps: HashMap::new(),
             measure_num: 0,
             current_measure: None,
             current_voice: Vec::new(),
@@ -257,10 +278,29 @@ impl<'src> WalkState<'src> {
     /// Resolve a variable reference: look up stored measures and add them
     /// to the current part.
     fn resolve_variable(&mut self, name: &str) -> bool {
-        if let Some(measures) = self.definitions.get(name) {
-            let measures = measures.clone();
-            let part = self.ensure_part();
-            part.measures.extend(measures);
+        if let Some(def) = self.definitions.get(name) {
+            let def = def.clone();
+            match def {
+                VarDef::Parts(parts) => {
+                    // Flush current state and add the stored parts directly
+                    self.flush_measure();
+                    let base_idx = self.parts.len();
+                    self.parts.extend(parts);
+                    // Update voice_part_map: if any stored voice names pointed
+                    // to indices within the variable's local parts, remap them
+                    // to the new global indices.
+                    if let Some(voice_map) = self.var_voice_maps.get(name) {
+                        for (voice_name, local_idx) in voice_map {
+                            self.voice_part_map
+                                .insert(voice_name.clone(), base_idx + local_idx);
+                        }
+                    }
+                }
+                VarDef::Measures(measures) => {
+                    let part = self.ensure_part();
+                    part.measures.extend(measures);
+                }
+            }
             true
         } else {
             false
@@ -359,6 +399,15 @@ impl LyToIrAdapter {
 
         // Flush any remaining state
         state.flush_measure();
+
+        // Attach pending lyrics to matching parts
+        for (voice_name, syllables) in &state.pending_lyrics {
+            if let Some(&part_idx) = state.voice_part_map.get(voice_name) {
+                if let Some((_, part)) = state.parts.get_mut(part_idx) {
+                    attach_lyrics_to_part(part, syllables);
+                }
+            }
+        }
 
         // Build the Score
         let mut score = Score::new();
@@ -497,27 +546,91 @@ fn walk_program(state: &mut WalkState, root: Node) {
                     result
                 };
                 if !var_name.is_empty() {
-                    // Skip the "=" punctuation, then capture the expression_block
+                    // Skip the "=" punctuation, then capture the body
                     if let Some(eq) = children.get(i + 1) {
                         if eq.kind() == "punctuation" && state.text(*eq) == "=" {
-                            if let Some(block) = children.get(i + 2) {
-                                if block.kind() == "expression_block" {
-                                    // Walk the block but capture the parts it creates
+                            let mut j = i + 2;
+                            // Skip \lyricmode or \new before the expression_block
+                            let mut is_lyricmode = false;
+                            while j < children.len() {
+                                let candidate = children[j];
+                                if candidate.kind() == "escaped_word" {
+                                    let ew = state.text(candidate);
+                                    if ew == "\\lyricmode" || ew == "\\notemode" {
+                                        is_lyricmode = ew == "\\lyricmode";
+                                        j += 1;
+                                        continue;
+                                    }
+                                }
+                                break;
+                            }
+                            if let Some(next) = children.get(j) {
+                                if next.kind() == "expression_block" {
+                                    if is_lyricmode {
+                                        // Parse lyrics variable
+                                        let lyrics = parse_lyric_block(state, *next);
+                                        state.lyric_definitions.insert(var_name, lyrics);
+                                    } else {
+                                        // Check if the block contains a \new Staff/PianoStaff
+                                        let has_named_context =
+                                            block_contains_named_context(state, *next);
+                                        // Walk the block but capture the parts it creates
+                                        let parts_before = state.parts.len();
+                                        let old_measure_num = state.measure_num;
+                                        state.measure_num = 0;
+                                        walk_music_block(state, *next);
+                                        state.flush_measure();
+                                        // Extract newly created parts
+                                        let new_parts: Vec<_> =
+                                            state.parts.drain(parts_before..).collect();
+                                        // If the block explicitly contained \new Staff,
+                                        // store as full Parts to preserve metadata
+                                        let def = if has_named_context {
+                                            VarDef::Parts(new_parts)
+                                        } else {
+                                            let measures: Vec<Measure> = new_parts
+                                                .into_iter()
+                                                .flat_map(|(_, part)| part.measures)
+                                                .collect();
+                                            VarDef::Measures(measures)
+                                        };
+                                        state.definitions.insert(var_name, def);
+                                        state.measure_num = old_measure_num;
+                                    }
+                                    i = j + 1; // skip to after block
+                                    continue;
+                                } else if next.kind() == "named_context" {
+                                    // Variable is `name = \new Staff { ... }`
+                                    // The named_context is followed by expression_block
                                     let parts_before = state.parts.len();
                                     let old_measure_num = state.measure_num;
                                     state.measure_num = 0;
-                                    walk_music_block(state, *block);
+                                    let (context, ctx_name) =
+                                        extract_named_context(state, *next);
+                                    j += 1;
+                                    j = walk_context_body(
+                                        state, &children, j, &context, &ctx_name,
+                                    );
                                     state.flush_measure();
-                                    // Extract newly created parts' measures
                                     let new_parts: Vec<_> =
                                         state.parts.drain(parts_before..).collect();
-                                    let measures: Vec<Measure> = new_parts
-                                        .into_iter()
-                                        .flat_map(|(_, part)| part.measures)
+                                    // Capture voice→part mappings created during this variable def
+                                    let local_voice_map: HashMap<String, usize> = state
+                                        .voice_part_map
+                                        .iter()
+                                        .filter(|(_, idx)| **idx >= parts_before)
+                                        .map(|(name, idx)| (name.clone(), idx - parts_before))
                                         .collect();
-                                    state.definitions.insert(var_name, measures);
+                                    if !local_voice_map.is_empty() {
+                                        state.var_voice_maps.insert(var_name.clone(), local_voice_map);
+                                    }
+                                    // Remove stale entries from voice_part_map
+                                    state.voice_part_map.retain(|_, idx| *idx < parts_before);
+                                    state
+                                        .definitions
+                                        .insert(var_name, VarDef::Parts(new_parts));
                                     state.measure_num = old_measure_num;
-                                    i += 3; // skip assignment_lhs, "=", expression_block
+                                    i = j;
                                     continue;
                                 }
                             }
@@ -694,18 +807,32 @@ fn walk_parallel_music(state: &mut WalkState, node: Node) {
     }
 }
 
-/// Extract context type and instrument name from a `named_context` node.
-/// Returns (context_type, instrument_name).
+/// Extract context type and context name from a `named_context` node.
+/// For `\new Staff`, returns ("Staff", "").
+/// For `\context Voice = "melodySop"`, returns ("Voice", "melodySop").
 fn extract_named_context<'a>(state: &WalkState<'a>, node: Node<'a>) -> (String, String) {
     let mut context = String::new();
+    let mut name = String::new();
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "symbol" {
-            context = state.text(child).to_string();
-            break;
+    let children: Vec<_> = node.children(&mut cursor).collect();
+    let mut found_symbol = false;
+    let mut found_eq = false;
+    for child in &children {
+        match child.kind() {
+            "symbol" if !found_symbol => {
+                context = state.text(*child).to_string();
+                found_symbol = true;
+            }
+            "punctuation" if found_symbol && state.text(*child) == "=" => {
+                found_eq = true;
+            }
+            "string" if found_eq => {
+                name = extract_string_value(state, *child);
+            }
+            _ => {}
         }
     }
-    (context, String::new())
+    (context, name)
 }
 
 /// After parsing a `named_context` node, consume the body (which might be
@@ -718,6 +845,52 @@ fn walk_context_body(
     context: &str,
     name: &str,
 ) -> usize {
+    // Lyrics context: don't create a music part, parse lyrics instead
+    if context == "Lyrics" {
+        return walk_lyrics_context(state, children, i, name);
+    }
+
+    // Voice context: don't create a new part, but set voice name on current part
+    if context == "Voice" {
+        // Don't call new_part — we stay in the current Staff part
+        // Just consume the body block
+        while i < children.len() {
+            let node = children[i];
+            match node.kind() {
+                "expression_block" => {
+                    walk_music_block(state, node);
+                    i += 1;
+                    break;
+                }
+                "escaped_word" => {
+                    let text = state.text(node).to_string();
+                    if text == "\\relative" {
+                        state.in_relative = true;
+                        state.mode = PitchMode::Relative;
+                        i += 1;
+                        i = consume_relative(state, children, i);
+                        continue;
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        // Store the voice name for lyrics attachment
+        if !name.is_empty() {
+            let part = state.ensure_part();
+            if part.part_id.is_empty() || part.part_id.starts_with('P') {
+                // Use the voice name to help identify this part for lyrics
+            }
+            // Store voice name → part index mapping
+            let part_idx = state.parts.len().saturating_sub(1);
+            state
+                .voice_part_map
+                .insert(name.to_string(), part_idx);
+        }
+        return i;
+    }
+
     // Remember old relative state
     let was_relative = state.in_relative;
     let old_ref = state.relative_ref;
@@ -771,6 +944,47 @@ fn walk_context_body(
     state.relative_ref = old_ref;
     state.prev_pitch = old_prev;
 
+    i
+}
+
+/// Handle `\context Lyrics = "name" \lyricmode { \lyricsto "voice" ... }`
+/// Consumes tokens after the named_context and stores lyrics for later attachment.
+fn walk_lyrics_context(
+    state: &mut WalkState,
+    children: &[Node],
+    mut i: usize,
+    _name: &str,
+) -> usize {
+    // After named_context(Lyrics), we expect:
+    // \lyricmode { \lyricsto "voiceName" \variable_or_lyrics }
+    let mut is_lyricmode = false;
+    while i < children.len() {
+        let node = children[i];
+        match node.kind() {
+            "escaped_word" => {
+                let text = state.text(node);
+                if text == "\\lyricmode" {
+                    is_lyricmode = true;
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            "expression_block" => {
+                if is_lyricmode {
+                    // Parse the lyric block and find the \lyricsto voice name
+                    let voice_name = extract_lyricsto_voice(state, node);
+                    let syllables = parse_lyric_block(state, node);
+                    if let Some(voice) = voice_name {
+                        state.pending_lyrics.insert(voice, syllables);
+                    }
+                }
+                i += 1;
+                break;
+            }
+            _ => break,
+        }
+    }
     i
 }
 
@@ -1271,6 +1485,38 @@ fn handle_escaped_word(
                 }
             }
         }
+        "\\set" => {
+            // \set Staff.instrumentName = "value"
+            // Tree-sitter: assignment_lhs(property_expression(symbol, ".", symbol)) "=" string
+            if let Some(lhs) = children.get(i) {
+                if lhs.kind() == "assignment_lhs" {
+                    let prop_text = state.text(*lhs).to_string();
+                    i += 1;
+                    // Skip "="
+                    if let Some(eq) = children.get(i) {
+                        if eq.kind() == "punctuation" && state.text(*eq) == "=" {
+                            i += 1;
+                        }
+                    }
+                    // Read value (string or scheme)
+                    if let Some(val_node) = children.get(i) {
+                        if val_node.kind() == "string" {
+                            let val = extract_string_value(state, *val_node);
+                            i += 1;
+                            apply_set_property(state, &prop_text, &val);
+                        }
+                    }
+                }
+            }
+        }
+        "\\unset" | "\\cadenzaOn" | "\\cadenzaOff" | "\\autoBeamOff" | "\\autoBeamOn"
+        | "\\dynamicUp" | "\\dynamicDown" | "\\dynamicNeutral" | "\\melisma"
+        | "\\melismaEnd" | "\\context" => {
+            // Skip these commands; some may consume the next token
+            // \context within music blocks is handled by named_context at the
+            // walk_music_block level, but if tree-sitter doesn't wrap it as
+            // named_context, skip it here.
+        }
         _ => {
             // Unknown escaped word — may be a variable reference or dynamic
             let var_name = text.trim_start_matches('\\');
@@ -1280,6 +1526,30 @@ fn handle_escaped_word(
         }
     }
     i
+}
+
+/// Apply a `\set Context.property = "value"` command to the current part.
+fn apply_set_property(state: &mut WalkState, property: &str, value: &str) {
+    // property is like "Staff.instrumentName" or "Staff.midiInstrument"
+    let prop_name = property
+        .split('.')
+        .last()
+        .unwrap_or(property);
+    match prop_name {
+        "instrumentName" => {
+            let part = state.ensure_part();
+            part.name = value.to_string();
+        }
+        "shortInstrumentName" => {
+            let part = state.ensure_part();
+            part.abbreviation = value.to_string();
+        }
+        "midiInstrument" => {
+            let part = state.ensure_part();
+            part.midi_instrument = value.to_string();
+        }
+        _ => {} // Ignore other properties
+    }
 }
 
 /// Whether a `\xxx` string is a known dynamic marking.
@@ -1709,6 +1979,159 @@ fn consume_override(state: &mut WalkState, children: &[Node], mut i: usize) -> u
 }
 
 /// Parse a `\paper { ... }` block and populate `state.page_layout`.
+/// Check if an expression_block directly contains a `named_context` child
+/// (i.e., `\new Staff` or `\new PianoStaff`).
+fn block_contains_named_context(_state: &WalkState, block: Node) -> bool {
+    let mut cursor = block.walk();
+    for child in block.children(&mut cursor) {
+        if child.kind() == "named_context" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Parse a `\lyricmode { ... }` block into a list of `LyricSyllable`s.
+/// Lyrics are symbols separated by `--` (hyphen) or `__` (extend).
+fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyllable> {
+    let mut syllables = Vec::new();
+    let mut cursor = block.walk();
+    let children: Vec<Node> = block.children(&mut cursor).collect();
+    let mut i = 0;
+    let mut pending_hyphen = false;
+
+    while i < children.len() {
+        let node = children[i];
+        match node.kind() {
+            "symbol" => {
+                let text = state.text(node).to_string();
+                let syllabic = if pending_hyphen {
+                    // Check if next is also "--" → middle, else → end
+                    let next_is_hyphen = peek_double_hyphen(state, &children, i + 1);
+                    if next_is_hyphen {
+                        SyllabicType::Middle
+                    } else {
+                        SyllabicType::End
+                    }
+                } else {
+                    let next_is_hyphen = peek_double_hyphen(state, &children, i + 1);
+                    if next_is_hyphen {
+                        SyllabicType::Begin
+                    } else {
+                        SyllabicType::Single
+                    }
+                };
+                syllables.push(LyricSyllable {
+                    text,
+                    syllabic,
+                    number: 1,
+                    extend: false,
+                    elision: false,
+                });
+                pending_hyphen = false;
+            }
+            "punctuation" => {
+                let t = state.text(node);
+                if t == "-" {
+                    // Check for "--" (double hyphen = syllable separator)
+                    if let Some(next) = children.get(i + 1) {
+                        if next.kind() == "punctuation" && state.text(*next) == "-" {
+                            pending_hyphen = true;
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+            }
+            "escaped_word" => {
+                let text = state.text(node);
+                if text == "\\lyricsto" {
+                    // Skip \lyricsto "voiceName" — we handle this at a higher level
+                    i += 1;
+                    if i < children.len() && children[i].kind() == "string" {
+                        i += 1; // skip voice name string
+                    }
+                    continue;
+                }
+                // Check for variable reference
+                let var_name = text.trim_start_matches('\\');
+                if let Some(lyrics) = state.lyric_definitions.get(var_name) {
+                    syllables.extend(lyrics.clone());
+                }
+            }
+            "expression_block" => {
+                // Nested block — recurse
+                let inner = parse_lyric_block(state, node);
+                syllables.extend(inner);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    syllables
+}
+
+/// Check if position `start` begins a "--" double hyphen.
+fn peek_double_hyphen(state: &WalkState, children: &[Node], start: usize) -> bool {
+    if let Some(a) = children.get(start) {
+        if a.kind() == "punctuation" && state.text(*a) == "-" {
+            if let Some(b) = children.get(start + 1) {
+                if b.kind() == "punctuation" && state.text(*b) == "-" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Extract the voice name from a `\lyricsto "voiceName"` inside a lyric block.
+fn extract_lyricsto_voice(state: &WalkState, block: Node) -> Option<String> {
+    let mut cursor = block.walk();
+    let children: Vec<Node> = block.children(&mut cursor).collect();
+    for i in 0..children.len() {
+        let node = children[i];
+        if node.kind() == "escaped_word" && state.text(node) == "\\lyricsto" {
+            if let Some(next) = children.get(i + 1) {
+                if next.kind() == "string" {
+                    return Some(extract_string_value(state, *next));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Attach a list of lyric syllables to the notes of a part, distributing
+/// one syllable per note (skipping rests, tied notes, and melisma notes).
+fn attach_lyrics_to_part(part: &mut Part, syllables: &[LyricSyllable]) {
+    let mut syl_idx = 0;
+    for measure in &mut part.measures {
+        for voice in &mut measure.voices {
+            for elem in &mut voice.elements {
+                if syl_idx >= syllables.len() {
+                    return;
+                }
+                match elem {
+                    VoiceElement::Note(note) => {
+                        // Skip grace notes and tied notes (continuation)
+                        if note.is_grace {
+                            continue;
+                        }
+                        let is_tied = note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
+                        if is_tied {
+                            continue;
+                        }
+                        note.lyrics.push(syllables[syl_idx].clone());
+                        syl_idx += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 fn parse_paper_block(state: &mut WalkState, block: Node) {
     let mut layout = state.page_layout.take().unwrap_or(PageLayout {
         page_height: None,
@@ -2925,6 +3348,244 @@ pB = { g4 a b c' }
             other => panic!("expected Note, got {:?}", other),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Regression tests for example.ly features
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_staff_variable_with_new_staff() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"
+staffA = \new Staff {
+  \set Staff.instrumentName = "Violin"
+  \set Staff.midiInstrument = "violin"
+  \key c \major
+  \clef treble
+  \relative c' { c4 d e f | }
+}
+staffB = \new Staff {
+  \set Staff.instrumentName = "Cello"
+  \set Staff.midiInstrument = "cello"
+  \key c \major
+  \clef bass
+  \relative c { c4 d e f | }
+}
+\score { << \staffA \staffB >> }
+"#,
+            )
+            .unwrap();
+
+        let parts = score.parts();
+        assert_eq!(parts.len(), 2, "should have 2 parts from 2 staff variables");
+        assert_eq!(parts[0].name, "Violin");
+        assert_eq!(parts[0].midi_instrument, "violin");
+        assert_eq!(parts[1].name, "Cello");
+        assert_eq!(parts[1].midi_instrument, "cello");
+        // Check notes exist
+        let notes_a: Vec<&Note> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes_a.len(), 4);
+    }
+
+    #[test]
+    fn test_set_instrument_name() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\new Staff {
+  \set Staff.instrumentName = "Trumpet"
+  \set Staff.midiInstrument = "trumpet"
+  c'4 d' e' f'
+}"#,
+            )
+            .unwrap();
+        let part = &score.parts()[0];
+        assert_eq!(part.name, "Trumpet");
+        assert_eq!(part.midi_instrument, "trumpet");
+    }
+
+    #[test]
+    fn test_context_voice_named() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\new Staff {
+  \context Voice = "melody" { c'4 d' e' f' }
+}"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        assert_eq!(parts.len(), 1, "should be 1 part, Voice doesn't create a new part");
+        let notes: Vec<&Note> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes.len(), 4);
+    }
+
+    #[test]
+    fn test_lyrics_variable_and_lyricsto() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"
+verse = \lyricmode { hel -- lo world }
+staffSop = \new Staff {
+  \context Voice = "sop" { c'4 d' e' }
+}
+\score {
+  <<
+    \staffSop
+    \context Lyrics = "lsop" \lyricmode { \lyricsto "sop" \verse }
+  >>
+}
+"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        assert_eq!(parts.len(), 1, "Lyrics context should not create an extra part");
+        // Check that lyrics were attached to notes
+        let notes: Vec<&Note> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert!(notes.len() >= 3, "should have at least 3 notes");
+        // First note should have lyric "hel"
+        assert!(!notes[0].lyrics.is_empty(), "first note should have a lyric");
+        assert_eq!(notes[0].lyrics[0].text, "hel");
+        assert_eq!(notes[0].lyrics[0].syllabic, SyllabicType::Begin);
+    }
+
+    #[test]
+    fn test_six_part_score_from_variables() {
+        let adapter = LyToIrAdapter::new().with_language(PitchLanguage::Deutsch);
+        let source = std::fs::read_to_string("example.ly").unwrap();
+        let score = adapter.convert_str(&source).unwrap();
+
+        let parts = score.parts();
+        assert_eq!(parts.len(), 6, "example.ly should produce 6 parts");
+        assert_eq!(parts[0].name, "Corno da Caccia");
+        assert_eq!(parts[1].name, "Violino I");
+        assert_eq!(parts[2].name, "Violino II");
+        assert_eq!(parts[3].name, "Viola");
+        assert_eq!(parts[4].name, "Soprano");
+        assert_eq!(parts[5].name, "Basso");
+
+        // Check MIDI instruments
+        assert_eq!(parts[0].midi_instrument, "french horn");
+        assert_eq!(parts[1].midi_instrument, "violin");
+        assert_eq!(parts[3].midi_instrument, "viola");
+        assert_eq!(parts[5].midi_instrument, "harpsichord");
+
+        // Check that each part has measures
+        for (i, part) in parts.iter().enumerate() {
+            assert!(
+                !part.measures.is_empty(),
+                "Part {} ({}) should have measures",
+                i,
+                part.name
+            );
+        }
+
+        // Check soprano part has lyrics
+        let sop_notes: Vec<&Note> = parts[4]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        let notes_with_lyrics = sop_notes.iter().filter(|n| !n.lyrics.is_empty()).count();
+        assert!(
+            notes_with_lyrics > 0,
+            "Soprano part should have notes with lyrics attached"
+        );
+    }
+
+    #[test]
+    fn test_cadenza_and_melisma_dont_crash() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"{
+  \cadenzaOn c'2 \bar "|" \cadenzaOff
+  c'4\melisma d' e'\melismaEnd f'
+  \autoBeamOff c'8 d' e' f'
+  \dynamicUp c'4\f d'\p
+}"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        assert!(!parts.is_empty());
+        let notes: Vec<&Note> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        // Should have parsed all notes without crashing
+        assert!(notes.len() >= 10, "should parse notes despite cadenza/melisma commands");
+    }
+
+    #[test]
+    fn test_ly_to_mxml_roundtrip_example() {
+        // Test the full ly → IR → MusicXML pipeline doesn't lose parts
+        let adapter = LyToIrAdapter::new().with_language(PitchLanguage::Deutsch);
+        let source = std::fs::read_to_string("example.ly").unwrap();
+        let score = adapter.convert_str(&source).unwrap();
+
+        let mxml_adapter = crate::adapters::ir_to_mxml::IrToMxmlAdapter::new();
+        let xml = crate::adapters::FromIrAdapter::convert(&mxml_adapter, &score).unwrap();
+
+        // Verify all 6 parts appear in XML
+        let part_count = xml.matches("<score-part ").count();
+        assert_eq!(part_count, 6, "MusicXML should have 6 <score-part> elements");
+
+        // Verify part names
+        assert!(xml.contains("<part-name>Corno da Caccia</part-name>"));
+        assert!(xml.contains("<part-name>Violino I</part-name>"));
+        assert!(xml.contains("<part-name>Soprano</part-name>"));
+        assert!(xml.contains("<part-name>Basso</part-name>"));
+
+        // Verify MIDI instruments
+        assert!(xml.contains("<midi-name>french horn</midi-name>"));
+        assert!(xml.contains("<midi-name>violin</midi-name>"));
+
+        // Verify lyrics in soprano part
+        assert!(xml.contains("<lyric"), "Should contain lyrics in MusicXML output");
+        assert!(xml.contains("<text>Men</text>"), "Should contain first lyric syllable");
+    }
+
 }
 
 /// Set tuplet duration fields and display markers on a voice element.

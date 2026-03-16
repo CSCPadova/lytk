@@ -163,9 +163,17 @@ what the adapter can parse (import) and emit (export).
 | Slide | ✅ | Via glissando trill style |
 | Anacrusis | ✅ | `\partial` |
 | Paper block | ✅ | `\paper { }` → page layout |
+| `\set Staff.instrumentName` | ✅ | Part name from `\set` property |
+| `\set Staff.midiInstrument` | ✅ | MIDI instrument from `\set` property |
+| `\context Voice = "name"` | ✅ | Named voices for lyrics attachment |
+| Lyrics | ✅ | `\lyricsto`, `\lyricmode`, `\context Lyrics` |
+| Staff variables | ✅ | `staffX = \new Staff { ... }` with full part metadata |
+| `\cadenzaOn/Off` | ✅ | Gracefully skipped |
+| `\melisma/End` | ✅ | Gracefully skipped |
+| `\autoBeamOff/On` | ✅ | Gracefully skipped |
+| `\dynamicUp/Down` | ✅ | Gracefully skipped |
 | Harmony/chord names | 🔲 | `\chordmode` |
 | Figured bass | 🔲 | `\figuremode` |
-| Lyrics | 🔲 | `\lyricsto \addlyrics` |
 
 ### Export (IR → LilyPond) — `src/adapters/ir_to_ly.rs`
 
