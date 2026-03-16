@@ -125,6 +125,8 @@ pub struct Rest {
     /// Whether this is an invisible spacer (LilyPond `s`).
     pub is_spacer: bool,
     pub fermata: Option<Fermata>,
+    /// Tuplet display bracket / numbering (start or stop).
+    pub tuplet: Option<TupletDisplay>,
 }
 
 impl Rest {
@@ -138,6 +140,7 @@ impl Rest {
             is_measure_rest: false,
             is_spacer: false,
             fermata: None,
+            tuplet: None,
         }
     }
 

@@ -727,6 +727,9 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
 
     let mut voice_elements: HashMap<u8, Vec<VoiceElement>> = HashMap::new();
     let mut pending_arpeggio: HashMap<u8, ArpeggioType> = HashMap::new();
+    // Running forward position in divisions — used to attach directions to the
+    // correct voice element based on document order.
+    let mut forward_position: i64 = 0;
 
     for child in &elem.children {
         match child.tag.as_str() {
@@ -737,6 +740,7 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
             }
             "note" => {
                 let is_chord = child.find("chord").is_some();
+                let is_grace = child.find("grace").is_some();
                 // Detect arpeggio from notations (applies to chord)
                 let arpeggio = child
                     .find("notations")
@@ -754,6 +758,11 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                         }
                     });
                 let result = parse_note(child, divisions);
+                // Advance forward position for non-chord, non-grace notes
+                let dur_val = child.child_i64("duration", 0);
+                if !is_chord && !is_grace && dur_val > 0 {
+                    forward_position += dur_val;
+                }
                 match result {
                     Some(NoteOrRest::Note(note)) => {
                         let voice_num = note.voice;
@@ -781,6 +790,7 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
             "forward" => {
                 let dur_val = child.child_i64("duration", 0);
                 if dur_val > 0 {
+                    forward_position += dur_val;
                     let dots = child.find_all("dot").len() as u8;
                     let duration = Duration::from_divisions(dur_val, divisions, dots);
                     let voice_num = child.child_i64("voice", 1) as u8;
@@ -799,6 +809,7 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
             "backup" => {
                 let dur_val = child.child_i64("duration", 0);
                 if dur_val > 0 {
+                    forward_position -= dur_val as i64;
                     let dots = child.find_all("dot").len() as u8;
                     let duration = Duration::from_divisions(dur_val, divisions, dots);
                     let backup = Backup::new(duration);
@@ -810,7 +821,10 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                 }
             }
             "direction" => {
-                if let Some(dir) = parse_direction(child) {
+                if let Some(mut dir) = parse_direction(child) {
+                    // Store the current forward position so ir_to_ly can
+                    // attach this direction to the correct voice element.
+                    dir.offset = forward_position as i32;
                     measure.directions.push(dir);
                 }
             }
@@ -1054,11 +1068,27 @@ fn parse_note(elem: &XmlNode, divisions: i64) -> Option<NoteOrRest> {
             is_measure_rest,
             is_spacer: false,
             fermata: None,
+            tuplet: None,
         };
 
-        // Check for fermata in notations.
+        // Check for fermata and tuplet display in notations.
         if let Some(notations) = elem.find("notations") {
             rest.fermata = parse_fermata(notations);
+            if let Some(tuplet) = notations.find("tuplet") {
+                let tuplet_type = match tuplet.attr("type").unwrap_or("start") {
+                    "start" => StartStop::Start,
+                    "stop" => StartStop::Stop,
+                    _ => StartStop::Start,
+                };
+                let bracket = tuplet.attr("bracket") == Some("yes");
+                let show_number =
+                    tuplet.attr("show-number").unwrap_or("actual").to_string();
+                rest.tuplet = Some(TupletDisplay {
+                    tuplet_type,
+                    bracket,
+                    show_number,
+                });
+            }
         }
 
         return Some(NoteOrRest::Rest(rest));

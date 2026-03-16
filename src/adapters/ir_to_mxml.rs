@@ -58,13 +58,20 @@ impl Default for IrToMxmlAdapter {
 
 impl FromIrAdapter for IrToMxmlAdapter {
     fn convert(&self, score: &Score) -> Result<String> {
+        // Auto-compute divisions that accommodate all tuplet ratios in the score
+        let effective_divisions = compute_score_divisions(score, self.divisions);
+        let adapter = Self {
+            version: self.version.clone(),
+            divisions: effective_divisions,
+        };
+
         let buf = Cursor::new(Vec::new());
         let mut w = Writer::new_with_indent(buf, b' ', 2);
 
         // XML declaration
         w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
 
-        self.write_score(&mut w, score)?;
+        adapter.write_score(&mut w, score)?;
 
         let bytes = w.into_inner().into_inner();
         Ok(String::from_utf8(bytes).expect("XML output is valid UTF-8"))
@@ -291,12 +298,17 @@ impl IrToMxmlAdapter {
             for elem in &voice.elements {
                 match elem {
                     VoiceElement::Note(n) => {
+                        self.emit_note_directions(w, n)?;
                         self.write_note(w, n, voice.number, false, None)?;
                     }
                     VoiceElement::Rest(r) => {
                         self.write_rest(w, r, voice.number)?;
                     }
                     VoiceElement::Chord(c) => {
+                        // Emit directions from the first note in the chord
+                        if let Some(first) = c.notes.first() {
+                            self.emit_note_directions(w, first)?;
+                        }
                         self.write_chord(w, c, voice.number)?;
                     }
                     VoiceElement::Forward(fwd) => {
@@ -750,15 +762,51 @@ impl IrToMxmlAdapter {
             w.write_event(Event::Empty(BytesStart::new("dot")))?;
         }
 
-        if let Some(fermata) = &rest.fermata {
+        // Time modification (tuplets)
+        if rest.duration.tuplet_actual != 1 || rest.duration.tuplet_normal != 1 {
+            w.write_event(Event::Start(BytesStart::new("time-modification")))?;
+            text_element(
+                w,
+                "actual-notes",
+                &rest.duration.tuplet_actual.to_string(),
+            )?;
+            text_element(
+                w,
+                "normal-notes",
+                &rest.duration.tuplet_normal.to_string(),
+            )?;
+            w.write_event(Event::End(BytesEnd::new("time-modification")))?;
+        }
+
+        // Notations (fermata, tuplet display)
+        let has_notations = rest.fermata.is_some() || rest.tuplet.is_some();
+        if has_notations {
             w.write_event(Event::Start(BytesStart::new("notations")))?;
-            let mut el = BytesStart::new("fermata");
-            if fermata.inverted {
-                el.push_attribute(("type", "inverted"));
+
+            if let Some(tuplet) = &rest.tuplet {
+                let mut el = BytesStart::new("tuplet");
+                let t_str = match tuplet.tuplet_type {
+                    StartStop::Start => "start",
+                    StartStop::Stop => "stop",
+                    StartStop::Continue => "start", // fallback
+                };
+                el.push_attribute(("type", t_str));
+                if tuplet.bracket {
+                    el.push_attribute(("bracket", "yes"));
+                }
+                w.write_event(Event::Empty(el))?;
             }
-            w.write_event(Event::Start(el))?;
-            w.write_event(Event::Text(BytesText::new(&fermata.shape)))?;
-            w.write_event(Event::End(BytesEnd::new("fermata")))?;
+
+            if let Some(fermata) = &rest.fermata {
+                let mut el = BytesStart::new("fermata");
+                if fermata.inverted {
+                    el.push_attribute(("type", "inverted"));
+                }
+                w.write_event(Event::Start(el))?;
+                w.write_event(Event::Text(BytesText::new(&fermata.shape)))?;
+                w.write_event(Event::End(BytesEnd::new("fermata")))?;
+            }
+
             w.write_event(Event::End(BytesEnd::new("notations")))?;
         }
 
@@ -771,6 +819,30 @@ impl IrToMxmlAdapter {
     fn write_chord(&self, w: &mut W, chord: &Chord, voice_num: u8) -> Result<()> {
         for (i, note) in chord.notes.iter().enumerate() {
             self.write_note(w, note, voice_num, i > 0, chord.arpeggio)?;
+        }
+        Ok(())
+    }
+
+    // ── note-level dynamics → direction ───────────────────────────────────
+
+    /// Emit `<direction>` elements for dynamics and wedges attached directly
+    /// to a [`Note`] (populated by the LY→IR path).
+    fn emit_note_directions(&self, w: &mut W, note: &Note) -> Result<()> {
+        for dyn_mark in &note.dynamics {
+            let dir = Direction {
+                dynamic: Some(dyn_mark.clone()),
+                placement: Placement::Below,
+                ..Direction::default()
+            };
+            self.write_direction(w, &dir)?;
+        }
+        for wedge in &note.wedges {
+            let dir = Direction {
+                wedge: Some(wedge.clone()),
+                placement: Placement::Below,
+                ..Direction::default()
+            };
+            self.write_direction(w, &dir)?;
         }
         Ok(())
     }
@@ -1086,6 +1158,50 @@ impl IrToMxmlAdapter {
             total * crate::ir::duration::Frac::from_integer(4 * self.divisions as i64);
         *result.numer() / *result.denom()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Division auto-computation
+// ---------------------------------------------------------------------------
+
+/// Compute divisions per quarter note that exactly represent all durations in
+/// the score (including tuplets).
+///
+/// Starting from `base` (typically 4), takes the LCM with every `tuplet_actual`
+/// value found in the score so that `duration_to_divisions` never truncates.
+fn compute_score_divisions(score: &Score, base: u16) -> u16 {
+    let mut result = base as u64;
+    for part in score.parts() {
+        for measure in &part.measures {
+            for voice in &measure.voices {
+                for elem in &voice.elements {
+                    let actual = match elem {
+                        VoiceElement::Note(n) => n.duration.tuplet_actual,
+                        VoiceElement::Rest(r) => r.duration.tuplet_actual,
+                        VoiceElement::Chord(c) => c.duration.tuplet_actual,
+                        _ => 1,
+                    };
+                    if actual > 1 {
+                        result = lcm_u64(result, actual as u64);
+                    }
+                }
+            }
+        }
+    }
+    result as u16
+}
+
+fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+fn lcm_u64(a: u64, b: u64) -> u64 {
+    a / gcd_u64(a, b) * b
 }
 
 // ---------------------------------------------------------------------------
@@ -1863,6 +1979,73 @@ mod tests {
         let xml = emit_direction(dir);
         assert!(xml.contains("<words>D.S.</words>"), "{xml}");
         assert!(xml.contains("<sound dalsegno=\"yes\"/>"), "{xml}");
+    }
+
+    #[test]
+    fn note_level_dynamics_emitted_as_direction() {
+        use crate::ir::articulation::DynamicMark;
+
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.dynamics.push(DynamicMark {
+            sign: "ff".to_string(),
+            placement: Placement::Below,
+        });
+        let xml = emit_single_note(note);
+
+        assert!(
+            xml.contains("<dynamics>"),
+            "note-level dynamics should emit <direction> with <dynamics>: {xml}"
+        );
+        assert!(xml.contains("<ff/>"), "expected <ff/> in output: {xml}");
+    }
+
+    #[test]
+    fn note_level_wedge_emitted_as_direction() {
+        use crate::ir::articulation::Wedge;
+
+        let mut note = Note::new(Pitch::new(PitchStep::D, 4), Duration::quarter());
+        note.wedges.push(Wedge {
+            wedge_type: "crescendo".to_string(),
+            placement: Placement::Below,
+        });
+        let xml = emit_single_note(note);
+
+        assert!(
+            xml.contains("<wedge type=\"crescendo\""),
+            "note-level wedge should emit <direction> with <wedge>: {xml}"
+        );
+    }
+
+    #[test]
+    fn triplet_divisions_auto_computed() {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::eighth());
+        note.duration.tuplet_actual = 3;
+        note.duration.tuplet_normal = 2;
+
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(note))],
+        };
+        let mut measure = make_empty_measure();
+        measure.attributes = Some(MeasureAttributes::default());
+        measure.voices = vec![voice];
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToMxmlAdapter::new();
+        let xml = adapter.convert(&score).unwrap();
+
+        // With divisions=12 (lcm(4,3)), triplet eighth = duration 4
+        assert!(
+            xml.contains("<divisions>12</divisions>"),
+            "divisions should be 12 for triplets: {xml}"
+        );
+        assert!(
+            xml.contains("<duration>4</duration>"),
+            "triplet eighth with divisions=12 should be duration 4: {xml}"
+        );
     }
 
     // ── test helpers ──────────────────────────────────────────────────────

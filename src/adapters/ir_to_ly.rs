@@ -10,7 +10,7 @@ use num::rational::Ratio;
 
 use crate::ir::articulation::{StartStop, TupletDisplay};
 use crate::ir::direction::BarlineType;
-use crate::ir::duration::Duration;
+use crate::ir::duration::{Duration, Frac};
 use crate::ir::harmony::{ChordPitch, Figure};
 use crate::ir::language::{pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
@@ -746,6 +746,7 @@ fn emit_measures(
     let pad = " ".repeat(indent);
     let mut prev_pitch: Option<Pitch> = None;
     let mut is_first_measure = true;
+    let mut last_divisions: i64 = 1;
 
     for measure in &part.measures {
         // Anacrusis: emit \partial before first measure
@@ -776,8 +777,10 @@ fn emit_measures(
             }
         }
 
-        // Separate directions into standalone (tempo, rehearsal) and note-attached (dynamics, wedges, markup)
-        let mut pending_dirs: Vec<String> = Vec::new();
+        // Separate directions into standalone (tempo, rehearsal) and note-attached (dynamics, wedges, markup).
+        // Note-attached directions are grouped by their forward-position offset
+        // (populated in mxml_to_ir) so they attach to the correct voice element.
+        let mut dir_at_offset: std::collections::BTreeMap<i32, Vec<String>> = std::collections::BTreeMap::new();
         for dir in &measure.directions {
             // Tempo and rehearsal marks can stand alone
             if let Some(tempo) = &dir.tempo {
@@ -840,9 +843,17 @@ fn emit_measures(
                 }
             }
             if !parts.is_empty() {
-                pending_dirs.extend(parts);
+                dir_at_offset.entry(dir.offset).or_default().extend(parts);
             }
         }
+
+        // Compute divisions for mapping direction offsets to voice element indices.
+        let divisions: i64 = measure
+            .attributes
+            .as_ref()
+            .map(|a| a.divisions as i64)
+            .unwrap_or(last_divisions);
+        last_divisions = divisions;
 
         // Left barline
         if let Some(bl) = &measure.left_barline {
@@ -865,11 +876,12 @@ fn emit_measures(
         if voices.len() <= 1 {
             if let Some(voice) = voices.first() {
                 prev_pitch =
-                    emit_voice_elements(voice, lang, mode, prev_pitch, &pad, &pending_dirs, lines);
+                    emit_voice_elements(voice, lang, mode, prev_pitch, &pad, &dir_at_offset, divisions, lines);
             }
         } else {
             // Multi-voice: << \\ >> syntax
             lines.push(format!("{pad}<<"));
+            let empty_dirs = std::collections::BTreeMap::new();
             for (i, voice) in voices.iter().enumerate() {
                 if i > 0 {
                     lines.push(format!("{pad}  \\\\"));
@@ -877,9 +889,9 @@ fn emit_measures(
                 lines.push(format!("{pad}  {{"));
                 let inner_pad = format!("{pad}    ");
                 // Only attach directions to the first voice
-                let dirs_for_voice = if i == 0 { &pending_dirs } else { &Vec::new() };
+                let dirs_for_voice = if i == 0 { &dir_at_offset } else { &empty_dirs };
                 prev_pitch =
-                    emit_voice_elements(voice, lang, mode, prev_pitch, &inner_pad, dirs_for_voice, lines);
+                    emit_voice_elements(voice, lang, mode, prev_pitch, &inner_pad, dirs_for_voice, divisions, lines);
                 lines.push(format!("{pad}  }}"));
             }
             lines.push(format!("{pad}>>"));
@@ -915,6 +927,7 @@ fn element_tuplet(elem: &VoiceElement) -> Option<&TupletDisplay> {
     match elem {
         VoiceElement::Note(n) => n.tuplet.as_ref(),
         VoiceElement::Chord(c) => c.notes.first().and_then(|n| n.tuplet.as_ref()),
+        VoiceElement::Rest(r) => r.tuplet.as_ref(),
         _ => None,
     }
 }
@@ -931,18 +944,38 @@ fn element_tuplet_ratio(elem: &VoiceElement) -> (u8, u8) {
     (dur.tuplet_actual, dur.tuplet_normal)
 }
 
+/// Convert a Duration to a number of MusicXML divisions.
+fn duration_to_divisions(dur: &Duration, divisions: i64) -> i64 {
+    let frac = dur.actual_duration() * Frac::from_integer(4 * divisions);
+    // Should always be an integer when divisions is correctly set.
+    (*frac.numer() / *frac.denom()).max(0)
+}
+
 fn emit_voice_elements(
     voice: &Voice,
     lang: PitchLanguage,
     mode: PitchMode,
     mut prev_pitch: Option<Pitch>,
     pad: &str,
-    pending_dirs: &[String],
+    dir_at_offset: &std::collections::BTreeMap<i32, Vec<String>>,
+    divisions: i64,
     lines: &mut Vec<String>,
 ) -> Option<Pitch> {
     let mut tokens: Vec<String> = Vec::new();
-    let mut dirs_attached = false;
     let mut in_tuplet = false;
+    // Running forward position in divisions — mirrors the value computed in
+    // mxml_to_ir during parse_measure.
+    let mut fwd_pos: i64 = 0;
+
+    // Helper: collect direction strings whose offset matches `pos` and return
+    // them concatenated (to append after a note token).
+    let dirs_at = |pos: i64| -> String {
+        if let Some(parts) = dir_at_offset.get(&(pos as i32)) {
+            parts.join("")
+        } else {
+            String::new()
+        }
+    };
 
     for elem in &voice.elements {
         // Check for tuplet start
@@ -953,6 +986,9 @@ fn emit_voice_elements(
                 in_tuplet = true;
             }
         }
+
+        // Collect any directions that should attach at the current position.
+        let dir_suffix = dirs_at(fwd_pos);
 
         match elem {
             VoiceElement::Note(note) => {
@@ -973,19 +1009,24 @@ fn emit_voice_elements(
                     }
                 }
                 let mut token = note_to_ly(note, lang, mode, prev_pitch.as_ref());
-                if !dirs_attached && !pending_dirs.is_empty() {
-                    token = format!("{token}{}", pending_dirs.join(""));
-                    dirs_attached = true;
+                if !dir_suffix.is_empty() {
+                    token = format!("{token}{dir_suffix}");
                 }
                 prev_pitch = Some(note.pitch);
+                // Advance position for non-grace notes
+                if !note.is_grace {
+                    let dur_divs = duration_to_divisions(&note.duration, divisions);
+                    fwd_pos += dur_divs;
+                }
                 tokens.push(token);
             }
             VoiceElement::Rest(rest) => {
                 let mut token = rest_to_ly(rest);
-                if !dirs_attached && !pending_dirs.is_empty() {
-                    token = format!("{token}{}", pending_dirs.join(""));
-                    dirs_attached = true;
+                if !dir_suffix.is_empty() {
+                    token = format!("{token}{dir_suffix}");
                 }
+                let dur_divs = duration_to_divisions(&rest.duration, divisions);
+                fwd_pos += dur_divs;
                 tokens.push(token);
             }
             VoiceElement::Chord(chord) => {
@@ -1004,17 +1045,22 @@ fn emit_voice_elements(
                     }
                 }
                 let (mut token, last) = chord_to_ly(chord, lang, mode, prev_pitch.as_ref());
-                if !dirs_attached && !pending_dirs.is_empty() {
-                    token = format!("{token}{}", pending_dirs.join(""));
-                    dirs_attached = true;
+                if !dir_suffix.is_empty() {
+                    token = format!("{token}{dir_suffix}");
                 }
                 prev_pitch = last;
+                let dur_divs = duration_to_divisions(&chord.duration, divisions);
+                fwd_pos += dur_divs;
                 tokens.push(token);
             }
             VoiceElement::Forward(fwd) => {
+                let dur_divs = duration_to_divisions(&fwd.duration, divisions);
+                fwd_pos += dur_divs;
                 tokens.push(format!("s{}", duration_to_ly(&fwd.duration)));
             }
-            VoiceElement::Backup(_) => {
+            VoiceElement::Backup(bk) => {
+                let dur_divs = duration_to_divisions(&bk.duration, divisions);
+                fwd_pos -= dur_divs;
                 // Backups are structural; they don't emit LilyPond tokens
             }
         }
@@ -1024,6 +1070,17 @@ fn emit_voice_elements(
             if td.tuplet_type == StartStop::Stop && in_tuplet {
                 tokens.push("}".to_string());
                 in_tuplet = false;
+            }
+        }
+    }
+
+    // Attach any remaining directions that didn't match a note position
+    // (e.g. at the very end of the measure): append to the last token.
+    for (&off, parts) in dir_at_offset.iter() {
+        if (off as i64) >= fwd_pos && !parts.is_empty() {
+            let suffix = parts.join("");
+            if let Some(last) = tokens.last_mut() {
+                *last = format!("{last}{suffix}");
             }
         }
     }
@@ -2248,6 +2305,152 @@ melody = {
         assert_eq!(
             figure_to_ly(&Figure { number: None, prefix: None, suffix: None }),
             "_"
+        );
+    }
+
+    /// Tuplet starting on a rest should emit `\tuplet` wrapper (regression).
+    #[test]
+    fn test_tuplet_starting_on_rest() {
+        use crate::ir::articulation::TupletDisplay;
+        // Build a 6/4 sextuplet: rest + 5 notes
+        let mut rest = Rest::new(Duration::new(Ratio::new(1, 16)));
+        rest.duration.tuplet_actual = 6;
+        rest.duration.tuplet_normal = 4;
+        rest.tuplet = Some(TupletDisplay {
+            tuplet_type: StartStop::Start,
+            bracket: true,
+            show_number: "actual".to_string(),
+        });
+
+        let mut elements: Vec<VoiceElement> = vec![VoiceElement::Rest(rest)];
+        for i in 0..5u8 {
+            let step = match i {
+                0 => PitchStep::A,
+                1 => PitchStep::B,
+                2 => PitchStep::C,
+                3 => PitchStep::D,
+                _ => PitchStep::E,
+            };
+            let mut n = Note::new(
+                Pitch::new(step, 4 + (i / 3) as i32),
+                Duration::new(Ratio::new(1, 16)),
+            );
+            n.duration.tuplet_actual = 6;
+            n.duration.tuplet_normal = 4;
+            if i == 4 {
+                n.tuplet = Some(TupletDisplay {
+                    tuplet_type: StartStop::Stop,
+                    bracket: true,
+                    show_number: String::new(),
+                });
+            }
+            elements.push(VoiceElement::Note(Box::new(n)));
+        }
+
+        let voice = Voice { number: 1, elements };
+        let mut measure = Measure::new(1);
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+        assert!(
+            ly.contains("\\tuplet 6/4"),
+            "tuplet starting on rest should emit \\tuplet 6/4: {}",
+            ly
+        );
+    }
+
+    /// Wedge directions should attach to the correct note based on offset,
+    /// not all to the first note (regression).
+    #[test]
+    fn test_wedge_position_aware_attachment() {
+        use crate::ir::articulation::{DynamicMark, Wedge};
+        use crate::ir::direction::Direction;
+
+        // Build 4 quarter-note chords in 4/4 at divisions=4
+        let mut elements: Vec<VoiceElement> = Vec::new();
+        for _ in 0..4 {
+            let n = Note::new(
+                Pitch::new(PitchStep::C, 4),
+                Duration::quarter(),
+            );
+            elements.push(VoiceElement::Note(Box::new(n)));
+        }
+
+        let voice = Voice { number: 1, elements };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            divisions: 4,
+            time: Some(TimeSignature::default()),
+            key: Some(KeySignature::default()),
+            clefs: std::collections::HashMap::new(),
+            staves: None,
+            transpose: None,
+        });
+        measure.voices.push(voice);
+
+        // Dynamic \p at offset 0 (before note 1)
+        measure.directions.push(Direction {
+            offset: 0,
+            dynamic: Some(DynamicMark {
+                sign: "p".to_string(),
+                placement: Placement::Below,
+            }),
+            ..Direction::default()
+        });
+        // Crescendo start at offset 4 (before note 2)
+        measure.directions.push(Direction {
+            offset: 4,
+            wedge: Some(Wedge {
+                wedge_type: "crescendo".to_string(),
+                placement: Placement::Below,
+            }),
+            ..Direction::default()
+        });
+        // Wedge stop at offset 12 (before note 4)
+        measure.directions.push(Direction {
+            offset: 12,
+            wedge: Some(Wedge {
+                wedge_type: "stop".to_string(),
+                placement: Placement::Below,
+            }),
+            ..Direction::default()
+        });
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        // \p should be on first note only, not together with \< or \!
+        assert!(
+            ly.contains("c'4\\p"),
+            "dynamic should be on first note: {}",
+            ly
+        );
+        assert!(
+            ly.contains("c'4\\<"),
+            "crescendo should be on second note: {}",
+            ly
+        );
+        assert!(
+            ly.contains("c'4\\!"),
+            "wedge stop should be on fourth note: {}",
+            ly
+        );
+        // Must NOT have all directions on first note
+        assert!(
+            !ly.contains("\\p\\<"),
+            "dynamics and wedge should not all be on same note: {}",
+            ly
         );
     }
 }

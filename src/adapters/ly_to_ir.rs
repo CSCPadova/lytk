@@ -1056,18 +1056,33 @@ fn handle_escaped_word(
             i = consume_tempo(state, children, i);
         }
         "\\grace" | "\\acciaccatura" | "\\appoggiatura" => {
-            // \grace { notes }
+            // \grace { notes }  OR  \grace note (single unbraced note)
             let is_slash = text == "\\acciaccatura";
-            if let Some(block_node) = children.get(i) {
-                if block_node.kind() == "expression_block" {
+            if let Some(next_node) = children.get(i) {
+                if next_node.kind() == "expression_block" {
                     // Parse grace notes from the block
-                    let grace_notes = parse_grace_block(state, *block_node);
+                    let grace_notes = parse_grace_block(state, *next_node);
                     for mut note in grace_notes {
                         note.is_grace = true;
                         note.grace_slash = is_slash;
                         state.current_voice.push(VoiceElement::Note(Box::new(note)));
                     }
                     i += 1;
+                } else if next_node.kind() == "symbol" {
+                    // Single unbraced grace note, e.g. \acciaccatura d''8
+                    let sym = state.text(*next_node);
+                    if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
+                        i += 1;
+                        let octave_marks = consume_octave_marks(state, children, &mut i);
+                        let dur = consume_duration(state, children, &mut i);
+                        let attachments = consume_attachments(state, children, &mut i);
+                        let pitch = state.resolve_pitch(step, alter, octave_marks);
+                        let mut note = Note::new(pitch, dur);
+                        apply_note_attachments(state, &mut note, &attachments);
+                        note.is_grace = true;
+                        note.grace_slash = is_slash;
+                        state.current_voice.push(VoiceElement::Note(Box::new(note)));
+                    }
                 }
             }
         }
@@ -1195,16 +1210,30 @@ fn handle_escaped_word(
             state.metadata.partial_duration = Some(dur);
         }
         "\\afterGrace" => {
-            // \afterGrace { notes }
-            if let Some(block_node) = children.get(i) {
-                if block_node.kind() == "expression_block" {
-                    let grace_notes = parse_grace_block(state, *block_node);
+            // \afterGrace { notes }  OR  \afterGrace note
+            if let Some(next_node) = children.get(i) {
+                if next_node.kind() == "expression_block" {
+                    let grace_notes = parse_grace_block(state, *next_node);
                     for mut note in grace_notes {
                         note.is_grace = true;
                         note.after_grace = true;
                         state.current_voice.push(VoiceElement::Note(Box::new(note)));
                     }
                     i += 1;
+                } else if next_node.kind() == "symbol" {
+                    let sym = state.text(*next_node);
+                    if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
+                        i += 1;
+                        let octave_marks = consume_octave_marks(state, children, &mut i);
+                        let dur = consume_duration(state, children, &mut i);
+                        let attachments = consume_attachments(state, children, &mut i);
+                        let pitch = state.resolve_pitch(step, alter, octave_marks);
+                        let mut note = Note::new(pitch, dur);
+                        apply_note_attachments(state, &mut note, &attachments);
+                        note.is_grace = true;
+                        note.after_grace = true;
+                        state.current_voice.push(VoiceElement::Note(Box::new(note)));
+                    }
                 }
             }
         }
@@ -2849,6 +2878,53 @@ pB = { g4 a b c' }
         assert_eq!(chords.len(), 1);
         assert_eq!(chords[0].arpeggio, Some(ArpeggioType::Up));
     }
+
+    #[test]
+    fn test_single_note_acciaccatura() {
+        // \acciaccatura d''8 should produce a grace note without braces
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \acciaccatura d''8 c''4 }"#)
+            .unwrap();
+
+        let part = &score.parts()[0];
+        let elems = &part.measures[0].voices[0].elements;
+
+        // First element should be the grace note
+        match &elems[0] {
+            VoiceElement::Note(n) => {
+                assert!(n.is_grace, "first note should be a grace note");
+                assert!(n.grace_slash, "acciaccatura should have slash");
+            }
+            other => panic!("expected Note, got {:?}", other),
+        }
+        // Second element should be the main note
+        match &elems[1] {
+            VoiceElement::Note(n) => {
+                assert!(!n.is_grace, "second note should not be grace");
+            }
+            other => panic!("expected Note, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_single_note_grace() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \grace e'16 c'4 }"#)
+            .unwrap();
+
+        let part = &score.parts()[0];
+        let elems = &part.measures[0].voices[0].elements;
+
+        match &elems[0] {
+            VoiceElement::Note(n) => {
+                assert!(n.is_grace, "first note should be grace");
+                assert!(!n.grace_slash, "\\grace should not have slash");
+            }
+            other => panic!("expected Note, got {:?}", other),
+        }
+    }
 }
 
 /// Set tuplet duration fields and display markers on a voice element.
@@ -2881,6 +2957,19 @@ fn apply_tuplet_to_element(
         VoiceElement::Rest(r) => {
             r.duration.tuplet_actual = actual;
             r.duration.tuplet_normal = normal;
+            if is_first {
+                r.tuplet = Some(TupletDisplay {
+                    tuplet_type: StartStop::Start,
+                    bracket: true,
+                    show_number: "actual".to_string(),
+                });
+            } else if is_last {
+                r.tuplet = Some(TupletDisplay {
+                    tuplet_type: StartStop::Stop,
+                    bracket: true,
+                    show_number: String::new(),
+                });
+            }
         }
         VoiceElement::Chord(c) => {
             c.duration.tuplet_actual = actual;
