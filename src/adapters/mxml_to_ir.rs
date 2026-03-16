@@ -1583,7 +1583,16 @@ fn parse_direction(elem: &XmlNode) -> Option<Direction> {
         }
     }
 
-    // Check <sound> element for dacapo/dalsegno attributes
+    // If we have both a tempo (from <metronome>) and a text direction (from
+    // <words>), merge the text into the tempo so that LilyPond emits e.g.
+    // \tempo "Allegro" 4 = 120  instead of a separate \markup.
+    if dir.tempo.is_some() && dir.text.is_some() {
+        if let (Some(tempo), Some(text_dir)) = (dir.tempo.as_mut(), dir.text.take()) {
+            tempo.text = Some(text_dir.text);
+        }
+    }
+
+    // Check <sound> element for dacapo/dalsegno and tempo attributes
     if let Some(sound) = elem.find("sound") {
         if let Some(dc) = sound.attr("dacapo") {
             if dc == "yes" {
@@ -1593,6 +1602,27 @@ fn parse_direction(elem: &XmlNode) -> Option<Direction> {
         if let Some(ds) = sound.attr("dalsegno") {
             if !ds.is_empty() {
                 dir.dal_segno = Some("D.S.".to_string());
+            }
+        }
+        // <sound tempo="120"> as fallback BPM when no <metronome> was given,
+        // or to fill in a missing per_minute value.
+        if let Some(tempo_val) = sound.attr("tempo").and_then(|s| s.parse::<f64>().ok()) {
+            if let Some(ref mut tempo) = dir.tempo {
+                // Fill in BPM if the metronome element didn't have one
+                if tempo.per_minute.is_none() {
+                    tempo.per_minute = Some(tempo_val);
+                }
+            } else {
+                // No <metronome> at all — create a tempo from <sound tempo>
+                // and absorb any <words> text as the tempo label.
+                let text = dir.text.take().map(|t| t.text);
+                dir.tempo = Some(TempoDirection {
+                    text,
+                    beat_unit: Some("quarter".to_string()),
+                    per_minute: Some(tempo_val),
+                    dots: 0,
+                    placement: dir.placement,
+                });
             }
         }
     }

@@ -718,16 +718,31 @@ fn emit_part_variable(
         String::new()
     };
 
+    // MIDI instrument setting (emitted at the top of the part variable body)
+    let midi_set = if !part.midi_instrument.is_empty() {
+        let name = part.midi_instrument.to_lowercase();
+        format!("  \\set Staff.midiInstrument = \"{name}\"\n")
+    } else {
+        String::new()
+    };
+
     if part.staves > 1 {
         for staff_num in 1..=part.staves {
             let staff_var = format!("{}Staff{}", var, roman(staff_num));
             lines.push(format!("{staff_var} = {relative_prefix}{{"));
+            if !midi_set.is_empty() {
+                // trim trailing newline — push as a separate line
+                lines.push(midi_set.trim_end().to_string());
+            }
             emit_measures(part, lang, mode, Some(staff_num), partial_dur, 2, lines);
             lines.push("}".to_string());
             lines.push(String::new());
         }
     } else {
         lines.push(format!("{var} = {relative_prefix}{{"));
+        if !midi_set.is_empty() {
+            lines.push(midi_set.trim_end().to_string());
+        }
         emit_measures(part, lang, mode, None, partial_dur, 2, lines);
         lines.push("}".to_string());
         lines.push(String::new());
@@ -1135,17 +1150,18 @@ fn grace_note_to_ly(
 ) -> String {
     let p = pitch_to_ly(&note.pitch, lang, prev, mode);
     let d = duration_to_ly(&note.duration);
+    let attach = attachments_to_ly(note);
     if note.after_grace {
         // \afterGrace <main-note> { <grace-note> }
         // The main note is emitted separately; we emit only the grace part.
-        return format!("\\afterGrace {{ {p}{d} }}");
+        return format!("\\afterGrace {{ {p}{d}{attach} }}");
     }
     let cmd = if note.grace_slash {
         "\\acciaccatura"
     } else {
-        "\\grace"
+        "\\appoggiatura"
     };
-    format!("{cmd} {p}{d}")
+    format!("{cmd} {p}{d}{attach}")
 }
 
 fn rest_to_ly(rest: &Rest) -> String {
@@ -1953,7 +1969,7 @@ melody = {
         score.children.push(ScoreChild::Part(part));
         let adapter = IrToLyAdapter::new();
         let ly = adapter.convert(&score).unwrap();
-        assert!(ly.contains("\\grace"), "should emit \\grace: {}", ly);
+        assert!(ly.contains("\\appoggiatura"), "should emit \\appoggiatura: {}", ly);
         assert!(!ly.contains("\\acciaccatura"), "should NOT emit \\acciaccatura: {}", ly);
     }
 
