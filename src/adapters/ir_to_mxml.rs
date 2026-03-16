@@ -256,9 +256,31 @@ impl IrToMxmlAdapter {
         }
         w.write_event(Event::Start(el))?;
 
+        // <print> element for layout breaks (emitted before attributes)
+        let has_layout_break = measure.directions.iter().any(|d| d.layout_break.is_some());
+        if has_layout_break {
+            for dir in &measure.directions {
+                if let Some(ref lb) = dir.layout_break {
+                    let mut print_el = BytesStart::new("print");
+                    match lb {
+                        crate::ir::direction::LayoutBreakType::Page => {
+                            print_el.push_attribute(("new-page", "yes"));
+                        }
+                        crate::ir::direction::LayoutBreakType::System => {
+                            print_el.push_attribute(("new-system", "yes"));
+                        }
+                        crate::ir::direction::LayoutBreakType::Section => {
+                            print_el.push_attribute(("new-system", "yes"));
+                        }
+                    }
+                    w.write_event(Event::Empty(print_el))?;
+                }
+            }
+        }
+
         // Attributes
         if let Some(attrs) = &measure.attributes {
-            self.write_attributes(w, attrs)?;
+            self.write_attributes(w, attrs, measure.multi_measure_rest)?;
         }
 
         // Left barline
@@ -266,8 +288,24 @@ impl IrToMxmlAdapter {
             self.write_barline(w, bl, "left")?;
         }
 
-        // Directions
+        // Directions (skip layout-break-only directions; those are emitted as <print>)
         for dir in &measure.directions {
+            if dir.layout_break.is_some()
+                && dir.dynamic.is_none()
+                && dir.wedge.is_none()
+                && dir.tempo.is_none()
+                && dir.text.is_none()
+                && dir.rehearsal.is_none()
+                && dir.octave_shift.is_none()
+                && dir.pedal.is_none()
+                && !dir.coda
+                && !dir.segno
+                && dir.da_capo.is_none()
+                && dir.dal_segno.is_none()
+                && dir.instrument_change.is_none()
+            {
+                continue;
+            }
             self.write_direction(w, dir)?;
         }
 
@@ -338,7 +376,7 @@ impl IrToMxmlAdapter {
 
     // ── attributes ────────────────────────────────────────────────────────
 
-    fn write_attributes(&self, w: &mut W, attrs: &MeasureAttributes) -> Result<()> {
+    fn write_attributes(&self, w: &mut W, attrs: &MeasureAttributes, multi_measure_rest: Option<u16>) -> Result<()> {
         w.write_event(Event::Start(BytesStart::new("attributes")))?;
         text_element(w, "divisions", &self.divisions.to_string())?;
 
@@ -398,6 +436,24 @@ impl IrToMxmlAdapter {
                 text_element(w, "octave-change", &tr.octave_change.to_string())?;
             }
             w.write_event(Event::End(BytesEnd::new("transpose")))?;
+        }
+
+        // Staff details (non-default staff lines)
+        if let Some(lines) = attrs.staff_lines {
+            if lines != 5 {
+                w.write_event(Event::Start(BytesStart::new("staff-details")))?;
+                text_element(w, "staff-lines", &lines.to_string())?;
+                w.write_event(Event::End(BytesEnd::new("staff-details")))?;
+            }
+        }
+
+        // Measure style (multi-measure rest)
+        if let Some(count) = multi_measure_rest {
+            w.write_event(Event::Start(BytesStart::new("measure-style")))?;
+            w.write_event(Event::Start(BytesStart::new("multiple-rest")))?;
+            w.write_event(Event::Text(BytesText::new(&count.to_string())))?;
+            w.write_event(Event::End(BytesEnd::new("multiple-rest")))?;
+            w.write_event(Event::End(BytesEnd::new("measure-style")))?;
         }
 
         w.write_event(Event::End(BytesEnd::new("attributes")))?;
@@ -645,7 +701,26 @@ impl IrToMxmlAdapter {
             if !note.ornaments.is_empty() {
                 w.write_event(Event::Start(BytesStart::new("ornaments")))?;
                 for orn in &note.ornaments {
-                    w.write_event(Event::Empty(BytesStart::new(&orn.name)))?;
+                    if orn.name == "tremolo" {
+                        // Tremolo needs text content (marks count) and type attribute
+                        let mut el = BytesStart::new("tremolo");
+                        if note.two_note_tremolo {
+                            el.push_attribute(("type", if note.tremolo_start { "start" } else { "stop" }));
+                        } else {
+                            el.push_attribute(("type", "single"));
+                        }
+                        w.write_event(Event::Start(el))?;
+                        w.write_event(Event::Text(BytesText::new(&note.tremolo_marks.to_string())))?;
+                        w.write_event(Event::End(BytesEnd::new("tremolo")))?;
+                    } else if orn.name.starts_with("wavy-line-") {
+                        // wavy-line-start, wavy-line-stop, wavy-line-continue
+                        let wl_type = orn.name.strip_prefix("wavy-line-").unwrap_or("start");
+                        let mut el = BytesStart::new("wavy-line");
+                        el.push_attribute(("type", wl_type));
+                        w.write_event(Event::Empty(el))?;
+                    } else {
+                        w.write_event(Event::Empty(BytesStart::new(&orn.name)))?;
+                    }
                 }
                 w.write_event(Event::End(BytesEnd::new("ornaments")))?;
             }
@@ -931,15 +1006,26 @@ impl IrToMxmlAdapter {
 
         w.write_event(Event::End(BytesEnd::new("direction-type")))?;
 
-        // Sound element for tempo without beat-unit
+        // Sound element for tempo
         if let Some(tempo) = &direction.tempo {
-            if tempo.beat_unit.is_none() {
-                if let Some(per_min) = tempo.per_minute {
-                    let mut sound = BytesStart::new("sound");
-                    sound.push_attribute(("tempo", format_float(per_min).as_str()));
-                    w.write_event(Event::Empty(sound))?;
-                }
+            if let Some(per_min) = tempo.per_minute {
+                let mut sound = BytesStart::new("sound");
+                sound.push_attribute(("tempo", format_float(per_min).as_str()));
+                w.write_event(Event::Empty(sound))?;
             }
+        }
+
+        // Instrument change
+        if let Some(ref ic) = direction.instrument_change {
+            w.write_event(Event::Start(BytesStart::new("sound")))?;
+            let mut midi_el = BytesStart::new("midi-instrument");
+            midi_el.push_attribute(("id", ic.instrument_id.as_str()));
+            w.write_event(Event::Start(midi_el))?;
+            if let Some(ref name) = ic.instrument_name {
+                text_element(w, "midi-name", name)?;
+            }
+            w.write_event(Event::End(BytesEnd::new("midi-instrument")))?;
+            w.write_event(Event::End(BytesEnd::new("sound")))?;
         }
 
         // Sound element for da capo / dal segno
@@ -1284,6 +1370,7 @@ mod tests {
             clefs: HashMap::new(),
             transpose: None,
             staves: None,
+            staff_lines: None,
         };
         attrs.clefs.insert(1, Clef::default());
 
@@ -1305,6 +1392,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
 
@@ -1392,6 +1481,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
         let part = Part {
@@ -1429,6 +1520,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1462,6 +1555,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1500,6 +1595,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1540,6 +1637,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1577,6 +1676,8 @@ mod tests {
             directions: vec![dir],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![],
         };
         let mut part = Part::new("P1");
@@ -1614,6 +1715,8 @@ mod tests {
             directions: vec![dir],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![],
         };
         let mut part = Part::new("P1");
@@ -1650,6 +1753,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -1685,6 +1790,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![v1, v2],
         };
         let mut part = Part::new("P1");
@@ -2108,7 +2215,155 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![],
         }
+    }
+
+    #[test]
+    fn tremolo_single_note_emission() {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.tremolo_marks = 3;
+        note.ornaments.push(crate::ir::articulation::Ornament {
+            name: "tremolo".to_string(),
+            placement: Placement::Unspecified,
+        });
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(note))],
+        };
+        let mut measure = make_empty_measure();
+        measure.voices.push(voice);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<tremolo type=\"single\">3</tremolo>"), "should emit tremolo with type and marks: {xml}");
+    }
+
+    #[test]
+    fn tremolo_two_note_emission() {
+        let mut n1 = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        n1.tremolo_marks = 2;
+        n1.two_note_tremolo = true;
+        n1.tremolo_start = true;
+        n1.ornaments.push(crate::ir::articulation::Ornament {
+            name: "tremolo".to_string(),
+            placement: Placement::Unspecified,
+        });
+        let mut n2 = Note::new(Pitch::new(PitchStep::E, 4), Duration::quarter());
+        n2.tremolo_marks = 2;
+        n2.two_note_tremolo = true;
+        n2.tremolo_start = false;
+        n2.ornaments.push(crate::ir::articulation::Ornament {
+            name: "tremolo".to_string(),
+            placement: Placement::Unspecified,
+        });
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n1)),
+                VoiceElement::Note(Box::new(n2)),
+            ],
+        };
+        let mut measure = make_empty_measure();
+        measure.voices.push(voice);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<tremolo type=\"start\">2</tremolo>"), "first note should have tremolo start: {xml}");
+        assert!(xml.contains("<tremolo type=\"stop\">2</tremolo>"), "second note should have tremolo stop: {xml}");
+    }
+
+    #[test]
+    fn layout_break_emission() {
+        let mut measure = make_empty_measure();
+        measure.directions.push(Direction {
+            layout_break: Some(crate::ir::direction::LayoutBreakType::Page),
+            ..Default::default()
+        });
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<print new-page=\"yes\""), "should emit page break as <print>: {xml}");
+        assert!(!xml.contains("<direction>"), "layout-break-only directions should not emit <direction>: {xml}");
+    }
+
+    #[test]
+    fn system_break_emission() {
+        let mut measure = make_empty_measure();
+        measure.directions.push(Direction {
+            layout_break: Some(crate::ir::direction::LayoutBreakType::System),
+            ..Default::default()
+        });
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<print new-system=\"yes\""), "should emit system break: {xml}");
+    }
+
+    #[test]
+    fn staff_lines_emission() {
+        let mut measure = make_empty_measure();
+        measure.attributes = Some(crate::ir::measure::MeasureAttributes {
+            staff_lines: Some(1),
+            ..Default::default()
+        });
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<staff-details>"), "should emit staff-details: {xml}");
+        assert!(xml.contains("<staff-lines>1</staff-lines>"), "should emit staff-lines: {xml}");
+    }
+
+    #[test]
+    fn staff_lines_5_not_emitted() {
+        let mut measure = make_empty_measure();
+        measure.attributes = Some(crate::ir::measure::MeasureAttributes {
+            staff_lines: Some(5),
+            ..Default::default()
+        });
+        let xml = emit_measure(measure);
+        assert!(!xml.contains("<staff-details>"), "standard 5-line staff should not emit staff-details: {xml}");
+    }
+
+    #[test]
+    fn multi_measure_rest_emission() {
+        let mut measure = make_empty_measure();
+        measure.attributes = Some(crate::ir::measure::MeasureAttributes::default());
+        measure.multi_measure_rest = Some(4);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<measure-style>"), "should emit measure-style: {xml}");
+        assert!(xml.contains("<multiple-rest>4</multiple-rest>"), "should emit multiple-rest count: {xml}");
+    }
+
+    #[test]
+    fn sound_tempo_with_metronome() {
+        let mut measure = make_empty_measure();
+        measure.directions.push(Direction {
+            tempo: Some(crate::ir::direction::TempoDirection {
+                text: None,
+                beat_unit: Some("quarter".to_string()),
+                per_minute: Some(120.0),
+                dots: 0,
+                placement: Placement::Above,
+            }),
+            ..Default::default()
+        });
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<metronome>"), "should emit metronome: {xml}");
+        assert!(xml.contains("<sound tempo=\"120\""), "should also emit sound tempo: {xml}");
+    }
+
+    #[test]
+    fn wavy_line_emission() {
+        let mut note = Note::new(Pitch::new(PitchStep::D, 5), Duration::half());
+        note.ornaments.push(crate::ir::articulation::Ornament {
+            name: "trill-mark".to_string(),
+            placement: Placement::Above,
+        });
+        note.ornaments.push(crate::ir::articulation::Ornament {
+            name: "wavy-line-start".to_string(),
+            placement: Placement::Above,
+        });
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(note))],
+        };
+        let mut measure = make_empty_measure();
+        measure.voices.push(voice);
+        let xml = emit_measure(measure);
+        assert!(xml.contains("<trill-mark/>"), "should emit trill-mark: {xml}");
+        assert!(xml.contains("<wavy-line type=\"start\""), "should emit wavy-line with type: {xml}");
     }
 }

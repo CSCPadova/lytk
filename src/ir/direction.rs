@@ -10,6 +10,21 @@
 use super::articulation::Placement;
 use serde::{Deserialize, Serialize};
 
+/// Layout break type (page / system / section).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LayoutBreakType {
+    Page,
+    System,
+    Section,
+}
+
+/// Reference to an instrument (for mid-part instrument changes).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct InstrumentRef {
+    pub instrument_id: String,
+    pub instrument_name: Option<String>,
+}
+
 /// Barline style.
 ///
 /// From lytk-py's `BarlineType` enum.
@@ -138,6 +153,10 @@ pub struct Direction {
     pub da_capo: Option<String>,
     /// Dal Segno text (e.g. "D.S.", "D.S. al Coda").
     pub dal_segno: Option<String>,
+    /// Layout break at this position.
+    pub layout_break: Option<LayoutBreakType>,
+    /// Mid-part instrument change.
+    pub instrument_change: Option<InstrumentRef>,
 }
 
 impl Default for Direction {
@@ -156,6 +175,8 @@ impl Default for Direction {
             segno: false,
             da_capo: None,
             dal_segno: None,
+            layout_break: None,
+            instrument_change: None,
         }
     }
 }

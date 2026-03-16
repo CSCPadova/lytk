@@ -62,6 +62,12 @@ pub struct Note {
     pub stem_direction: String,
     pub notehead: String,
     pub print_object: bool,
+    /// Number of tremolo slashes (1–4) for single-note tremolo.
+    pub tremolo_marks: u8,
+    /// Whether this note is part of a two-note tremolo (paired with next/prev note).
+    pub two_note_tremolo: bool,
+    /// For two-note tremolo: true = first note (start), false = second note (stop).
+    pub tremolo_start: bool,
 }
 
 impl Note {
@@ -93,6 +99,9 @@ impl Note {
             stem_direction: String::new(),
             notehead: String::new(),
             print_object: true,
+            tremolo_marks: 0,
+            two_note_tremolo: false,
+            tremolo_start: true,
         }
     }
 }

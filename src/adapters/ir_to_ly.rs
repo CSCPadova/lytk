@@ -2390,6 +2390,7 @@ melody = {
             key: Some(KeySignature::default()),
             clefs: std::collections::HashMap::new(),
             staves: None,
+            staff_lines: None,
             transpose: None,
         });
         measure.voices.push(voice);

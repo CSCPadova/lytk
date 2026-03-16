@@ -131,6 +131,7 @@ mod tests {
             clefs: HashMap::new(),
             transpose: None,
             staves: None,
+            staff_lines: None,
         };
         let n1 = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
         let n2 = Note::new(Pitch::new(PitchStep::E, 4), Duration::quarter());
@@ -153,6 +154,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");

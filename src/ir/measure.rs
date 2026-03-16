@@ -197,6 +197,8 @@ pub struct MeasureAttributes {
     pub transpose: Option<Transpose>,
     /// Number of staves, if changed.
     pub staves: Option<u8>,
+    /// Number of staff lines (default 5). E.g. 1-line percussion, 6-line TAB.
+    pub staff_lines: Option<u8>,
 }
 
 impl Default for MeasureAttributes {
@@ -208,6 +210,7 @@ impl Default for MeasureAttributes {
             clefs: HashMap::new(),
             transpose: None,
             staves: None,
+            staff_lines: None,
         }
     }
 }
@@ -238,6 +241,10 @@ pub struct Measure {
     pub harmonies: Vec<Harmony>,
     /// Figured bass indications in this measure.
     pub figured_bass: Vec<FiguredBass>,
+    /// Whether this measure should be printed (MusicXML `print-object`).
+    pub print_object: bool,
+    /// Multi-measure rest count (e.g. 4 = rest spanning 4 measures).
+    pub multi_measure_rest: Option<u16>,
     /// Voices within this measure.
     pub voices: Vec<Voice>,
 }
@@ -254,6 +261,8 @@ impl Measure {
             directions: Vec::new(),
             harmonies: Vec::new(),
             figured_bass: Vec::new(),
+            print_object: true,
+            multi_measure_rest: None,
             voices: Vec::new(),
         }
     }

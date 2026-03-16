@@ -722,6 +722,8 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
         directions: Vec::new(),
         harmonies: Vec::new(),
         figured_bass: Vec::new(),
+        print_object: true,
+        multi_measure_rest: None,
         voices: Vec::new(),
     };
 
@@ -737,6 +739,25 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                 let (attrs, new_div) = parse_attributes(child, divisions);
                 divisions = new_div;
                 measure.attributes = Some(attrs);
+                // <measure-style> lives inside <attributes>
+                if let Some(ms) = child.find("measure-style") {
+                    if let Some(mr) = ms.find("multiple-rest") {
+                        measure.multi_measure_rest = Some(mr.text_i64(1) as u16);
+                    }
+                }
+            }
+            "print" => {
+                if child.attr("new-page") == Some("yes") {
+                    measure.directions.push(Direction {
+                        layout_break: Some(crate::ir::direction::LayoutBreakType::Page),
+                        ..Default::default()
+                    });
+                } else if child.attr("new-system") == Some("yes") {
+                    measure.directions.push(Direction {
+                        layout_break: Some(crate::ir::direction::LayoutBreakType::System),
+                        ..Default::default()
+                    });
+                }
             }
             "note" => {
                 let is_chord = child.find("chord").is_some();
@@ -991,6 +1012,11 @@ fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttribute
 
     let staves = elem.find("staves").map(|s| s.text_i64(1) as u8);
 
+    let staff_lines = elem
+        .find("staff-details")
+        .and_then(|sd| sd.find("staff-lines"))
+        .map(|sl| sl.text_i64(5) as u8);
+
     (
         MeasureAttributes {
             divisions,
@@ -999,6 +1025,7 @@ fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttribute
             clefs,
             transpose,
             staves,
+            staff_lines,
         },
         new_divisions,
     )
@@ -1282,23 +1309,58 @@ fn parse_notations(notations: &XmlNode, note: &mut Note) {
     // Ornaments
     if let Some(orns) = notations.find("ornaments") {
         for child in &orns.children {
-            let name = match child.tag.as_str() {
-                "trill-mark" | "mordent" | "inverted-mordent" | "turn" | "inverted-turn"
-                | "tremolo" => child.tag.as_str(),
+            match child.tag.as_str() {
+                "tremolo" => {
+                    let marks: u8 = child.text_content().parse().unwrap_or(0);
+                    note.tremolo_marks = marks;
+                    let ttype = child.attr("type").unwrap_or("single");
+                    note.two_note_tremolo = ttype == "start" || ttype == "stop";
+                    note.tremolo_start = ttype == "start";
+                    // Also keep as ornament for round-trip
+                    let placement = child
+                        .attr("placement")
+                        .map(|p| match p {
+                            "above" => Placement::Above,
+                            "below" => Placement::Below,
+                            _ => Placement::Unspecified,
+                        })
+                        .unwrap_or(Placement::Unspecified);
+                    note.ornaments.push(Ornament {
+                        name: "tremolo".to_string(),
+                        placement,
+                    });
+                }
+                "wavy-line" => {
+                    let placement = child
+                        .attr("placement")
+                        .map(|p| match p {
+                            "above" => Placement::Above,
+                            "below" => Placement::Below,
+                            _ => Placement::Unspecified,
+                        })
+                        .unwrap_or(Placement::Unspecified);
+                    let wl_type = child.attr("type").unwrap_or("start");
+                    note.ornaments.push(Ornament {
+                        name: format!("wavy-line-{}", wl_type),
+                        placement,
+                    });
+                }
+                "trill-mark" | "mordent" | "inverted-mordent" | "turn" | "inverted-turn" => {
+                    let placement = child
+                        .attr("placement")
+                        .map(|p| match p {
+                            "above" => Placement::Above,
+                            "below" => Placement::Below,
+                            _ => Placement::Unspecified,
+                        })
+                        .unwrap_or(Placement::Unspecified);
+                    note.ornaments.push(Ornament {
+                        name: child.tag.to_string(),
+                        placement,
+                    });
+                }
                 _ => continue,
-            };
-            let placement = child
-                .attr("placement")
-                .map(|p| match p {
-                    "above" => Placement::Above,
-                    "below" => Placement::Below,
-                    _ => Placement::Unspecified,
-                })
-                .unwrap_or(Placement::Unspecified);
-            note.ornaments.push(Ornament {
-                name: name.to_string(),
-                placement,
-            });
+            }
         }
     }
 
@@ -2261,5 +2323,213 @@ mod tests {
             .expect("should detect anacrusis");
         // 1 quarter note in a 3/4 measure → partial duration = 1/4
         assert_eq!(partial.base, Ratio::new(1, 4), "partial should be a quarter note");
+    }
+
+    #[test]
+    fn parse_single_note_tremolo() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name/></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+        <notations><ornaments><tremolo type="single">3</tremolo></ornaments></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+        let note = &score.parts()[0].measures[0].voices[0].elements[0];
+        if let crate::ir::note::VoiceElement::Note(n) = note {
+            assert_eq!(n.tremolo_marks, 3);
+            assert!(!n.two_note_tremolo);
+        } else {
+            panic!("expected Note");
+        }
+    }
+
+    #[test]
+    fn parse_two_note_tremolo() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name/></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+        <notations><ornaments><tremolo type="start">2</tremolo></ornaments></notations>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+        <notations><ornaments><tremolo type="stop">2</tremolo></ornaments></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+        let elems = &score.parts()[0].measures[0].voices[0].elements;
+        if let crate::ir::note::VoiceElement::Note(n1) = &elems[0] {
+            assert_eq!(n1.tremolo_marks, 2);
+            assert!(n1.two_note_tremolo);
+            assert!(n1.tremolo_start);
+        } else {
+            panic!("expected Note");
+        }
+        if let crate::ir::note::VoiceElement::Note(n2) = &elems[1] {
+            assert_eq!(n2.tremolo_marks, 2);
+            assert!(n2.two_note_tremolo);
+            assert!(!n2.tremolo_start);
+        } else {
+            panic!("expected Note");
+        }
+    }
+
+    #[test]
+    fn parse_layout_break() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name/></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <print new-system="yes"/>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+        let dirs = &score.parts()[0].measures[0].directions;
+        assert!(dirs.iter().any(|d| d.layout_break == Some(crate::ir::direction::LayoutBreakType::System)),
+            "should parse system break from <print>");
+    }
+
+    #[test]
+    fn parse_staff_lines() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name/></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <staff-details><staff-lines>1</staff-lines></staff-details>
+      </attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+        let attrs = score.parts()[0].measures[0].attributes.as_ref().unwrap();
+        assert_eq!(attrs.staff_lines, Some(1));
+    }
+
+    #[test]
+    fn parse_multi_measure_rest() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name/></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <measure-style><multiple-rest>4</multiple-rest></measure-style>
+      </attributes>
+      <note>
+        <rest measure="yes"/>
+        <duration>16</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+        assert_eq!(score.parts()[0].measures[0].multi_measure_rest, Some(4));
+    }
+
+    #[test]
+    fn parse_wavy_line() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name/></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <note>
+        <pitch><step>D</step><octave>5</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+        <notations><ornaments>
+          <trill-mark/>
+          <wavy-line type="start"/>
+        </ornaments></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+        let note = &score.parts()[0].measures[0].voices[0].elements[0];
+        if let crate::ir::note::VoiceElement::Note(n) = note {
+            assert!(n.ornaments.iter().any(|o| o.name == "trill-mark"), "should have trill-mark");
+            assert!(n.ornaments.iter().any(|o| o.name == "wavy-line-start"), "should have wavy-line-start");
+        } else {
+            panic!("expected Note");
+        }
+    }
+
+    #[test]
+    fn tremolo_round_trip() {
+        use crate::adapters::FromIrAdapter;
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name/></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+        <notations><ornaments><tremolo type="single">3</tremolo></ornaments></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+
+        let import = MxmlToIrAdapter::new();
+        let score = import.convert_str(xml).unwrap();
+        let export = crate::adapters::ir_to_mxml::IrToMxmlAdapter::new();
+        let out_xml = export.convert(&score).unwrap();
+        assert!(out_xml.contains("<tremolo type=\"single\">3</tremolo>"),
+            "tremolo should round-trip: {out_xml}");
     }
 }

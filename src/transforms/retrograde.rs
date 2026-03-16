@@ -89,6 +89,8 @@ mod tests {
             directions: vec![],
             harmonies: vec![],
             figured_bass: vec![],
+            print_object: true,
+            multi_measure_rest: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
