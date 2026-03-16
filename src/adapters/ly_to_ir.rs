@@ -1772,9 +1772,10 @@ fn consume_attachments(state: &WalkState, children: &[Node], i: &mut usize) -> V
                         *i += 1;
                     }
                     "^" | "_" | "-" => {
-                        // Direction indicator: check for \markup { "text" }
+                        // Direction indicator: check what follows
                         if let Some(next) = children.get(*i + 1) {
                             if next.kind() == "escaped_word" && state.text(*next) == "\\markup" {
+                                // \markup { "text" } text direction
                                 if let Some(block) = children.get(*i + 2) {
                                     if block.kind() == "expression_block" {
                                         let text = extract_markup_text(state, *block);
@@ -1790,6 +1791,22 @@ fn consume_attachments(state: &WalkState, children: &[Node], i: &mut usize) -> V
                                         continue;
                                     }
                                 }
+                            } else if next.kind() == "escaped_word" {
+                                // Direction + escaped command, e.g. ^\fermata
+                                let ew = state.text(*next);
+                                if is_post_note_command(ew) {
+                                    attachments.push(ew.to_string());
+                                    *i += 2;
+                                    continue;
+                                }
+                            } else if next.kind() == "punctuation" {
+                                // Shorthand articulation: -. -> -_ -^ -! -+ --
+                                let short = punct_text(state, *next);
+                                if let Some(art) = shorthand_articulation(&short) {
+                                    attachments.push(art.to_string());
+                                    *i += 2;
+                                    continue;
+                                }
                             }
                         }
                         break;
@@ -1801,6 +1818,20 @@ fn consume_attachments(state: &WalkState, children: &[Node], i: &mut usize) -> V
         }
     }
     attachments
+}
+
+/// Map a LilyPond shorthand articulation character to its long-form escaped command.
+fn shorthand_articulation(ch: &str) -> Option<&'static str> {
+    match ch {
+        "." => Some("\\staccato"),
+        ">" => Some("\\accent"),
+        "_" => Some("\\tenuto"),
+        "^" => Some("\\marcato"),
+        "!" => Some("\\staccatissimo"),
+        "+" => Some("\\stopped"),
+        "-" => Some("\\tenuto"),
+        _ => None,
+    }
 }
 
 /// Whether an escaped_word is a post-note attachment rather than a new command.
@@ -1816,10 +1847,12 @@ fn is_post_note_command(text: &str) -> bool {
             | "\\shake"
             | "\\breathe"
             | "\\staccato"
+            | "\\staccatissimo"
             | "\\tenuto"
             | "\\accent"
             | "\\marcato"
             | "\\portato"
+            | "\\stopped"
             | "\\espressivo"
             | "\\glissando"
             | "\\arpeggio"
@@ -2496,6 +2529,24 @@ fn apply_note_attachments(_state: &mut WalkState, note: &mut Note, attachments: 
                     placement: Placement::Unspecified,
                 });
             }
+            "\\staccatissimo" => {
+                note.articulations.push(Articulation {
+                    name: "staccatissimo".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\portato" => {
+                note.articulations.push(Articulation {
+                    name: "detached-legato".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\stopped" => {
+                note.articulations.push(Articulation {
+                    name: "stopped".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
             "\\breathe" => {
                 note.articulations.push(Articulation {
                     name: "breath-mark".to_string(),
@@ -2675,6 +2726,24 @@ fn apply_chord_attachments(
             "\\marcato" => {
                 first.articulations.push(Articulation {
                     name: "strong-accent".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\staccatissimo" => {
+                first.articulations.push(Articulation {
+                    name: "staccatissimo".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\portato" => {
+                first.articulations.push(Articulation {
+                    name: "detached-legato".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            }
+            "\\stopped" => {
+                first.articulations.push(Articulation {
+                    name: "stopped".to_string(),
                     placement: Placement::Unspecified,
                 });
             }
@@ -3707,7 +3776,7 @@ staffSop = \new Staff {
     #[test]
     fn test_six_part_score_from_variables() {
         let adapter = LyToIrAdapter::new().with_language(PitchLanguage::Deutsch);
-        let source = std::fs::read_to_string("example.ly").unwrap();
+        let source = std::fs::read_to_string("tests/fixtures/ly/example.ly").unwrap();
         let score = adapter.convert_str(&source).unwrap();
 
         let parts = score.parts();
@@ -3786,7 +3855,7 @@ staffSop = \new Staff {
     fn test_ly_to_mxml_roundtrip_example() {
         // Test the full ly → IR → MusicXML pipeline doesn't lose parts
         let adapter = LyToIrAdapter::new().with_language(PitchLanguage::Deutsch);
-        let source = std::fs::read_to_string("example.ly").unwrap();
+        let source = std::fs::read_to_string("tests/fixtures/ly/example.ly").unwrap();
         let score = adapter.convert_str(&source).unwrap();
 
         let mxml_adapter = crate::adapters::ir_to_mxml::IrToMxmlAdapter::new();
