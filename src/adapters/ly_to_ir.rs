@@ -210,6 +210,8 @@ struct WalkState<'src> {
     tuplet_stack: Vec<(u8, u8)>,
     /// Whether automatic beaming is disabled (\autoBeamOff).
     auto_beam_off: bool,
+    /// Whether a manual \melisma block is active (notes inside don't consume lyrics).
+    melisma_active: bool,
 }
 
 impl<'src> WalkState<'src> {
@@ -244,6 +246,7 @@ impl<'src> WalkState<'src> {
             in_beam_group: false,
             tuplet_stack: Vec::new(),
             auto_beam_off: false,
+            melisma_active: false,
         }
     }
 
@@ -362,6 +365,14 @@ impl<'src> WalkState<'src> {
                         n.no_auto_beam = true;
                     }
                 }
+                _ => {}
+            }
+        }
+
+        // Mark notes inside a \melisma ... \melismaEnd block
+        if self.melisma_active {
+            match &mut elem {
+                VoiceElement::Note(n) => n.in_melisma = true,
                 _ => {}
             }
         }
@@ -1972,9 +1983,15 @@ fn handle_escaped_word(
         "\\autoBeamOn" => {
             state.auto_beam_off = false;
         }
+        "\\melisma" => {
+            state.melisma_active = true;
+        }
+        "\\melismaEnd" => {
+            state.melisma_active = false;
+        }
         "\\unset" | "\\cadenzaOn" | "\\cadenzaOff"
-        | "\\dynamicUp" | "\\dynamicDown" | "\\dynamicNeutral" | "\\melisma"
-        | "\\melismaEnd" | "\\context" => {
+        | "\\dynamicUp" | "\\dynamicDown" | "\\dynamicNeutral"
+        | "\\context" => {
             // Skip these commands; some may consume the next token
             // \context within music blocks is handled by named_context at the
             // walk_music_block level, but if tree-sitter doesn't wrap it as
@@ -2739,6 +2756,11 @@ fn extract_lyricsto_voice(state: &WalkState, block: Node) -> Option<String> {
 /// Syllables with `number == 0` are melisma skips — the note gets no lyric.
 fn attach_lyrics_to_part(part: &mut Part, syllables: &[LyricSyllable]) {
     let mut syl_idx = 0;
+    // Slur depth counter — persists across measures (slurs can span barlines).
+    // Used to detect slur melisma: notes 2..N inside a slur don't consume syllables
+    // when \autoBeamOff is active (matching LilyPond's slurMelismaBusy rule).
+    let mut open_slurs: u32 = 0;
+
     for measure in &mut part.measures {
         for voice in &mut measure.voices {
             for elem in &mut voice.elements {
@@ -2747,21 +2769,74 @@ fn attach_lyrics_to_part(part: &mut Part, syllables: &[LyricSyllable]) {
                 }
                 match elem {
                     VoiceElement::Note(note) => {
-                        // Skip grace notes and tied notes (continuation)
+                        // Count slur starts/stops on this note to maintain open_slurs depth.
+                        let starts = note
+                            .slurs
+                            .iter()
+                            .filter(|s| s.slur_type == StartStop::Start)
+                            .count() as u32;
+                        let stops = note
+                            .slurs
+                            .iter()
+                            .filter(|s| s.slur_type == StartStop::Stop)
+                            .count() as u32;
+
+                        // Grace notes never consume syllables (but still update slur state).
                         if note.is_grace {
+                            open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
                             continue;
                         }
-                        let is_tied = note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
-                        if is_tied {
+
+                        // Tied continuation notes don't consume syllables.
+                        let is_tied_cont =
+                            note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
+
+                        // Slur melisma: with \autoBeamOff, notes 2..N of a slur don't consume
+                        // syllables (LilyPond's slurMelismaBusy). A note is interior to a slur
+                        // when open_slurs > 0 and this note does NOT start a new slur.
+                        let in_slur_melisma = note.no_auto_beam
+                            && open_slurs > 0
+                            && !note.slurs.iter().any(|s| s.slur_type == StartStop::Start);
+
+                        // Update slur depth after determining melisma status.
+                        open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
+
+                        if is_tied_cont || note.in_melisma || in_slur_melisma {
                             continue;
                         }
+
+                        // Consume next syllable.
                         let syl = &syllables[syl_idx];
-                        if syl.number == 0 {
-                            // Melisma skip: advance syllable index, no lyric on this note
-                            syl_idx += 1;
-                        } else {
+                        syl_idx += 1;
+                        // number == 0 is an explicit `_` skip: note gets no lyric.
+                        if syl.number != 0 {
                             note.lyrics.push(syl.clone());
+                        }
+                    }
+                    VoiceElement::Chord(chord) => {
+                        // Chords consume exactly one syllable (attached to the first note).
+                        if let Some(first) = chord.notes.first() {
+                            let starts = first
+                                .slurs
+                                .iter()
+                                .filter(|s| s.slur_type == StartStop::Start)
+                                .count() as u32;
+                            let stops = first
+                                .slurs
+                                .iter()
+                                .filter(|s| s.slur_type == StartStop::Stop)
+                                .count() as u32;
+                            open_slurs =
+                                open_slurs.saturating_add(starts).saturating_sub(stops);
+                        }
+                        if syl_idx < syllables.len() {
+                            let syl = &syllables[syl_idx];
                             syl_idx += 1;
+                            if syl.number != 0 {
+                                if let Some(first) = chord.notes.first_mut() {
+                                    first.lyrics.push(syl.clone());
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -5420,6 +5495,133 @@ melB = { g'4 a' b' c'' }
         let m2_dur: Frac = part.measures[1].voices[0].elements.iter()
             .map(|e| voice_element_duration(e)).sum();
         assert_eq!(m2_dur, Frac::new(3, 4), "m2 should be 3/4");
+    }
+
+    #[test]
+    fn test_melisma_command() {
+        // \melisma ... \melismaEnd marks notes that don't consume syllables.
+        // c' gets "word", d' and e' are inside \melisma (skipped), f' gets "next".
+        let adapter = LyToIrAdapter::new();
+        let src = r#"
+\score {
+  <<
+    \new Voice = "v" { \autoBeamOff c'4\melisma d' e'\melismaEnd f' }
+    \new Lyrics \lyricsto "v" \lyricmode { word next }
+  >>
+}
+"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let notes: Vec<&Note> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(notes.len() >= 4, "expected 4 notes, got {}", notes.len());
+        assert_eq!(notes[0].lyrics.len(), 1, "note 0 should have 'word'");
+        assert_eq!(notes[0].lyrics[0].text, "word");
+        // d' and e' are inside \melisma block — no lyric
+        assert!(notes[1].lyrics.is_empty(), "note 1 (d') should have no lyric (in melisma)");
+        assert!(notes[2].lyrics.is_empty(), "note 2 (e') should have no lyric (in melisma)");
+        assert_eq!(notes[3].lyrics.len(), 1, "note 3 should have 'next'");
+        assert_eq!(notes[3].lyrics[0].text, "next");
+    }
+
+    #[test]
+    fn test_slur_melisma() {
+        // With \autoBeamOff, slurred notes 2..N don't consume syllables.
+        // c' gets "word" (starts slur), d' and e' are mid-slur (skipped), f' gets "next".
+        let adapter = LyToIrAdapter::new();
+        let src = r#"
+\score {
+  <<
+    \new Voice = "v" { \autoBeamOff c'4( d' e') f' }
+    \new Lyrics \lyricsto "v" \lyricmode { word next }
+  >>
+}
+"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let notes: Vec<&Note> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(notes.len() >= 4, "expected 4 notes, got {}", notes.len());
+        assert_eq!(notes[0].lyrics.len(), 1, "note 0 should have 'word'");
+        assert_eq!(notes[0].lyrics[0].text, "word");
+        // d' is mid-slur — no lyric
+        assert!(notes[1].lyrics.is_empty(), "note 1 (d') should have no lyric (slur melisma)");
+        // e' closes the slur but is still interior (slur opened before it)
+        assert!(notes[2].lyrics.is_empty(), "note 2 (e') should have no lyric (slur melisma)");
+        assert_eq!(notes[3].lyrics.len(), 1, "note 3 should have 'next'");
+        assert_eq!(notes[3].lyrics[0].text, "next");
+    }
+
+    #[test]
+    fn test_chord_lyric() {
+        // Chords should consume exactly one syllable (attached to the first note).
+        let adapter = LyToIrAdapter::new();
+        let src = r#"
+\score {
+  <<
+    \new Voice = "v" { \autoBeamOff <c' e'>4 f' }
+    \new Lyrics \lyricsto "v" \lyricmode { word two }
+  >>
+}
+"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let elems: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .collect();
+        // Find the chord
+        let chord = elems.iter().find_map(|e| {
+            if let VoiceElement::Chord(c) = e {
+                Some(c)
+            } else {
+                None
+            }
+        });
+        assert!(chord.is_some(), "should have a chord");
+        let chord = chord.unwrap();
+        assert_eq!(
+            chord.notes[0].lyrics.len(),
+            1,
+            "chord's first note should have 'word'"
+        );
+        assert_eq!(chord.notes[0].lyrics[0].text, "word");
+        // Find the f' note
+        let f_note = elems.iter().find_map(|e| {
+            if let VoiceElement::Note(n) = e {
+                Some(n.as_ref())
+            } else {
+                None
+            }
+        });
+        assert!(f_note.is_some(), "should have a note after chord");
+        let f_note = f_note.unwrap();
+        assert_eq!(f_note.lyrics.len(), 1, "f' should have 'two'");
+        assert_eq!(f_note.lyrics[0].text, "two");
     }
 
 }

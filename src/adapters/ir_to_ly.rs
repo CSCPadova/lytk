@@ -8,7 +8,7 @@
 
 use num::rational::Ratio;
 
-use crate::ir::articulation::{StartStop, TupletDisplay};
+use crate::ir::articulation::{LyricSyllable, StartStop, SyllabicType, TupletDisplay};
 use crate::ir::direction::BarlineType;
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::harmony::{ChordPitch, Figure};
@@ -462,6 +462,7 @@ impl FromIrAdapter for IrToLyAdapter {
             );
             emit_harmony_variable(part, &mut lines);
             emit_figured_bass_variable(part, &mut lines);
+            emit_lyrics_variable(part, &mut lines);
         }
 
         // Score block
@@ -759,7 +760,7 @@ fn emit_measures(
     lines: &mut Vec<String>,
 ) {
     let pad = " ".repeat(indent);
-    let mut prev_pitch: Option<Pitch> = None;
+    let mut emit_state = EmitState::default();
     let mut is_first_measure = true;
     let mut last_divisions: i64 = 1;
 
@@ -890,8 +891,7 @@ fn emit_measures(
 
         if voices.len() <= 1 {
             if let Some(voice) = voices.first() {
-                prev_pitch =
-                    emit_voice_elements(voice, lang, mode, prev_pitch, &pad, &dir_at_offset, divisions, lines);
+                emit_voice_elements(voice, lang, mode, &mut emit_state, &pad, &dir_at_offset, divisions, lines);
             }
         } else {
             // Multi-voice: << \\ >> syntax
@@ -905,8 +905,7 @@ fn emit_measures(
                 let inner_pad = format!("{pad}    ");
                 // Only attach directions to the first voice
                 let dirs_for_voice = if i == 0 { &dir_at_offset } else { &empty_dirs };
-                prev_pitch =
-                    emit_voice_elements(voice, lang, mode, prev_pitch, &inner_pad, dirs_for_voice, divisions, lines);
+                emit_voice_elements(voice, lang, mode, &mut emit_state, &inner_pad, dirs_for_voice, divisions, lines);
                 lines.push(format!("{pad}  }}"));
             }
             lines.push(format!("{pad}>>"));
@@ -966,16 +965,24 @@ fn duration_to_divisions(dur: &Duration, divisions: i64) -> i64 {
     (*frac.numer() / *frac.denom()).max(0)
 }
 
+/// Persistent state across measure boundaries during LilyPond emission.
+#[derive(Default)]
+struct EmitState {
+    prev_pitch: Option<Pitch>,
+    auto_beam_off: bool,
+    in_melisma: bool,
+}
+
 fn emit_voice_elements(
     voice: &Voice,
     lang: PitchLanguage,
     mode: PitchMode,
-    mut prev_pitch: Option<Pitch>,
+    state: &mut EmitState,
     pad: &str,
     dir_at_offset: &std::collections::BTreeMap<i32, Vec<String>>,
     divisions: i64,
     lines: &mut Vec<String>,
-) -> Option<Pitch> {
+) {
     let mut tokens: Vec<String> = Vec::new();
     let mut in_tuplet = false;
     let mut current_stem: String = String::new(); // track stem direction changes
@@ -1027,6 +1034,17 @@ fn emit_voice_elements(
             current_stem.clear();
         }
 
+        // Emit \autoBeamOff / \autoBeamOn state changes
+        if let VoiceElement::Note(note) = elem {
+            if note.no_auto_beam && !state.auto_beam_off && !note.is_grace {
+                tokens.push("\\autoBeamOff".to_string());
+                state.auto_beam_off = true;
+            } else if !note.no_auto_beam && state.auto_beam_off && !note.is_grace {
+                tokens.push("\\autoBeamOn".to_string());
+                state.auto_beam_off = false;
+            }
+        }
+
         match elem {
             VoiceElement::Note(note) => {
                 // Glissando style override (must precede the note)
@@ -1045,11 +1063,24 @@ fn emit_voice_elements(
                         }
                     }
                 }
-                let mut token = note_to_ly(note, lang, mode, prev_pitch.as_ref());
+                let mut token = note_to_ly(note, lang, mode, state.prev_pitch.as_ref());
                 if !dir_suffix.is_empty() {
                     token = format!("{token}{dir_suffix}");
                 }
-                prev_pitch = Some(note.pitch);
+                // Append \melisma / \melismaEnd state changes to the note token
+                if !note.is_grace {
+                    if note.in_melisma && !state.in_melisma {
+                        token = format!("{token}\\melisma");
+                        state.in_melisma = true;
+                    } else if !note.in_melisma && state.in_melisma {
+                        // \melismaEnd goes on the last melisma note — patch the previous token
+                        if let Some(prev_token) = tokens.last_mut() {
+                            *prev_token = format!("{prev_token}\\melismaEnd");
+                        }
+                        state.in_melisma = false;
+                    }
+                }
+                state.prev_pitch = Some(note.pitch);
                 // Advance position for non-grace notes
                 if !note.is_grace {
                     let dur_divs = duration_to_divisions(&note.duration, divisions);
@@ -1081,11 +1112,11 @@ fn emit_voice_elements(
                         }
                     }
                 }
-                let (mut token, last) = chord_to_ly(chord, lang, mode, prev_pitch.as_ref());
+                let (mut token, last) = chord_to_ly(chord, lang, mode, state.prev_pitch.as_ref());
                 if !dir_suffix.is_empty() {
                     token = format!("{token}{dir_suffix}");
                 }
-                prev_pitch = last;
+                state.prev_pitch = last;
                 let dur_divs = duration_to_divisions(&chord.duration, divisions);
                 fwd_pos += dur_divs;
                 tokens.push(token);
@@ -1144,8 +1175,6 @@ fn emit_voice_elements(
             lines.push(format!("{pad}{}", current_line.join(" ")));
         }
     }
-
-    prev_pitch
 }
 
 fn note_to_ly(
@@ -1339,6 +1368,232 @@ fn tempo_to_ly(tempo: &crate::ir::direction::TempoDirection) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Lyrics emission
+// ---------------------------------------------------------------------------
+
+/// Extract lyrics from a part's notes, grouped by lyric number.
+///
+/// Walks notes in the same order as `attach_lyrics_to_part` in `ly_to_ir.rs`:
+/// grace notes, tied continuations, `in_melisma` notes, and slur-interior notes
+/// (when `no_auto_beam` is set) are automatically skipped by the voice — no `_`
+/// skip is needed in lyricmode for these. Only notes that *should* consume a
+/// syllable but have no lyric attached get a `_` skip.
+fn extract_lyrics(part: &Part) -> std::collections::BTreeMap<u8, Vec<LyricEvent>> {
+    let mut lyrics_by_number: std::collections::BTreeMap<u8, Vec<LyricEvent>> =
+        std::collections::BTreeMap::new();
+
+    let mut open_slurs: u32 = 0;
+
+    for measure in &part.measures {
+        for voice in &measure.voices {
+            for elem in &voice.elements {
+                match elem {
+                    VoiceElement::Note(note) => {
+                        let starts = note
+                            .slurs
+                            .iter()
+                            .filter(|s| s.slur_type == StartStop::Start)
+                            .count() as u32;
+                        let stops = note
+                            .slurs
+                            .iter()
+                            .filter(|s| s.slur_type == StartStop::Stop)
+                            .count() as u32;
+
+                        if note.is_grace {
+                            open_slurs =
+                                open_slurs.saturating_add(starts).saturating_sub(stops);
+                            continue;
+                        }
+
+                        let is_tied_cont =
+                            note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
+                        let in_slur_melisma = note.no_auto_beam
+                            && open_slurs > 0
+                            && !note
+                                .slurs
+                                .iter()
+                                .any(|s| s.slur_type == StartStop::Start);
+
+                        open_slurs =
+                            open_slurs.saturating_add(starts).saturating_sub(stops);
+
+                        // These notes are automatically skipped — no lyric event needed
+                        if is_tied_cont || note.in_melisma || in_slur_melisma {
+                            continue;
+                        }
+
+                        // This note consumes a syllable position
+                        if !note.lyrics.is_empty() {
+                            for syl in &note.lyrics {
+                                lyrics_by_number
+                                    .entry(syl.number)
+                                    .or_default()
+                                    .push(LyricEvent::Syllable(syl.clone()));
+                            }
+                        } else {
+                            // Note consumes a position but has no lyric — emit skip
+                            for lyrics in lyrics_by_number.values_mut() {
+                                lyrics.push(LyricEvent::Skip);
+                            }
+                        }
+                    }
+                    VoiceElement::Chord(chord) => {
+                        if let Some(first) = chord.notes.first() {
+                            let starts = first
+                                .slurs
+                                .iter()
+                                .filter(|s| s.slur_type == StartStop::Start)
+                                .count() as u32;
+                            let stops = first
+                                .slurs
+                                .iter()
+                                .filter(|s| s.slur_type == StartStop::Stop)
+                                .count() as u32;
+                            open_slurs =
+                                open_slurs.saturating_add(starts).saturating_sub(stops);
+
+                            if !first.lyrics.is_empty() {
+                                for syl in &first.lyrics {
+                                    lyrics_by_number
+                                        .entry(syl.number)
+                                        .or_default()
+                                        .push(LyricEvent::Syllable(syl.clone()));
+                                }
+                            } else {
+                                for lyrics in lyrics_by_number.values_mut() {
+                                    lyrics.push(LyricEvent::Skip);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    lyrics_by_number
+}
+
+#[derive(Debug, Clone)]
+enum LyricEvent {
+    Syllable(LyricSyllable),
+    Skip,
+}
+
+/// Check if a part has any lyrics on its notes.
+fn part_has_lyrics(part: &Part) -> bool {
+    part.measures.iter().any(|m| {
+        m.voices.iter().any(|v| {
+            v.elements.iter().any(|e| match e {
+                VoiceElement::Note(n) => !n.lyrics.is_empty(),
+                VoiceElement::Chord(c) => c.notes.first().map_or(false, |n| !n.lyrics.is_empty()),
+                _ => false,
+            })
+        })
+    })
+}
+
+/// Emit a lyrics variable for a part.
+fn emit_lyrics_variable(part: &Part, lines: &mut Vec<String>) {
+    let lyrics_map = extract_lyrics(part);
+    if lyrics_map.is_empty() {
+        return;
+    }
+
+    let var = part_var_name(part);
+
+    for (&number, events) in &lyrics_map {
+        let suffix = if lyrics_map.len() > 1 {
+            format!("Verse{}", index_to_alpha(number as usize))
+        } else {
+            "Lyrics".to_string()
+        };
+        let lyrics_var = format!("{var}{suffix}");
+        lines.push(format!("{lyrics_var} = \\lyricmode {{"));
+
+        let mut tokens: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < events.len() {
+            match &events[i] {
+                LyricEvent::Skip => {
+                    tokens.push("_".to_string());
+                }
+                LyricEvent::Syllable(syl) => {
+                    let text = escape_lyric_text(&syl.text);
+                    match syl.syllabic {
+                        SyllabicType::Begin | SyllabicType::Middle => {
+                            tokens.push(format!("{text} --"));
+                        }
+                        SyllabicType::End | SyllabicType::Single => {
+                            tokens.push(text);
+                        }
+                    }
+                    if syl.extend {
+                        tokens.push("__".to_string());
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        // Group tokens into lines of ~72 chars
+        let pad = "  ";
+        let mut current_line: Vec<&str> = Vec::new();
+        let mut current_len = 0usize;
+        for token in &tokens {
+            current_len += token.len() + 1;
+            current_line.push(token);
+            if current_len > 72 {
+                lines.push(format!("{pad}{}", current_line.join(" ")));
+                current_line.clear();
+                current_len = 0;
+            }
+        }
+        if !current_line.is_empty() {
+            lines.push(format!("{pad}{}", current_line.join(" ")));
+        }
+
+        lines.push("}".to_string());
+        lines.push(String::new());
+    }
+}
+
+/// Escape special characters in lyric text for LilyPond.
+fn escape_lyric_text(text: &str) -> String {
+    // Wrap in quotes if the text contains spaces or special chars
+    if text.contains(' ') || text.contains('"') || text.contains('\\') {
+        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        text.to_string()
+    }
+}
+
+/// Emit lyrics references in the score block for a part.
+fn emit_lyrics_refs(part: &Part, voice_name: &str, indent: usize, lines: &mut Vec<String>) {
+    let lyrics_map = extract_lyrics(part);
+    if lyrics_map.is_empty() {
+        return;
+    }
+
+    let pad = " ".repeat(indent);
+    let var = part_var_name(part);
+
+    for (&number, _) in &lyrics_map {
+        let suffix = if lyrics_map.len() > 1 {
+            format!("Verse{}", index_to_alpha(number as usize))
+        } else {
+            "Lyrics".to_string()
+        };
+        let lyrics_var = format!("{var}{suffix}");
+        lines.push(format!(
+            "{pad}\\new Lyrics \\lyricsto \"{voice_name}\" \\{lyrics_var}"
+        ));
+    }
+}
+
 fn emit_score_block(score: &Score, lines: &mut Vec<String>) {
     lines.push("\\score {".to_string());
     lines.push("  <<".to_string());
@@ -1413,6 +1668,9 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
         lines.push(format!("{pad}\\new FiguredBass \\{figures_var}"));
     }
 
+    let has_lyrics = part_has_lyrics(part);
+    let voice_name = var.clone();
+
     if part.staves > 1 {
         lines.push(format!("{pad}\\new PianoStaff <<"));
         for staff_num in 1..=part.staves {
@@ -1422,6 +1680,21 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
                 part.name, staff_num
             ));
         }
+        lines.push(format!("{pad}>>"));
+    } else if has_lyrics {
+        // When lyrics exist, wrap in << ... >> with a named Voice so \lyricsto can target it
+        if !part.name.is_empty() {
+            lines.push(format!(
+                "{pad}\\new Staff \\with {{ instrumentName = \"{}\" }} <<",
+                part.name
+            ));
+        } else {
+            lines.push(format!("{pad}\\new Staff <<"));
+        }
+        lines.push(format!(
+            "{pad}  \\new Voice = \"{voice_name}\" \\{var}"
+        ));
+        emit_lyrics_refs(part, &voice_name, indent + 2, lines);
         lines.push(format!("{pad}>>"));
     } else if !part.name.is_empty() {
         lines.push(format!(
@@ -2503,5 +2776,185 @@ melody = {
             "dynamics and wedge should not all be on same note: {}",
             ly
         );
+    }
+
+    #[test]
+    fn test_lyrics_emission() {
+        // Build a score with lyrics on notes
+        let mut n1 = make_note(PitchStep::C, 4, Duration::quarter());
+        n1.lyrics.push(LyricSyllable {
+            text: "Hel".to_string(),
+            syllabic: SyllabicType::Begin,
+            number: 1,
+            extend: false,
+            elision: false,
+        });
+        let mut n2 = make_note(PitchStep::D, 4, Duration::quarter());
+        n2.lyrics.push(LyricSyllable {
+            text: "lo".to_string(),
+            syllabic: SyllabicType::End,
+            number: 1,
+            extend: false,
+            elision: false,
+        });
+        let mut n3 = make_note(PitchStep::E, 4, Duration::quarter());
+        n3.lyrics.push(LyricSyllable {
+            text: "world".to_string(),
+            syllabic: SyllabicType::Single,
+            number: 1,
+            extend: false,
+            elision: false,
+        });
+        let n4 = make_note(PitchStep::F, 4, Duration::quarter());
+
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n1)),
+                VoiceElement::Note(Box::new(n2)),
+                VoiceElement::Note(Box::new(n3)),
+                VoiceElement::Note(Box::new(n4)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            clefs: {
+                let mut m = HashMap::new();
+                m.insert(1, Clef::default());
+                m
+            },
+            ..Default::default()
+        });
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.name = "Soprano".to_string();
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        // Should have a lyrics variable with lyricmode
+        assert!(ly.contains("\\lyricmode"), "should contain \\lyricmode: {ly}");
+        // Should have syllable with hyphens
+        assert!(ly.contains("Hel --"), "should contain 'Hel --': {ly}");
+        assert!(ly.contains("lo"), "should contain 'lo': {ly}");
+        assert!(ly.contains("world"), "should contain 'world': {ly}");
+        // Should have \lyricsto reference
+        assert!(ly.contains("\\lyricsto"), "should contain \\lyricsto: {ly}");
+        // Should have named Voice
+        assert!(ly.contains("\\new Voice ="), "should contain named Voice: {ly}");
+    }
+
+    #[test]
+    fn test_melisma_emission() {
+        // Build a score with melisma notes
+        let mut n1 = make_note(PitchStep::C, 4, Duration::quarter());
+        n1.lyrics.push(LyricSyllable {
+            text: "word".to_string(),
+            syllabic: SyllabicType::Single,
+            number: 1,
+            extend: false,
+            elision: false,
+        });
+        let mut n2 = make_note(PitchStep::D, 4, Duration::quarter());
+        n2.in_melisma = true; // melisma
+        let mut n3 = make_note(PitchStep::E, 4, Duration::quarter());
+        n3.in_melisma = true; // still melisma
+        let mut n4 = make_note(PitchStep::F, 4, Duration::quarter());
+        n4.lyrics.push(LyricSyllable {
+            text: "next".to_string(),
+            syllabic: SyllabicType::Single,
+            number: 1,
+            extend: false,
+            elision: false,
+        });
+
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n1)),
+                VoiceElement::Note(Box::new(n2)),
+                VoiceElement::Note(Box::new(n3)),
+                VoiceElement::Note(Box::new(n4)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            clefs: {
+                let mut m = HashMap::new();
+                m.insert(1, Clef::default());
+                m
+            },
+            ..Default::default()
+        });
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        // Should emit \melisma and \melismaEnd
+        assert!(ly.contains("\\melisma"), "should contain \\melisma: {ly}");
+        assert!(ly.contains("\\melismaEnd"), "should contain \\melismaEnd: {ly}");
+        // Lyrics should only have "word" and "next" (no skips for melisma notes)
+        assert!(ly.contains("word"), "should contain 'word': {ly}");
+        assert!(ly.contains("next"), "should contain 'next': {ly}");
+    }
+
+    #[test]
+    fn test_auto_beam_off_emission() {
+        // Build a score with no_auto_beam notes
+        let mut n1 = make_note(PitchStep::C, 4, Duration::eighth());
+        n1.no_auto_beam = true;
+        let mut n2 = make_note(PitchStep::D, 4, Duration::eighth());
+        n2.no_auto_beam = true;
+        let n3 = make_note(PitchStep::E, 4, Duration::eighth()); // autoBeamOn
+        let n4 = make_note(PitchStep::F, 4, Duration::eighth());
+
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n1)),
+                VoiceElement::Note(Box::new(n2)),
+                VoiceElement::Note(Box::new(n3)),
+                VoiceElement::Note(Box::new(n4)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            clefs: {
+                let mut m = HashMap::new();
+                m.insert(1, Clef::default());
+                m
+            },
+            ..Default::default()
+        });
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        // Should emit \autoBeamOff before first no_auto_beam note
+        assert!(ly.contains("\\autoBeamOff"), "should contain \\autoBeamOff: {ly}");
+        // Should emit \autoBeamOn when reverting
+        assert!(ly.contains("\\autoBeamOn"), "should contain \\autoBeamOn: {ly}");
     }
 }

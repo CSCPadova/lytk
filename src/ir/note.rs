@@ -73,6 +73,9 @@ pub struct Note {
     /// If true, auto-beaming should skip this note (\autoBeamOff).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_auto_beam: bool,
+    /// If true, this note is inside a \melisma ... \melismaEnd block and does not consume a lyric syllable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_melisma: bool,
 }
 
 impl Note {
@@ -109,6 +112,7 @@ impl Note {
             two_note_tremolo: false,
             tremolo_start: true,
             no_auto_beam: false,
+            in_melisma: false,
         }
     }
 }
