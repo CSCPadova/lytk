@@ -120,8 +120,28 @@ fn run_convert(
     if input.is_dir() {
         run_batch(input, output, format, jobs, None::<&fn(&Score) -> Score>)
     } else {
-        let score = parse_input(input)?;
-        write_output(&score, output, format)?;
+        let scores = parse_input_multi(input)?;
+        if scores.len() <= 1 {
+            let score = scores.into_iter().next().unwrap_or_else(|| Score::new());
+            write_output(&score, output, format)?;
+        } else {
+            // Multi-movement: write separate files with _01, _02, etc. suffixes
+            let stem = output
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            let ext = output
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("xml");
+            let parent = output.parent().unwrap_or(Path::new("."));
+            for (idx, score) in scores.iter().enumerate() {
+                let filename = format!("{}_{:02}.{}", stem, idx + 1, ext);
+                let path = parent.join(&filename);
+                write_output(score, &path, format)?;
+                eprintln!("Wrote movement {} → {}", idx + 1, path.display());
+            }
+        }
         Ok(())
     }
 }
@@ -336,6 +356,24 @@ fn parse_input(path: &Path) -> anyhow::Result<Score> {
         }
     };
     Ok(score)
+}
+
+/// Parse input file, returning multiple scores for multi-movement LilyPond files.
+fn parse_input_multi(path: &Path) -> anyhow::Result<Vec<Score>> {
+    let fmt = detect_input_format(path)?;
+    match fmt {
+        InputFormat::LilyPond => {
+            Ok(LyToIrAdapter::new().convert_file_multi(path)?)
+        }
+        InputFormat::MusicXml => {
+            Ok(vec![MxmlToIrAdapter::new().convert_file(path)?])
+        }
+        #[cfg(feature = "midi")]
+        InputFormat::Midi => {
+            let bytes = std::fs::read(path)?;
+            Ok(vec![MidiToIrAdapter::new().convert_bytes(&bytes)?])
+        }
+    }
 }
 
 fn detect_output_format(path: &Path, forced: Option<OutputFormat>) -> anyhow::Result<OutputFormat> {
