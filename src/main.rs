@@ -4,6 +4,7 @@
 //!   convert   Convert files between LilyPond, MusicXML, and MXL formats
 //!   transpose Transpose pitches by N semitones
 //!   info      Print score metadata
+//!   flatten   Recursively expand \include directives into a single flat file
 
 use std::path::{Path, PathBuf};
 
@@ -11,8 +12,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rayon::prelude::*;
 
 use _core::adapters::{
-    ir_to_ly::IrToLyAdapter, ir_to_mxml::IrToMxmlAdapter, ly_to_ir::LyToIrAdapter,
-    mxml_to_ir::MxmlToIrAdapter, FromIrAdapter, ToIrAdapter,
+    ir_to_ly::IrToLyAdapter, ir_to_mxml::IrToMxmlAdapter,
+    ly_flatten::{flatten, FlattenOpts},
+    ly_to_ir::LyToIrAdapter, mxml_to_ir::MxmlToIrAdapter, FromIrAdapter, ToIrAdapter,
 };
 #[cfg(feature = "midi")]
 use _core::adapters::ir_to_midi::IrToMidiAdapter;
@@ -72,6 +74,29 @@ enum Command {
         /// Input file.
         input: PathBuf,
     },
+
+    /// Flatten a LilyPond file by recursively expanding all \include directives.
+    ///
+    /// Produces a single self-contained output file. Duplicate \version and
+    /// \language directives are deduplicated (last occurrence wins, with a
+    /// warning). Multiple \header blocks are an error.
+    Flatten {
+        /// Input LilyPond file.
+        input: PathBuf,
+
+        /// Output file. Writes to stdout if omitted.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Additional include search paths (like LilyPond's -I flag).
+        /// May be specified multiple times.
+        #[arg(short = 'I', long = "include-path", value_name = "DIR")]
+        include_paths: Vec<PathBuf>,
+
+        /// Suppress % === BEGIN/END INCLUDE === comment markers in output.
+        #[arg(long)]
+        no_markers: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -99,6 +124,12 @@ fn main() {
             format,
         } => run_transpose(&input, &output, semitones, format),
         Command::Info { input } => run_info(&input),
+        Command::Flatten {
+            input,
+            output,
+            include_paths,
+            no_markers,
+        } => run_flatten(&input, output.as_deref(), &include_paths, no_markers),
     };
 
     if let Err(e) = result {
@@ -155,6 +186,29 @@ fn run_transpose(
     let score = parse_input(input)?;
     let transposed = transpose::transpose(&score, semitones);
     write_output(&transposed, output, format)?;
+    Ok(())
+}
+
+fn run_flatten(
+    input: &Path,
+    output: Option<&Path>,
+    include_paths: &[PathBuf],
+    no_markers: bool,
+) -> anyhow::Result<()> {
+    let opts = FlattenOpts {
+        include_paths: include_paths.to_vec(),
+        add_markers: !no_markers,
+    };
+    let text = flatten(input, opts)?;
+    match output {
+        Some(path) => {
+            std::fs::write(path, &text)?;
+        }
+        None => {
+            use std::io::Write;
+            std::io::stdout().write_all(text.as_bytes())?;
+        }
+    }
     Ok(())
 }
 
