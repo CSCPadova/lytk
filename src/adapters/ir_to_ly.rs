@@ -978,6 +978,7 @@ fn emit_voice_elements(
 ) -> Option<Pitch> {
     let mut tokens: Vec<String> = Vec::new();
     let mut in_tuplet = false;
+    let mut current_stem: String = String::new(); // track stem direction changes
     // Running forward position in divisions — mirrors the value computed in
     // mxml_to_ir during parse_measure.
     let mut fwd_pos: i64 = 0;
@@ -1004,6 +1005,27 @@ fn emit_voice_elements(
 
         // Collect any directions that should attach at the current position.
         let dir_suffix = dirs_at(fwd_pos);
+
+        // Emit stem direction change if needed
+        let elem_stem: &str = match elem {
+            VoiceElement::Note(n) => &n.stem_direction,
+            VoiceElement::Chord(c) => c.notes.first().map_or("", |n| &n.stem_direction),
+            _ => "",
+        };
+        if !elem_stem.is_empty() && elem_stem != current_stem {
+            let cmd = match elem_stem {
+                "up" => "\\stemUp",
+                "down" => "\\stemDown",
+                _ => "",
+            };
+            if !cmd.is_empty() {
+                tokens.push(cmd.to_string());
+                current_stem = elem_stem.to_string();
+            }
+        } else if elem_stem.is_empty() && !current_stem.is_empty() {
+            tokens.push("\\stemNeutral".to_string());
+            current_stem.clear();
+        }
 
         match elem {
             VoiceElement::Note(note) => {
@@ -1215,6 +1237,18 @@ fn chord_to_ly(
 fn attachments_to_ly(note: &Note) -> String {
     let mut parts: Vec<&str> = Vec::new();
     let mut owned: Vec<String> = Vec::new();
+
+    // Beam brackets (must come immediately after pitch+duration)
+    // Look at level-1 beam only; `[` for begin, `]` for end
+    for beam in &note.beams {
+        if beam.number == 1 {
+            match beam.beam_type.as_str() {
+                "begin" => parts.push("["),
+                "end" => parts.push("]"),
+                _ => {}
+            }
+        }
+    }
 
     // Ties
     for tie in &note.ties {

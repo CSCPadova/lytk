@@ -70,6 +70,9 @@ pub struct Note {
     pub two_note_tremolo: bool,
     /// For two-note tremolo: true = first note (start), false = second note (stop).
     pub tremolo_start: bool,
+    /// If true, auto-beaming should skip this note (\autoBeamOff).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_auto_beam: bool,
 }
 
 impl Note {
@@ -105,6 +108,7 @@ impl Note {
             tremolo_marks: 0,
             two_note_tremolo: false,
             tremolo_start: true,
+            no_auto_beam: false,
         }
     }
 }

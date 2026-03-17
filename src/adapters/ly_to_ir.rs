@@ -28,7 +28,7 @@ use num::rational::Ratio;
 use tree_sitter::Node;
 
 use crate::ir::articulation::{
-    Articulation, DynamicMark, Fermata, LyricSyllable, Placement, SlurEvent, StartStop,
+    Articulation, BeamEvent, DynamicMark, Fermata, LyricSyllable, Placement, SlurEvent, StartStop,
     SyllabicType, Technical, TieEvent, TupletDisplay, Wedge,
 };
 use crate::ir::direction::{Barline, BarlineType, Direction, TempoDirection, TextDirection};
@@ -200,6 +200,16 @@ struct WalkState<'src> {
     page_layout: Option<PageLayout>,
     /// Completed scores from previous `\score` blocks (multi-movement).
     completed_scores: Vec<Score>,
+
+    // Beam/stem state
+    /// Current stem direction override: "up", "down", or "" (auto).
+    stem_direction: String,
+    /// Whether we are inside a manual beam group (after `[`, before `]`).
+    in_beam_group: bool,
+    /// Stack of active tuplet ratios (actual, normal). Innermost is last.
+    tuplet_stack: Vec<(u8, u8)>,
+    /// Whether automatic beaming is disabled (\autoBeamOff).
+    auto_beam_off: bool,
 }
 
 impl<'src> WalkState<'src> {
@@ -230,6 +240,10 @@ impl<'src> WalkState<'src> {
             pending_slide: false,
             page_layout: None,
             completed_scores: Vec::new(),
+            stem_direction: String::new(),
+            in_beam_group: false,
+            tuplet_stack: Vec::new(),
+            auto_beam_off: false,
         }
     }
 
@@ -275,7 +289,12 @@ impl<'src> WalkState<'src> {
     }
 
     /// Push a voice element and auto-split the measure if it's full.
-    fn push_voice_element(&mut self, elem: VoiceElement) {
+    fn push_voice_element(&mut self, mut elem: VoiceElement) {
+        // Apply active tuplet ratio to the element's duration
+        if let Some(&(actual, normal)) = self.tuplet_stack.last() {
+            apply_tuplet_ratio(&mut elem, actual, normal);
+        }
+
         let dur = voice_element_duration(&elem);
 
         // Before pushing, check if the current measure is already full.
@@ -289,8 +308,70 @@ impl<'src> WalkState<'src> {
             self.elapsed_in_measure = self.elapsed_in_measure - self.current_time_sig;
         }
 
+        // Apply beam "continue" for notes inside a manual beam group
+        // (notes with explicit [/] already have begin/end set by apply_note_attachments)
+        if self.in_beam_group {
+            match &mut elem {
+                VoiceElement::Note(n) if n.beams.is_empty() => {
+                    let level = beam_level_for_duration(&n.duration);
+                    if level > 0 {
+                        n.beams.push(BeamEvent {
+                            beam_type: "continue".to_string(),
+                            number: 1,
+                        });
+                    }
+                }
+                VoiceElement::Chord(c) if !c.notes.is_empty() => {
+                    let level = beam_level_for_duration(&c.duration);
+                    if level > 0 && c.notes[0].beams.is_empty() {
+                        c.notes[0].beams.push(BeamEvent {
+                            beam_type: "continue".to_string(),
+                            number: 1,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Apply current stem direction override to notes
+        if !self.stem_direction.is_empty() {
+            match &mut elem {
+                VoiceElement::Note(n) => {
+                    if n.stem_direction.is_empty() {
+                        n.stem_direction = self.stem_direction.clone();
+                    }
+                }
+                VoiceElement::Chord(c) => {
+                    for n in &mut c.notes {
+                        if n.stem_direction.is_empty() {
+                            n.stem_direction = self.stem_direction.clone();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Mark notes with no_auto_beam when \autoBeamOff is active
+        if self.auto_beam_off {
+            match &mut elem {
+                VoiceElement::Note(n) => n.no_auto_beam = true,
+                VoiceElement::Chord(c) => {
+                    for n in &mut c.notes {
+                        n.no_auto_beam = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Grace notes don't consume time in the measure
+        let is_grace = matches!(&elem, VoiceElement::Note(n) if n.is_grace);
         self.current_voice.push(elem);
-        self.elapsed_in_measure = self.elapsed_in_measure + dur;
+        if !is_grace {
+            self.elapsed_in_measure = self.elapsed_in_measure + dur;
+        }
     }
 
     /// Update the current time signature (called when \time is parsed).
@@ -501,6 +582,9 @@ impl LyToIrAdapter {
 
         // If walk_program collected scores from \score blocks, return those
         if !state.completed_scores.is_empty() {
+            for score in &mut state.completed_scores {
+                post_process_beams_and_stems(score);
+            }
             return Ok(state.completed_scores);
         }
 
@@ -528,6 +612,7 @@ impl LyToIrAdapter {
             score.children.push(ScoreChild::Part(Part::new("P1")));
         }
 
+        post_process_beams_and_stems(&mut score);
         Ok(vec![score])
     }
 
@@ -1560,10 +1645,15 @@ fn handle_escaped_word(
                 if frac_node.kind() == "fraction" {
                     let frac_text = state.text(*frac_node);
                     if let Some((num, den)) = parse_fraction(frac_text) {
+                        let symbol = match (num, den) {
+                            (4, 4) => Some("common".to_string()),
+                            (2, 2) => Some("cut".to_string()),
+                            _ => None,
+                        };
                         let ts = TimeSignature {
                             beats: num.to_string(),
                             beat_type: den as u8,
-                            ..Default::default()
+                            symbol,
                         };
                         state.set_time_signature(num, den);
                         let measure = state.ensure_measure();
@@ -1657,16 +1747,19 @@ fn handle_escaped_word(
                         i += 1;
                         if let Some(block) = children.get(i) {
                             if block.kind() == "expression_block" {
+                                // Push tuplet ratio so notes created inside get
+                                // the scaling applied immediately (for correct
+                                // measure duration tracking).
+                                state.tuplet_stack.push((actual, normal));
                                 let before = state.current_voice.len();
                                 walk_music_block(state, *block);
                                 let after = state.current_voice.len();
-                                for idx in before..after {
-                                    apply_tuplet_to_element(
-                                        &mut state.current_voice[idx],
+                                state.tuplet_stack.pop();
+                                // Apply tuplet display markers (start/stop brackets)
+                                if after > before {
+                                    apply_tuplet_display(
+                                        &mut state.current_voice[before..after],
                                         actual,
-                                        normal,
-                                        idx == before,
-                                        idx == after - 1,
                                     );
                                 }
                                 i += 1;
@@ -1696,6 +1789,15 @@ fn handle_escaped_word(
         "\\reverseturn" => attach_articulation(state, "inverted-turn"),
         "\\sustainOn" | "\\sustainOff" => {
             // Pedal events: create a direction
+        }
+        "\\stemUp" => {
+            state.stem_direction = "up".to_string();
+        }
+        "\\stemDown" => {
+            state.stem_direction = "down".to_string();
+        }
+        "\\stemNeutral" => {
+            state.stem_direction.clear();
         }
         "\\repeat" => {
             // \repeat volta N { ... }
@@ -1864,7 +1966,13 @@ fn handle_escaped_word(
                 }
             }
         }
-        "\\unset" | "\\cadenzaOn" | "\\cadenzaOff" | "\\autoBeamOff" | "\\autoBeamOn"
+        "\\autoBeamOff" => {
+            state.auto_beam_off = true;
+        }
+        "\\autoBeamOn" => {
+            state.auto_beam_off = false;
+        }
+        "\\unset" | "\\cadenzaOn" | "\\cadenzaOff"
         | "\\dynamicUp" | "\\dynamicDown" | "\\dynamicNeutral" | "\\melisma"
         | "\\melismaEnd" | "\\context" => {
             // Skip these commands; some may consume the next token
@@ -2496,7 +2604,7 @@ fn block_contains_named_context(state: &WalkState, block: Node) -> bool {
 /// Parse a `\lyricmode { ... }` block into a list of `LyricSyllable`s.
 /// Lyrics are symbols separated by `--` (hyphen) or `__` (extend).
 fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyllable> {
-    let mut syllables = Vec::new();
+    let mut syllables: Vec<LyricSyllable> = Vec::new();
     let mut cursor = block.walk();
     let children: Vec<Node> = block.children(&mut cursor).collect();
     let mut i = 0;
@@ -2507,21 +2615,35 @@ fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyllable> {
         match node.kind() {
             "symbol" => {
                 let text = state.text(node).to_string();
+                // Handle `_` as melisma extender (skip)
+                if text == "_" {
+                    // Check for `__` (double underscore = extender line)
+                    if let Some(next) = children.get(i + 1) {
+                        if next.kind() == "symbol" && state.text(*next) == "_" {
+                            // `__` = extender line on previous syllable
+                            if let Some(last) = syllables.last_mut() {
+                                last.extend = true;
+                            }
+                            i += 2;
+                            continue;
+                        }
+                    }
+                    // Single `_` = melisma skip (note gets no syllable)
+                    syllables.push(LyricSyllable {
+                        text: String::new(),
+                        syllabic: SyllabicType::Single,
+                        number: 0, // marker: number=0 means "skip"
+                        extend: false,
+                        elision: false,
+                    });
+                    i += 1;
+                    continue;
+                }
+                let next_is_hyphen = peek_lyric_hyphen(state, &children, i + 1);
                 let syllabic = if pending_hyphen {
-                    // Check if next is also "--" → middle, else → end
-                    let next_is_hyphen = peek_double_hyphen(state, &children, i + 1);
-                    if next_is_hyphen {
-                        SyllabicType::Middle
-                    } else {
-                        SyllabicType::End
-                    }
+                    if next_is_hyphen { SyllabicType::Middle } else { SyllabicType::End }
                 } else {
-                    let next_is_hyphen = peek_double_hyphen(state, &children, i + 1);
-                    if next_is_hyphen {
-                        SyllabicType::Begin
-                    } else {
-                        SyllabicType::Single
-                    }
+                    if next_is_hyphen { SyllabicType::Begin } else { SyllabicType::Single }
                 };
                 syllables.push(LyricSyllable {
                     text,
@@ -2543,6 +2665,18 @@ fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyllable> {
                             continue;
                         }
                     }
+                    // Single "-" is also a syllable separator in LilyPond lyrics
+                    pending_hyphen = true;
+                }
+                if t == "_" {
+                    // `_` as punctuation = melisma skip
+                    syllables.push(LyricSyllable {
+                        text: String::new(),
+                        syllabic: SyllabicType::Single,
+                        number: 0,
+                        extend: false,
+                        elision: false,
+                    });
                 }
             }
             "escaped_word" => {
@@ -2573,15 +2707,11 @@ fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyllable> {
     syllables
 }
 
-/// Check if position `start` begins a "--" double hyphen.
-fn peek_double_hyphen(state: &WalkState, children: &[Node], start: usize) -> bool {
+/// Check if position `start` begins a hyphen separator ("--" or single "-").
+fn peek_lyric_hyphen(state: &WalkState, children: &[Node], start: usize) -> bool {
     if let Some(a) = children.get(start) {
         if a.kind() == "punctuation" && state.text(*a) == "-" {
-            if let Some(b) = children.get(start + 1) {
-                if b.kind() == "punctuation" && state.text(*b) == "-" {
-                    return true;
-                }
-            }
+            return true;
         }
     }
     false
@@ -2606,6 +2736,7 @@ fn extract_lyricsto_voice(state: &WalkState, block: Node) -> Option<String> {
 
 /// Attach a list of lyric syllables to the notes of a part, distributing
 /// one syllable per note (skipping rests, tied notes, and melisma notes).
+/// Syllables with `number == 0` are melisma skips — the note gets no lyric.
 fn attach_lyrics_to_part(part: &mut Part, syllables: &[LyricSyllable]) {
     let mut syl_idx = 0;
     for measure in &mut part.measures {
@@ -2624,8 +2755,14 @@ fn attach_lyrics_to_part(part: &mut Part, syllables: &[LyricSyllable]) {
                         if is_tied {
                             continue;
                         }
-                        note.lyrics.push(syllables[syl_idx].clone());
-                        syl_idx += 1;
+                        let syl = &syllables[syl_idx];
+                        if syl.number == 0 {
+                            // Melisma skip: advance syllable index, no lyric on this note
+                            syl_idx += 1;
+                        } else {
+                            note.lyrics.push(syl.clone());
+                            syl_idx += 1;
+                        }
                     }
                     _ => {}
                 }
@@ -2801,6 +2938,31 @@ fn parse_grace_block(state: &mut WalkState, block: Node) -> Vec<Note> {
 fn apply_note_attachments(_state: &mut WalkState, note: &mut Note, attachments: &[String]) {
     for att in attachments {
         match att.as_str() {
+            "[" => {
+                // Start of manual beam group
+                _state.in_beam_group = true;
+                // Beam level depends on note duration: 8th=1, 16th=2, 32nd=3, 64th=4
+                let level = beam_level_for_duration(&note.duration);
+                if level > 0 {
+                    note.beams.push(BeamEvent {
+                        beam_type: "begin".to_string(),
+                        number: 1,
+                    });
+                }
+                continue;
+            }
+            "]" => {
+                // End of manual beam group
+                _state.in_beam_group = false;
+                let level = beam_level_for_duration(&note.duration);
+                if level > 0 {
+                    note.beams.push(BeamEvent {
+                        beam_type: "end".to_string(),
+                        number: 1,
+                    });
+                }
+                continue;
+            }
             "~" => {
                 note.ties.push(TieEvent {
                     tie_type: StartStop::Start,
@@ -3020,6 +3182,28 @@ fn apply_chord_attachments(
     let first = &mut chord.notes[0];
     for att in attachments {
         match att.as_str() {
+            "[" => {
+                _state.in_beam_group = true;
+                let level = beam_level_for_duration(&chord.duration);
+                if level > 0 {
+                    first.beams.push(BeamEvent {
+                        beam_type: "begin".to_string(),
+                        number: 1,
+                    });
+                }
+                continue;
+            }
+            "]" => {
+                _state.in_beam_group = false;
+                let level = beam_level_for_duration(&chord.duration);
+                if level > 0 {
+                    first.beams.push(BeamEvent {
+                        beam_type: "end".to_string(),
+                        number: 1,
+                    });
+                }
+                continue;
+            }
             "~" => {
                 first.ties.push(TieEvent {
                     tie_type: StartStop::Start,
@@ -3229,6 +3413,438 @@ fn attach_articulation(state: &mut WalkState, name: &str) {
             name: name.to_string(),
             placement: Placement::Unspecified,
         });
+    }
+}
+
+// ===========================================================================
+// Post-processing: automatic beaming and stem direction
+// ===========================================================================
+
+/// Apply automatic beaming and stem directions to all parts in a score.
+/// Only applies to notes that don't already have explicit beams/stems.
+fn post_process_beams_and_stems(score: &mut Score) {
+    for child in &mut score.children {
+        if let ScoreChild::Part(part) = child {
+            let mut current_ts: Option<TimeSignature> = None;
+            let mut current_clef = Clef::default(); // treble by default
+            for measure in &mut part.measures {
+                // Track time signature and clef changes
+                if let Some(ref attrs) = measure.attributes {
+                    if let Some(ref ts) = attrs.time {
+                        current_ts = Some(ts.clone());
+                    }
+                    if let Some(clef) = attrs.clefs.get(&1) {
+                        current_clef = clef.clone();
+                    }
+                }
+                let ts = current_ts
+                    .clone()
+                    .unwrap_or(TimeSignature {
+                        beats: "4".to_string(),
+                        beat_type: 4,
+                        symbol: None,
+                    });
+                for voice in &mut measure.voices {
+                    auto_beam_voice(&mut voice.elements, &ts);
+                    auto_stem_voice(&mut voice.elements, &current_clef);
+                }
+            }
+        }
+    }
+}
+
+/// Apply automatic beaming to a voice's elements.
+///
+/// Beaming rules:
+/// - Group consecutive beamable notes (8th or shorter) within a beam span.
+/// - In 4/4: 8th notes group per half note (4 per group); 16ths group per
+///   quarter note (4 per group). Mixed groups use the shorter span.
+/// - In other simple meters: group per beat (1/beat_type).
+/// - In compound meters (6/8, 9/8, 12/8): group per dotted beat (3/beat_type).
+/// - Tuplet notes only beam within their own tuplet group.
+/// - Don't beam single notes (group must have ≥2 beamable notes).
+/// - Skip notes that already have explicit beams.
+fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
+    let (eighth_span, sub_span) = compute_beam_spans(ts);
+    if sub_span <= Frac::from_integer(0) {
+        return;
+    }
+
+    // Collect beamable note indices with position and tuplet group info
+    struct NoteInfo {
+        idx: usize,
+        position: Frac,
+        beam_level: u8,
+        has_explicit_beam: bool,
+        tuplet_group: u32, // 0 = not in tuplet; same non-zero value = same tuplet
+    }
+
+    let mut infos: Vec<NoteInfo> = Vec::new();
+    let mut pos = Frac::from_integer(0);
+    let mut tuplet_counter: u32 = 0;
+    let mut current_tuplet: u32 = 0;
+
+    for (idx, elem) in elements.iter().enumerate() {
+        match elem {
+            VoiceElement::Note(n) => {
+                // Track tuplet groups
+                if let Some(ref td) = n.tuplet {
+                    if td.tuplet_type == StartStop::Start {
+                        tuplet_counter += 1;
+                        current_tuplet = tuplet_counter;
+                    }
+                }
+                let in_tuplet = if n.duration.tuplet_actual != 1 {
+                    current_tuplet
+                } else {
+                    0
+                };
+
+                let level = beam_level_for_duration(&n.duration);
+                if level > 0 && !n.is_grace {
+                    infos.push(NoteInfo {
+                        idx,
+                        position: pos,
+                        beam_level: level,
+                        has_explicit_beam: !n.beams.is_empty() || n.no_auto_beam,
+                        tuplet_group: in_tuplet,
+                    });
+                }
+                if !n.is_grace {
+                    pos = pos + n.duration.actual_duration();
+                }
+
+                if let Some(ref td) = n.tuplet {
+                    if td.tuplet_type == StartStop::Stop {
+                        current_tuplet = 0;
+                    }
+                }
+            }
+            VoiceElement::Rest(r) => {
+                // Track tuplet group for rests too
+                if let Some(ref td) = r.tuplet {
+                    if td.tuplet_type == StartStop::Start {
+                        tuplet_counter += 1;
+                        current_tuplet = tuplet_counter;
+                    }
+                }
+                pos = pos + r.duration.actual_duration();
+                if let Some(ref td) = r.tuplet {
+                    if td.tuplet_type == StartStop::Stop {
+                        current_tuplet = 0;
+                    }
+                }
+            }
+            VoiceElement::Chord(c) => {
+                let first_tuplet = c.notes.first().and_then(|n| n.tuplet.as_ref());
+                if let Some(td) = first_tuplet {
+                    if td.tuplet_type == StartStop::Start {
+                        tuplet_counter += 1;
+                        current_tuplet = tuplet_counter;
+                    }
+                }
+                let in_tuplet = if c.duration.tuplet_actual != 1 {
+                    current_tuplet
+                } else {
+                    0
+                };
+
+                let level = beam_level_for_duration(&c.duration);
+                let has_beam = c.notes.first().map_or(false, |n| !n.beams.is_empty() || n.no_auto_beam);
+                if level > 0 {
+                    infos.push(NoteInfo {
+                        idx,
+                        position: pos,
+                        beam_level: level,
+                        has_explicit_beam: has_beam,
+                        tuplet_group: in_tuplet,
+                    });
+                }
+                pos = pos + c.duration.actual_duration();
+
+                let last_tuplet = c.notes.first().and_then(|n| n.tuplet.as_ref());
+                if let Some(td) = last_tuplet {
+                    if td.tuplet_type == StartStop::Stop {
+                        current_tuplet = 0;
+                    }
+                }
+            }
+            VoiceElement::Forward(f) => {
+                pos = pos + f.duration.actual_duration();
+            }
+            VoiceElement::Backup(b) => {
+                pos = pos - b.duration.actual_duration();
+            }
+        }
+    }
+
+    let span_of = |pos: Frac, span: Frac| -> i64 {
+        if span <= Frac::from_integer(0) { return 0; }
+        (pos / span).to_integer()
+    };
+
+    // Group consecutive beamable notes that share the same tuplet group
+    // and fall within the same beam span.
+    // For tuplet notes: the beam span is the whole tuplet (don't use time-based spans).
+    // For non-tuplet notes: use beat-based spans depending on note durations.
+    let mut i = 0;
+    while i < infos.len() {
+        if infos[i].has_explicit_beam {
+            i += 1;
+            continue;
+        }
+
+        let group_start = i;
+        let tuplet_g = infos[i].tuplet_group;
+
+        if tuplet_g != 0 {
+            // Tuplet group: extend to end of same tuplet
+            i += 1;
+            while i < infos.len()
+                && infos[i].tuplet_group == tuplet_g
+                && !infos[i].has_explicit_beam
+            {
+                i += 1;
+            }
+        } else {
+            // Non-tuplet: determine the effective span for this group.
+            // If all notes are 8ths only (level 1), use eighth_span (half note in 4/4).
+            // If any note is 16th or shorter, use sub_span (quarter note in 4/4).
+            let beat = span_of(infos[i].position, sub_span);
+            i += 1;
+            while i < infos.len()
+                && infos[i].tuplet_group == 0
+                && !infos[i].has_explicit_beam
+                && span_of(infos[i].position, sub_span) == beat
+            {
+                i += 1;
+            }
+        }
+
+        let group_end = i;
+        let group_slice = &infos[group_start..group_end];
+        let group_len = group_slice.len();
+
+        if group_len < 2 {
+            continue;
+        }
+
+        // For non-tuplet 8th-only groups, try to merge with the next beat group
+        // to form half-note groups (in 4/4). This is done by checking if the next
+        // group is also 8th-only and on the same eighth_span.
+        let all_eighths = group_slice.iter().all(|n| n.beam_level == 1);
+        let mut merged_end = group_end;
+
+        if tuplet_g == 0 && all_eighths && eighth_span > sub_span {
+            // Try to extend into adjacent beat groups within the same eighth_span
+            let eighth_beat = span_of(infos[group_start].position, eighth_span);
+            while merged_end < infos.len()
+                && infos[merged_end].tuplet_group == 0
+                && !infos[merged_end].has_explicit_beam
+                && infos[merged_end].beam_level == 1
+                && span_of(infos[merged_end].position, eighth_span) == eighth_beat
+            {
+                merged_end += 1;
+            }
+            if merged_end > group_end {
+                // We merged; update i to skip past merged notes
+                i = merged_end;
+            }
+        }
+
+        let final_slice = &infos[group_start..merged_end];
+        let final_len = final_slice.len();
+
+        if final_len < 2 {
+            continue;
+        }
+
+        // Build beam assignments
+        let max_level = final_slice.iter().map(|n| n.beam_level).max().unwrap_or(1);
+
+        let mut assignments: Vec<(usize, Vec<BeamEvent>)> = Vec::new();
+        for info in final_slice {
+            assignments.push((info.idx, Vec::new()));
+        }
+
+        // Level 1: beam across the entire group
+        for (gi, _) in final_slice.iter().enumerate() {
+            let bt = if gi == 0 {
+                "begin"
+            } else if gi == final_len - 1 {
+                "end"
+            } else {
+                "continue"
+            };
+            assignments[gi].1.push(BeamEvent {
+                beam_type: bt.to_string(),
+                number: 1,
+            });
+        }
+
+        // Level 2+: break at sub_span boundaries
+        for level in 2..=max_level {
+            let mut si = 0;
+            while si < final_len {
+                let info = &final_slice[si];
+                if info.beam_level < level {
+                    si += 1;
+                    continue;
+                }
+                let sub_beat = span_of(info.position, sub_span);
+                let sub_start = si;
+                si += 1;
+                while si < final_len {
+                    let ni = &final_slice[si];
+                    if ni.beam_level < level
+                        || span_of(ni.position, sub_span) != sub_beat
+                    {
+                        break;
+                    }
+                    si += 1;
+                }
+                let sub_len = si - sub_start;
+                if sub_len < 2 {
+                    // Single note at this level: use a hook
+                    let is_at_end = sub_start + 1 >= final_len;
+                    let hook = if is_at_end { "backward hook" } else { "forward hook" };
+                    assignments[sub_start].1.push(BeamEvent {
+                        beam_type: hook.to_string(),
+                        number: level,
+                    });
+                    continue;
+                }
+                for sgi in sub_start..si {
+                    let bt = if sgi == sub_start {
+                        "begin"
+                    } else if sgi == si - 1 {
+                        "end"
+                    } else {
+                        "continue"
+                    };
+                    assignments[sgi].1.push(BeamEvent {
+                        beam_type: bt.to_string(),
+                        number: level,
+                    });
+                }
+            }
+        }
+
+        // Apply to elements
+        for (elem_idx, beams) in assignments {
+            if beams.is_empty() { continue; }
+            match &mut elements[elem_idx] {
+                VoiceElement::Note(n) => n.beams = beams,
+                VoiceElement::Chord(c) => {
+                    if let Some(first) = c.notes.first_mut() {
+                        first.beams = beams;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Compute beam grouping spans for auto-beaming.
+/// Returns (primary_span, sub_span):
+/// - primary_span: grouping unit for level-1 beams (8ths)
+/// - sub_span: grouping unit for level-2+ beams (16ths, 32nds)
+///
+/// In simple quadruple time (4/4): primary = half note, sub = quarter note.
+/// In compound meters (6/8 etc): both = dotted beat.
+/// In other simple meters: both = one beat.
+fn compute_beam_spans(ts: &TimeSignature) -> (Frac, Frac) {
+    let beats: i64 = ts
+        .beats
+        .split('+')
+        .filter_map(|b| b.trim().parse::<i64>().ok())
+        .sum();
+    let bt = ts.beat_type as i64;
+
+    if bt == 0 || beats == 0 {
+        let q = Frac::new(1, 4);
+        return (q, q);
+    }
+
+    // Compound meters: dotted beat for all levels
+    if beats % 3 == 0 && beats > 3 && (bt == 8 || bt == 16) {
+        let dotted = Frac::new(3, bt);
+        return (dotted, dotted);
+    }
+
+    let beat = Frac::new(1, bt);
+
+    // Simple quadruple: 8ths group per half note, sub-beams per beat
+    if beats == 4 && bt == 4 {
+        let half = Frac::new(1, 2);
+        return (half, beat);
+    }
+
+    // Other simple meters: both levels group per beat
+    (beat, beat)
+}
+
+/// Apply automatic stem directions to notes that don't have explicit stems.
+///
+/// Rule: for notes on or above the middle line (B4 in treble clef),
+/// stem goes down; below the middle line, stem goes up.
+/// The middle line depends on the clef, but B4 is the default for treble.
+fn auto_stem_voice(elements: &mut [VoiceElement], clef: &Clef) {
+    let mid = middle_line_midi(clef);
+    for elem in elements {
+        match elem {
+            VoiceElement::Note(n) => {
+                if n.stem_direction.is_empty() && !n.is_grace {
+                    n.stem_direction = auto_stem_for_midi(n.pitch.midi_number(), mid);
+                }
+            }
+            VoiceElement::Chord(c) => {
+                if c.notes.is_empty() {
+                    continue;
+                }
+                let has_explicit = c.notes.iter().any(|n| !n.stem_direction.is_empty());
+                if !has_explicit {
+                    let avg_midi: f64 = c.notes.iter().map(|n| n.pitch.midi_number() as f64).sum::<f64>()
+                        / c.notes.len() as f64;
+                    let dir = if avg_midi >= mid as f64 { "down" } else { "up" };
+                    for n in &mut c.notes {
+                        n.stem_direction = dir.to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// MIDI number of the middle staff line for a given clef.
+/// Notes at or above this pitch get stem down; below get stem up.
+fn middle_line_midi(clef: &Clef) -> i32 {
+    let base = match clef.sign {
+        ClefSign::G => {
+            // G clef: G4 (MIDI 67) on clef.line (default 2). Middle line (3) offset.
+            67 + (3 - clef.line as i32) * 2
+        }
+        ClefSign::F => {
+            // F clef: F3 (MIDI 53) on clef.line (default 4). Middle line (3) offset.
+            53 + (3 - clef.line as i32) * 2
+        }
+        ClefSign::C => {
+            // C clef: C4 (MIDI 60) on clef.line. Middle line (3) offset.
+            60 + (3 - clef.line as i32) * 2
+        }
+        _ => 71, // default to treble
+    };
+    base + clef.octave_change as i32 * 12
+}
+
+/// Determine automatic stem direction based on MIDI number and middle line.
+fn auto_stem_for_midi(midi: i32, middle: i32) -> String {
+    if midi >= middle {
+        "down".to_string()
+    } else {
+        "up".to_string()
     }
 }
 
@@ -3759,6 +4375,37 @@ pB = { g4 a b c' }
                 assert_eq!(n.duration.tuplet_normal, 2);
             }
             _ => panic!("expected Note"),
+        }
+    }
+
+    #[test]
+    fn test_sextuplet_6_4() {
+        // \tuplet 6/4 { r16 a'16 b'16 cis''16 d''16 e''16 } = 6 16ths in time of 4 16ths = 1 quarter
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \time 4/4 c'4 r4 r4 \tuplet 6/4 { r16 a'16 b'16 cis''16 d''16 e''16 } }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let part = &parts[0];
+        // Should be exactly 1 measure (3 quarters + sextuplet = 1 quarter = 4/4)
+        assert_eq!(part.measures.len(), 1, "sextuplet should fit in one measure, got {} measures", part.measures.len());
+
+        let elems: Vec<&VoiceElement> = part.measures[0].voices[0].elements.iter().collect();
+        // c'4 r4 r4 + 6 tuplet notes = 9 elements
+        assert_eq!(elems.len(), 9, "expected 9 elements, got {}", elems.len());
+
+        // Check that the tuplet rest and notes have tuplet_actual=6, tuplet_normal=4
+        for elem in &elems[3..9] {
+            match elem {
+                VoiceElement::Note(n) => {
+                    assert_eq!(n.duration.tuplet_actual, 6, "note should have tuplet_actual=6");
+                    assert_eq!(n.duration.tuplet_normal, 4, "note should have tuplet_normal=4");
+                }
+                VoiceElement::Rest(r) => {
+                    assert_eq!(r.duration.tuplet_actual, 6, "rest should have tuplet_actual=6");
+                    assert_eq!(r.duration.tuplet_normal, 4, "rest should have tuplet_normal=4");
+                }
+                _ => panic!("unexpected element in tuplet"),
+            }
         }
     }
 
@@ -4410,6 +5057,371 @@ melB = { g'4 a' b' c'' }
         assert_eq!(scores[1].parts().len(), 4);
     }
 
+    #[test]
+    fn test_explicit_beam_brackets() {
+        let adapter = LyToIrAdapter::new();
+        let src = "{ c'8[ d' e' f'] }";
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(notes.len(), 4);
+        // First note: beam begin at level 1
+        assert!(
+            notes[0].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1),
+            "first note should have beam begin: {:?}",
+            notes[0].beams
+        );
+        // Middle notes: beam continue at level 1
+        assert!(
+            notes[1].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1),
+            "second note should have beam continue: {:?}",
+            notes[1].beams
+        );
+        assert!(
+            notes[2].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1),
+            "third note should have beam continue: {:?}",
+            notes[2].beams
+        );
+        // Last note: beam end at level 1
+        assert!(
+            notes[3].beams.iter().any(|b| b.beam_type == "end" && b.number == 1),
+            "last note should have beam end: {:?}",
+            notes[3].beams
+        );
+    }
+
+    #[test]
+    fn test_auto_beam_eighths_in_4_4() {
+        // Eight eighth notes in 4/4 should be beamed in groups of 4 (per half note)
+        let adapter = LyToIrAdapter::new();
+        let src = "{ \\time 4/4 c'8 d' e' f' g' a' b' c'' }";
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(notes.len(), 8, "should have 8 eighth notes");
+        // Group 1 (half note 1): c' d' e' f' (begin, continue, continue, end)
+        assert!(notes[0].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[1].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[2].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[3].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+        // Group 2 (half note 2): g' a' b' c'' (begin, continue, continue, end)
+        assert!(notes[4].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[5].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[6].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[7].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+    }
+
+    #[test]
+    fn test_auto_beam_compound_6_8() {
+        // In 6/8, beam in groups of 3 eighth notes
+        let adapter = LyToIrAdapter::new();
+        let src = "{ \\time 6/8 c'8 d' e' f' g' a' }";
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(notes.len(), 6, "should have 6 eighth notes");
+        // Group 1: c' d' e' (begin, continue, end)
+        assert!(notes[0].beams.iter().any(|b| b.beam_type == "begin"));
+        assert!(notes[1].beams.iter().any(|b| b.beam_type == "continue"));
+        assert!(notes[2].beams.iter().any(|b| b.beam_type == "end"));
+        // Group 2: f' g' a' (begin, continue, end)
+        assert!(notes[3].beams.iter().any(|b| b.beam_type == "begin"));
+        assert!(notes[4].beams.iter().any(|b| b.beam_type == "continue"));
+        assert!(notes[5].beams.iter().any(|b| b.beam_type == "end"));
+    }
+
+    #[test]
+    #[allow(clippy::vec_init_then_push)]
+    fn test_stem_direction_commands() {
+        let adapter = LyToIrAdapter::new();
+        let src = "{ \\stemUp c'8 d' \\stemDown e' f' \\stemNeutral g' a' b' c'' }";
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(notes.len(), 8);
+        // \stemUp applies to first two
+        assert_eq!(notes[0].stem_direction, "up");
+        assert_eq!(notes[1].stem_direction, "up");
+        // \stemDown applies to next two
+        assert_eq!(notes[2].stem_direction, "down");
+        assert_eq!(notes[3].stem_direction, "down");
+        // \stemNeutral → auto-stem for remaining
+        // g' (G4, MIDI 67) < 71 → up
+        assert_eq!(notes[4].stem_direction, "up", "G4 auto-stem should be up");
+    }
+
+    #[test]
+    fn test_auto_stem_direction() {
+        // Notes above B4 should have stem down, below should have stem up
+        let adapter = LyToIrAdapter::new();
+        let src = "{ c'4 b' c'' }"; // C4=60, B4=71, C5=72
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(notes[0].stem_direction, "up", "C4 below middle → up");
+        assert_eq!(notes[1].stem_direction, "down", "B4 on middle line → down");
+        assert_eq!(notes[2].stem_direction, "down", "C5 above middle → down");
+    }
+
+    #[test]
+    fn test_acciaccatura_no_measure_duration() {
+        // Grace notes should not affect measure duration tracking
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \time 4/4 \acciaccatura d''8 c''2 e''8 d'' c'' b' }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let part = &parts[0];
+        assert_eq!(part.measures.len(), 1, "acciaccatura should not cause extra measure split");
+    }
+
+    #[test]
+    fn test_auto_beam_16ths_grouped_by_4() {
+        // 16th notes in 4/4 should be grouped by 4 (per quarter note)
+        let adapter = LyToIrAdapter::new();
+        let src = "{ \\time 4/4 c'16 d' e' f' g' a' b' c'' d'' e'' f'' g'' a'' b'' c''' d''' }";
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .collect();
+        assert_eq!(notes.len(), 16);
+        // Group 1 (beat 1): notes 0-3
+        assert!(notes[0].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[3].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+        // Group 2 (beat 2): notes 4-7
+        assert!(notes[4].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[7].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+        // Group 3 (beat 3): notes 8-11
+        assert!(notes[8].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[11].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+    }
+
+    #[test]
+    fn test_tuplet_beam_isolation() {
+        // Tuplet 8ths should beam only within the tuplet, not with adjacent notes
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \time 4/4 c'4 \tuplet 3/2 { d'8 e' f' } g'4 }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .collect();
+        // c'4 d'8 e'8 f'8 g'4 = 5 notes
+        assert_eq!(notes.len(), 5);
+        // Tuplet notes (1,2,3) should be beamed together
+        assert!(notes[1].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[2].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[3].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+        // Non-tuplet quarter notes should have no beams
+        assert!(notes[0].beams.is_empty());
+        assert!(notes[4].beams.is_empty());
+    }
+
+    #[test]
+    fn test_alto_clef_auto_stem() {
+        // In alto clef, middle line is C4 (MIDI 60)
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \clef "alto" \time 4/4 b4 c' d' e' }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .collect();
+        assert_eq!(notes.len(), 4);
+        // B3 = MIDI 59, below C4 → up
+        assert_eq!(notes[0].stem_direction, "up", "B3 below alto middle → up");
+        // C4 = MIDI 60, on middle line → down
+        assert_eq!(notes[1].stem_direction, "down", "C4 on alto middle → down");
+        // D4 = MIDI 62, above middle → down
+        assert_eq!(notes[2].stem_direction, "down", "D4 above alto middle → down");
+    }
+
+    #[test]
+    fn test_lyric_melisma_skip() {
+        // `_` in lyrics should skip a note (melisma extension)
+        let adapter = LyToIrAdapter::new();
+        let src = r#"
+\score {
+  <<
+    \new Voice = "melody" { c'4 d' e' f' }
+    \new Lyrics \lyricsto "melody" \lyricmode { hello _ world _ }
+  >>
+}
+"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let notes: Vec<&Note> = parts[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .collect();
+        assert!(notes.len() >= 4);
+        // Note 0 should have "hello"
+        assert_eq!(notes[0].lyrics.len(), 1, "note 0 should have a lyric");
+        assert_eq!(notes[0].lyrics[0].text, "hello");
+        // Note 1 should have no lyric (melisma skip)
+        assert!(notes[1].lyrics.is_empty(), "note 1 should have no lyric (melisma skip)");
+        // Note 2 should have "world"
+        assert_eq!(notes[2].lyrics.len(), 1, "note 2 should have a lyric");
+        assert_eq!(notes[2].lyrics[0].text, "world");
+        // Note 3 should have no lyric (melisma skip)
+        assert!(notes[3].lyrics.is_empty(), "note 3 should have no lyric (melisma skip)");
+    }
+
+    #[test]
+    fn test_lyric_single_hyphen_separator() {
+        // Single `-` between lyrics should work as syllable separator
+        let adapter = LyToIrAdapter::new();
+        let src = r#"
+\score {
+  <<
+    \new Voice = "v" { c'4 d' e' f' }
+    \new Lyrics \lyricsto "v" \lyricmode { fi - li - ae rest }
+  >>
+}
+"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let notes: Vec<&Note> = parts[0].measures.iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .collect();
+        assert!(notes.len() >= 4);
+        assert_eq!(notes[0].lyrics[0].text, "fi");
+        assert_eq!(notes[0].lyrics[0].syllabic, SyllabicType::Begin);
+        assert_eq!(notes[1].lyrics[0].text, "li");
+        assert_eq!(notes[1].lyrics[0].syllabic, SyllabicType::Middle);
+        assert_eq!(notes[2].lyrics[0].text, "ae");
+        assert_eq!(notes[2].lyrics[0].syllabic, SyllabicType::End);
+        assert_eq!(notes[3].lyrics[0].text, "rest");
+        assert_eq!(notes[3].lyrics[0].syllabic, SyllabicType::Single);
+    }
+
+    #[test]
+    fn test_auto_beam_off() {
+        // \autoBeamOff should prevent auto-beaming
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \time 4/4 \autoBeamOff c'8 d' e' f' g' a' b' c'' }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .collect();
+        assert_eq!(notes.len(), 8);
+        // All notes should have no beams (auto-beaming suppressed)
+        for (i, note) in notes.iter().enumerate() {
+            assert!(note.beams.is_empty(), "note {} should have no beams with \\autoBeamOff", i);
+        }
+    }
+
+    #[test]
+    fn test_auto_beam_off_with_explicit_brackets() {
+        // \autoBeamOff with explicit [] should still beam those notes
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \time 4/4 \autoBeamOff c'8[ d'] e' f' }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        let notes: Vec<&Note> = m.voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .collect();
+        // First two notes should have explicit beams
+        assert!(!notes[0].beams.is_empty(), "note 0 should have beam from [");
+        assert!(!notes[1].beams.is_empty(), "note 1 should have beam from ]");
+        // Remaining notes should have no beams
+        assert!(notes[2].beams.is_empty(), "note 2 should have no beams");
+        assert!(notes[3].beams.is_empty(), "note 3 should have no beams");
+    }
+
+    #[test]
+    fn test_time_sig_change_measure_duration() {
+        // When time signature changes, measure durations should match the new time sig
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \time 4/4 c'4 d' e' f' | \time 3/4 g'4 a' b' | c''2. }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let part = &parts[0];
+        assert!(part.measures.len() >= 3, "should have at least 3 measures");
+        // Measure 1: 4/4 = 4 quarter notes
+        let m1_dur: Frac = part.measures[0].voices[0].elements.iter()
+            .map(|e| voice_element_duration(e)).sum();
+        assert_eq!(m1_dur, Frac::new(1, 1), "m1 should be 1 whole");
+        // Measure 2: 3/4 = 3 quarter notes
+        let m2_dur: Frac = part.measures[1].voices[0].elements.iter()
+            .map(|e| voice_element_duration(e)).sum();
+        assert_eq!(m2_dur, Frac::new(3, 4), "m2 should be 3/4");
+    }
+
 }
 
 /// Parse a `\figuremode { ... }` expression block into a flat stream of figured bass entries.
@@ -4657,6 +5669,24 @@ fn distribute_figured_bass(measures: &mut [Measure], entries: &[FiguredBassEntry
 }
 
 /// Get the sounding duration of a voice element (for auto bar-splitting).
+/// Return the beam level for a note duration:
+/// 0 = not beamable (quarter or longer), 1 = eighth, 2 = 16th, 3 = 32nd, 4 = 64th.
+fn beam_level_for_duration(dur: &Duration) -> u8 {
+    let d = *dur.base.denom();
+    let n = *dur.base.numer();
+    if n != 1 {
+        return 0;
+    }
+    match d {
+        8 => 1,
+        16 => 2,
+        32 => 3,
+        64 => 4,
+        128 => 5,
+        _ => 0,
+    }
+}
+
 fn voice_element_duration(elem: &VoiceElement) -> Frac {
     match elem {
         VoiceElement::Note(n) => n.duration.actual_duration(),
@@ -4853,71 +5883,84 @@ fn resplit_measures_to_match(
     result
 }
 
-/// Set tuplet duration fields and display markers on a voice element.
-fn apply_tuplet_to_element(
-    elem: &mut VoiceElement,
-    actual: u8,
-    normal: u8,
-    is_first: bool,
-    is_last: bool,
-) {
-    // Set duration tuplet ratio
+/// Apply tuplet ratio to a voice element's duration.
+/// Called from `push_voice_element` so that measure duration tracking is correct.
+fn apply_tuplet_ratio(elem: &mut VoiceElement, actual: u8, normal: u8) {
     match elem {
         VoiceElement::Note(n) => {
             n.duration.tuplet_actual = actual;
             n.duration.tuplet_normal = normal;
-            if is_first {
-                n.tuplet = Some(TupletDisplay {
-                    tuplet_type: StartStop::Start,
-                    bracket: true,
-                    show_number: "actual".to_string(),
-                });
-            } else if is_last {
-                n.tuplet = Some(TupletDisplay {
-                    tuplet_type: StartStop::Stop,
-                    bracket: true,
-                    show_number: String::new(),
-                });
-            }
         }
         VoiceElement::Rest(r) => {
             r.duration.tuplet_actual = actual;
             r.duration.tuplet_normal = normal;
-            if is_first {
-                r.tuplet = Some(TupletDisplay {
-                    tuplet_type: StartStop::Start,
-                    bracket: true,
-                    show_number: "actual".to_string(),
-                });
-            } else if is_last {
-                r.tuplet = Some(TupletDisplay {
-                    tuplet_type: StartStop::Stop,
-                    bracket: true,
-                    show_number: String::new(),
-                });
-            }
         }
         VoiceElement::Chord(c) => {
             c.duration.tuplet_actual = actual;
             c.duration.tuplet_normal = normal;
-            if is_first {
-                if let Some(first_note) = c.notes.first_mut() {
-                    first_note.tuplet = Some(TupletDisplay {
+        }
+        _ => {}
+    }
+}
+
+/// Set tuplet display markers (start/stop brackets) on a slice of voice elements.
+fn apply_tuplet_display(elements: &mut [VoiceElement], _actual: u8) {
+    let len = elements.len();
+    for (i, elem) in elements.iter_mut().enumerate() {
+        let is_first = i == 0;
+        let is_last = i == len - 1;
+        if !is_first && !is_last {
+            continue;
+        }
+        match elem {
+            VoiceElement::Note(n) => {
+                if is_first {
+                    n.tuplet = Some(TupletDisplay {
                         tuplet_type: StartStop::Start,
                         bracket: true,
                         show_number: "actual".to_string(),
                     });
-                }
-            } else if is_last {
-                if let Some(first_note) = c.notes.first_mut() {
-                    first_note.tuplet = Some(TupletDisplay {
+                } else if is_last {
+                    n.tuplet = Some(TupletDisplay {
                         tuplet_type: StartStop::Stop,
                         bracket: true,
                         show_number: String::new(),
                     });
                 }
             }
+            VoiceElement::Rest(r) => {
+                if is_first {
+                    r.tuplet = Some(TupletDisplay {
+                        tuplet_type: StartStop::Start,
+                        bracket: true,
+                        show_number: "actual".to_string(),
+                    });
+                } else if is_last {
+                    r.tuplet = Some(TupletDisplay {
+                        tuplet_type: StartStop::Stop,
+                        bracket: true,
+                        show_number: String::new(),
+                    });
+                }
+            }
+            VoiceElement::Chord(c) => {
+                if let Some(first_note) = c.notes.first_mut() {
+                    if is_first {
+                        first_note.tuplet = Some(TupletDisplay {
+                            tuplet_type: StartStop::Start,
+                            bracket: true,
+                            show_number: "actual".to_string(),
+                        });
+                    } else if is_last {
+                        first_note.tuplet = Some(TupletDisplay {
+                            tuplet_type: StartStop::Stop,
+                            bracket: true,
+                            show_number: String::new(),
+                        });
+                    }
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
 }
