@@ -47,7 +47,7 @@ target/debug/lytk          # debug
 target/release/lytk        # release
 ```
 
-Build with the optional MIDI feature:
+Build with the MIDI feature:
 
 ```bash
 cargo build --features midi
@@ -76,11 +76,10 @@ Or in one step via uv:
 uv run maturin develop
 ```
 
-The installed package lives in `src/lytk/`. After running `maturin develop` you can import it:
+Build with MIDI support enabled:
 
-```python
-import lytk
-print(lytk.hello_from_bin())   # stub, prints the Rust greeting
+```bash
+maturin develop --features midi
 ```
 
 Build a wheel (for distribution):
@@ -106,6 +105,7 @@ Run a specific test by name (substring match):
 ```bash
 cargo test test_parse_minimal_score
 cargo test test_parse_all_fixtures
+cargo test test_sextuplet
 ```
 
 Run tests for a specific module:
@@ -114,6 +114,12 @@ Run tests for a specific module:
 cargo test --lib ir::
 cargo test --lib adapters::
 cargo test --lib transforms::
+```
+
+Run flatten-specific tests:
+
+```bash
+cargo test --lib adapters::ly_flatten
 ```
 
 Show output from passing tests (useful for debugging):
@@ -148,12 +154,6 @@ Run with coverage:
 pytest tests/ --cov=lytk --cov-report=term-missing
 ```
 
-Run a specific test file:
-
-```bash
-pytest tests/adapters/test_mxml.py -v
-```
-
 ### Lint and format
 
 ```bash
@@ -170,7 +170,8 @@ ruff format .                       # format
 
 ## Test Fixtures
 
-MusicXML fixture files are in `tests/fixtures/xml/` (143 files from the MusicXML Test Suite). LilyPond fixtures are in `tests/fixtures/ly/` (30 files).
+- **MusicXML fixtures** — `tests/fixtures/xml/` (143 files from the MusicXML Test Suite)
+- **LilyPond fixtures** — `tests/fixtures/ly/` (test scores including multi-movement, multi-staff, lyrics, figured bass)
 
 The test `test_parse_all_fixtures` in `src/adapters/mxml_to_ir.rs` runs the MusicXML adapter against every file in `tests/fixtures/xml/` and asserts that each parses without error and produces at least one part.
 
@@ -178,54 +179,25 @@ The test `test_parse_all_fixtures` in `src/adapters/mxml_to_ir.rs` runs the Musi
 
 ## CLI
 
-> **Note:** The CLI is currently a stub. Running `lytk` prints "lytk CLI not yet implemented" and exits with code 1. The interface below describes the planned commands — see [roadmap.md](roadmap.md) for implementation status.
+The CLI is fully implemented. See [docs/cli.md](cli.md) for the complete reference.
 
-### Planned interface
-
-Convert a single file:
+### Quick reference
 
 ```bash
-lytk convert input.xml -o output.ly          # MusicXML → LilyPond
-lytk convert input.ly  -o output.xml         # LilyPond → MusicXML
-lytk convert input.mxl -o output.ly          # compressed MXL → LilyPond
-```
-
-Batch convert a directory (parallel, 8 threads):
-
-```bash
+# Convert
+lytk convert input.xml -o output.ly
+lytk convert input.ly  -o output.xml
 lytk convert input_dir/ -o output_dir/ -j 8
-```
 
-Force output format (overrides extension detection):
+# Flatten (expand \include directives)
+lytk flatten score.ly -o flat.ly
+lytk flatten score.ly -I ./lib -o flat.ly
 
-```bash
-lytk convert input.xml -o output.txt --format ly
-```
+# Transpose
+lytk transpose input.ly --semitones 3 -o out.ly
 
-Apply a transform and convert:
-
-```bash
-lytk transpose input.xml --semitones 3 -o transposed.xml
-lytk transpose input_dir/ --semitones 3 -o output_dir/ -j 8
-```
-
-Print score metadata:
-
-```bash
+# Metadata
 lytk info input.xml
-```
-
-### Building the CLI
-
-```bash
-cargo build --release
-```
-
-Add the binary to your PATH:
-
-```bash
-export PATH="$PATH:$(pwd)/target/release"
-lytk --help
 ```
 
 ---
@@ -234,7 +206,7 @@ lytk --help
 
 | Feature | Default | Description |
 |---|---|---|
-| `midi` | off | Enable MIDI adapter (adds `midly` dependency) |
+| `midi` | off | Enable MIDI adapter (adds `midly` dependency). Planned to become a default dependency in a future release. |
 
 Enable a feature at build time:
 
@@ -242,3 +214,22 @@ Enable a feature at build time:
 cargo build --features midi
 cargo test --features midi
 ```
+
+---
+
+## Benchmarks
+
+Benchmarks are in `benches/benchmarks.rs` (Criterion) and `benches/bench_python.py`
+(pytest-benchmark, comparing lytk vs python-ly).
+
+```bash
+cargo bench
+pytest benches/bench_python.py --benchmark-compare
+```
+
+Key measured results (release build, ~5k-note score):
+
+| Operation | lytk (Rust) | python-ly | Speedup |
+|---|---|---|---|
+| Transpose | ~0.8 ms | ~42 ms | ~52× |
+| Language change | ~0.5 ms | ~20 ms | ~40× |

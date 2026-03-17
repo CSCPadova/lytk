@@ -2,9 +2,15 @@
 
 ## Overview
 
-lytk converts between symbolic music formats (MusicXML, LilyPond, MIDI, ABC) through a shared Internal Representation (IR). The IR is a tree of immutable value objects that can be cloned, serialized, and transformed. Transforms are composable, idempotent passes that produce new IR trees without mutating their input.
+lytk converts between symbolic music formats (MusicXML, LilyPond, MIDI) through a
+shared Internal Representation (IR). The IR is a tree of value objects that can be
+cloned, serialised (serde JSON), and transformed. Transforms are composable,
+pure-function passes that produce new IR trees without mutating their input.
 
-The Rust crate (`lytk`) is the core library. Python bindings are exposed via PyO3 under `lytk._core`, with a thin Python package at `src/lytk/` providing the public API.
+The Rust crate (`lytk`) is the core library. Python bindings are exposed via PyO3
+under `lytk._core`, with a thin Python package at `src/lytk/` providing the public API.
+
+---
 
 ## IR Tree Structure
 
@@ -12,59 +18,148 @@ The IR forms a tree rooted at `Score`:
 
 ```
 Score
-├── metadata: ScoreMetadata (title, composer, pitch_language, pitch_mode, …)
-├── part_groups: Vec<PartGroup>
-│   └── parts: (indices into Score.parts)
-└── parts: Vec<Part>
-    ├── info: PartInfo (id, name, abbreviation, midi_program, midi_channel)
-    └── voices: Vec<Voice>
+├── metadata: ScoreMetadata (title, composer, subtitle, arranger,
+│             pitch_language, partial_duration, extra)
+├── page_layout: Option<PageLayout>
+├── part_groups: Vec<PartGroup>  (brace/bracket groupings)
+└── children: Vec<ScoreChild>   (ScoreChild::Part or ScoreChild::Score for movements)
+    └── Part
+        ├── part_id, name, abbreviation
+        ├── midi_channel, midi_program, midi_instrument
         └── measures: Vec<Measure>
-            ├── attributes: MeasureAttributes (key, time, clef, divisions, transpose, staves)
-            ├── notes: Vec<NoteEvent>  — Note, Rest, Chord, Spacer
+            ├── attributes: Option<MeasureAttributes>
+            │   ├── key: Option<KeySignature>
+            │   ├── time: Option<TimeSignature>
+            │   ├── clefs: HashMap<u8, Clef>    (staff number → clef)
+            │   ├── divisions: Option<u32>
+            │   ├── transpose: Option<Transpose>
+            │   └── staves: Option<u8>
+            ├── voices: Vec<MeasureVoice>
+            │   └── elements: Vec<VoiceElement>
+            │       ├── Note    (pitch, duration, ties, slurs, articulations,
+            │       │            beams, tuplet, lyrics, grace/cue flags, …)
+            │       ├── Rest    (duration, display pitch, is_measure_rest)
+            │       ├── Chord   (duration, Vec<Note>, arpeggio)
+            │       ├── Forward (time advance)
+            │       └── Backup  (time retreat)
             ├── directions: Vec<Direction>
-            └── barline: Option<Barline>
+            ├── harmonies: Vec<Harmony>
+            ├── figured_basses: Vec<FiguredBass>
+            ├── barline: Option<Barline>
+            └── width: Option<f32>
 ```
 
-### Leaf Value Objects
+### Leaf value objects
 
-These are plain structs, not tree nodes:
+| Type | Fields |
+|---|---|
+| `Pitch` | `step: PitchStep`, `alter: Alter`, `octave: i32` |
+| `Duration` | `base: Frac`, `dots: u8`, `tuplet_actual: u8`, `tuplet_normal: u8` |
+| `Articulation` | `name: String`, `placement: Placement` |
+| `Ornament` | `name: String`, `placement: Placement` |
+| `Technical` | `name: String`, `value: String` |
+| `DynamicMark` | `sign: String`, `placement: Placement` |
+| `Wedge` | `wedge_type: String`, `placement: Placement` |
+| `BeamEvent` | `beam_type: BeamType`, `number: u8` |
+| `TupletDisplay` | `type_: StartStop`, `number: Option<u8>`, `bracket: Option<bool>` |
+| `LyricSyllable` | `text: String`, `syllabic: SyllabicType`, `number: u8`, `extend: bool`, `elision: bool` |
+| `Fermata` | `shape: String`, `placement: Placement` |
+| `TieEvent` / `SlurEvent` | `tie_type / slur_type: StartStop`, `number: u8` |
 
-- **Pitch** — step (0–6), alter (float, semitones), octave. Constructed via `Pitch::new()` or `Pitch::from_midi()`. Comparison and display are derived.
-- **Duration** — numerator/denominator fraction plus dot count. `from_divisions(value, divisions, dots)` converts MusicXML divisions. `to_lilypond()` renders as `.ly` duration token.
-- **Articulation** — `name: String` (e.g. `"staccato"`, `"accent"`), `placement: Placement`.
-- **Ornament** — `name: String` (e.g. `"trill"`, `"mordent"`), `placement: Placement`.
-- **Technical** — `name: String`, `value: String` (e.g. `name="fingering"`, `value="3"`).
-- **DynamicMark** — `sign: String` (e.g. `"ff"`, `"mp"`), `placement: Placement`.
-- **Wedge** — `wedge_type: String` (e.g. `"crescendo"`), `placement: Placement`.
+Articulations, ornaments, technicals, and dynamics use `String` names rather than
+exhaustive enums, keeping the IR extensible across MusicXML and LilyPond dialects.
 
-Articulations, ornaments, technicals, dynamics, and wedges use `String` names rather than enums to stay extensible. The adapter is responsible for mapping format-specific names.
+### Note fields
 
-### NoteEvent Variants
+`Note` carries all notation attached to a single pitch:
 
-`NoteEvent` is an enum with four variants:
-
-- **Note** — pitch, duration, dots, voice number, staff, plus optional: stem direction, beam events, tie, slurs, articulations, ornaments, technicals, lyrics, grace/cue flags, tuplet display, accidental display, notehead.
-- **Rest** — duration, dots, voice, staff, display step/octave.
-- **Chord** — a `Vec<Note>` sharing a single duration.
-- **Spacer** — duration, dots, voice.
+```rust
+pub struct Note {
+    pub pitch: Pitch,
+    pub duration: Duration,
+    pub voice: u8,
+    pub staff: u8,
+    // articulations & notation
+    pub ties: Vec<TieEvent>,
+    pub slurs: Vec<SlurEvent>,
+    pub articulations: Vec<Articulation>,
+    pub ornaments: Vec<Ornament>,
+    pub technicals: Vec<Technical>,
+    pub dynamics: Vec<DynamicMark>,
+    pub wedges: Vec<Wedge>,
+    pub text_directions: Vec<TextDirection>,
+    pub beams: Vec<BeamEvent>,
+    pub tuplet: Option<TupletDisplay>,
+    pub fermata: Option<Fermata>,
+    pub lyrics: Vec<LyricSyllable>,
+    // flags
+    pub is_grace: bool,
+    pub grace_slash: bool,   // acciaccatura
+    pub after_grace: bool,
+    pub is_cue: bool,
+    pub glissando: Option<StartStop>,
+    pub slide: Option<StartStop>,
+    pub glissando_line_type: Option<String>,
+    pub stem_direction: String,
+    pub notehead: String,
+    pub print_object: bool,
+    pub tremolo_marks: u8,
+    pub two_note_tremolo: bool,
+    pub tremolo_start: bool,
+    pub no_auto_beam: bool,
+}
+```
 
 ### Direction
 
-A `Direction` holds at most one of each: `dynamic`, `wedge`, `tempo`, `text`, `rehearsal`, `octave_shift`, `pedal`. Plus `placement` and `offset`.
+`Direction` holds a set of optional markings at a single musical position:
+
+```rust
+pub struct Direction {
+    pub placement: Placement,
+    pub offset: Option<i32>,
+    pub dynamic: Option<DynamicMark>,
+    pub wedge: Option<Wedge>,
+    pub tempo: Option<TempoDirection>,
+    pub text: Option<TextDirection>,
+    pub rehearsal: Option<String>,
+    pub octave_shift: Option<OctaveShift>,
+    pub pedal: Option<PedalEvent>,
+    pub coda: bool,
+    pub segno: bool,
+    pub da_capo: bool,
+    pub dal_segno: bool,
+}
+```
 
 ### Barline
 
-`Barline` has `style: BarlineType` (enum: Regular, Double, Final, RepeatForward, RepeatBackward, RepeatBoth, Dashed, Short, Tick, None), plus optional `repeat_direction`, `ending_number`, `ending_type`, `fermata`.
+```rust
+pub struct Barline {
+    pub location: BarlineLocation,
+    pub style: BarlineType,
+    pub repeat_direction: Option<RepeatDirection>,
+    pub ending_number: Option<String>,
+    pub ending_type: Option<EndingType>,
+    pub fermata: Option<Fermata>,
+}
+```
+
+---
 
 ## Pitch Languages
 
-`PitchLanguage` represents the 11 note-naming languages supported by LilyPond (nederlands, english, deutsch, italiano, français, español, português, norsk, suomi, svenska, vlaams). Each language maps step + alteration → note name string. `PitchMode` tracks absolute vs. relative pitch context.
+`PitchLanguage` represents the 11 note-naming languages supported by LilyPond
+(`nederlands`, `english`, `deutsch`, `italiano`, `français`, `español`, `português`,
+`norsk`, `suomi`, `svenska`, `vlaams`). Each language maps `(step, alter)` → note name
+string. `PitchMode` tracks absolute vs. relative pitch context.
 
-Pitch language and mode are stored in `ScoreMetadata` and used at emit time, not during parsing.
+Pitch language and mode are stored in `ScoreMetadata` and used at emit time, not during
+parsing. This keeps the IR format-agnostic.
+
+---
 
 ## Adapter Pattern
-
-All adapters implement one of two traits:
 
 ```rust
 pub trait ToIrAdapter {
@@ -78,25 +173,51 @@ pub trait FromIrAdapter {
 }
 ```
 
-`AdapterError` is a single enum with variants for IO, XML parsing, ZIP handling, LilyPond parsing, format-specific errors, missing data, and unsupported features.
+`AdapterError` is a single enum with variants for IO, XML, ZIP, LilyPond parsing,
+format-specific, missing data, and unsupported features.
 
 ### MusicXML → IR
 
-`MxmlToIrAdapter` converts MusicXML to IR in two phases:
+`MxmlToIrAdapter` converts in two phases:
 
-1. **DOM construction** — quick-xml streaming events are collected into an `XmlNode` tree (element name, attributes, text content, children). This is a minimal DOM that avoids the complexity of a full XML DOM while providing random-access traversal.
+1. **DOM construction** — quick-xml streaming events are collected into a minimal
+   `XmlNode` tree (element name, attributes, text content, children). This provides
+   random-access traversal without the weight of a full DOM crate.
 
-2. **Tree walk** — the `XmlNode` tree is walked top-down:
-   - `<score-partwise>` → `Score`
-   - `<work>`, `<identification>`, `<movement-title>` → `ScoreMetadata`
-   - `<part-list>` → `PartInfo` entries + `PartGroup` ranges
-   - `<part>` → `Part`, with stateful `divisions` tracking across measures
-   - `<measure>` → `Measure`, with notes sorted by voice number and chords merged
-   - `<note>` → `Note`/`Rest`, with pitch, duration, notations, lyrics
-   - `<direction>` → `Direction` with dynamics, wedges, tempo, text, rehearsal, pedal, octave-shift
-   - `<barline>` → `Barline`
+2. **Tree walk** — `<score-partwise>` → `Score`, `<part>` → `Part`, `<measure>` →
+   `Measure`, `<note>` → `Note`/`Rest`, `<direction>` → `Direction`, `<barline>` →
+   `Barline`, `<harmony>` → `Harmony`, `<figured-bass>` → `FiguredBass`, etc.
 
-MXL archives (`.mxl`) are ZIP files. `mxl_zip::read_musicxml()` extracts the rootfile from `META-INF/container.xml` and returns the XML content.
+MXL archives (`.mxl`) are ZIP files. `mxl_zip::read_musicxml()` extracts the rootfile
+from `META-INF/container.xml` and returns the XML content.
+
+### LilyPond → IR
+
+`LyToIrAdapter` uses tree-sitter via `src/parser.rs` to parse `.ly` files into a CST,
+then walks the CST with a stateful `WalkState`:
+
+- `\relative` / `\absolute` pitch context tracking
+- Pitch language from `\language` command
+- `tuplet_stack` for nested tuplet ratio propagation
+- `auto_beam_off` flag for `\autoBeamOff`/`\autoBeamOn`
+- Variable definitions resolved inline
+- Measure auto-splitting by time signature with elapsed time tracking
+- Post-processing: clef-aware auto-stem, tuplet-aware auto-beam grouping,
+  lyrics attachment
+
+### LilyPond Flatten
+
+`ly_flatten::flatten()` processes a file textually (not via the IR pipeline):
+
+1. Scan line by line, tracking block comments (`%{ %}`)
+2. Match `\include "path"` and resolve the path (relative to including file,
+   with `.ly`/`.ily` extension fallback, then `-I` paths)
+3. Check for circular dependency via ancestor set
+4. Recurse into included files, wrap with comment markers
+5. Post-process: deduplicate `\version`/`\language` (keep last, warn), error on
+   multiple `\header` blocks
+
+---
 
 ## Transform Pattern
 
@@ -106,7 +227,7 @@ pub trait Transform {
 }
 ```
 
-Transforms borrow a `&Score` and return a new owned `Score`. They never mutate in place. This enables:
+Transforms borrow `&Score` and return a new owned `Score`. They never mutate in place:
 
 - **Idempotency** — `T(T(x)) == T(x)` for well-behaved transforms.
 - **Composition** — `apply_all(&[&dyn Transform], &Score)` chains transforms left-to-right.
@@ -116,18 +237,53 @@ The dual API convention (following torchaudio):
 - OOP: `Transpose::new(2).apply(&score) -> Score`
 - Functional: `transpose(&score, 2) -> Score`
 
-## Testing
+Implemented transforms: `Transpose`, `ChangeLanguage`, `Invert`, `Retrograde`.
 
-- **Unit tests** — colocated with each module (`#[cfg(test)]`).
-- **Fixture tests** — 143 MusicXML files from `musicxmlTestSuite/` are copied to `tests/fixtures/xml/` and parsed in `test_parse_all_fixtures`.
-- **Round-trip tests** — planned: MusicXML → IR → LilyPond → IR → MusicXML, testing semantic equivalence (not byte equality).
-- **Property tests** — `proptest` in dev-dependencies for transform idempotency and inverse-pair testing.
-- **Benchmarks** — planned with `criterion`.
+---
+
+## Testing Strategy
+
+- **Unit tests** — colocated with each module (`#[cfg(test)]`). 255 passing.
+- **Fixture tests** — 143 MusicXML files from `musicxmlTestSuite/` in `tests/fixtures/xml/`.
+- **Round-trip tests** — `LilyPond → IR → LilyPond` and `MusicXML → IR → MusicXML`,
+  comparing semantic equivalence. Currently tested via `test_roundtrip_*` in the adapter tests.
+- **CLI integration tests** — `tests/cli.rs` using `assert_cmd` + `predicates` + `tempfile`.
+  15 passing.
+- **Python tests** — `pytest tests/` (26 tests) for PyO3 binding correctness.
+- **Criterion benchmarks** — `benches/benchmarks.rs`, 25 benchmarks.
+- **pytest-benchmark** — `benches/bench_python.py`, cross-language comparison.
+
+---
 
 ## Key Design Decisions
 
-- **String-based names for articulations/dynamics/ornaments** rather than exhaustive enums. This keeps the IR extensible and avoids maintaining a fragile enum that must cover every MusicXML and LilyPond notation element.
-- **Mini-DOM (`XmlNode`) for MusicXML parsing** rather than SAX-style streaming or a full DOM crate. This balances simplicity, random access, and memory use.
-- **Singular `Direction` fields** (one dynamic, one wedge per direction) rather than vectors, matching the typical MusicXML structure where each `<direction>` contains one type of marking.
-- **`divisions` tracked stateully** across measures within a part, matching MusicXML semantics where `<attributes>` can change divisions mid-part.
-- **`Score` uses `Clone` for immutable transform pattern** — transforms clone the score and modify the clone. For large scores, copy-on-write or arena allocation is a future optimization.
+**String-based names for articulations/dynamics/ornaments** — avoids a fragile enum that
+must cover every MusicXML and LilyPond notation element. The adapter maps format-specific
+names.
+
+**Mini-DOM (`XmlNode`) for MusicXML parsing** — balances simplicity, random access, and
+memory use. Avoids SAX complexity or a full DOM crate dependency.
+
+**`tuplet_stack` for nested tuplets** — the `WalkState` maintains a stack of active
+`(actual, normal)` tuplet ratios. `push_voice_element` applies the innermost ratio before
+recording the element's duration, ensuring measure tracking is correct for sextuplets and
+other complex cases.
+
+**Grace notes excluded from measure duration** — `push_voice_element` skips elapsed-time
+advancement for grace notes (`is_grace: true`), preventing false measure flushes.
+
+**Post-process auto-beam and auto-stem** — beaming and stem direction are not assigned
+during LilyPond parsing (which would require two-pass lookahead) but in a post-processing
+pass after the full measure is assembled. This allows clef-aware stem direction and
+time-signature-aware beam grouping.
+
+**`no_auto_beam` flag** — notes under `\autoBeamOff` are marked with `no_auto_beam: true`
+during parsing. The post-processing beam pass skips these notes, preserving explicit `[]`
+brackets while suppressing auto-beaming.
+
+**`Score` uses `Clone` for immutable transform pattern** — transforms clone and modify.
+For large scores, copy-on-write or arena allocation is a future optimisation.
+
+**Flatten is textual, not IR-level** — `\include` expansion preserves every character of
+the original source (comments, whitespace, formatting). Using the IR pipeline would
+destroy this fidelity. The textual approach matches lyp and Lilybert's design.

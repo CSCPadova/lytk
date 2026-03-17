@@ -145,6 +145,8 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 | `MEILER/` | MEI→LilyPond XSLT; useful edge-case scores |
 | `PDMX/` | Dataset IR for MusicXML + MSCZ; internal representation reference |
 | `MuseScore/src/importexport/` | C++ MusicXML, MEI, mscz, midi parsing and emitting reference (complex real-world codebase) |
+| `symusic/` | fast MIDI parsing in C++ with IR; useful for MIDI adapter reference and benchmarks |
+| `music21/` | Python musicology toolkit; useful for various format parsing, IR design patterns and advanced MIR features |
 
 ---
 
