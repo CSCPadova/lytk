@@ -645,7 +645,13 @@ fn emit_figured_bass_variable(part: &Part, lines: &mut Vec<String>) {
     let var = format!("{}Figures", part_var_name(part));
     lines.push(format!("{var} = \\figuremode {{"));
 
-    // Track time signature for spacer durations
+    // Divisions per quarter note — must match FIGURED_BASS_DIVISIONS in ly_to_ir.rs
+    // and DEFAULT_DIVISIONS in ir_to_mxml.rs.
+    const DIVISIONS: i64 = 4;
+    // Fractions are in units of whole notes (= 4 quarter notes = 4 * DIVISIONS divs)
+    let divs_per_whole = 4 * DIVISIONS; // 16
+
+    // Track time signature for measure duration
     let mut ts_beats: i64 = 4;
     let mut ts_beat_type: i64 = 4;
 
@@ -662,17 +668,59 @@ fn emit_figured_bass_variable(part: &Part, lines: &mut Vec<String>) {
             }
         }
 
+        // Measure duration in divisions
+        // (ts_beats / ts_beat_type) * divs_per_whole
+        let measure_divs = ts_beats * divs_per_whole / ts_beat_type;
+
         if measure.figured_bass.is_empty() {
+            // Whole-measure spacer
             let measure_frac = Ratio::new(ts_beats, ts_beat_type);
             let dur = Duration::new(measure_frac);
             lines.push(format!("  s{}", duration_to_ly(&dur)));
         } else {
             let mut tokens: Vec<String> = Vec::new();
-            for fb in &measure.figured_bass {
-                let figs: Vec<String> = fb.figures.iter().map(figure_to_ly).collect();
+            let mut elapsed_divs: i64 = 0; // tracks position through this measure
+
+            // Sort figures by offset so we process them in time order
+            let mut figs: Vec<&crate::ir::harmony::FiguredBass> =
+                measure.figured_bass.iter().collect();
+            figs.sort_by_key(|f| f.offset);
+
+            for fb in &figs {
+                let fig_offset = fb.offset as i64;
+
+                // Emit a spacer for any gap before this figure
+                if fig_offset > elapsed_divs {
+                    let gap_divs = fig_offset - elapsed_divs;
+                    // Convert gap_divs back to a Duration fraction of whole note
+                    let gap_frac = Ratio::new(gap_divs, divs_per_whole);
+                    let gap_dur = Duration::new(gap_frac);
+                    tokens.push(format!("s{}", duration_to_ly(&gap_dur)));
+                    elapsed_divs = fig_offset;
+                }
+
+                let figs_str: Vec<String> = fb.figures.iter().map(figure_to_ly).collect();
                 let d = duration_to_ly(&fb.duration);
-                tokens.push(format!("<{}>{d}", figs.join(" ")));
+                tokens.push(format!("<{}>{d}", figs_str.join(" ")));
+
+                // Advance elapsed by figure duration
+                let fig_dur_divs = {
+                    let actual = fb.duration.actual_duration();
+                    let q = actual * crate::ir::duration::Frac::from_integer(4);
+                    let divs = q * crate::ir::duration::Frac::from_integer(DIVISIONS);
+                    *divs.numer() / *divs.denom()
+                };
+                elapsed_divs += fig_dur_divs;
             }
+
+            // Trailing spacer if figures don't fill the measure
+            if elapsed_divs < measure_divs {
+                let gap_divs = measure_divs - elapsed_divs;
+                let gap_frac = Ratio::new(gap_divs, divs_per_whole);
+                let gap_dur = Duration::new(gap_frac);
+                tokens.push(format!("s{}", duration_to_ly(&gap_dur)));
+            }
+
             lines.push(format!("  {}", tokens.join(" ")));
         }
     }

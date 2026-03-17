@@ -5824,6 +5824,21 @@ fn consume_multiplier_stateless(state: &WalkState, children: &[Node], i: &mut us
 /// When the accumulated duration fills a measure (based on the current time
 /// signature), advances to the next measure. Figures land in whichever
 /// measure their start time falls into.
+/// Divisions per quarter note used when computing figured bass offsets.
+/// Must match `DEFAULT_DIVISIONS` in `ir_to_mxml.rs`.
+const FIGURED_BASS_DIVISIONS: i64 = 4;
+
+/// Distribute a flat stream of figured bass entries across measures.
+///
+/// Walks the entries and measures in parallel, tracking cumulative duration.
+/// When the accumulated duration fills a measure (based on the current time
+/// signature), advances to the next measure. Figures land in whichever
+/// measure their start time falls into.
+///
+/// Sets `FiguredBass.offset` to the figure's start position within its
+/// measure in divisions (using `FIGURED_BASS_DIVISIONS` per quarter note).
+/// This matches the MusicXML `<offset>` convention so round-trips preserve
+/// alignment.
 fn distribute_figured_bass(measures: &mut [Measure], entries: &[FiguredBassEntry]) {
     use crate::ir::duration::Frac;
 
@@ -5859,7 +5874,16 @@ fn distribute_figured_bass(measures: &mut [Measure], entries: &[FiguredBassEntry
         match entry {
             FiguredBassEntry::Figure(fb) => {
                 if measure_idx < measures.len() {
-                    measures[measure_idx].figured_bass.push(fb.clone());
+                    // Compute offset within the measure in divisions.
+                    // actual_duration() is a fraction of a whole note;
+                    // multiply by 4 to get quarter notes, then by divisions/quarter.
+                    let offset_frac = elapsed_in_measure
+                        * Frac::from_integer(4)
+                        * Frac::from_integer(FIGURED_BASS_DIVISIONS);
+                    let offset_divs = *offset_frac.numer() / *offset_frac.denom();
+                    let mut fb_placed = fb.clone();
+                    fb_placed.offset = offset_divs as i32;
+                    measures[measure_idx].figured_bass.push(fb_placed);
                 }
                 elapsed_in_measure = elapsed_in_measure + fb.duration.actual_duration();
             }

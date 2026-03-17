@@ -375,10 +375,16 @@ impl IrToMxmlAdapter {
             self.write_harmony(w, harmony)?;
         }
 
-        // Figured bass (before notes; offset positions within measure)
+        // Build an index of figured bass keyed by measure-offset (in divisions).
+        // We'll interleave them into the first voice's note stream.
+        // Sort by offset so they land in temporal order.
+        let mut fb_by_offset: std::collections::BTreeMap<i32, Vec<&FiguredBass>> =
+            std::collections::BTreeMap::new();
         for fb in &measure.figured_bass {
-            self.write_figured_bass(w, fb)?;
+            fb_by_offset.entry(fb.offset).or_default().push(fb);
         }
+        // Offset of the last emitted figure group — to avoid double-emitting
+        let mut fb_emitted_up_to: i32 = -1;
 
         // Voices with backup between them
         let voices = &measure.voices;
@@ -394,14 +400,31 @@ impl IrToMxmlAdapter {
                 }
             }
 
+            let mut fwd_pos: i64 = 0;
             for elem in &voice.elements {
+                // Interleave figured bass into voice 1's note stream.
+                // Emit all figures whose offset falls at the current note position.
+                if vi == 0 {
+                    let cur_divs = fwd_pos as i32;
+                    for (&off, fbs) in fb_by_offset.range(fb_emitted_up_to + 1..=cur_divs) {
+                        for fb in fbs {
+                            self.write_figured_bass(w, fb)?;
+                        }
+                        fb_emitted_up_to = off;
+                    }
+                }
+
                 match elem {
                     VoiceElement::Note(n) => {
                         self.emit_note_directions(w, n)?;
                         self.write_note(w, n, voice.number, false, None)?;
+                        if !n.is_grace {
+                            fwd_pos += self.duration_to_divisions(&n.duration);
+                        }
                     }
                     VoiceElement::Rest(r) => {
                         self.write_rest(w, r, voice.number)?;
+                        fwd_pos += self.duration_to_divisions(&r.duration);
                     }
                     VoiceElement::Chord(c) => {
                         // Emit directions from the first note in the chord
@@ -409,19 +432,41 @@ impl IrToMxmlAdapter {
                             self.emit_note_directions(w, first)?;
                         }
                         self.write_chord(w, c, voice.number)?;
+                        fwd_pos += self.duration_to_divisions(&c.duration);
                     }
                     VoiceElement::Forward(fwd) => {
                         w.write_event(Event::Start(BytesStart::new("forward")))?;
                         let dur_val = self.duration_to_divisions(&fwd.duration);
                         text_element(w, "duration", &dur_val.to_string())?;
                         w.write_event(Event::End(BytesEnd::new("forward")))?;
+                        fwd_pos += dur_val;
                     }
                     VoiceElement::Backup(bk) => {
                         w.write_event(Event::Start(BytesStart::new("backup")))?;
                         let dur_val = self.duration_to_divisions(&bk.duration);
                         text_element(w, "duration", &dur_val.to_string())?;
                         w.write_event(Event::End(BytesEnd::new("backup")))?;
+                        fwd_pos -= dur_val;
                     }
+                }
+            }
+
+            // Emit any remaining figured bass that falls after the last note (voice 1 only)
+            if vi == 0 {
+                for (&off, fbs) in fb_by_offset.range(fb_emitted_up_to + 1..) {
+                    for fb in fbs {
+                        self.write_figured_bass(w, fb)?;
+                    }
+                    fb_emitted_up_to = off;
+                }
+            }
+        }
+
+        // Fallback: if there are no voices at all, emit figured bass with offsets
+        if voices.is_empty() {
+            for (_, fbs) in &fb_by_offset {
+                for fb in fbs {
+                    self.write_figured_bass(w, fb)?;
                 }
             }
         }
@@ -1339,10 +1384,6 @@ impl IrToMxmlAdapter {
 
         let dur_val = self.duration_to_divisions(&fb.duration);
         text_element(w, "duration", &dur_val.to_string())?;
-
-        if fb.offset != 0 {
-            text_element(w, "offset", &fb.offset.to_string())?;
-        }
 
         w.write_event(Event::End(BytesEnd::new("figured-bass")))?;
         Ok(())
