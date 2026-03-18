@@ -182,6 +182,18 @@ fn duration_to_ly(dur: &Duration) -> String {
     format!("{result}{dots}")
 }
 
+/// Tremolo suffix → `:N` for single-note tremolo (e.g. `:32`), empty if no tremolo.
+/// N = base_dur_denom × 2^marks.
+fn tremolo_suffix(note: &Note) -> String {
+    if note.tremolo_marks > 0 && !note.two_note_tremolo {
+        let base_denom = *note.duration.base.denom() as u32;
+        let n = base_denom * (1u32 << note.tremolo_marks);
+        format!(":{n}")
+    } else {
+        String::new()
+    }
+}
+
 /// Pitch → LilyPond pitch string with octave marks.
 ///
 /// In absolute mode, octave marks are relative to `c` (octave 3 in our
@@ -217,7 +229,13 @@ fn pitch_to_ly(
         String::new()
     };
 
-    format!("{name}{oct_marks}")
+    let acc_suffix = match pitch.accidental {
+        crate::ir::pitch::AccidentalDisplay::Forced => "!",
+        crate::ir::pitch::AccidentalDisplay::Cautionary => "?",
+        _ => "",
+    };
+
+    format!("{name}{oct_marks}{acc_suffix}")
 }
 
 /// Calculate the octave marks needed for LilyPond relative mode.
@@ -869,6 +887,19 @@ fn emit_measures(
             if let Some(text) = &dir.dal_segno {
                 lines.push(format!("{pad}\\mark \"{text}\""));
             }
+            if let Some(lb) = &dir.layout_break {
+                match lb {
+                    crate::ir::direction::LayoutBreakType::System => {
+                        lines.push(format!("{pad}\\break"));
+                    }
+                    crate::ir::direction::LayoutBreakType::Page => {
+                        lines.push(format!("{pad}\\pageBreak"));
+                    }
+                    crate::ir::direction::LayoutBreakType::Section => {
+                        lines.push(format!("{pad}\\section"));
+                    }
+                }
+            }
             // Dynamics, wedges, text, pedal, octave shifts must attach to a note
             let mut parts: Vec<String> = Vec::new();
             if let Some(dyn_mark) = &dir.dynamic {
@@ -921,8 +952,19 @@ fn emit_measures(
 
         // Left barline
         if let Some(bl) = &measure.left_barline {
-            if let Some(ref _rd) = bl.repeat_direction {
+            if bl.repeat_direction.is_some() && bl.ending_number.is_none() {
                 lines.push(format!("{pad}\\repeat volta 2 {{"));
+            }
+            if let Some(ending_num) = bl.ending_number {
+                if bl.ending_type.as_deref() == Some("start") {
+                    if ending_num == 1 {
+                        // Close the repeat body and open \alternative
+                        lines.push(format!("{pad}}}"));
+                        lines.push(format!("{pad}\\alternative {{"));
+                    }
+                    // Open this alternative's block
+                    lines.push(format!("{pad}  {{"));
+                }
             }
         }
 
@@ -932,6 +974,7 @@ fn emit_measures(
                 .voices
                 .iter()
                 .filter(|v| voice_matches_staff(v, sf))
+                .filter(|v| voice_has_content(v))
                 .collect()
         } else {
             measure.voices.iter().collect()
@@ -961,7 +1004,17 @@ fn emit_measures(
 
         // Right barline
         if let Some(bl) = &measure.right_barline {
-            if bl.repeat_direction.is_some() {
+            if let Some(_ending_num) = bl.ending_number {
+                if bl.ending_type.as_deref() == Some("stop") {
+                    // Close this alternative's block
+                    lines.push(format!("{pad}  }}"));
+                }
+                // Check if this is the last alternative (has backward repeat)
+                if bl.repeat_direction.is_some() {
+                    // Close \alternative and \repeat
+                    lines.push(format!("{pad}}}"));
+                }
+            } else if bl.repeat_direction.is_some() {
                 lines.push(format!("{pad}}}"));
             } else {
                 let bar_cmd = match bl.style {
@@ -1237,8 +1290,9 @@ fn note_to_ly(
 
     let p = pitch_to_ly(&note.pitch, lang, prev, mode);
     let d = duration_to_ly(&note.duration);
+    let trem = tremolo_suffix(note);
     let attach = attachments_to_ly(note);
-    format!("{p}{d}{attach}")
+    format!("{p}{d}{trem}{attach}")
 }
 
 fn grace_note_to_ly(
@@ -1301,13 +1355,14 @@ fn chord_to_ly(
     }
 
     let d = duration_to_ly(&chord.duration);
+    let trem = tremolo_suffix(&chord.notes[0]);
     let attach = attachments_to_ly(&chord.notes[0]);
     let arp = if chord.arpeggio.is_some() {
         "\\arpeggio"
     } else {
         ""
     };
-    let result = format!("<{}>{d}{attach}{arp}", pitch_strs.join(" "));
+    let result = format!("<{}>{d}{trem}{attach}{arp}", pitch_strs.join(" "));
     (result, last_pitch)
 }
 
@@ -1358,6 +1413,10 @@ fn attachments_to_ly(note: &Note) -> String {
 
     // Ornaments
     for orn in &note.ornaments {
+        // Tremolo is handled by tremolo_suffix(), not as an attachment
+        if orn.name == "tremolo" {
+            continue;
+        }
         let ly = ornament_to_ly(&orn.name);
         if !ly.is_empty() {
             parts.push(ly);
@@ -1385,6 +1444,25 @@ fn attachments_to_ly(note: &Note) -> String {
     // Glissando (the style override is emitted as a prefix in emit_voice_elements)
     if note.glissando == Some(StartStop::Start) || note.slide == Some(StartStop::Start) {
         parts.push("\\glissando");
+    }
+
+    // Technicals (fingering, bow marks, etc.)
+    for tech in &note.technicals {
+        match tech.name.as_str() {
+            "fingering" => {
+                owned.push(format!("-{}", tech.value));
+            }
+            "up-bow" => parts.push("\\upbow"),
+            "down-bow" => parts.push("\\downbow"),
+            "open-string" => parts.push("\\open"),
+            "snap-pizzicato" => parts.push("\\snappizzicato"),
+            "harmonic" => parts.push("\\flageolet"),
+            "stopped" => parts.push("-+"),
+            "string" => {
+                owned.push(format!("\\{}", tech.value));
+            }
+            _ => {}
+        }
     }
 
     let mut result: String = parts.join("");
@@ -1754,34 +1832,55 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
     }
 }
 
+/// Returns true if the voice contains any real music content (notes, rests, chords),
+/// not just timing elements (forward/backup).
+fn voice_has_content(voice: &Voice) -> bool {
+    voice.elements.iter().any(|e| matches!(e,
+        VoiceElement::Note(_) | VoiceElement::Rest(_) | VoiceElement::Chord(_)
+    ))
+}
+
 fn voice_matches_staff(voice: &Voice, staff_num: u8) -> bool {
+    let mut has_staff_info = false;
     for elem in &voice.elements {
         match elem {
             VoiceElement::Note(n) => {
                 if n.staff == staff_num {
                     return true;
                 }
+                if n.staff != 0 {
+                    has_staff_info = true;
+                }
             }
             VoiceElement::Rest(r) => {
                 if r.staff == staff_num {
                     return true;
+                }
+                if r.staff != 0 {
+                    has_staff_info = true;
                 }
             }
             VoiceElement::Chord(c) => {
                 if c.staff == staff_num {
                     return true;
                 }
+                if c.staff != 0 {
+                    has_staff_info = true;
+                }
             }
             VoiceElement::Forward(f) => {
                 if f.staff == staff_num {
                     return true;
                 }
+                if f.staff != 0 {
+                    has_staff_info = true;
+                }
             }
             VoiceElement::Backup(_) => {}
         }
     }
-    // Default: include if empty or no staff info found
-    true
+    // If we found staff info but nothing matched, this voice belongs to a different staff
+    !has_staff_info
 }
 
 // ===========================================================================
@@ -3004,5 +3103,233 @@ melody = {
         assert!(ly.contains("\\autoBeamOff"), "should contain \\autoBeamOff: {ly}");
         // Should emit \autoBeamOn when reverting
         assert!(ly.contains("\\autoBeamOn"), "should contain \\autoBeamOn: {ly}");
+    }
+
+    #[test]
+    fn test_accidental_display_emission() {
+        let mut n1 = make_note(PitchStep::C, 4, Duration::quarter());
+        n1.pitch.alter = crate::ir::pitch::Alter::from_integer(1); // C#
+        n1.pitch.accidental = crate::ir::pitch::AccidentalDisplay::Forced;
+        let mut n2 = make_note(PitchStep::D, 4, Duration::quarter());
+        n2.pitch.accidental = crate::ir::pitch::AccidentalDisplay::Cautionary;
+        let n3 = make_note(PitchStep::E, 4, Duration::quarter());
+
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n1)),
+                VoiceElement::Note(Box::new(n2)),
+                VoiceElement::Note(Box::new(n3)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            clefs: {
+                let mut m = HashMap::new();
+                m.insert(1, Clef::default());
+                m
+            },
+            ..Default::default()
+        });
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        // Default output language is Nederlands, so C# = "cis"
+        assert!(
+            ly.contains("cis'!"),
+            "should emit forced accidental '!' after cis': {ly}"
+        );
+        assert!(
+            ly.contains("d'?"),
+            "should emit cautionary accidental '?' after d': {ly}"
+        );
+    }
+
+    #[test]
+    fn test_layout_break_emission() {
+        use crate::ir::direction::{Direction, LayoutBreakType};
+
+        let n1 = make_note(PitchStep::C, 4, Duration::whole());
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(n1))],
+        };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            clefs: {
+                let mut m = HashMap::new();
+                m.insert(1, Clef::default());
+                m
+            },
+            ..Default::default()
+        });
+        measure.voices.push(voice);
+        measure.directions.push(Direction {
+            layout_break: Some(LayoutBreakType::System),
+            ..Default::default()
+        });
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        assert!(ly.contains("\\break"), "should emit \\break: {ly}");
+    }
+
+    #[test]
+    fn test_pedal_emission() {
+        use crate::ir::direction::{Direction, PedalEvent};
+
+        let n1 = make_note(PitchStep::C, 4, Duration::quarter());
+        let n2 = make_note(PitchStep::D, 4, Duration::quarter());
+        let voice = Voice {
+            number: 1,
+            elements: vec![
+                VoiceElement::Note(Box::new(n1)),
+                VoiceElement::Note(Box::new(n2)),
+            ],
+        };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            clefs: {
+                let mut m = HashMap::new();
+                m.insert(1, Clef::default());
+                m
+            },
+            ..Default::default()
+        });
+        measure.voices.push(voice);
+        measure.directions.push(Direction {
+            pedal: Some(PedalEvent {
+                pedal_type: "start".to_string(),
+                line: false,
+            }),
+            ..Default::default()
+        });
+        measure.directions.push(Direction {
+            offset: 1,
+            pedal: Some(PedalEvent {
+                pedal_type: "stop".to_string(),
+                line: false,
+            }),
+            ..Default::default()
+        });
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        assert!(
+            ly.contains("\\sustainOn"),
+            "should emit \\sustainOn: {ly}"
+        );
+        assert!(
+            ly.contains("\\sustainOff"),
+            "should emit \\sustainOff: {ly}"
+        );
+    }
+
+    #[test]
+    fn test_ottava_emission() {
+        use crate::ir::direction::{Direction, OctaveShift};
+
+        let n1 = make_note(PitchStep::C, 5, Duration::quarter());
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(n1))],
+        };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            clefs: {
+                let mut m = HashMap::new();
+                m.insert(1, Clef::default());
+                m
+            },
+            ..Default::default()
+        });
+        measure.voices.push(voice);
+        measure.directions.push(Direction {
+            octave_shift: Some(OctaveShift {
+                shift_type: "up".to_string(),
+                size: 8,
+            }),
+            ..Default::default()
+        });
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        assert!(
+            ly.contains("\\ottava #1"),
+            "should emit \\ottava #1: {ly}"
+        );
+    }
+
+    #[test]
+    fn test_tremolo_emission() {
+        let mut n1 = make_note(PitchStep::C, 4, Duration::quarter());
+        n1.tremolo_marks = 3;
+        n1.ornaments.push(crate::ir::articulation::Ornament {
+            name: "tremolo".to_string(),
+            placement: Default::default(),
+        });
+
+        let voice = Voice {
+            number: 1,
+            elements: vec![VoiceElement::Note(Box::new(n1))],
+        };
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            clefs: {
+                let mut m = HashMap::new();
+                m.insert(1, Clef::default());
+                m
+            },
+            ..Default::default()
+        });
+        measure.voices.push(voice);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+
+        let adapter = IrToLyAdapter::new();
+        let ly = adapter.convert(&score).unwrap();
+
+        assert!(
+            ly.contains(":32"),
+            "should emit :32 for 3 tremolo marks on quarter note: {ly}"
+        );
     }
 }

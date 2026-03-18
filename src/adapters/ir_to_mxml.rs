@@ -298,14 +298,14 @@ impl IrToMxmlAdapter {
         w.write_event(Event::Start(el))?;
 
         for measure in &part.measures {
-            self.write_measure(w, measure)?;
+            self.write_measure(w, measure, part.staves)?;
         }
 
         w.write_event(Event::End(BytesEnd::new("part")))?;
         Ok(())
     }
 
-    fn write_measure(&self, w: &mut W, measure: &Measure) -> Result<()> {
+    fn write_measure(&self, w: &mut W, measure: &Measure, part_staves: u8) -> Result<()> {
         let mut el = BytesStart::new("measure");
         el.push_attribute(("number", measure.number.to_string().as_str()));
         if measure.implicit {
@@ -417,13 +417,13 @@ impl IrToMxmlAdapter {
                 match elem {
                     VoiceElement::Note(n) => {
                         self.emit_note_directions(w, n)?;
-                        self.write_note(w, n, voice.number, false, None)?;
+                        self.write_note(w, n, voice.number, false, None, part_staves)?;
                         if !n.is_grace {
                             fwd_pos += self.duration_to_divisions(&n.duration);
                         }
                     }
                     VoiceElement::Rest(r) => {
-                        self.write_rest(w, r, voice.number)?;
+                        self.write_rest(w, r, voice.number, part_staves)?;
                         fwd_pos += self.duration_to_divisions(&r.duration);
                     }
                     VoiceElement::Chord(c) => {
@@ -431,13 +431,17 @@ impl IrToMxmlAdapter {
                         if let Some(first) = c.notes.first() {
                             self.emit_note_directions(w, first)?;
                         }
-                        self.write_chord(w, c, voice.number)?;
+                        self.write_chord(w, c, voice.number, part_staves)?;
                         fwd_pos += self.duration_to_divisions(&c.duration);
                     }
                     VoiceElement::Forward(fwd) => {
                         w.write_event(Event::Start(BytesStart::new("forward")))?;
                         let dur_val = self.duration_to_divisions(&fwd.duration);
                         text_element(w, "duration", &dur_val.to_string())?;
+                        text_element(w, "voice", &fwd.voice.to_string())?;
+                        if part_staves > 1 {
+                            text_element(w, "staff", &fwd.staff.to_string())?;
+                        }
                         w.write_event(Event::End(BytesEnd::new("forward")))?;
                         fwd_pos += dur_val;
                     }
@@ -623,6 +627,7 @@ impl IrToMxmlAdapter {
         voice_num: u8,
         is_chord: bool,
         chord_arpeggio: Option<ArpeggioType>,
+        part_staves: u8,
     ) -> Result<()> {
         if note.print_object {
             w.write_event(Event::Start(BytesStart::new("note")))?;
@@ -734,8 +739,8 @@ impl IrToMxmlAdapter {
             text_element(w, "stem", &note.stem_direction)?;
         }
 
-        // Staff
-        if note.staff > 1 {
+        // Staff — always emit for multi-staff parts so staff assignment is unambiguous
+        if part_staves > 1 || note.staff > 1 {
             text_element(w, "staff", &note.staff.to_string())?;
         }
 
@@ -926,7 +931,7 @@ impl IrToMxmlAdapter {
 
     // ── rest ──────────────────────────────────────────────────────────────
 
-    fn write_rest(&self, w: &mut W, rest: &Rest, voice_num: u8) -> Result<()> {
+    fn write_rest(&self, w: &mut W, rest: &Rest, voice_num: u8, part_staves: u8) -> Result<()> {
         w.write_event(Event::Start(BytesStart::new("note")))?;
 
         let mut rest_el = BytesStart::new("rest");
@@ -956,6 +961,11 @@ impl IrToMxmlAdapter {
         }
         for _ in 0..rest.duration.dots {
             w.write_event(Event::Empty(BytesStart::new("dot")))?;
+        }
+
+        // Staff
+        if part_staves > 1 || rest.staff > 1 {
+            text_element(w, "staff", &rest.staff.to_string())?;
         }
 
         // Time modification (tuplets)
@@ -1012,9 +1022,9 @@ impl IrToMxmlAdapter {
 
     // ── chord ─────────────────────────────────────────────────────────────
 
-    fn write_chord(&self, w: &mut W, chord: &Chord, voice_num: u8) -> Result<()> {
+    fn write_chord(&self, w: &mut W, chord: &Chord, voice_num: u8, part_staves: u8) -> Result<()> {
         for (i, note) in chord.notes.iter().enumerate() {
-            self.write_note(w, note, voice_num, i > 0, chord.arpeggio)?;
+            self.write_note(w, note, voice_num, i > 0, chord.arpeggio, part_staves)?;
         }
         Ok(())
     }

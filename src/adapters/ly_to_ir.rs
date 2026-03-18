@@ -31,13 +31,16 @@ use crate::ir::articulation::{
     Articulation, BeamEvent, DynamicMark, Fermata, LyricSyllable, Placement, SlurEvent, StartStop,
     SyllabicType, Technical, TieEvent, TupletDisplay, Wedge,
 };
-use crate::ir::direction::{Barline, BarlineType, Direction, TempoDirection, TextDirection};
+use crate::ir::direction::{
+    Barline, BarlineType, Direction, LayoutBreakType, OctaveShift, PedalEvent, RepeatDirection,
+    TempoDirection, TextDirection,
+};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::harmony::{FiguredBass, Figure};
 use crate::ir::language::{parse_pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
 use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
-use crate::ir::pitch::{Pitch, PitchStep};
+use crate::ir::pitch::{AccidentalDisplay, Pitch, PitchStep};
 use crate::ir::score::{PageLayout, Score, ScoreChild, ScoreMetadata};
 use crate::ir::voice::Voice;
 use crate::ir::Part;
@@ -143,7 +146,9 @@ enum VarDef {
     /// Variable contained `\new Staff { ... }` — stores the full part(s).
     Parts(Vec<(String, Part)>),
     /// Variable contained bare music — stores just the measures.
-    Measures(Vec<Measure>),
+    /// The `Frac` records the time signature active when the variable was pre-parsed,
+    /// so we can re-split if the time sig differs at resolution time.
+    Measures(Vec<Measure>, Frac),
     /// Variable contained `\figuremode { ... }` — stores flat stream of entries.
     FiguredBass(Vec<FiguredBassEntry>),
 }
@@ -212,6 +217,11 @@ struct WalkState<'src> {
     auto_beam_off: bool,
     /// Whether a manual \melisma block is active (notes inside don't consume lyrics).
     melisma_active: bool,
+    /// Stack of \transpose intervals (from, to). Pitches are transposed by the
+    /// cumulative interval before being stored in the IR.
+    transpose_stack: Vec<(Pitch, Pitch)>,
+    /// Current voice number (set by \voiceOne=1, \voiceTwo=2, etc.; default 1).
+    current_voice_number: u8,
 }
 
 impl<'src> WalkState<'src> {
@@ -247,6 +257,8 @@ impl<'src> WalkState<'src> {
             tuplet_stack: Vec::new(),
             auto_beam_off: false,
             melisma_active: false,
+            transpose_stack: Vec::new(),
+            current_voice_number: 1,
         }
     }
 
@@ -261,7 +273,7 @@ impl<'src> WalkState<'src> {
             return;
         }
         let voice = Voice {
-            number: 1,
+            number: self.current_voice_number,
             elements: std::mem::take(&mut self.current_voice),
         };
         let measure = self.ensure_measure();
@@ -437,10 +449,33 @@ impl<'src> WalkState<'src> {
                         }
                     }
                 }
-                VarDef::Measures(measures) => {
+                VarDef::Measures(measures, def_time_sig) => {
                     if measures.is_empty() {
                         return true; // empty variable, no-op
                     }
+                    // Propagate time signature from the resolved measures.
+                    // If any measure in the variable has a time signature attribute,
+                    // update current_time_sig so subsequent variable resolutions
+                    // use the correct time sig (e.g. \global sets \time 6/8,
+                    // then \lowerStaff needs to be re-split to 6/8).
+                    for m in &measures {
+                        if let Some(ref attrs) = m.attributes {
+                            if let Some(ref ts) = attrs.time {
+                                self.current_time_sig = ts.beats_fraction();
+                            }
+                        }
+                    }
+                    // If the variable was pre-parsed with a different time signature
+                    // than the current one, re-split the measures to match the
+                    // current time signature while preserving multi-voice structure.
+                    let measures = if def_time_sig != self.current_time_sig
+                        && self.current_time_sig > Frac::from_integer(0)
+                        && !measures_are_spacer_only(&measures)
+                    {
+                        resplit_measures_for_time_sig(&measures, self.current_time_sig)
+                    } else {
+                        measures
+                    };
                     // Flush any in-progress measure before adding pre-split measures
                     self.flush_measure();
                     self.elapsed_in_measure = Frac::from_integer(0);
@@ -460,11 +495,20 @@ impl<'src> WalkState<'src> {
                     // contain only spacer rests (e.g. from a \forma variable in
                     // parallel music), merge attributes into existing measures
                     // rather than appending.
+                    // Check if any existing measure has multi-voice content
+                    let has_multi_voice = part
+                        .measures
+                        .iter()
+                        .any(|m| m.voices.len() > 1);
                     if !part.measures.is_empty() && measures_are_spacer_only(&measures) {
-                        if measures.len() != part.measures.len() {
-                            // Measure counts differ — re-split music to match spacer boundaries
-                            part.measures = resplit_measures_to_match(&part.measures, &measures);
+                        if measures.len() != part.measures.len() && !has_multi_voice {
+                            // Measure counts differ and no multi-voice — safe to re-split
+                            part.measures =
+                                resplit_measures_to_match(&part.measures, &measures);
                         } else {
+                            // Either counts match or we have multi-voice measures
+                            // that would be destroyed by resplitting — just merge
+                            // directions/attributes on overlapping range
                             merge_spacer_measures(&mut part.measures, &measures);
                         }
                     } else if part.measures.is_empty()
@@ -474,9 +518,12 @@ impl<'src> WalkState<'src> {
                     } else {
                         // Existing measures are spacer-only, incoming are real music —
                         // re-split to match spacer boundaries if needed, then replace.
-                        if measures.len() != part.measures.len() {
-                            part.measures = resplit_measures_to_match(&measures, &part.measures);
+                        let incoming_multi_voice = measures.iter().any(|m| m.voices.len() > 1);
+                        if measures.len() != part.measures.len() && !incoming_multi_voice {
+                            part.measures =
+                                resplit_measures_to_match(&measures, &part.measures);
                         } else {
+                            // Merge spacer attributes/directions onto incoming measures
                             let mut incoming = measures;
                             merge_spacer_measures(&mut incoming, &part.measures);
                             part.measures = incoming;
@@ -503,14 +550,14 @@ impl<'src> WalkState<'src> {
 
     /// Resolve a pitch from a symbol node, handling relative mode.
     fn resolve_pitch(&mut self, step: PitchStep, alter: Ratio<i32>, octave_marks: i32) -> Pitch {
-        if self.in_relative {
+        let pitch = if self.in_relative {
             if let Some(ref prev) = self.prev_pitch {
                 // In relative mode: find closest pitch within a fourth, then apply marks
                 let inferred_octave = find_relative_octave(prev, step);
                 let octave = inferred_octave + octave_marks;
-                let pitch = Pitch::with_alter(step, alter, octave);
-                self.prev_pitch = Some(pitch);
-                pitch
+                let p = Pitch::with_alter(step, alter, octave);
+                self.prev_pitch = Some(p);
+                p
             } else {
                 // First note after \relative: use the reference pitch's octave
                 let base_oct = self
@@ -519,14 +566,25 @@ impl<'src> WalkState<'src> {
                     .map(|r| r.octave)
                     .unwrap_or(4);
                 let octave = base_oct + octave_marks;
-                let pitch = Pitch::with_alter(step, alter, octave);
-                self.prev_pitch = Some(pitch);
-                pitch
+                let p = Pitch::with_alter(step, alter, octave);
+                self.prev_pitch = Some(p);
+                p
             }
         } else {
             // Absolute mode: octave marks relative to LilyPond c (octave 3 in our numbering)
             let octave = 3 + octave_marks;
             Pitch::with_alter(step, alter, octave)
+        };
+        // Apply any active \transpose intervals
+        if !self.transpose_stack.is_empty() {
+            let total_semitones: i32 = self
+                .transpose_stack
+                .iter()
+                .map(|(from, to)| to.midi_number() - from.midi_number())
+                .sum();
+            pitch.transposed(total_semitones)
+        } else {
+            pitch
         }
     }
 }
@@ -594,6 +652,10 @@ impl LyToIrAdapter {
         // If walk_program collected scores from \score blocks, return those
         if !state.completed_scores.is_empty() {
             for score in &mut state.completed_scores {
+                for part in score.parts_mut() {
+                    merge_leading_attribute_measures(part);
+                }
+                propagate_first_tempo(score);
                 post_process_beams_and_stems(score);
             }
             return Ok(state.completed_scores);
@@ -611,6 +673,9 @@ impl LyToIrAdapter {
             }
         }
 
+        // Merge spacer-only parts (from \new Dynamics) into staff parts
+        merge_dynamics_parts(&mut state.parts);
+
         let mut score = Score::new();
         score.metadata = state.metadata;
         score.metadata.pitch_mode = state.mode;
@@ -623,6 +688,10 @@ impl LyToIrAdapter {
             score.children.push(ScoreChild::Part(Part::new("P1")));
         }
 
+        for part in score.parts_mut() {
+            merge_leading_attribute_measures(part);
+        }
+        propagate_first_tempo(&mut score);
         post_process_beams_and_stems(&mut score);
         Ok(vec![score])
     }
@@ -725,6 +794,13 @@ fn walk_program(state: &mut WalkState, root: Node) {
                         // \score { ... } — each score block becomes a separate movement
                         if let Some(next) = children.get(i + 1) {
                             if next.kind() == "expression_block" {
+                                // Skip MIDI-only score blocks (have \midi but no \layout)
+                                let (has_layout, has_midi) = score_block_output_types(state, *next);
+                                if has_midi && !has_layout {
+                                    i += 1; // skip the expression_block
+                                    i += 1;
+                                    continue;
+                                }
                                 // Save and reset parts for this score block
                                 state.flush_measure();
                                 let saved_parts = std::mem::take(&mut state.parts);
@@ -747,6 +823,9 @@ fn walk_program(state: &mut WalkState, root: Node) {
                                     }
                                 }
 
+                                // Merge spacer-only parts (from \new Dynamics) into staff parts
+                                merge_dynamics_parts(&mut state.parts);
+
                                 // Build a Score from the parts created by this score block
                                 if !state.parts.is_empty() {
                                     let mut score = Score::new();
@@ -757,6 +836,11 @@ fn walk_program(state: &mut WalkState, root: Node) {
                                     for (_, part) in state.parts.drain(..) {
                                         score.children.push(ScoreChild::Part(part));
                                     }
+                                    // Post-process: merge attribute-only measures and propagate tempo
+                                    for part in score.parts_mut() {
+                                        merge_leading_attribute_measures(part);
+                                    }
+                                    propagate_first_tempo(&mut score);
                                     state.completed_scores.push(score);
                                 }
 
@@ -777,6 +861,11 @@ fn walk_program(state: &mut WalkState, root: Node) {
                         state.mode = PitchMode::Relative;
                         i += 1;
                         i = consume_relative(state, &children, i);
+                        continue;
+                    }
+                    "\\transpose" => {
+                        i += 1;
+                        i = consume_transpose(state, &children, i);
                         continue;
                     }
                     "\\paper" => {
@@ -932,7 +1021,7 @@ fn walk_program(state: &mut WalkState, root: Node) {
                                                 .into_iter()
                                                 .flat_map(|(_, part)| part.measures)
                                                 .collect();
-                                            VarDef::Measures(measures)
+                                            VarDef::Measures(measures, old_time_sig)
                                         };
                                         state.definitions.insert(var_name, def);
                                         state.measure_num = old_measure_num;
@@ -1066,6 +1155,11 @@ fn walk_score_block(state: &mut WalkState, block: Node) {
                         i = consume_relative(state, &children, i);
                         continue;
                     }
+                    "\\transpose" => {
+                        i += 1;
+                        i = consume_transpose(state, &children, i);
+                        continue;
+                    }
                     "\\layout" | "\\midi" => {
                         // Skip these blocks
                         if let Some(next) = children.get(i + 1) {
@@ -1073,6 +1167,9 @@ fn walk_score_block(state: &mut WalkState, block: Node) {
                                 i += 1;
                             }
                         }
+                    }
+                    "\\unfoldRepeats" => {
+                        // Transparent wrapper — just skip the keyword
                     }
                     "\\paper" => {
                         // \paper { ... } inside \score
@@ -1090,6 +1187,22 @@ fn walk_score_block(state: &mut WalkState, block: Node) {
                                 i += 1;
                             }
                         }
+                    }
+                    "\\set" | "\\override" | "\\revert" => {
+                        // \set Context.prop = value / \override / \revert
+                        // Skip tokens until the next escaped_word, named_context,
+                        // expression_block, or parallel_music.
+                        i += 1;
+                        while i < children.len() {
+                            let peek = children[i].kind();
+                            if matches!(peek, "escaped_word" | "named_context"
+                                | "expression_block" | "parallel_music")
+                            {
+                                break;
+                            }
+                            i += 1;
+                        }
+                        continue;
                     }
                     _ => {
                         let var_name = text.trim_start_matches('\\');
@@ -1111,9 +1224,197 @@ fn walk_score_block(state: &mut WalkState, block: Node) {
 }
 
 /// Walk a `<< ... >>` parallel music block.
+///
+/// If the block contains `\\` separators (voice splitting within one staff),
+/// delegates to `walk_parallel_music_voices` which parses each voice branch
+/// independently and merges them measure-by-measure.
+///
+/// Otherwise delegates to `walk_parallel_music_staves` which handles
+/// simultaneous staves/contexts (the original behaviour).
 fn walk_parallel_music(state: &mut WalkState, node: Node) {
     let mut cursor = node.walk();
     let children: Vec<Node> = node.children(&mut cursor).collect();
+
+    let has_voice_separator = children
+        .iter()
+        .any(|c| c.kind() == "parallel_music_separator");
+
+    if has_voice_separator {
+        walk_parallel_music_voices(state, &children);
+    } else {
+        walk_parallel_music_staves(state, &children);
+    }
+}
+
+/// Walk a `<< ... >>` block that contains `\\` voice separators.
+///
+/// Each voice branch is parsed independently into its own `Vec<Measure>`,
+/// then corresponding measures are merged so that each output measure
+/// contains multiple `Voice` objects.
+fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
+    // 1. Save state that each voice branch needs to start from
+    let saved_measure_num = state.measure_num;
+    let _saved_elapsed = state.elapsed_in_measure;
+    let saved_current_measure = state.current_measure.take();
+    let saved_current_voice = std::mem::take(&mut state.current_voice);
+    let saved_time_sig = state.current_time_sig;
+    let saved_prev_pitch = state.prev_pitch;
+    let saved_relative_ref = state.relative_ref;
+    let saved_in_relative = state.in_relative;
+    let saved_stem_direction = state.stem_direction.clone();
+    let saved_voice_number = state.current_voice_number;
+    let saved_last_duration = state.last_duration.clone();
+    let saved_tuplet_stack = state.tuplet_stack.clone();
+    let saved_auto_beam_off = state.auto_beam_off;
+
+    // 2. Split children at parallel_music_separator nodes into voice branches
+    let mut branches: Vec<Vec<usize>> = vec![vec![]]; // indices into children
+    for (idx, child) in children.iter().enumerate() {
+        if child.kind() == "parallel_music_separator" {
+            branches.push(vec![]);
+        } else {
+            branches.last_mut().unwrap().push(idx);
+        }
+    }
+    // Remove empty branches
+    branches.retain(|b| !b.is_empty());
+
+    // 3. Parse each voice branch independently
+    let mut voice_streams: Vec<Vec<Measure>> = Vec::new();
+
+    for (voice_idx, branch_indices) in branches.iter().enumerate() {
+        // Reset state for this voice branch
+        state.measure_num = saved_measure_num;
+        state.elapsed_in_measure = Frac::from_integer(0);
+        state.current_measure = None;
+        state.current_voice = Vec::new();
+        state.current_time_sig = saved_time_sig;
+        state.prev_pitch = saved_prev_pitch;
+        state.relative_ref = saved_relative_ref;
+        state.in_relative = saved_in_relative;
+        state.stem_direction = saved_stem_direction.clone();
+        state.current_voice_number = (voice_idx + 1) as u8;
+        state.last_duration = saved_last_duration.clone();
+        state.tuplet_stack = saved_tuplet_stack.clone();
+        state.auto_beam_off = saved_auto_beam_off;
+
+        // Record where the part's measures start so we can drain what this branch adds
+        let part_measures_before = state.ensure_part().measures.len();
+
+        // Walk the branch children
+        walk_voice_branch(state, children, branch_indices);
+
+        // Flush remaining state
+        state.flush_measure();
+
+        // Extract the measures produced by this voice branch
+        let part = state.ensure_part();
+        let voice_measures: Vec<Measure> = part.measures.drain(part_measures_before..).collect();
+
+        // Renumber voices in these measures
+        let voice_measures = renumber_voices_in_measures(voice_measures, (voice_idx + 1) as u8);
+        voice_streams.push(voice_measures);
+    }
+
+    // 4. Merge the per-voice measure streams
+    let merged = merge_voice_measure_streams(&voice_streams);
+
+    // 5. Restore state and append merged measures
+    state.current_measure = saved_current_measure;
+    state.current_voice = saved_current_voice;
+    state.current_time_sig = saved_time_sig;
+    state.stem_direction = saved_stem_direction;
+    state.current_voice_number = saved_voice_number;
+    state.tuplet_stack = saved_tuplet_stack;
+    state.auto_beam_off = saved_auto_beam_off;
+    // Advance measure_num past the merged measures
+    state.measure_num = saved_measure_num + merged.len() as u32;
+    state.elapsed_in_measure = Frac::from_integer(0);
+
+    let part = state.ensure_part();
+    part.measures.extend(merged);
+}
+
+/// Walk the children of a single voice branch within `<< \\ >>`.
+///
+/// `branch_indices` contains indices into `children` for this voice's nodes.
+fn walk_voice_branch(state: &mut WalkState, children: &[Node], branch_indices: &[usize]) {
+    let mut bi = 0;
+    while bi < branch_indices.len() {
+        let ci = branch_indices[bi];
+        let child = children[ci];
+        match child.kind() {
+            "named_context" => {
+                let (context, name) = extract_named_context(state, child);
+                // Collect the remaining children indices for context body consumption
+                let remaining: Vec<Node> = branch_indices[bi + 1..]
+                    .iter()
+                    .map(|&idx| children[idx])
+                    .collect();
+                let consumed = walk_context_body(state, &remaining, 0, &context, &name);
+                bi += 1 + consumed;
+                continue;
+            }
+            "expression_block" => {
+                walk_music_block(state, child);
+            }
+            "parallel_music" => {
+                walk_parallel_music(state, child);
+            }
+            "escaped_word" => {
+                let text = state.text(child).to_string();
+                if text == "\\relative" {
+                    state.in_relative = true;
+                    state.mode = PitchMode::Relative;
+                    // consume_relative expects a slice; build one from remaining branch nodes
+                    let remaining: Vec<Node> = branch_indices[bi + 1..]
+                        .iter()
+                        .map(|&idx| children[idx])
+                        .collect();
+                    let consumed = consume_relative(state, &remaining, 0);
+                    bi += 1 + consumed;
+                    continue;
+                } else if text == "\\transpose" {
+                    let remaining: Vec<Node> = branch_indices[bi + 1..]
+                        .iter()
+                        .map(|&idx| children[idx])
+                        .collect();
+                    let consumed = consume_transpose(state, &remaining, 0);
+                    bi += 1 + consumed;
+                    continue;
+                } else if text == "\\unfoldRepeats" {
+                    // Transparent wrapper — just skip the keyword
+                } else if matches!(text.as_str(), "\\set" | "\\override" | "\\revert") {
+                    // Skip property assignments
+                    bi += 1;
+                    while bi < branch_indices.len() {
+                        let peek = children[branch_indices[bi]].kind();
+                        if matches!(
+                            peek,
+                            "escaped_word"
+                                | "named_context"
+                                | "expression_block"
+                                | "parallel_music"
+                        ) {
+                            break;
+                        }
+                        bi += 1;
+                    }
+                    continue;
+                } else {
+                    let var_name = text.trim_start_matches('\\');
+                    state.resolve_variable(var_name);
+                }
+            }
+            _ => {}
+        }
+        bi += 1;
+    }
+}
+
+/// Walk a `<< ... >>` block that does NOT contain `\\` separators.
+/// This handles simultaneous staves/contexts (\new Staff, \new Voice, etc.).
+fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
     let mut i = 0;
 
     while i < children.len() {
@@ -1122,16 +1423,11 @@ fn walk_parallel_music(state: &mut WalkState, node: Node) {
             "named_context" => {
                 let (context, name) = extract_named_context(state, child);
                 i += 1;
-                i = walk_context_body(state, &children, i, &context, &name);
+                i = walk_context_body(state, children, i, &context, &name);
                 continue;
             }
             "expression_block" => {
-                // Voice within parallel music
                 walk_music_block(state, child);
-            }
-            "parallel_music_separator" => {
-                // \\ — separates voices
-                state.flush_measure();
             }
             "escaped_word" => {
                 let text = state.text(child).to_string();
@@ -1139,7 +1435,30 @@ fn walk_parallel_music(state: &mut WalkState, node: Node) {
                     state.in_relative = true;
                     state.mode = PitchMode::Relative;
                     i += 1;
-                    i = consume_relative(state, &children, i);
+                    i = consume_relative(state, children, i);
+                    continue;
+                } else if text == "\\transpose" {
+                    i += 1;
+                    i = consume_transpose(state, children, i);
+                    continue;
+                } else if text == "\\unfoldRepeats" {
+                    // Transparent wrapper — just skip the keyword
+                } else if matches!(text.as_str(), "\\set" | "\\override" | "\\revert") {
+                    // Skip property assignments
+                    i += 1;
+                    while i < children.len() {
+                        let peek = children[i].kind();
+                        if matches!(
+                            peek,
+                            "escaped_word"
+                                | "named_context"
+                                | "expression_block"
+                                | "parallel_music"
+                        ) {
+                            break;
+                        }
+                        i += 1;
+                    }
                     continue;
                 } else {
                     let var_name = text.trim_start_matches('\\');
@@ -1216,6 +1535,11 @@ fn walk_context_body(
                         i = consume_relative(state, children, i);
                         continue;
                     }
+                    if text == "\\transpose" {
+                        i += 1;
+                        i = consume_transpose(state, children, i);
+                        continue;
+                    }
                     break;
                 }
                 _ => break,
@@ -1232,6 +1556,48 @@ fn walk_context_body(
             state
                 .voice_part_map
                 .insert(name.to_string(), part_idx);
+        }
+        return i;
+    }
+
+    // Dynamics / NullVoice contexts: these carry layout-only information
+    // (dynamics placement between staves, null voice for lyrics alignment).
+    // Don't create a new part; parse the body into the current part context
+    // so that spacer-rest merging can attach directions to the correct staff.
+    if context == "Dynamics" || context == "NullVoice" {
+        // Skip optional \with { ... }
+        while i < children.len() {
+            let node = children[i];
+            if node.kind() == "escaped_word" && state.text(node) == "\\with" {
+                if let Some(next) = children.get(i + 1) {
+                    if next.kind() == "expression_block" {
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+        // Parse body into current part (no new_part call)
+        if let Some(node) = children.get(i) {
+            match node.kind() {
+                "expression_block" => {
+                    walk_music_block(state, *node);
+                    i += 1;
+                }
+                "parallel_music" => {
+                    walk_parallel_music(state, *node);
+                    i += 1;
+                }
+                "escaped_word" => {
+                    let text = state.text(*node).to_string();
+                    let var_name = text.trim_start_matches('\\');
+                    if state.resolve_variable(var_name) {
+                        i += 1;
+                    }
+                }
+                _ => {}
+            }
         }
         return i;
     }
@@ -1292,6 +1658,11 @@ fn walk_context_body(
                         state.mode = PitchMode::Relative;
                         i += 1;
                         i = consume_relative(state, children, i);
+                        continue;
+                    }
+                    "\\transpose" => {
+                        i += 1;
+                        i = consume_transpose(state, children, i);
                         continue;
                     }
                     "\\with" => {
@@ -1472,6 +1843,338 @@ fn consume_relative(state: &mut WalkState, children: &[Node], mut i: usize) -> u
     i
 }
 
+/// Consume `\repeat volta N { music } [\alternative { {..} {..} }]`.
+/// Inserts forward/backward repeat barlines and ending markers for alternatives.
+fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
+    // Parse repeat type (volta, unfold, etc.)
+    let repeat_type = if i < children.len() && children[i].kind() == "symbol" {
+        let t = state.text(children[i]).to_string();
+        i += 1;
+        t
+    } else {
+        return i;
+    };
+
+    // Parse repeat count
+    let repeat_count: u8 = if i < children.len() && children[i].kind() == "unsigned_integer" {
+        let n = state.text(children[i]).parse().unwrap_or(2);
+        i += 1;
+        n
+    } else {
+        2
+    };
+
+    // For unfold repeats, just walk the block N times
+    if repeat_type == "unfold" {
+        i = consume_repeat_body(state, children, i);
+        return i;
+    }
+
+    // Insert forward repeat barline on the first measure of the repeat body
+    {
+        let measure = state.ensure_measure();
+        measure.left_barline = Some(Barline {
+            style: BarlineType::RepeatForward,
+            repeat_direction: Some(RepeatDirection::Forward),
+            ..Default::default()
+        });
+    }
+
+    // Walk the repeat body
+    i = consume_repeat_body(state, children, i);
+
+    // Check for \alternative
+    if i < children.len() && children[i].kind() == "escaped_word" {
+        let text = state.text(children[i]);
+        if text == "\\alternative" {
+            i += 1;
+            // \alternative { { alt1 } { alt2 } }
+            if i < children.len() && children[i].kind() == "expression_block" {
+                let alt_block = children[i];
+                i += 1;
+                consume_alternatives(state, alt_block, repeat_count);
+            }
+            return i;
+        }
+    }
+
+    // No alternative — close the repeat with a backward barline on the last measure
+    {
+        let measure = state.ensure_measure();
+        measure.right_barline = Some(Barline {
+            style: BarlineType::RepeatBackward,
+            repeat_direction: Some(RepeatDirection::Backward),
+            ..Default::default()
+        });
+        state.bar_check();
+    }
+
+    i
+}
+
+/// Consume the body of a \repeat (expression_block, or \relative { } etc.)
+fn consume_repeat_body(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
+    while i < children.len() {
+        let node = children[i];
+        match node.kind() {
+            "expression_block" => {
+                walk_music_block(state, node);
+                i += 1;
+                return i;
+            }
+            "escaped_word" => {
+                let text = state.text(node).to_string();
+                i += 1;
+                if text == "\\relative" {
+                    // \repeat volta 2 \relative c' { ... }
+                    // consume the reference pitch and block
+                    if i < children.len() && children[i].kind() == "symbol" {
+                        let ref_sym = state.text(children[i]).to_string();
+                        i += 1;
+                        if let Some((step, alter)) = parse_pitch_name(&ref_sym, state.language) {
+                            let oct_marks = consume_octave_marks(state, children, &mut i);
+                            let ref_pitch = Pitch::with_alter(step, alter, 3 + oct_marks);
+                            let old_relative = state.in_relative;
+                            let old_prev = state.prev_pitch;
+                            let old_ref = state.relative_ref;
+                            state.in_relative = true;
+                            state.prev_pitch = Some(ref_pitch);
+                            state.relative_ref = Some(ref_pitch);
+                            if i < children.len() && children[i].kind() == "expression_block" {
+                                walk_music_block(state, children[i]);
+                                i += 1;
+                            }
+                            state.in_relative = old_relative;
+                            state.prev_pitch = old_prev;
+                            state.relative_ref = old_ref;
+                        }
+                    }
+                    return i;
+                }
+                // Unknown escaped word inside repeat header — skip
+                return i;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    i
+}
+
+/// Parse `\alternative { { alt1 } { alt2 } ... }` and mark endings.
+fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u8) {
+    let mut cursor = alt_block.walk();
+    let mut alt_blocks: Vec<Node> = Vec::new();
+
+    // Collect all child blocks (expression_block or \relative blocks)
+    if cursor.goto_first_child() {
+        loop {
+            let node = cursor.node();
+            match node.kind() {
+                "expression_block" => alt_blocks.push(node),
+                "escaped_word" => {
+                    // Could be \relative — need to handle inline
+                    // For now, collect the following block
+                }
+                _ => {}
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    // Walk through children more carefully to handle \relative alternatives
+    let children: Vec<Node> = {
+        let mut c = Vec::new();
+        let mut cursor2 = alt_block.walk();
+        if cursor2.goto_first_child() {
+            loop {
+                c.push(cursor2.node());
+                if !cursor2.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        c
+    };
+
+    // Parse alternatives — each is either an expression_block or \relative <pitch> { }
+    let mut ending_num: u8 = 1;
+    let mut ci = 0;
+    while ci < children.len() {
+        let node = children[ci];
+        match node.kind() {
+            "expression_block" => {
+                walk_alternative_block(state, node, ending_num);
+                ending_num += 1;
+                ci += 1;
+            }
+            "escaped_word" => {
+                let text = state.text(node).to_string();
+                ci += 1;
+                if text == "\\relative" {
+                    // \relative <pitch> { ... }
+                    if ci < children.len() && children[ci].kind() == "symbol" {
+                        let ref_sym = state.text(children[ci]).to_string();
+                        ci += 1;
+                        if let Some((step, alter)) = parse_pitch_name(&ref_sym, state.language) {
+                            let oct_marks = consume_octave_marks(state, &children, &mut ci);
+                            let ref_pitch = Pitch::with_alter(step, alter, 3 + oct_marks);
+                            let old_relative = state.in_relative;
+                            let old_prev = state.prev_pitch;
+                            let old_ref = state.relative_ref;
+                            state.in_relative = true;
+                            state.prev_pitch = Some(ref_pitch);
+                            state.relative_ref = Some(ref_pitch);
+                            if ci < children.len() && children[ci].kind() == "expression_block" {
+                                walk_alternative_block(state, children[ci], ending_num);
+                                ending_num += 1;
+                                ci += 1;
+                            }
+                            state.in_relative = old_relative;
+                            state.prev_pitch = old_prev;
+                            state.relative_ref = old_ref;
+                        }
+                    }
+                }
+            }
+            _ => { ci += 1; }
+        }
+    }
+
+    // After the last alternative, place a backward repeat barline
+    {
+        let measure = state.ensure_measure();
+        measure.right_barline = Some(Barline {
+            style: BarlineType::RepeatBackward,
+            repeat_direction: Some(RepeatDirection::Backward),
+            ..Default::default()
+        });
+        state.bar_check();
+    }
+}
+
+/// Walk one alternative block, marking the first measure with ending start
+/// and the last with ending stop.
+fn walk_alternative_block(state: &mut WalkState, block: Node, ending_num: u8) {
+    // Record how many measures existed before this alternative
+    let measures_before = state.ensure_part().measures.len();
+
+    walk_music_block(state, block);
+
+    // Flush any pending measure so we can mark it
+    state.flush_measure();
+
+    let part = state.ensure_part();
+    let measures_after = part.measures.len();
+
+    // Mark the first and last measures of this alternative with ending info
+    if measures_after > measures_before {
+        // First measure of alternative
+        let first_idx = measures_before;
+        part.measures[first_idx].left_barline = Some(Barline {
+            style: BarlineType::Regular,
+            ending_number: Some(ending_num),
+            ending_type: Some("start".to_string()),
+            ..Default::default()
+        });
+
+        // Last measure of alternative
+        let last_idx = measures_after - 1;
+        if part.measures[last_idx].right_barline.is_none() {
+            part.measures[last_idx].right_barline = Some(Barline {
+                style: BarlineType::Regular,
+                ending_number: Some(ending_num),
+                ending_type: Some("stop".to_string()),
+                ..Default::default()
+            });
+        } else {
+            // Just add ending info to the existing barline
+            let bl = part.measures[last_idx].right_barline.as_mut().unwrap();
+            bl.ending_number = Some(ending_num);
+            bl.ending_type = Some("stop".to_string());
+        }
+    }
+}
+
+/// Consume `\transpose <from> <to> { music }`.
+/// Parses two pitches (from and to), pushes the transposition interval onto the
+/// stack, walks the music block, then pops the interval.
+fn consume_transpose(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
+    // Parse first pitch (from)
+    let from = consume_transpose_pitch(state, children, &mut i);
+    // Parse second pitch (to)
+    let to = consume_transpose_pitch(state, children, &mut i);
+
+    let (from, to) = match (from, to) {
+        (Some(f), Some(t)) => (f, t),
+        _ => return i, // couldn't parse both pitches — bail
+    };
+
+    state.transpose_stack.push((from, to));
+
+    // Now look for the music block or escaped variable reference
+    while i < children.len() {
+        let node = children[i];
+        match node.kind() {
+            "expression_block" => {
+                walk_music_block(state, node);
+                i += 1;
+                break;
+            }
+            "escaped_word" => {
+                let text = state.text(node).to_string();
+                i += 1;
+                // Could be \relative, a variable ref, or another command
+                if text == "\\relative" {
+                    state.in_relative = true;
+                    state.mode = PitchMode::Relative;
+                    i = consume_relative(state, children, i);
+                } else if text == "\\transpose" {
+                    i = consume_transpose(state, children, i);
+                } else {
+                    let var_name = text.trim_start_matches('\\');
+                    state.resolve_variable(var_name);
+                }
+                break;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    state.transpose_stack.pop();
+    i
+}
+
+/// Helper: consume a single pitch (symbol + octave marks) for \transpose arguments.
+fn consume_transpose_pitch(
+    state: &WalkState,
+    children: &[Node],
+    i: &mut usize,
+) -> Option<Pitch> {
+    // Skip non-symbol tokens (whitespace, punctuation)
+    while *i < children.len() {
+        let node = children[*i];
+        if node.kind() == "symbol" {
+            let sym = state.text(node).to_string();
+            if let Some((step, alter)) = parse_pitch_name(&sym, state.language) {
+                *i += 1;
+                let octave_marks = consume_octave_marks(state, children, i);
+                return Some(Pitch::with_alter(step, alter, 3 + octave_marks));
+            } else {
+                break;
+            }
+        } else {
+            *i += 1;
+        }
+    }
+    None
+}
+
 /// Walk an `expression_block` `{ ... }` containing music.
 /// This is the core of the parser: reads symbols, durations, commands
 /// and builds notes/rests/chords.
@@ -1576,6 +2279,7 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
             // Spacer rest, possibly with *N multiplier (e.g. s1*62)
             let dur = consume_duration(state, children, &mut i);
             let count = consume_duration_multiplier(state, children, &mut i);
+            let _attachments = consume_attachments(state, children, &mut i);
             let mut rest = Rest::new(dur.clone());
             rest.is_spacer = true;
             state.push_voice_element(VoiceElement::Rest(rest));
@@ -1594,12 +2298,21 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 // Consume octave marks
                 let octave_marks = consume_octave_marks(state, children, &mut i);
                 // Consume accidental forcing marks (! = forced, ? = cautionary)
-                consume_accidental_marks(state, children, &mut i);
+                let acc_display = consume_accidental_marks(state, children, &mut i);
                 let dur = consume_duration(state, children, &mut i);
+                let tremolo = consume_tremolo(state, children, &mut i, &dur);
                 let attachments = consume_attachments(state, children, &mut i);
 
-                let pitch = state.resolve_pitch(step, alter, octave_marks);
+                let mut pitch = state.resolve_pitch(step, alter, octave_marks);
+                pitch.accidental = acc_display;
                 let mut note = Note::new(pitch, dur);
+                if tremolo > 0 {
+                    note.tremolo_marks = tremolo;
+                    note.ornaments.push(crate::ir::articulation::Ornament {
+                        name: "tremolo".to_string(),
+                        placement: Default::default(),
+                    });
+                }
                 apply_note_attachments(state, &mut note, &attachments);
                 state.push_voice_element(VoiceElement::Note(Box::new(note)));
             }
@@ -1785,6 +2498,9 @@ fn handle_escaped_word(
             state.mode = PitchMode::Relative;
             i = consume_relative(state, children, i);
         }
+        "\\transpose" => {
+            i = consume_transpose(state, children, i);
+        }
         "\\fermata" => {
             // Attach fermata to most recent note/rest
             attach_fermata(state);
@@ -1799,7 +2515,65 @@ fn handle_escaped_word(
         "\\turn" => attach_articulation(state, "turn"),
         "\\reverseturn" => attach_articulation(state, "inverted-turn"),
         "\\sustainOn" | "\\sustainOff" => {
-            // Pedal events: create a direction
+            let pedal_type = if text == "\\sustainOn" {
+                "start"
+            } else {
+                "stop"
+            };
+            let dir = Direction {
+                pedal: Some(PedalEvent {
+                    pedal_type: pedal_type.to_string(),
+                    line: false,
+                }),
+                ..Default::default()
+            };
+            let measure = state.ensure_measure();
+            measure.directions.push(dir);
+        }
+        "\\ottava" => {
+            // \ottava #1, \ottava #-1, \ottava #0
+            if let Some(scheme_node) = children.get(i) {
+                if scheme_node.kind() == "embedded_scheme" {
+                    let scheme_text = state.text(*scheme_node);
+                    // Parse #N or #-N from the embedded scheme
+                    let num_str = scheme_text.trim_start_matches('#');
+                    if let Ok(n) = num_str.parse::<i32>() {
+                        let (shift_type, size) = if n > 0 {
+                            ("up", (n * 8) as i8)
+                        } else if n < 0 {
+                            ("down", (n.abs() * 8) as i8)
+                        } else {
+                            ("stop", 0i8)
+                        };
+                        let dir = Direction {
+                            octave_shift: Some(OctaveShift {
+                                shift_type: shift_type.to_string(),
+                                size,
+                            }),
+                            ..Default::default()
+                        };
+                        let measure = state.ensure_measure();
+                        measure.directions.push(dir);
+                    }
+                    i += 1;
+                }
+            }
+        }
+        "\\break" => {
+            let dir = Direction {
+                layout_break: Some(LayoutBreakType::System),
+                ..Default::default()
+            };
+            let measure = state.ensure_measure();
+            measure.directions.push(dir);
+        }
+        "\\pageBreak" => {
+            let dir = Direction {
+                layout_break: Some(LayoutBreakType::Page),
+                ..Default::default()
+            };
+            let measure = state.ensure_measure();
+            measure.directions.push(dir);
         }
         "\\stemUp" => {
             state.stem_direction = "up".to_string();
@@ -1810,25 +2584,28 @@ fn handle_escaped_word(
         "\\stemNeutral" => {
             state.stem_direction.clear();
         }
+        "\\voiceOne" => {
+            state.current_voice_number = 1;
+            state.stem_direction = "up".to_string();
+        }
+        "\\voiceTwo" => {
+            state.current_voice_number = 2;
+            state.stem_direction = "down".to_string();
+        }
+        "\\voiceThree" => {
+            state.current_voice_number = 3;
+            state.stem_direction = "up".to_string();
+        }
+        "\\voiceFour" => {
+            state.current_voice_number = 4;
+            state.stem_direction = "down".to_string();
+        }
+        "\\oneVoice" => {
+            state.current_voice_number = 1;
+            state.stem_direction.clear();
+        }
         "\\repeat" => {
-            // \repeat volta N { ... }
-            // Skip "volta" and the number, parse the block
-            if let Some(next) = children.get(i) {
-                if next.kind() == "symbol" && state.text(*next) == "volta" {
-                    i += 1; // skip "volta"
-                    if let Some(num_node) = children.get(i) {
-                        if num_node.kind() == "unsigned_integer" {
-                            i += 1; // skip count
-                        }
-                    }
-                    if let Some(block) = children.get(i) {
-                        if block.kind() == "expression_block" {
-                            walk_music_block(state, *block);
-                            i += 1;
-                        }
-                    }
-                }
-            }
+            i = consume_repeat(state, children, i);
         }
         "\\bar" => {
             // \bar "||" or \bar "|."
@@ -1977,6 +2754,22 @@ fn handle_escaped_word(
                 }
             }
         }
+        "\\skip" => {
+            // \skip <duration> — equivalent to spacer rest (s<duration>)
+            let dur = consume_duration(state, children, &mut i);
+            let count = consume_duration_multiplier(state, children, &mut i);
+            let mut rest = Rest::new(dur.clone());
+            rest.is_spacer = true;
+            state.push_voice_element(VoiceElement::Rest(rest));
+            if count > 1 {
+                for _ in 1..count {
+                    state.bar_check();
+                    let mut rest = Rest::new(dur.clone());
+                    rest.is_spacer = true;
+                    state.push_voice_element(VoiceElement::Rest(rest));
+                }
+            }
+        }
         "\\autoBeamOff" => {
             state.auto_beam_off = true;
         }
@@ -1991,7 +2784,7 @@ fn handle_escaped_word(
         }
         "\\unset" | "\\cadenzaOn" | "\\cadenzaOff"
         | "\\dynamicUp" | "\\dynamicDown" | "\\dynamicNeutral"
-        | "\\context" => {
+        | "\\context" | "\\unfoldRepeats" => {
             // Skip these commands; some may consume the next token
             // \context within music blocks is handled by named_context at the
             // walk_music_block level, but if tree-sitter doesn't wrap it as
@@ -2141,12 +2934,22 @@ fn consume_octave_marks(state: &WalkState, children: &[Node], i: &mut usize) -> 
 
 /// Consume accidental forcing marks (`!` = forced, `?` = cautionary) after a pitch.
 /// These are LilyPond punctuation tokens that appear between octave marks and duration.
-fn consume_accidental_marks(state: &WalkState, children: &[Node], i: &mut usize) {
+/// Returns the resulting `AccidentalDisplay`.
+fn consume_accidental_marks(
+    state: &WalkState,
+    children: &[Node],
+    i: &mut usize,
+) -> AccidentalDisplay {
+    let mut display = AccidentalDisplay::None;
     while *i < children.len() {
         let node = children[*i];
         if node.kind() == "punctuation" {
             let text = punct_text(state, node);
-            if text == "!" || text == "?" {
+            if text == "!" {
+                display = AccidentalDisplay::Forced;
+                *i += 1;
+            } else if text == "?" {
+                display = AccidentalDisplay::Cautionary;
                 *i += 1;
             } else {
                 break;
@@ -2155,6 +2958,7 @@ fn consume_accidental_marks(state: &WalkState, children: &[Node], i: &mut usize)
             break;
         }
     }
+    display
 }
 
 /// Consume an optional duration (unsigned_integer + dot punctuation).
@@ -2227,6 +3031,36 @@ fn consume_duration_multiplier(state: &WalkState, children: &[Node], i: &mut usi
         }
     }
     1
+}
+
+/// Consume an optional tremolo suffix `:N` (e.g. `c4:32`) after a duration.
+/// Returns the number of tremolo marks (0 if none found).
+/// Formula: marks = log2(N / base_dur_denom), e.g. `:32` on a quarter note (4) → 3 marks.
+fn consume_tremolo(
+    state: &WalkState,
+    children: &[Node],
+    i: &mut usize,
+    base_dur: &Duration,
+) -> u8 {
+    if *i < children.len() && children[*i].kind() == "punctuation" {
+        let ptext = punct_text(state, children[*i]);
+        if ptext == ":" {
+            *i += 1;
+            if *i < children.len() && children[*i].kind() == "unsigned_integer" {
+                let num_text = state.text(children[*i]).to_string();
+                *i += 1;
+                if let Ok(n) = num_text.parse::<u32>() {
+                    // base_dur denominator: e.g. quarter = 1/4 → denom 4
+                    let base_denom = *base_dur.base.denom() as u32;
+                    if n > base_denom && base_denom > 0 {
+                        let ratio = n / base_denom;
+                        return (ratio as f64).log2() as u8;
+                    }
+                }
+            }
+        }
+    }
+    0
 }
 
 /// Consume post-note attachments: dynamics, ties, slurs, articulations, etc.
@@ -2618,6 +3452,25 @@ fn block_contains_named_context(state: &WalkState, block: Node) -> bool {
     false
 }
 
+/// Check if a `\score { ... }` expression_block contains `\layout` and/or `\midi`.
+/// Returns (has_layout, has_midi).
+fn score_block_output_types(state: &WalkState, block: Node) -> (bool, bool) {
+    let mut has_layout = false;
+    let mut has_midi = false;
+    let mut cursor = block.walk();
+    for child in block.children(&mut cursor) {
+        if child.kind() == "escaped_word" {
+            let text = state.text(child);
+            if text == "\\layout" {
+                has_layout = true;
+            } else if text == "\\midi" {
+                has_midi = true;
+            }
+        }
+    }
+    (has_layout, has_midi)
+}
+
 /// Parse a `\lyricmode { ... }` block into a list of `LyricSyllable`s.
 /// Lyrics are symbols separated by `--` (hyphen) or `__` (extend).
 fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyllable> {
@@ -2967,8 +3820,9 @@ fn build_chord(state: &mut WalkState, chord_node: Node, dur: Duration) -> Chord 
             if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
                 i += 1;
                 let octave_marks = consume_octave_marks(state, &children, &mut i);
-                consume_accidental_marks(state, &children, &mut i);
-                let pitch = state.resolve_pitch(step, alter, octave_marks);
+                let acc_display = consume_accidental_marks(state, &children, &mut i);
+                let mut pitch = state.resolve_pitch(step, alter, octave_marks);
+                pitch.accidental = acc_display;
                 let note = Note::new(pitch, dur.clone());
                 notes.push(note);
                 continue;
@@ -2993,9 +3847,10 @@ fn parse_grace_block(state: &mut WalkState, block: Node) -> Vec<Note> {
             if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
                 i += 1;
                 let octave_marks = consume_octave_marks(state, &children, &mut i);
-                consume_accidental_marks(state, &children, &mut i);
+                let acc_display = consume_accidental_marks(state, &children, &mut i);
                 let dur = consume_duration(state, &children, &mut i);
-                let pitch = state.resolve_pitch(step, alter, octave_marks);
+                let mut pitch = state.resolve_pitch(step, alter, octave_marks);
+                pitch.accidental = acc_display;
                 let note = Note::new(pitch, dur);
                 notes.push(note);
                 continue;
@@ -5624,6 +6479,358 @@ melB = { g'4 a' b' c'' }
         assert_eq!(f_note.lyrics[0].text, "two");
     }
 
+    #[test]
+    fn test_sustain_pedal_parsing() {
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ c'4\sustainOn d' e'\sustainOff f' }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let dirs: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.directions)
+            .filter_map(|d| d.pedal.as_ref())
+            .collect();
+        assert_eq!(dirs.len(), 2, "should have 2 pedal events");
+        assert_eq!(dirs[0].pedal_type, "start");
+        assert_eq!(dirs[1].pedal_type, "stop");
+    }
+
+    #[test]
+    fn test_ottava_parsing() {
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \ottava #1 c''4 d'' \ottava #0 e' f' }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let shifts: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.directions)
+            .filter_map(|d| d.octave_shift.as_ref())
+            .collect();
+        assert_eq!(shifts.len(), 2, "should have 2 octave shifts");
+        assert_eq!(shifts[0].shift_type, "up");
+        assert_eq!(shifts[0].size, 8);
+        assert_eq!(shifts[1].shift_type, "stop");
+        assert_eq!(shifts[1].size, 0);
+    }
+
+    #[test]
+    fn test_layout_break_parsing() {
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ c'4 d' e' f' \break g' a' b' c'' \pageBreak d'' e'' f'' g'' }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let breaks: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.directions)
+            .filter_map(|d| d.layout_break.as_ref())
+            .collect();
+        assert_eq!(breaks.len(), 2, "should have 2 layout breaks");
+        assert_eq!(*breaks[0], crate::ir::direction::LayoutBreakType::System);
+        assert_eq!(*breaks[1], crate::ir::direction::LayoutBreakType::Page);
+    }
+
+    #[test]
+    fn test_accidental_display_forced() {
+        let adapter = LyToIrAdapter::new();
+        let src = r#"\language "english"
+{ cs'!4 d'?4 e'4 }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let notes: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(notes.len() >= 3, "should have at least 3 notes");
+        assert_eq!(
+            notes[0].pitch.accidental,
+            crate::ir::pitch::AccidentalDisplay::Forced,
+            "cis'! should have forced accidental"
+        );
+        assert_eq!(
+            notes[1].pitch.accidental,
+            crate::ir::pitch::AccidentalDisplay::Cautionary,
+            "d'? should have cautionary accidental"
+        );
+        assert_eq!(
+            notes[2].pitch.accidental,
+            crate::ir::pitch::AccidentalDisplay::None,
+            "e' should have no accidental display"
+        );
+    }
+
+    #[test]
+    fn test_transpose_simple() {
+        // \transpose c d { c' d' e' } → D4 E4 F#4
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \transpose c d { c'4 d' e' } }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let notes: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(notes.len(), 3, "should have 3 notes");
+        // C transposed up by whole step → D
+        assert_eq!(notes[0].pitch.step, PitchStep::D);
+        assert_eq!(notes[0].pitch.octave, 4);
+        // D transposed up by whole step → E
+        assert_eq!(notes[1].pitch.step, PitchStep::E);
+        assert_eq!(notes[1].pitch.octave, 4);
+        // E transposed up by whole step → F#
+        assert_eq!(notes[2].pitch.step, PitchStep::F);
+        assert_eq!(*notes[2].pitch.alter.numer(), 1, "F# should have alter=1");
+    }
+
+    #[test]
+    fn test_transpose_with_relative() {
+        // \transpose c d \relative c' { c d e } → D4 E4 F#4
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ \transpose c d \relative c' { c4 d e } }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let notes: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(notes.len(), 3, "should have 3 notes");
+        assert_eq!(notes[0].pitch.step, PitchStep::D);
+        assert_eq!(notes[1].pitch.step, PitchStep::E);
+        assert_eq!(notes[2].pitch.step, PitchStep::F);
+    }
+
+    #[test]
+    fn test_tremolo_parsing() {
+        // c'4:32 → quarter note with 32nd-note tremolo = 3 marks
+        // d'8:16 → eighth note with 16th-note tremolo = 1 mark
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{ c'4:32 d'8:16 e'2:32 }"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let notes: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(notes.len() >= 3, "should have at least 3 notes");
+        // c'4:32 → marks = log2(32/4) = 3
+        assert_eq!(notes[0].tremolo_marks, 3, "c'4:32 should have 3 tremolo marks");
+        assert!(
+            notes[0].ornaments.iter().any(|o| o.name == "tremolo"),
+            "should have tremolo ornament"
+        );
+        // d'8:16 → marks = log2(16/8) = 1
+        assert_eq!(notes[1].tremolo_marks, 1, "d'8:16 should have 1 tremolo mark");
+        // e'2:32 → marks = log2(32/2) = 4
+        assert_eq!(notes[2].tremolo_marks, 4, "e'2:32 should have 4 tremolo marks");
+    }
+
+    #[test]
+    fn test_repeat_volta_with_alternative() {
+        let adapter = LyToIrAdapter::new();
+        let src = r#"\language "english"
+{
+    \time 3/4
+    \repeat volta 2 {
+        c'4 d' e' |
+        f' g' a' |
+    }
+    \alternative {
+        { b'4 a' g' | }
+        { c''4 b' a' | }
+    }
+}"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let measures = &parts[0].measures;
+
+        // Should have at least 4 measures: 2 repeat body + 2 alternatives
+        assert!(measures.len() >= 4, "should have at least 4 measures, got {}", measures.len());
+
+        // First measure should have forward repeat barline
+        assert!(
+            measures[0].left_barline.is_some(),
+            "first measure should have left barline"
+        );
+        let lb = measures[0].left_barline.as_ref().unwrap();
+        assert_eq!(lb.style, BarlineType::RepeatForward);
+
+        // Alternative measures should have ending markers
+        let alt1_start = measures.iter().position(|m| {
+            m.left_barline.as_ref().map_or(false, |bl| bl.ending_number == Some(1))
+        });
+        assert!(alt1_start.is_some(), "should find ending 1 start");
+
+        let alt2_start = measures.iter().position(|m| {
+            m.left_barline.as_ref().map_or(false, |bl| bl.ending_number == Some(2))
+        });
+        assert!(alt2_start.is_some(), "should find ending 2 start");
+    }
+
+    #[test]
+    fn test_repeat_volta_no_alternative() {
+        let adapter = LyToIrAdapter::new();
+        let src = r#"{
+    \time 3/4
+    \repeat volta 2 {
+        c'4 d' e' |
+        f' g' a' |
+    }
+}"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let measures = &parts[0].measures;
+
+        // First measure: forward repeat
+        assert!(measures[0].left_barline.is_some());
+        assert_eq!(
+            measures[0].left_barline.as_ref().unwrap().style,
+            BarlineType::RepeatForward
+        );
+
+        // Last repeat measure: backward repeat
+        let has_backward = measures.iter().any(|m| {
+            m.right_barline.as_ref().map_or(false, |bl| bl.style == BarlineType::RepeatBackward)
+        });
+        assert!(has_backward, "should have backward repeat barline");
+    }
+
+    #[test]
+    fn test_repeat_barlines_survive_variable_chain() {
+        // Verify repeat barlines survive nested variable resolution
+        // through Staff/PianoStaff context layers.
+        let adapter = LyToIrAdapter::new();
+        let src = r#"partA = \relative d' {
+    \repeat volta 2 {
+        d4 e f |
+        g a b |
+    }
+    \alternative {
+        { c4 b a | }
+        { d4 c b | }
+    }
+}
+scoreRH = {
+    \new Staff = "rh" {
+        <<
+            \partA
+        >>
+    }
+}
+scoreAll = {
+    \new PianoStaff {
+        <<
+            \scoreRH
+        >>
+    }
+}
+\score {
+    \scoreAll
+    \layout { }
+}"#;
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let fwd = parts.iter().flat_map(|p| &p.measures)
+            .filter(|m| m.left_barline.as_ref().map_or(false, |bl| bl.style == BarlineType::RepeatForward))
+            .count();
+        assert!(fwd > 0, "should have forward repeat barlines");
+        let endings = parts.iter().flat_map(|p| &p.measures)
+            .filter(|m| m.left_barline.as_ref().map_or(false, |bl| bl.ending_number.is_some()))
+            .count();
+        assert!(endings > 0, "should have ending markers");
+    }
+
+    #[test]
+    fn test_fixture_repeats_ly() {
+        // Regression test: parse the repeats fixture (Bethena by Scott Joplin).
+        // Should produce 1 score with 2 parts (RH + LH piano).
+        // MIDI-only \score block should be skipped.
+        let src = std::fs::read_to_string("tests/fixtures/ly/repeats.ly").unwrap();
+        let adapter = LyToIrAdapter::new();
+        let scores = adapter.convert_str_multi(&src).unwrap();
+        assert_eq!(scores.len(), 1, "should produce exactly 1 score (MIDI-only block skipped), got {}", scores.len());
+        assert_eq!(scores[0].parts().len(), 2, "should have 2 parts (RH + LH), got {}", scores[0].parts().len());
+        let total_measures: usize = scores[0].parts()
+            .iter()
+            .map(|p| p.measures.len())
+            .sum();
+        assert!(total_measures > 100, "should produce many measures, got {total_measures}");
+    }
+
+    #[test]
+    fn test_fixture_pedal_ly() {
+        // Regression test: parse the pedal fixture (Albéniz).
+        // Should produce 1 score with 2 parts (upper + lower).
+        // \new Dynamics contexts should not create extra parts.
+        let src = std::fs::read_to_string("tests/fixtures/ly/pedal.ly").unwrap();
+        let adapter = LyToIrAdapter::new();
+        let scores = adapter.convert_str_multi(&src).unwrap();
+        assert_eq!(scores.len(), 1, "should produce exactly 1 score, got {}", scores.len());
+        let score = &scores[0];
+        assert_eq!(score.parts().len(), 2, "should have 2 parts (upper + lower), got {}", score.parts().len());
+
+        // Count pedal events — should be merged from \new Dynamics contexts
+        let pedal_count: usize = score.parts().iter().flat_map(|p| &p.measures)
+            .flat_map(|m| &m.directions)
+            .filter(|d| d.pedal.is_some())
+            .count();
+        assert!(pedal_count > 0, "should have pedal events, got 0");
+    }
+
+    #[test]
+    fn test_fixture_chopin_n_ly() {
+        // Regression test: parse the chopin nocturne fixture.
+        // Should produce 1 score with 2 parts (upper + lower).
+        // \new Dynamics context should not create extra parts.
+        let src = std::fs::read_to_string("tests/fixtures/ly/chopin_n.ly").unwrap();
+        let adapter = LyToIrAdapter::new();
+        let scores = adapter.convert_str_multi(&src).unwrap();
+        assert_eq!(scores.len(), 1, "should produce exactly 1 score, got {}", scores.len());
+        assert_eq!(scores[0].parts().len(), 2, "should have 2 parts (upper + lower), got {}", scores[0].parts().len());
+        let total_measures: usize = scores[0].parts()
+            .iter()
+            .map(|p| p.measures.len())
+            .sum();
+        assert!(total_measures > 50, "should produce many measures, got {total_measures}");
+    }
+
 }
 
 /// Parse a `\figuremode { ... }` expression block into a flat stream of figured bass entries.
@@ -5923,6 +7130,23 @@ fn voice_element_duration(elem: &VoiceElement) -> Frac {
     }
 }
 
+/// Check if a part contains only rests/spacers and directions (no actual notes or chords).
+/// This identifies parts created from Dynamics contexts, which may have non-spacer rests
+/// (e.g. from unhandled \skip commands) but never have pitched content.
+fn part_is_dynamics_only(part: &Part) -> bool {
+    for m in &part.measures {
+        for voice in &m.voices {
+            for elem in &voice.elements {
+                match elem {
+                    VoiceElement::Note(_) | VoiceElement::Chord(_) => return false,
+                    _ => {} // Rests (spacer or not), Forward, Backup are OK
+                }
+            }
+        }
+    }
+    true
+}
+
 fn measures_are_spacer_only(measures: &[Measure]) -> bool {
     for m in measures {
         for voice in &m.voices {
@@ -5960,9 +7184,9 @@ fn merge_spacer_measures(target: &mut Vec<Measure>, spacer: &[Measure]) {
                     ta.clefs = sa.clefs.clone();
                 }
             }
-            // Merge directions (tempo, etc.)
-            if !sm.directions.is_empty() && tm.directions.is_empty() {
-                tm.directions = sm.directions.clone();
+            // Merge directions (tempo, dynamics, pedal, etc.)
+            if !sm.directions.is_empty() {
+                tm.directions.extend(sm.directions.iter().cloned());
             }
             // Merge barlines
             if sm.right_barline.is_some() && tm.right_barline.is_none() {
@@ -5974,6 +7198,259 @@ fn merge_spacer_measures(target: &mut Vec<Measure>, spacer: &[Measure]) {
         }
         // If spacer has more measures than target, we don't append them
         // (they're just spacers and don't contribute music)
+    }
+}
+
+/// Merge spacer-only parts (from `\new Dynamics` contexts) into adjacent staff parts.
+// ---------------------------------------------------------------------------
+// Multi-voice merge helpers
+// ---------------------------------------------------------------------------
+
+/// Set the voice number on all Voice objects and their contained elements.
+fn renumber_voices_in_measures(measures: Vec<Measure>, voice_num: u8) -> Vec<Measure> {
+    measures
+        .into_iter()
+        .map(|mut m| {
+            for voice in &mut m.voices {
+                voice.number = voice_num;
+                for elem in &mut voice.elements {
+                    match elem {
+                        VoiceElement::Note(n) => n.voice = voice_num,
+                        VoiceElement::Rest(r) => r.voice = voice_num,
+                        VoiceElement::Chord(c) => {
+                            c.voice = voice_num;
+                            for n in &mut c.notes {
+                                n.voice = voice_num;
+                            }
+                        }
+                        VoiceElement::Forward(f) => f.voice = voice_num,
+                        VoiceElement::Backup(_) => {}
+                    }
+                }
+            }
+            m
+        })
+        .collect()
+}
+
+/// Merge N voice-specific measure streams into a single stream.
+///
+/// For each measure index, combines all voices from all streams into
+/// a single measure. Attributes are merged (first non-None wins),
+/// directions are concatenated, barlines take first non-None.
+fn merge_voice_measure_streams(streams: &[Vec<Measure>]) -> Vec<Measure> {
+    if streams.is_empty() {
+        return Vec::new();
+    }
+    let max_len = streams.iter().map(|s| s.len()).max().unwrap_or(0);
+    let mut result = Vec::with_capacity(max_len);
+
+    for i in 0..max_len {
+        // Start with the first stream's measure as the base
+        let mut merged = if let Some(m) = streams[0].get(i) {
+            m.clone()
+        } else {
+            Measure::new((i + 1) as u32)
+        };
+
+        // Merge voices from subsequent streams
+        for stream in &streams[1..] {
+            if let Some(m) = stream.get(i) {
+                // Add this stream's voices to the merged measure
+                merged.voices.extend(m.voices.iter().cloned());
+
+                // Merge attributes: first non-None wins for each field
+                if let Some(ref src_attrs) = m.attributes {
+                    let dst = merged
+                        .attributes
+                        .get_or_insert_with(MeasureAttributes::default);
+                    if src_attrs.key.is_some() && dst.key.is_none() {
+                        dst.key = src_attrs.key;
+                    }
+                    if src_attrs.time.is_some() && dst.time.is_none() {
+                        dst.time = src_attrs.time.clone();
+                    }
+                    if !src_attrs.clefs.is_empty() && dst.clefs.is_empty() {
+                        dst.clefs = src_attrs.clefs.clone();
+                    }
+                }
+
+                // Merge directions (extend, don't replace)
+                merged.directions.extend(m.directions.iter().cloned());
+
+                // Barlines: first non-None wins
+                if m.left_barline.is_some() && merged.left_barline.is_none() {
+                    merged.left_barline = m.left_barline.clone();
+                }
+                if m.right_barline.is_some() && merged.right_barline.is_none() {
+                    merged.right_barline = m.right_barline.clone();
+                }
+            }
+        }
+
+        result.push(merged);
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Post-processing: attribute merging and tempo propagation
+// ---------------------------------------------------------------------------
+
+/// Merge attribute-only leading measures into the first measure with actual voices.
+///
+/// When `\global` (containing `\key` / `\time` but no notes) is resolved before
+/// the music variable, the part gets leading measures with attributes but empty
+/// voices. This merges those attributes into the first real-music measure and
+/// removes the empty leading measures.
+fn merge_leading_attribute_measures(part: &mut Part) {
+    // Find the first measure with non-empty voice content
+    let first_music_idx = part.measures.iter().position(|m| {
+        m.voices.iter().any(|v| !v.elements.is_empty())
+    });
+
+    let idx = match first_music_idx {
+        Some(0) | None => return, // nothing to merge or no music at all
+        Some(i) => i,
+    };
+
+    // Collect attributes and directions from all leading attribute-only measures
+    let mut merged_key = None;
+    let mut merged_time = None;
+    let mut merged_clefs = std::collections::HashMap::new();
+    let mut merged_dirs: Vec<Direction> = Vec::new();
+    let mut merged_left_barline = None;
+
+    for m in &part.measures[..idx] {
+        if let Some(ref attrs) = m.attributes {
+            if attrs.key.is_some() {
+                merged_key = attrs.key;
+            }
+            if attrs.time.is_some() {
+                merged_time = attrs.time.clone();
+            }
+            if !attrs.clefs.is_empty() {
+                merged_clefs.extend(attrs.clefs.iter().map(|(&k, v)| (k, v.clone())));
+            }
+        }
+        merged_dirs.extend(m.directions.iter().cloned());
+        if m.left_barline.is_some() && merged_left_barline.is_none() {
+            merged_left_barline = m.left_barline.clone();
+        }
+    }
+
+    // Apply collected attributes to the first music measure
+    let target = &mut part.measures[idx];
+    let ta = target
+        .attributes
+        .get_or_insert_with(MeasureAttributes::default);
+    if merged_key.is_some() && ta.key.is_none() {
+        ta.key = merged_key;
+    }
+    if merged_time.is_some() && ta.time.is_none() {
+        ta.time = merged_time;
+    }
+    if !merged_clefs.is_empty() && ta.clefs.is_empty() {
+        ta.clefs = merged_clefs;
+    }
+
+    // Prepend directions from attribute-only measures
+    if !merged_dirs.is_empty() {
+        let existing_dirs = std::mem::take(&mut target.directions);
+        target.directions = merged_dirs;
+        target.directions.extend(existing_dirs);
+    }
+
+    // Remove the leading empty measures and renumber
+    part.measures.drain(0..idx);
+    for (i, m) in part.measures.iter_mut().enumerate() {
+        m.number = (i + 1) as u32;
+    }
+}
+
+/// Ensure the first part has a tempo marking (MusicXML convention).
+///
+/// If any part has a tempo direction in its first measure but the first part
+/// doesn't, copy it there.
+fn propagate_first_tempo(score: &mut Score) {
+    // Find the first tempo direction across all parts' first measures
+    let mut first_tempo: Option<TempoDirection> = None;
+
+    for part in score.parts() {
+        if let Some(m) = part.measures.first() {
+            for dir in &m.directions {
+                if let Some(ref tempo) = dir.tempo {
+                    first_tempo = Some(tempo.clone());
+                    break;
+                }
+            }
+        }
+        if first_tempo.is_some() {
+            break;
+        }
+    }
+
+    if let Some(tempo) = first_tempo {
+        // Ensure the first part has it
+        let parts = score.parts_mut();
+        if let Some(part) = parts.into_iter().next() {
+            if let Some(m) = part.measures.first_mut() {
+                let has_tempo = m.directions.iter().any(|d| d.tempo.is_some());
+                if !has_tempo {
+                    m.directions.push(Direction {
+                        tempo: Some(tempo),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+}
+
+///
+/// Dynamics contexts produce parts containing only spacer rests with Direction
+/// annotations (dynamics, pedal markings). These should not be separate parts;
+/// their directions should be merged into the nearest staff part.
+fn merge_dynamics_parts(parts: &mut Vec<(String, Part)>) {
+    if parts.len() <= 1 {
+        return;
+    }
+    // Identify spacer-only parts and their merge targets
+    let mut merges: Vec<(usize, usize)> = Vec::new(); // (spacer_idx, target_idx)
+
+    for i in 0..parts.len() {
+        if parts[i].1.measures.is_empty() || !part_is_dynamics_only(&parts[i].1) {
+            continue;
+        }
+        // Find nearest non-spacer part: prefer previous, fall back to next
+        let target = if i > 0 && !parts[i - 1].1.measures.is_empty() && !measures_are_spacer_only(&parts[i - 1].1.measures) {
+            Some(i - 1)
+        } else {
+            (i + 1..parts.len()).find(|&j| {
+                !parts[j].1.measures.is_empty() && !measures_are_spacer_only(&parts[j].1.measures)
+            })
+        };
+        if let Some(t) = target {
+            merges.push((i, t));
+        }
+    }
+
+    // Perform merges (clone spacer measures first to avoid borrow conflicts)
+    let spacer_data: Vec<(usize, Vec<Measure>)> = merges
+        .iter()
+        .map(|&(si, _)| (si, parts[si].1.measures.clone()))
+        .collect();
+    for ((_, ti), (_, spacer_measures)) in merges.iter().zip(spacer_data.iter()) {
+        merge_spacer_measures(&mut parts[*ti].1.measures, spacer_measures);
+    }
+
+    // Remove merged spacer parts (in reverse order to maintain indices)
+    let mut to_remove: Vec<usize> = merges.iter().map(|&(si, _)| si).collect();
+    to_remove.sort_unstable();
+    to_remove.dedup();
+    for idx in to_remove.into_iter().rev() {
+        parts.remove(idx);
     }
 }
 
@@ -6104,6 +7581,147 @@ fn resplit_measures_to_match(
             }
             result.push(m);
         }
+    }
+
+    result
+}
+
+/// Re-split measures using a new time signature, preserving multi-voice structure.
+///
+/// When a variable was pre-parsed with one time signature (e.g. default 4/4) but
+/// is resolved in a context with a different time signature (e.g. 6/8), the measure
+/// boundaries are wrong. This function flattens each voice independently and
+/// re-distributes elements into new measures at the correct boundaries.
+fn resplit_measures_for_time_sig(measures: &[Measure], target_time_sig: Frac) -> Vec<Measure> {
+    use std::collections::BTreeMap;
+
+    if measures.is_empty() || target_time_sig <= Frac::from_integer(0) {
+        return measures.to_vec();
+    }
+
+    // 1. Collect all voice numbers and their elements in order
+    let mut voice_elements: BTreeMap<u8, Vec<VoiceElement>> = BTreeMap::new();
+    // Also collect attributes/directions/barlines from original measures,
+    // keyed by cumulative duration position (start of that measure in voice 1)
+    let mut measure_attrs: Vec<(Frac, Option<MeasureAttributes>, Vec<Direction>, Option<Barline>, Option<Barline>)> = Vec::new();
+    let mut cumulative_pos = Frac::from_integer(0);
+
+    for m in measures {
+        measure_attrs.push((
+            cumulative_pos,
+            m.attributes.clone(),
+            m.directions.clone(),
+            m.left_barline.clone(),
+            m.right_barline.clone(),
+        ));
+        // Compute measure duration from the first (longest) voice
+        let mut max_dur = Frac::from_integer(0);
+        for v in &m.voices {
+            let voice_num = v.number;
+            let entry = voice_elements.entry(voice_num).or_insert_with(Vec::new);
+            let mut voice_dur = Frac::from_integer(0);
+            for e in &v.elements {
+                voice_dur = voice_dur + voice_element_duration(e);
+                entry.push(e.clone());
+            }
+            if voice_dur > max_dur {
+                max_dur = voice_dur;
+            }
+        }
+        cumulative_pos = cumulative_pos + max_dur;
+    }
+
+    if voice_elements.is_empty() {
+        return measures.to_vec();
+    }
+
+    // 2. Re-split each voice's elements into measures by the target time sig
+    let voice_nums: Vec<u8> = voice_elements.keys().copied().collect();
+    let mut voice_split: BTreeMap<u8, Vec<Vec<VoiceElement>>> = BTreeMap::new();
+
+    for &vn in &voice_nums {
+        let elements = voice_elements.remove(&vn).unwrap();
+        let mut split_measures: Vec<Vec<VoiceElement>> = Vec::new();
+        let mut current: Vec<VoiceElement> = Vec::new();
+        let mut elapsed = Frac::from_integer(0);
+
+        for elem in elements {
+            let dur = voice_element_duration(&elem);
+            // Check if adding this element would exceed the measure
+            if elapsed >= target_time_sig && elapsed > Frac::from_integer(0) {
+                split_measures.push(std::mem::take(&mut current));
+                elapsed = elapsed - target_time_sig;
+            }
+            current.push(elem);
+            elapsed = elapsed + dur;
+        }
+        if !current.is_empty() {
+            split_measures.push(current);
+        }
+        voice_split.insert(vn, split_measures);
+    }
+
+    // 3. Determine the number of output measures (max across all voices)
+    let num_measures = voice_split.values().map(|v| v.len()).max().unwrap_or(0);
+
+    // 4. Build output measures by combining voices
+    let mut result: Vec<Measure> = Vec::new();
+    // Track which original-measure attributes we've consumed
+    let mut attr_idx = 0usize;
+    let mut out_cumulative = Frac::from_integer(0);
+
+    for mi in 0..num_measures {
+        let mut m = Measure::new(mi as u32 + 1);
+
+        // Apply attributes/directions from original measures whose position falls
+        // within this output measure's range
+        let out_end = out_cumulative + target_time_sig;
+        while attr_idx < measure_attrs.len() && measure_attrs[attr_idx].0 < out_end {
+            let (_, ref attrs, ref dirs, ref lbar, ref rbar) = measure_attrs[attr_idx];
+            if let Some(ref a) = attrs {
+                let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
+                if ma.key.is_none() {
+                    ma.key = a.key.clone();
+                }
+                if ma.time.is_none() {
+                    ma.time = a.time.clone();
+                }
+                if ma.clefs.is_empty() {
+                    ma.clefs = a.clefs.clone();
+                }
+                if ma.staves.is_none() {
+                    ma.staves = a.staves;
+                }
+                if ma.divisions == 0 && a.divisions > 0 {
+                    ma.divisions = a.divisions;
+                }
+            }
+            m.directions.extend(dirs.iter().cloned());
+            if m.left_barline.is_none() {
+                m.left_barline = lbar.clone();
+            }
+            if m.right_barline.is_none() {
+                m.right_barline = rbar.clone();
+            }
+            attr_idx += 1;
+        }
+        out_cumulative = out_end;
+
+        // Add each voice
+        for &vn in &voice_nums {
+            if let Some(split) = voice_split.get(&vn) {
+                if let Some(elems) = split.get(mi) {
+                    if !elems.is_empty() {
+                        m.voices.push(Voice {
+                            number: vn,
+                            elements: elems.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        result.push(m);
     }
 
     result
