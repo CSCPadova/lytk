@@ -90,17 +90,17 @@ transpose, ~40× for language change.
 | E1T4 | Update CLI pipeline to use Music tree | Planned |
 | E1T5 | Update Python bindings for Music tree API | Planned |
 
-### Epic 2: Break Up Monolithic Files
+### Epic 2: Break Up Monolithic Files ✅
 
 **Goal:** Split large files into focused, testable modules. Pure refactor — no functional changes.
 
 | Task | Description | Status |
 |------|-------------|--------|
-| E2T1 | Split `ly_to_ir.rs` (~8000 lines) into module directory | Planned |
-| E2T2 | Split `ir_to_ly.rs` (~3400 lines) into module directory | Planned |
-| E2T3 | Split `ir_to_mxml.rs` (~2800 lines) into module directory | Planned |
-| E2T4 | Split `mxml_to_ir.rs` (~2600 lines) into module directory | Planned |
-| E2T5 | Split `lower.rs` (~1400 lines) into sub-modules | Planned |
+| E2T1 | Split `ly_to_ir.rs` (~8000 lines) into module directory | ✅ |
+| E2T2 | Split `ir_to_ly.rs` (~3400 lines) into module directory | ✅ |
+| E2T3 | Split `ir_to_mxml.rs` (~2800 lines) into module directory | ✅ |
+| E2T4 | Split `mxml_to_ir.rs` (~2600 lines) into module directory | ✅ |
+| E2T5 | Split `lower.rs` (~1400 lines) into sub-modules | ✅ |
 
 ### Epic 3: Test Coverage
 
@@ -191,7 +191,7 @@ Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Tra
 | Phase | Epics | Focus |
 |-------|-------|-------|
 | 1 | E0 ✅ | Stabilization: warnings, test fix, CI |
-| 2 | E2 | Modularity: split all large files |
+| 2 | E2 ✅ | Modularity: split all large files |
 | 3 | E1 + E4T1 | Architecture: Forward/Backup removal, parser/emitter rewrite, MIDI ungating |
 | 4 | E3 + E4T2-3 | Test coverage: unit, round-trip, proptest, MIDI tests |
 | 5 | E5 + E6 + E7 | Feature completeness: remaining parser/emitter gaps |

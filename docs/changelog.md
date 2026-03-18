@@ -30,3 +30,43 @@
 
 ### Next up
 - **Epic 2: Break Up Monolithic Files** — starting with E2T1 (split `ly_to_ir.rs` ~8000 lines into module directory). Execution order: E0 → E2 → E1.
+
+---
+
+## 2026-03-19 — Epic 2: Break Up Monolithic Files ✅
+
+Pure refactor — no functional changes. All 324 tests pass, clippy clean.
+
+### E2T1: Split `ly_to_ir.rs` (8418 lines) into module directory
+- Converted `src/adapters/ly_to_ir.rs` → `src/adapters/ly_to_ir/` with 12 sub-modules:
+  - `mod.rs` (334) — adapter struct, trait impls, top-level orchestration
+  - `state.rs` (462) — WalkState struct + impl
+  - `walk.rs` (1095) — tree-sitter walking functions
+  - `modifiers.rs` (406) — handle_symbol, handle_escaped_word, handle_punctuation
+  - `music.rs` (767) — music expression parsing (chords, grace, tuplets, repeats)
+  - `consume.rs` (815) — consume_duration, consume_attachments
+  - `apply.rs` (491) — apply articulations, dynamics, ornaments
+  - `postprocess.rs` (415) — beams, stems, auto-beam grouping
+  - `lyrics.rs` (236) — lyric parsing, attachment
+  - `figured_bass.rs` (278) — figuremode parsing, distribution
+  - `merge.rs` (1085) — merge/synchronize passes, variable resolution
+  - `tests.rs` (1976) — all tests
+
+### E2T2: Split `ir_to_ly.rs` (3345 lines) into module directory
+- Converted `src/adapters/ir_to_ly.rs` → `src/adapters/ir_to_ly/` with 7 sub-modules:
+  - `mod.rs` (383), `maps.rs` (343), `helpers.rs` (67), `parts.rs` (244), `emit.rs` (672), `lyrics.rs` (229), `tests.rs` (1451)
+
+### E2T3: Split `ir_to_mxml.rs` (2832 lines) into module directory
+- Converted `src/adapters/ir_to_mxml.rs` → `src/adapters/ir_to_mxml/` with 7 sub-modules:
+  - `mod.rs` (98), `score.rs` (301), `part.rs` (368), `note.rs` (417), `direction.rs` (282), `helpers.rs` (121), `tests.rs` (1272)
+
+### E2T4: Split `mxml_to_ir.rs` (2578 lines) into module directory
+- Converted `src/adapters/mxml_to_ir.rs` → `src/adapters/mxml_to_ir/` with 6 sub-modules:
+  - `mod.rs` (458), `part.rs` (415), `note.rs` (464), `direction.rs` (273), `helpers.rs` (136), `tests.rs` (879)
+
+### E2T5: Split `lower.rs` (1356 lines) into sub-modules
+- Converted `src/ir/lower.rs` → `src/ir/lower/` with 5 sub-modules:
+  - `mod.rs` (39), `state.rs` (116), `walk.rs` (284), `build.rs` (625), `tests.rs` (329)
+
+### Next up
+- **Epic 1: Complete the Two-Layer IR Architecture** — starting with E1T1 (remove Forward/Backup from VoiceElement). Execution order: E0 ✅ → E2 ✅ → E1.
