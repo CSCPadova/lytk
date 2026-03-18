@@ -55,6 +55,24 @@ impl ToIrAdapter for MxmlToIrAdapter {
     }
 }
 
+impl super::ToMusicAdapter for MxmlToIrAdapter {
+    fn convert_file_to_music(
+        &self,
+        path: &Path,
+    ) -> Result<crate::ir::music::MusicDocument> {
+        let score = self.convert_file(path)?;
+        Ok(crate::ir::lift::lift_to_music(&score))
+    }
+
+    fn convert_str_to_music(
+        &self,
+        text: &str,
+    ) -> Result<crate::ir::music::MusicDocument> {
+        let score = self.convert_str(text)?;
+        Ok(crate::ir::lift::lift_to_music(&score))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // XML helper: a minimal DOM-like tree built from quick-xml events
 // ---------------------------------------------------------------------------
@@ -816,29 +834,24 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                     let duration = Duration::from_divisions(dur_val, divisions, dots);
                     let voice_num = child.child_i64("voice", 1) as u8;
                     let staff_num = child.child_i64("staff", 1) as u8;
-                    let fwd = Forward {
-                        duration,
-                        voice: voice_num,
-                        staff: staff_num,
-                    };
+                    // Convert Forward to spacer rest
+                    let mut rest = Rest::new(duration);
+                    rest.is_spacer = true;
+                    rest.voice = voice_num;
+                    rest.staff = staff_num;
                     voice_elements
                         .entry(voice_num)
                         .or_default()
-                        .push(VoiceElement::Forward(fwd));
+                        .push(VoiceElement::Rest(rest));
                 }
             }
             "backup" => {
                 let dur_val = child.child_i64("duration", 0);
                 if dur_val > 0 {
-                    forward_position -= dur_val as i64;
-                    let dots = child.find_all("dot").len() as u8;
-                    let duration = Duration::from_divisions(dur_val, divisions, dots);
-                    let backup = Backup::new(duration);
-                    // Backup is not assigned to a voice — store in voice 0 as sentinel.
-                    voice_elements
-                        .entry(0)
-                        .or_default()
-                        .push(VoiceElement::Backup(backup));
+                    forward_position -= dur_val;
+                    // Backup is a MusicXML time-positioning concept. The voice
+                    // separation logic already handles positioning, so we
+                    // simply adjust forward_position and drop the element.
                 }
             }
             "direction" => {

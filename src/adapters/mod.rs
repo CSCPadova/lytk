@@ -10,6 +10,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use crate::ir::music::MusicDocument;
 use crate::ir::Score;
 
 pub mod ir_to_ly;
@@ -63,7 +64,7 @@ pub type Result<T> = std::result::Result<T, AdapterError>;
 // Traits
 // ---------------------------------------------------------------------------
 
-/// Adapter that reads a format and produces an IR [`Score`].
+/// Adapter that reads a format and produces an IR [`Score`] (Layer 2).
 pub trait ToIrAdapter {
     /// Parse a file (path) into an IR score.
     fn convert_file(&self, path: &Path) -> Result<Score>;
@@ -72,7 +73,7 @@ pub trait ToIrAdapter {
     fn convert_str(&self, text: &str) -> Result<Score>;
 }
 
-/// Adapter that takes an IR [`Score`] and emits a format.
+/// Adapter that takes an IR [`Score`] (Layer 2) and emits a format.
 pub trait FromIrAdapter {
     /// Render a score to a format string.
     fn convert(&self, score: &Score) -> Result<String>;
@@ -80,6 +81,36 @@ pub trait FromIrAdapter {
     /// Render a score and write it to a file.
     fn write(&self, score: &Score, path: &Path) -> Result<()> {
         let output = self.convert(score)?;
+        std::fs::write(path, output)?;
+        Ok(())
+    }
+}
+
+/// Adapter that reads a format and produces a [`MusicDocument`] (Layer 1).
+///
+/// This is the preferred trait for format parsers in the new two-layer architecture.
+/// Parsers that implement `ToIrAdapter` can get a default implementation via the
+/// lift pass (`Score → Music`).
+pub trait ToMusicAdapter {
+    /// Parse a file (path) into a Music tree.
+    fn convert_file_to_music(&self, path: &Path) -> Result<MusicDocument>;
+
+    /// Parse an in-memory string into a Music tree.
+    fn convert_str_to_music(&self, text: &str) -> Result<MusicDocument>;
+}
+
+/// Adapter that takes a [`MusicDocument`] (Layer 1) and emits a format.
+///
+/// This is the preferred trait for format emitters in the new two-layer architecture.
+/// Emitters that implement `FromIrAdapter` can get a default implementation via the
+/// lower pass (`Music → Score`).
+pub trait FromMusicAdapter {
+    /// Render a Music tree to a format string.
+    fn convert_music(&self, doc: &MusicDocument) -> Result<String>;
+
+    /// Render a Music tree and write it to a file.
+    fn write_music(&self, doc: &MusicDocument, path: &Path) -> Result<()> {
+        let output = self.convert_music(doc)?;
         std::fs::write(path, output)?;
         Ok(())
     }

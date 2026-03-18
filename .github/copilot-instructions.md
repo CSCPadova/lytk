@@ -6,6 +6,10 @@
 
 **Build toolchain:** `maturin` + `pyo3` for the Rust/Python bridge; `uv` for Python dependency management.
 
+Latest changes: look at the file docs/changelog.md to know about latest activity on the codebase.
+
+**Development plan and roadmap:** See [`docs/roadmap.md`](docs/roadmap.md) for the full epic/task breakdown, implementation sequence, and key decisions. After an epic/task has been completed update the roadmap file and write the latest changes to the [changelog file](docs/changelog.md), documenting what has been done and what to do next.
+
 ---
 
 ## Directory Layout

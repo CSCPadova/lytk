@@ -8,10 +8,11 @@
 //! `Transpose(-n)(Transpose(n)(x)) == x`.
 
 use crate::ir::measure::KeySignature;
+use crate::ir::music::{Music, MusicDocument};
 use crate::ir::note::VoiceElement;
 use crate::ir::score::Score;
 
-use super::Transform;
+use super::{MusicTransform, Transform};
 
 /// Transpose all pitches by a fixed number of semitones.
 ///
@@ -68,9 +69,66 @@ impl Transform for Transpose {
     }
 }
 
+impl MusicTransform for Transpose {
+    fn apply_music(&self, doc: &MusicDocument) -> MusicDocument {
+        if self.semitones == 0 {
+            return doc.clone();
+        }
+        let mut result = doc.clone();
+        transpose_music_node(&mut result.music, self.semitones);
+        result
+    }
+}
+
+/// Recursively transpose all pitches and key signatures in a Music tree.
+fn transpose_music_node(music: &mut Music, semitones: i32) {
+    match music {
+        Music::Note {
+            pitch, ..
+        } => {
+            *pitch = pitch.transposed(semitones);
+        }
+        Music::Chord {
+            pitches, ..
+        } => {
+            for (pitch, _) in pitches.iter_mut() {
+                *pitch = pitch.transposed(semitones);
+            }
+        }
+        Music::KeySignature(key) => {
+            *key = transpose_key(*key, semitones);
+        }
+        Music::Sequential(children) | Music::Simultaneous(children) => {
+            for child in children {
+                transpose_music_node(child, semitones);
+            }
+        }
+        Music::Context { content, .. }
+        | Music::Grace { content, .. }
+        | Music::Tuplet { content, .. }
+        | Music::Variable { content, .. } => {
+            transpose_music_node(content, semitones);
+        }
+        Music::Repeat {
+            body, alternatives, ..
+        } => {
+            transpose_music_node(body, semitones);
+            for alt in alternatives {
+                transpose_music_node(alt, semitones);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Functional API: transpose all pitches by `semitones`.
 pub fn transpose(score: &Score, semitones: i32) -> Score {
     Transpose::new(semitones).apply(score)
+}
+
+/// Functional API: transpose all pitches in a Music tree by `semitones`.
+pub fn transpose_music(doc: &MusicDocument, semitones: i32) -> MusicDocument {
+    Transpose::new(semitones).apply_music(doc)
 }
 
 /// Transpose a key signature on the circle of fifths.
@@ -248,5 +306,66 @@ mod tests {
         // F# major (6 sharps) + 1 semitone = G major (1 sharp)
         let result = transpose_key(key, 1);
         assert_eq!(result.fifths, 1);
+    }
+
+    #[test]
+    fn transpose_music_basic() {
+        use crate::ir::music::{Music, MusicDocument};
+
+        let doc = MusicDocument::new(Music::Sequential(vec![
+            Music::Note {
+                pitch: Pitch::new(PitchStep::C, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+            Music::Note {
+                pitch: Pitch::new(PitchStep::E, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+        ]));
+        let result = super::transpose_music(&doc, 2);
+        match &result.music {
+            Music::Sequential(children) => {
+                match &children[0] {
+                    Music::Note { pitch, .. } => assert_eq!(pitch.step, PitchStep::D),
+                    _ => panic!("expected Note"),
+                }
+                match &children[1] {
+                    Music::Note { pitch, .. } => {
+                        // E + 2 semitones = F#
+                        assert_eq!(pitch.step, PitchStep::F);
+                    }
+                    _ => panic!("expected Note"),
+                }
+            }
+            _ => panic!("expected Sequential"),
+        }
+    }
+
+    #[test]
+    fn transpose_music_roundtrip() {
+        use crate::ir::music::{Music, MusicDocument};
+
+        let doc = MusicDocument::new(Music::Sequential(vec![
+            Music::Note {
+                pitch: Pitch::new(PitchStep::C, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+        ]));
+        let up = super::transpose_music(&doc, 5);
+        let restored = super::transpose_music(&up, -5);
+        match (&doc.music, &restored.music) {
+            (Music::Sequential(orig), Music::Sequential(rest)) => {
+                match (&orig[0], &rest[0]) {
+                    (Music::Note { pitch: p1, .. }, Music::Note { pitch: p2, .. }) => {
+                        assert_eq!(p1.midi_number(), p2.midi_number());
+                    }
+                    _ => panic!("expected Notes"),
+                }
+            }
+            _ => panic!("expected Sequential"),
+        }
     }
 }

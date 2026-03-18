@@ -78,6 +78,16 @@ impl FromIrAdapter for IrToMxmlAdapter {
     }
 }
 
+impl super::FromMusicAdapter for IrToMxmlAdapter {
+    fn convert_music(
+        &self,
+        doc: &crate::ir::music::MusicDocument,
+    ) -> Result<String> {
+        let score = crate::ir::lower::lower_to_score(doc);
+        self.convert(&score)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -468,7 +478,7 @@ impl IrToMxmlAdapter {
 
         // Fallback: if there are no voices at all, emit figured bass with offsets
         if voices.is_empty() {
-            for (_, fbs) in &fb_by_offset {
+            for fbs in fb_by_offset.values() {
                 for fb in fbs {
                     self.write_figured_bass(w, fb)?;
                 }
@@ -2772,5 +2782,51 @@ mod tests {
         // Count <sound occurrences — should be exactly 1
         let sound_count = xml.matches("<sound ").count();
         assert_eq!(sound_count, 1, "should merge into single sound element: {xml}");
+    }
+
+    #[test]
+    fn test_music_to_mxml_round_trip() {
+        use crate::adapters::FromMusicAdapter;
+        use crate::ir::annotation::Annotation;
+        use crate::ir::music::{ContextType, Music, MusicDocument};
+        use crate::ir::pitch::{Pitch, PitchStep};
+
+        let music = Music::Sequential(vec![
+            Music::TimeSignature(TimeSignature {
+                beats: "4".to_string(),
+                beat_type: 4,
+                symbol: None,
+            }),
+            Music::Note {
+                pitch: Pitch::new(PitchStep::C, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+            Music::Note {
+                pitch: Pitch::new(PitchStep::D, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+            Music::Note {
+                pitch: Pitch::new(PitchStep::E, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+            Music::Note {
+                pitch: Pitch::new(PitchStep::F, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+        ])
+        .in_context(ContextType::Staff, None);
+
+        let doc = MusicDocument::new(music);
+
+        let adapter = IrToMxmlAdapter::new();
+        let xml = adapter.convert_music(&doc).unwrap();
+
+        assert!(xml.contains("<note"), "should contain notes");
+        assert!(xml.contains("<time>"), "should contain time signature");
+        assert!(xml.contains("<step>C</step>"), "should contain C note");
     }
 }

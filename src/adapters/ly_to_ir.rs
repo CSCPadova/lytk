@@ -41,12 +41,17 @@ use crate::ir::language::{parse_pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
 use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
 use crate::ir::pitch::{AccidentalDisplay, Pitch, PitchStep};
+use crate::ir::music::MusicDocument;
 use crate::ir::score::{PageLayout, Score, ScoreChild, ScoreMetadata};
 use crate::ir::voice::Voice;
 use crate::ir::Part;
 use crate::parser::LilyPondParser;
 
 use super::{AdapterError, Result, ToIrAdapter};
+
+/// Tuple of (cumulative position, attributes, directions, left barline, right barline)
+/// used when collecting per-measure metadata for re-splitting.
+type MeasureMeta = (Frac, Option<MeasureAttributes>, Vec<Direction>, Option<Barline>, Option<Barline>);
 
 // ---------------------------------------------------------------------------
 // Clef name → (sign, line)
@@ -320,7 +325,7 @@ impl<'src> WalkState<'src> {
             && self.elapsed_in_measure >= self.current_time_sig
         {
             self.flush_measure();
-            self.elapsed_in_measure = self.elapsed_in_measure - self.current_time_sig;
+            self.elapsed_in_measure -= self.current_time_sig;
         }
 
         // Apply beam "continue" for notes inside a manual beam group
@@ -383,17 +388,14 @@ impl<'src> WalkState<'src> {
 
         // Mark notes inside a \melisma ... \melismaEnd block
         if self.melisma_active {
-            match &mut elem {
-                VoiceElement::Note(n) => n.in_melisma = true,
-                _ => {}
-            }
+            if let VoiceElement::Note(n) = &mut elem { n.in_melisma = true }
         }
 
         // Grace notes don't consume time in the measure
         let is_grace = matches!(&elem, VoiceElement::Note(n) if n.is_grace);
         self.current_voice.push(elem);
         if !is_grace {
-            self.elapsed_in_measure = self.elapsed_in_measure + dur;
+            self.elapsed_in_measure += dur;
         }
     }
 
@@ -453,26 +455,33 @@ impl<'src> WalkState<'src> {
                     if measures.is_empty() {
                         return true; // empty variable, no-op
                     }
+                    // Save the external time sig (before variable's own time sigs)
+                    // for the resplit check below.
+                    let external_time_sig = self.current_time_sig;
                     // Propagate time signature from the resolved measures.
                     // If any measure in the variable has a time signature attribute,
                     // update current_time_sig so subsequent variable resolutions
                     // use the correct time sig (e.g. \global sets \time 6/8,
                     // then \lowerStaff needs to be re-split to 6/8).
+                    let mut has_own_time_sigs = false;
                     for m in &measures {
                         if let Some(ref attrs) = m.attributes {
                             if let Some(ref ts) = attrs.time {
                                 self.current_time_sig = ts.beats_fraction();
+                                has_own_time_sigs = true;
                             }
                         }
                     }
                     // If the variable was pre-parsed with a different time signature
-                    // than the current one, re-split the measures to match the
-                    // current time signature while preserving multi-voice structure.
-                    let measures = if def_time_sig != self.current_time_sig
-                        && self.current_time_sig > Frac::from_integer(0)
+                    // than the external one, re-split the measures to match.
+                    // But skip resplit if the variable has its own time sig changes
+                    // (it already knows its own measure boundaries).
+                    let measures = if !has_own_time_sigs
+                        && def_time_sig != external_time_sig
+                        && external_time_sig > Frac::from_integer(0)
                         && !measures_are_spacer_only(&measures)
                     {
-                        resplit_measures_for_time_sig(&measures, self.current_time_sig)
+                        resplit_measures_for_time_sig(&measures, external_time_sig)
                     } else {
                         measures
                     };
@@ -484,7 +493,7 @@ impl<'src> WalkState<'src> {
                         let _ = self.ensure_part(); // ensure part exists
                         let part_idx = self.parts.len() - 1;
                         if let Some(voice_map) = self.var_voice_maps.get(name) {
-                            for (voice_name, _) in voice_map {
+                            for voice_name in voice_map.keys() {
                                 self.voice_part_map
                                     .insert(voice_name.clone(), part_idx);
                             }
@@ -496,19 +505,19 @@ impl<'src> WalkState<'src> {
                     // parallel music), merge attributes into existing measures
                     // rather than appending.
                     // Check if any existing measure has multi-voice content
-                    let has_multi_voice = part
+                    let _has_multi_voice = part
                         .measures
                         .iter()
                         .any(|m| m.voices.len() > 1);
                     if !part.measures.is_empty() && measures_are_spacer_only(&measures) {
-                        if measures.len() != part.measures.len() && !has_multi_voice {
-                            // Measure counts differ and no multi-voice — safe to re-split
-                            part.measures =
-                                resplit_measures_to_match(&part.measures, &measures);
+                        if measures.len() != part.measures.len() {
+                            // Measure counts differ — spacer was pre-parsed at a
+                            // different time sig. Merge directions by cumulative
+                            // duration so we preserve the note measures' boundaries
+                            // and their time signature attributes.
+                            merge_spacer_by_duration(&mut part.measures, &measures);
                         } else {
-                            // Either counts match or we have multi-voice measures
-                            // that would be destroyed by resplitting — just merge
-                            // directions/attributes on overlapping range
+                            // Counts match — index-based merge is safe
                             merge_spacer_measures(&mut part.measures, &measures);
                         }
                     } else if part.measures.is_empty()
@@ -691,6 +700,7 @@ impl LyToIrAdapter {
         for part in score.parts_mut() {
             merge_leading_attribute_measures(part);
         }
+        synchronize_time_signatures(&mut score);
         propagate_first_tempo(&mut score);
         post_process_beams_and_stems(&mut score);
         Ok(vec![score])
@@ -733,6 +743,18 @@ impl ToIrAdapter for LyToIrAdapter {
 
     fn convert_str(&self, text: &str) -> Result<Score> {
         self.parse_source(text)
+    }
+}
+
+impl super::ToMusicAdapter for LyToIrAdapter {
+    fn convert_file_to_music(&self, path: &Path) -> Result<MusicDocument> {
+        let score = self.convert_file(path)?;
+        Ok(crate::ir::lift::lift_to_music(&score))
+    }
+
+    fn convert_str_to_music(&self, text: &str) -> Result<MusicDocument> {
+        let score = self.convert_str(text)?;
+        Ok(crate::ir::lift::lift_to_music(&score))
     }
 }
 
@@ -836,10 +858,11 @@ fn walk_program(state: &mut WalkState, root: Node) {
                                     for (_, part) in state.parts.drain(..) {
                                         score.children.push(ScoreChild::Part(part));
                                     }
-                                    // Post-process: merge attribute-only measures and propagate tempo
+                                    // Post-process: merge attribute-only measures first so indices align, then sync time sigs
                                     for part in score.parts_mut() {
                                         merge_leading_attribute_measures(part);
                                     }
+                                    synchronize_time_signatures(&mut score);
                                     propagate_first_tempo(&mut score);
                                     state.completed_scores.push(score);
                                 }
@@ -1254,7 +1277,7 @@ fn walk_parallel_music(state: &mut WalkState, node: Node) {
 fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
     // 1. Save state that each voice branch needs to start from
     let saved_measure_num = state.measure_num;
-    let _saved_elapsed = state.elapsed_in_measure;
+    let saved_elapsed = state.elapsed_in_measure;
     let saved_current_measure = state.current_measure.take();
     let saved_current_voice = std::mem::take(&mut state.current_voice);
     let saved_time_sig = state.current_time_sig;
@@ -1317,9 +1340,9 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
     }
 
     // 4. Merge the per-voice measure streams
-    let merged = merge_voice_measure_streams(&voice_streams);
+    let mut merged = merge_voice_measure_streams(&voice_streams);
 
-    // 5. Restore state and append merged measures
+    // 5. Restore state and flush pending content before appending merged measures
     state.current_measure = saved_current_measure;
     state.current_voice = saved_current_voice;
     state.current_time_sig = saved_time_sig;
@@ -1327,9 +1350,48 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
     state.current_voice_number = saved_voice_number;
     state.tuplet_stack = saved_tuplet_stack;
     state.auto_beam_off = saved_auto_beam_off;
+    state.elapsed_in_measure = saved_elapsed;
+
+    // If there's pending voice content, flush it before appending merged measures
+    if !state.current_voice.is_empty() {
+        state.flush_measure();
+        state.elapsed_in_measure = Frac::from_integer(0);
+    }
+
+    // Transfer attributes (time sig, key, clef) from pending current_measure
+    // to the first merged measure, so they appear at the right position.
+    if let Some(ref mut cm) = state.current_measure {
+        if let Some(ref cm_attrs) = cm.attributes {
+            if !merged.is_empty() {
+                let first = &mut merged[0];
+                let fa = first
+                    .attributes
+                    .get_or_insert_with(MeasureAttributes::default);
+                if cm_attrs.time.is_some() && fa.time.is_none() {
+                    fa.time = cm_attrs.time.clone();
+                }
+                if cm_attrs.key.is_some() && fa.key.is_none() {
+                    fa.key = cm_attrs.key;
+                }
+                if !cm_attrs.clefs.is_empty() && fa.clefs.is_empty() {
+                    fa.clefs = cm_attrs.clefs.clone();
+                }
+            }
+        }
+        // Transfer directions from pending measure
+        if !cm.directions.is_empty() && !merged.is_empty() {
+            let dirs = std::mem::take(&mut cm.directions);
+            let first = &mut merged[0];
+            let mut existing = std::mem::take(&mut first.directions);
+            first.directions = dirs;
+            first.directions.append(&mut existing);
+        }
+        // Clear the pending measure (its content was transferred)
+        state.current_measure = None;
+    }
+
     // Advance measure_num past the merged measures
     state.measure_num = saved_measure_num + merged.len() as u32;
-    state.elapsed_in_measure = Frac::from_integer(0);
 
     let part = state.ensure_part();
     part.measures.extend(merged);
@@ -2206,7 +2268,11 @@ fn walk_music_block(state: &mut WalkState, block: Node) {
                 let chord_node = node;
                 i += 1;
                 // Consume duration after chord
-                let dur = consume_duration(state, &children, &mut i);
+                let mut dur = consume_duration(state, &children, &mut i);
+                // Apply *N/M duration scaling
+                if let Some(scale) = consume_duration_scale(state, &children, &mut i) {
+                    dur.base *= scale;
+                }
                 let attachments = consume_attachments(state, &children, &mut i);
                 let chord = build_chord(state, chord_node, dur);
                 let mut chord = chord;
@@ -2276,17 +2342,32 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
             }
         }
         "s" => {
-            // Spacer rest, possibly with *N multiplier (e.g. s1*62)
-            let dur = consume_duration(state, children, &mut i);
-            let count = consume_duration_multiplier(state, children, &mut i);
+            // Spacer rest, possibly with *N or *N/M multiplier.
+            // *N (integer): push N spacer rests of the base duration,
+            //   letting auto-flush handle measure boundaries.
+            // *N/M (fraction): scale the duration (e.g. s16*2/3 = 1/24).
+            let mut dur = consume_duration(state, children, &mut i);
+            let scale = consume_duration_scale(state, children, &mut i);
             let _attachments = consume_attachments(state, children, &mut i);
-            let mut rest = Rest::new(dur.clone());
-            rest.is_spacer = true;
-            state.push_voice_element(VoiceElement::Rest(rest));
-            if count > 1 {
-                for _ in 1..count {
-                    state.bar_check();
-                    let mut rest = Rest::new(dur.clone());
+            match scale {
+                Some(frac) if *frac.denom() != 1 => {
+                    // Fractional multiplier: scale the duration
+                    dur.base *= frac;
+                    let mut rest = Rest::new(dur);
+                    rest.is_spacer = true;
+                    state.push_voice_element(VoiceElement::Rest(rest));
+                }
+                Some(frac) => {
+                    // Integer multiplier: push N spacer rests
+                    let count = *frac.numer() as u32;
+                    for _ in 0..count {
+                        let mut rest = Rest::new(dur.clone());
+                        rest.is_spacer = true;
+                        state.push_voice_element(VoiceElement::Rest(rest));
+                    }
+                }
+                None => {
+                    let mut rest = Rest::new(dur);
                     rest.is_spacer = true;
                     state.push_voice_element(VoiceElement::Rest(rest));
                 }
@@ -2299,7 +2380,11 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 let octave_marks = consume_octave_marks(state, children, &mut i);
                 // Consume accidental forcing marks (! = forced, ? = cautionary)
                 let acc_display = consume_accidental_marks(state, children, &mut i);
-                let dur = consume_duration(state, children, &mut i);
+                let mut dur = consume_duration(state, children, &mut i);
+                // Apply *N/M duration scaling (e.g. a32*8/7)
+                if let Some(scale) = consume_duration_scale(state, children, &mut i) {
+                    dur.base *= scale;
+                }
                 let tremolo = consume_tremolo(state, children, &mut i, &dur);
                 let attachments = consume_attachments(state, children, &mut i);
 
@@ -2369,6 +2454,12 @@ fn handle_escaped_word(
                 if frac_node.kind() == "fraction" {
                     let frac_text = state.text(*frac_node);
                     if let Some((num, den)) = parse_fraction(frac_text) {
+                        // If current voice or measure already has notes/rests,
+                        // flush the measure first so \time starts a new bar
+                        if state.elapsed_in_measure > Frac::from_integer(0)
+                        {
+                            state.bar_check();
+                        }
                         let symbol = match (num, den) {
                             (4, 4) => Some("common".to_string()),
                             (2, 2) => Some("cut".to_string()),
@@ -2756,15 +2847,25 @@ fn handle_escaped_word(
         }
         "\\skip" => {
             // \skip <duration> — equivalent to spacer rest (s<duration>)
-            let dur = consume_duration(state, children, &mut i);
-            let count = consume_duration_multiplier(state, children, &mut i);
-            let mut rest = Rest::new(dur.clone());
-            rest.is_spacer = true;
-            state.push_voice_element(VoiceElement::Rest(rest));
-            if count > 1 {
-                for _ in 1..count {
-                    state.bar_check();
-                    let mut rest = Rest::new(dur.clone());
+            let mut dur = consume_duration(state, children, &mut i);
+            let scale = consume_duration_scale(state, children, &mut i);
+            match scale {
+                Some(frac) if *frac.denom() != 1 => {
+                    dur.base *= frac;
+                    let mut rest = Rest::new(dur);
+                    rest.is_spacer = true;
+                    state.push_voice_element(VoiceElement::Rest(rest));
+                }
+                Some(frac) => {
+                    let count = *frac.numer() as u32;
+                    for _ in 0..count {
+                        let mut rest = Rest::new(dur.clone());
+                        rest.is_spacer = true;
+                        state.push_voice_element(VoiceElement::Rest(rest));
+                    }
+                }
+                None => {
+                    let mut rest = Rest::new(dur);
                     rest.is_spacer = true;
                     state.push_voice_element(VoiceElement::Rest(rest));
                 }
@@ -2806,7 +2907,7 @@ fn apply_set_property(state: &mut WalkState, property: &str, value: &str) {
     // property is like "Staff.instrumentName" or "Staff.midiInstrument"
     let prop_name = property
         .split('.')
-        .last()
+        .next_back()
         .unwrap_or(property);
     match prop_name {
         "instrumentName" => {
@@ -3008,7 +3109,12 @@ fn consume_duration_multiplier(state: &WalkState, children: &[Node], i: &mut usi
         let ptext = punct_text(state, children[*i]);
         if ptext == "*" {
             *i += 1;
-            // Read the integer multiplier
+            // Case 1: fraction token (e.g. "3/4") — not a multi-measure count
+            if *i < children.len() && children[*i].kind() == "fraction" {
+                *i += 1; // consume the fraction token
+                return 1;
+            }
+            // Case 2: unsigned_integer, optionally followed by /M
             if *i < children.len() && children[*i].kind() == "unsigned_integer" {
                 let num_text = state.text(children[*i]).to_string();
                 *i += 1;
@@ -3031,6 +3137,53 @@ fn consume_duration_multiplier(state: &WalkState, children: &[Node], i: &mut usi
         }
     }
     1
+}
+
+/// Consume an optional `*N` or `*N/M` duration scaling factor.
+/// Returns the fractional scale (e.g. `*8/7` → 8/7, `*3` → 3/1).
+/// Returns `None` if no multiplier is present.
+/// Use this for notes/chords where `*N/M` scales the sounding duration.
+///
+/// Tree-sitter may produce `*N/M` as either:
+/// - `punctuation("*")` `fraction("N/M")` (single fraction token), or
+/// - `punctuation("*")` `unsigned_integer("N")` `punctuation("/")` `unsigned_integer("M")`
+fn consume_duration_scale(state: &WalkState, children: &[Node], i: &mut usize) -> Option<Frac> {
+    if *i < children.len() && children[*i].kind() == "punctuation" {
+        let ptext = punct_text(state, children[*i]);
+        if ptext == "*" {
+            *i += 1;
+            // Case 1: fraction token (e.g. "8/7")
+            if *i < children.len() && children[*i].kind() == "fraction" {
+                let frac_text = state.text(children[*i]);
+                *i += 1;
+                if let Some((num, den)) = parse_fraction(frac_text) {
+                    return Some(Frac::new(num as i64, den as i64));
+                }
+                return None;
+            }
+            // Case 2: unsigned_integer, optionally followed by / and unsigned_integer
+            if *i < children.len() && children[*i].kind() == "unsigned_integer" {
+                let num_text = state.text(children[*i]).to_string();
+                *i += 1;
+                let numer: i64 = num_text.parse().unwrap_or(1);
+                // Check for fraction: *N/M as separate tokens
+                if *i + 1 < children.len()
+                    && children[*i].kind() == "punctuation"
+                    && punct_text(state, children[*i]) == "/"
+                {
+                    *i += 1; // skip "/"
+                    if *i < children.len() && children[*i].kind() == "unsigned_integer" {
+                        let denom_text = state.text(children[*i]).to_string();
+                        *i += 1;
+                        let denom: i64 = denom_text.parse().unwrap_or(1);
+                        return Some(Frac::new(numer, denom));
+                    }
+                }
+                return Some(Frac::from_integer(numer));
+            }
+        }
+    }
+    None
 }
 
 /// Consume an optional tremolo suffix `:N` (e.g. `c4:32`) after a duration.
@@ -4364,7 +4517,7 @@ fn post_process_beams_and_stems(score: &mut Score) {
                         current_ts = Some(ts.clone());
                     }
                     if let Some(clef) = attrs.clefs.get(&1) {
-                        current_clef = clef.clone();
+                        current_clef = *clef;
                     }
                 }
                 let ts = current_ts
@@ -4441,7 +4594,7 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                     });
                 }
                 if !n.is_grace {
-                    pos = pos + n.duration.actual_duration();
+                    pos += n.duration.actual_duration();
                 }
 
                 if let Some(ref td) = n.tuplet {
@@ -4458,7 +4611,7 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                         current_tuplet = tuplet_counter;
                     }
                 }
-                pos = pos + r.duration.actual_duration();
+                pos += r.duration.actual_duration();
                 if let Some(ref td) = r.tuplet {
                     if td.tuplet_type == StartStop::Stop {
                         current_tuplet = 0;
@@ -4480,7 +4633,7 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                 };
 
                 let level = beam_level_for_duration(&c.duration);
-                let has_beam = c.notes.first().map_or(false, |n| !n.beams.is_empty() || n.no_auto_beam);
+                let has_beam = c.notes.first().is_some_and(|n| !n.beams.is_empty() || n.no_auto_beam);
                 if level > 0 {
                     infos.push(NoteInfo {
                         idx,
@@ -4490,7 +4643,7 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                         tuplet_group: in_tuplet,
                     });
                 }
-                pos = pos + c.duration.actual_duration();
+                pos += c.duration.actual_duration();
 
                 let last_tuplet = c.notes.first().and_then(|n| n.tuplet.as_ref());
                 if let Some(td) = last_tuplet {
@@ -4500,10 +4653,10 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                 }
             }
             VoiceElement::Forward(f) => {
-                pos = pos + f.duration.actual_duration();
+                pos += f.duration.actual_duration();
             }
             VoiceElement::Backup(b) => {
-                pos = pos - b.duration.actual_duration();
+                pos -= b.duration.actual_duration();
             }
         }
     }
@@ -4644,15 +4797,15 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                     });
                     continue;
                 }
-                for sgi in sub_start..si {
-                    let bt = if sgi == sub_start {
+                for (j, assignment) in assignments[sub_start..si].iter_mut().enumerate() {
+                    let bt = if j == 0 {
                         "begin"
-                    } else if sgi == si - 1 {
+                    } else if sub_start + j == si - 1 {
                         "end"
                     } else {
                         "continue"
                     };
-                    assignments[sgi].1.push(BeamEvent {
+                    assignment.1.push(BeamEvent {
                         beam_type: bt.to_string(),
                         number: level,
                     });
@@ -6831,6 +6984,83 @@ scoreAll = {
         assert!(total_measures > 50, "should produce many measures, got {total_measures}");
     }
 
+    // -----------------------------------------------------------------------
+    // Music tree (Layer 1) round-trip tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ly_to_music_simple() {
+        use crate::adapters::ToMusicAdapter;
+        use crate::ir::music::Music;
+
+        let adapter = LyToIrAdapter::new();
+        let doc = adapter
+            .convert_str_to_music(r#"{ c'4 d' e' f' }"#)
+            .unwrap();
+
+        // The Music tree should contain note events
+        fn count_notes(m: &Music) -> usize {
+            match m {
+                Music::Note { .. } => 1,
+                Music::Sequential(v) | Music::Simultaneous(v) => {
+                    v.iter().map(count_notes).sum()
+                }
+                Music::Context { content, .. }
+                | Music::Grace { content, .. }
+                | Music::Tuplet { content, .. }
+                | Music::Variable { content, .. }
+                | Music::Repeat { body: content, .. } => count_notes(content),
+                _ => 0,
+            }
+        }
+
+        assert!(count_notes(&doc.music) >= 4, "should have at least 4 notes");
+    }
+
+    #[test]
+    fn test_ly_to_music_round_trip() {
+        use crate::adapters::{FromMusicAdapter, ToMusicAdapter};
+        use crate::adapters::ir_to_ly::IrToLyAdapter;
+
+        let adapter = LyToIrAdapter::new();
+        let doc = adapter
+            .convert_str_to_music(r#"{ c'4 d' e' f' }"#)
+            .unwrap();
+
+        // Convert Music tree back to LilyPond
+        let emitter = IrToLyAdapter::new();
+        let ly_output = emitter.convert_music(&doc).unwrap();
+
+        // Should contain the note names
+        assert!(ly_output.contains("c'"), "output should contain c': {}", ly_output);
+        assert!(ly_output.contains("d'"), "output should contain d': {}", ly_output);
+    }
+
+    #[test]
+    fn test_ly_to_music_with_time_sig() {
+        use crate::adapters::ToMusicAdapter;
+        use crate::ir::music::Music;
+
+        let adapter = LyToIrAdapter::new();
+        let doc = adapter
+            .convert_str_to_music(r#"{ \time 3/4 c'4 d' e' }"#)
+            .unwrap();
+
+        // Should contain a TimeSignature event
+        fn has_time_sig(m: &Music) -> bool {
+            match m {
+                Music::TimeSignature(_) => true,
+                Music::Sequential(v) | Music::Simultaneous(v) => {
+                    v.iter().any(has_time_sig)
+                }
+                Music::Context { content, .. } => has_time_sig(content),
+                _ => false,
+            }
+        }
+
+        assert!(has_time_sig(&doc.music), "should contain a TimeSignature");
+    }
+
 }
 
 /// Parse a `\figuremode { ... }` expression block into a flat stream of figured bass entries.
@@ -6991,7 +7221,7 @@ fn consume_duration_stateless(children: &[Node], i: &mut usize, last_dur: &mut D
     }
 
     if let Some(val) = dur_val {
-        let mut dur = Duration::from_lilypond_number(val, 0).unwrap_or_else(|| Duration::quarter());
+        let mut dur = Duration::from_lilypond_number(val, 0).unwrap_or_else(Duration::quarter);
         dur.dots = dots;
         *last_dur = dur.clone();
         dur
@@ -7053,22 +7283,32 @@ fn distribute_figured_bass(measures: &mut [Measure], entries: &[FiguredBassEntry
         return;
     }
 
+    // Skip leading attribute-only measures (no voice content).
+    // These will be merged into the first real-music measure by
+    // merge_leading_attribute_measures during post-processing.
+    let first_music = measures
+        .iter()
+        .position(|m| m.voices.iter().any(|v| !v.elements.is_empty()))
+        .unwrap_or(0);
+
     // Track current time signature to know measure duration
     let mut measure_dur = Frac::new(4, 4); // default 4/4
-    let mut measure_idx = 0usize;
+    let mut measure_idx = first_music;
     let mut elapsed_in_measure = Frac::from_integer(0);
 
-    // Update measure_dur from initial attributes
-    if let Some(ref attrs) = measures[0].attributes {
-        if let Some(ref ts) = attrs.time {
-            measure_dur = ts.beats_fraction().into();
+    // Update measure_dur from attributes up to and including the starting measure
+    for m in &measures[..=measure_idx] {
+        if let Some(ref attrs) = m.attributes {
+            if let Some(ref ts) = attrs.time {
+                measure_dur = ts.beats_fraction().into();
+            }
         }
     }
 
     for entry in entries {
         // Advance to correct measure if we've exceeded current measure duration
         while elapsed_in_measure >= measure_dur && measure_idx + 1 < measures.len() {
-            elapsed_in_measure = elapsed_in_measure - measure_dur;
+            elapsed_in_measure -= measure_dur;
             measure_idx += 1;
             // Check if the new measure changes time signature
             if let Some(ref attrs) = measures[measure_idx].attributes {
@@ -7092,10 +7332,10 @@ fn distribute_figured_bass(measures: &mut [Measure], entries: &[FiguredBassEntry
                     fb_placed.offset = offset_divs as i32;
                     measures[measure_idx].figured_bass.push(fb_placed);
                 }
-                elapsed_in_measure = elapsed_in_measure + fb.duration.actual_duration();
+                elapsed_in_measure += fb.duration.actual_duration();
             }
             FiguredBassEntry::Skip(dur) => {
-                elapsed_in_measure = elapsed_in_measure + dur.actual_duration();
+                elapsed_in_measure += dur.actual_duration();
             }
         }
     }
@@ -7167,7 +7407,7 @@ fn measures_are_spacer_only(measures: &[Measure]) -> bool {
 /// Merge attributes, directions, and barlines from spacer-only measures into
 /// existing measures. This handles the LilyPond pattern `<<\music \forma>>`
 /// where `forma` carries time/key/tempo attributes with spacer rests.
-fn merge_spacer_measures(target: &mut Vec<Measure>, spacer: &[Measure]) {
+fn merge_spacer_measures(target: &mut [Measure], spacer: &[Measure]) {
     for (i, sm) in spacer.iter().enumerate() {
         if i < target.len() {
             let tm = &mut target[i];
@@ -7201,7 +7441,68 @@ fn merge_spacer_measures(target: &mut Vec<Measure>, spacer: &[Measure]) {
     }
 }
 
-/// Merge spacer-only parts (from `\new Dynamics` contexts) into adjacent staff parts.
+/// Merge directions and barlines from spacer-only measures into target measures
+/// using cumulative duration alignment. This is needed when spacer measures have
+/// different boundaries than target measures (e.g. dynamics pre-parsed at a
+/// different time signature).
+fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure]) {
+    // Compute cumulative duration boundaries for target measures
+    let mut target_boundaries: Vec<Frac> = Vec::with_capacity(target.len() + 1);
+    let mut cumul = Frac::from_integer(0);
+    target_boundaries.push(cumul);
+    for tm in target.iter() {
+        let dur = measure_voice_duration(tm);
+        cumul += dur;
+        target_boundaries.push(cumul);
+    }
+
+    // Walk spacer measures, accumulating duration and placing directions
+    // into the correct target measure
+    let mut spacer_pos = Frac::from_integer(0);
+    for sm in spacer.iter() {
+        let sm_dur = measure_voice_duration(sm);
+
+        // Find the target measure that contains spacer_pos
+        let target_idx = target_boundaries
+            .windows(2)
+            .position(|w| spacer_pos >= w[0] && spacer_pos < w[1])
+            .unwrap_or_else(|| {
+                // If past the end, use last measure
+                if target.is_empty() { 0 } else { target.len() - 1 }
+            });
+
+        if target_idx < target.len() {
+            let tm = &mut target[target_idx];
+            // Merge directions
+            if !sm.directions.is_empty() {
+                tm.directions.extend(sm.directions.iter().cloned());
+            }
+            // Merge barlines
+            if sm.right_barline.is_some() && tm.right_barline.is_none() {
+                tm.right_barline = sm.right_barline.clone();
+            }
+            if sm.left_barline.is_some() && tm.left_barline.is_none() {
+                tm.left_barline = sm.left_barline.clone();
+            }
+        }
+
+        spacer_pos += sm_dur;
+    }
+}
+
+/// Compute the duration of a measure from its first voice's elements.
+fn measure_voice_duration(m: &Measure) -> Frac {
+    if let Some(voice) = m.voices.first() {
+        voice
+            .elements
+            .iter()
+            .map(voice_element_duration)
+            .fold(Frac::from_integer(0), |acc, d| acc + d)
+    } else {
+        Frac::from_integer(0)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Multi-voice merge helpers
 // ---------------------------------------------------------------------------
@@ -7315,12 +7616,13 @@ fn merge_leading_attribute_measures(part: &mut Part) {
         Some(i) => i,
     };
 
-    // Collect attributes and directions from all leading attribute-only measures
+    // Collect attributes, directions, and figured bass from all leading attribute-only measures
     let mut merged_key = None;
     let mut merged_time = None;
     let mut merged_clefs = std::collections::HashMap::new();
     let mut merged_dirs: Vec<Direction> = Vec::new();
     let mut merged_left_barline = None;
+    let mut merged_figured_bass: Vec<FiguredBass> = Vec::new();
 
     for m in &part.measures[..idx] {
         if let Some(ref attrs) = m.attributes {
@@ -7331,10 +7633,11 @@ fn merge_leading_attribute_measures(part: &mut Part) {
                 merged_time = attrs.time.clone();
             }
             if !attrs.clefs.is_empty() {
-                merged_clefs.extend(attrs.clefs.iter().map(|(&k, v)| (k, v.clone())));
+                merged_clefs.extend(attrs.clefs.iter().map(|(&k, v)| (k, *v)));
             }
         }
         merged_dirs.extend(m.directions.iter().cloned());
+        merged_figured_bass.extend(m.figured_bass.iter().cloned());
         if m.left_barline.is_some() && merged_left_barline.is_none() {
             merged_left_barline = m.left_barline.clone();
         }
@@ -7360,6 +7663,13 @@ fn merge_leading_attribute_measures(part: &mut Part) {
         let existing_dirs = std::mem::take(&mut target.directions);
         target.directions = merged_dirs;
         target.directions.extend(existing_dirs);
+    }
+
+    // Prepend figured bass from attribute-only measures
+    if !merged_figured_bass.is_empty() {
+        let existing_fb = std::mem::take(&mut target.figured_bass);
+        target.figured_bass = merged_figured_bass;
+        target.figured_bass.extend(existing_fb);
     }
 
     // Remove the leading empty measures and renumber
@@ -7442,7 +7752,13 @@ fn merge_dynamics_parts(parts: &mut Vec<(String, Part)>) {
         .map(|&(si, _)| (si, parts[si].1.measures.clone()))
         .collect();
     for ((_, ti), (_, spacer_measures)) in merges.iter().zip(spacer_data.iter()) {
-        merge_spacer_measures(&mut parts[*ti].1.measures, spacer_measures);
+        if spacer_measures.len() != parts[*ti].1.measures.len() {
+            // Different measure counts — spacer was pre-parsed at a different
+            // time sig, so merge by cumulative duration alignment.
+            merge_spacer_by_duration(&mut parts[*ti].1.measures, spacer_measures);
+        } else {
+            merge_spacer_measures(&mut parts[*ti].1.measures, spacer_measures);
+        }
     }
 
     // Remove merged spacer parts (in reverse order to maintain indices)
@@ -7465,17 +7781,27 @@ fn resplit_measures_to_match(
     note_measures: &[Measure],
     spacer_measures: &[Measure],
 ) -> Vec<Measure> {
-    // 1. Flatten all voice elements from note measures, tracking which
-    // element index corresponds to each note measure's start
+    // 1. Flatten all voice elements from note measures, tracking attributes
+    // by cumulative duration position (not element index) for correct alignment
     let mut elements: Vec<VoiceElement> = Vec::new();
-    let mut note_measure_attrs: Vec<(usize, MeasureAttributes)> = Vec::new();
+    let mut note_measure_attrs: Vec<(Frac, MeasureAttributes)> = Vec::new();
+    let mut cumul_dur = Frac::from_integer(0);
     for m in note_measures {
         if let Some(ref attrs) = m.attributes {
-            note_measure_attrs.push((elements.len(), attrs.clone()));
+            note_measure_attrs.push((cumul_dur, attrs.clone()));
         }
+        let mut measure_dur = Frac::from_integer(0);
         for v in &m.voices {
-            elements.extend(v.elements.iter().cloned());
+            let mut vdur = Frac::from_integer(0);
+            for e in &v.elements {
+                vdur += voice_element_duration(e);
+                elements.push(e.clone());
+            }
+            if vdur > measure_dur {
+                measure_dur = vdur;
+            }
         }
+        cumul_dur += measure_dur;
     }
 
     // 2. Compute actual duration of each spacer measure from its content
@@ -7485,7 +7811,7 @@ fn resplit_measures_to_match(
             let mut dur = Frac::from_integer(0);
             for v in &m.voices {
                 for e in &v.elements {
-                    dur = dur + voice_element_duration(e);
+                    dur += voice_element_duration(e);
                 }
             }
             dur
@@ -7496,6 +7822,7 @@ fn resplit_measures_to_match(
     let mut result: Vec<Measure> = Vec::new();
     let mut elem_idx = 0usize;
     let mut note_attr_idx = 0usize; // tracks which note_measure_attrs we've consumed
+    let mut output_cumul = Frac::from_integer(0); // cumulative duration of output measures
 
     for (si, sm) in spacer_measures.iter().enumerate() {
         let measure_dur = spacer_durations[si];
@@ -7518,7 +7845,7 @@ fn resplit_measures_to_match(
                 break;
             }
             voice_elements.push(elements[elem_idx].clone());
-            elapsed = elapsed + dur;
+            elapsed += dur;
             elem_idx += 1;
             if elapsed >= measure_dur {
                 break;
@@ -7532,11 +7859,13 @@ fn resplit_measures_to_match(
             });
         }
 
-        // Merge attributes from note measures that fall within this output measure's range
+        // Merge attributes from note measures whose cumulative position falls
+        // within this output measure's duration range
+        let output_end = output_cumul + measure_dur;
         while note_attr_idx < note_measure_attrs.len()
-            && note_measure_attrs[note_attr_idx].0 < elem_idx
+            && note_measure_attrs[note_attr_idx].0 < output_end
         {
-            let (_, ref note_attrs) = note_measure_attrs[note_attr_idx];
+            let (_attr_pos, ref note_attrs) = note_measure_attrs[note_attr_idx];
             let ma = new_measure
                 .attributes
                 .get_or_insert_with(MeasureAttributes::default);
@@ -7544,9 +7873,18 @@ fn resplit_measures_to_match(
             if !note_attrs.clefs.is_empty() && ma.clefs.is_empty() {
                 ma.clefs = note_attrs.clefs.clone();
             }
+            // Merge time signature from note measures if spacer didn't have one
+            if note_attrs.time.is_some() && ma.time.is_none() {
+                ma.time = note_attrs.time.clone();
+            }
+            // Merge key signature from note measures if spacer didn't have one
+            if note_attrs.key.is_some() && ma.key.is_none() {
+                ma.key = note_attrs.key;
+            }
             note_attr_idx += 1;
         }
 
+        output_cumul = output_end;
         result.push(new_measure);
     }
 
@@ -7566,7 +7904,7 @@ fn resplit_measures_to_match(
                     break;
                 }
                 voice_elements.push(elements[elem_idx].clone());
-                elapsed = elapsed + dur;
+                elapsed += dur;
                 elem_idx += 1;
                 if elapsed >= last_dur {
                     break;
@@ -7603,7 +7941,7 @@ fn resplit_measures_for_time_sig(measures: &[Measure], target_time_sig: Frac) ->
     let mut voice_elements: BTreeMap<u8, Vec<VoiceElement>> = BTreeMap::new();
     // Also collect attributes/directions/barlines from original measures,
     // keyed by cumulative duration position (start of that measure in voice 1)
-    let mut measure_attrs: Vec<(Frac, Option<MeasureAttributes>, Vec<Direction>, Option<Barline>, Option<Barline>)> = Vec::new();
+    let mut measure_attrs: Vec<MeasureMeta> = Vec::new();
     let mut cumulative_pos = Frac::from_integer(0);
 
     for m in measures {
@@ -7618,17 +7956,17 @@ fn resplit_measures_for_time_sig(measures: &[Measure], target_time_sig: Frac) ->
         let mut max_dur = Frac::from_integer(0);
         for v in &m.voices {
             let voice_num = v.number;
-            let entry = voice_elements.entry(voice_num).or_insert_with(Vec::new);
+            let entry = voice_elements.entry(voice_num).or_default();
             let mut voice_dur = Frac::from_integer(0);
             for e in &v.elements {
-                voice_dur = voice_dur + voice_element_duration(e);
+                voice_dur += voice_element_duration(e);
                 entry.push(e.clone());
             }
             if voice_dur > max_dur {
                 max_dur = voice_dur;
             }
         }
-        cumulative_pos = cumulative_pos + max_dur;
+        cumulative_pos += max_dur;
     }
 
     if voice_elements.is_empty() {
@@ -7650,10 +7988,10 @@ fn resplit_measures_for_time_sig(measures: &[Measure], target_time_sig: Frac) ->
             // Check if adding this element would exceed the measure
             if elapsed >= target_time_sig && elapsed > Frac::from_integer(0) {
                 split_measures.push(std::mem::take(&mut current));
-                elapsed = elapsed - target_time_sig;
+                elapsed -= target_time_sig;
             }
             current.push(elem);
-            elapsed = elapsed + dur;
+            elapsed += dur;
         }
         if !current.is_empty() {
             split_measures.push(current);
@@ -7681,7 +8019,7 @@ fn resplit_measures_for_time_sig(measures: &[Measure], target_time_sig: Frac) ->
             if let Some(ref a) = attrs {
                 let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
                 if ma.key.is_none() {
-                    ma.key = a.key.clone();
+                    ma.key = a.key;
                 }
                 if ma.time.is_none() {
                     ma.time = a.time.clone();
@@ -7708,6 +8046,276 @@ fn resplit_measures_for_time_sig(measures: &[Measure], target_time_sig: Frac) ->
         out_cumulative = out_end;
 
         // Add each voice
+        for &vn in &voice_nums {
+            if let Some(split) = voice_split.get(&vn) {
+                if let Some(elems) = split.get(mi) {
+                    if !elems.is_empty() {
+                        m.voices.push(Voice {
+                            number: vn,
+                            elements: elems.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        result.push(m);
+    }
+
+    result
+}
+
+/// Synchronize time signatures across all parts in a score.
+///
+/// In LilyPond, time signature changes in one staff of a PianoStaff (or any
+/// grouping) automatically apply to all staves. Our parser treats each staff
+/// independently, so a `\time 4/4` in `voicea` doesn't affect `voiceb`.
+///
+/// This function:
+/// 1. Collects all time signature changes from all parts with their cumulative
+///    duration positions
+/// 2. Re-splits any part whose measures don't align with the unified timeline
+fn synchronize_time_signatures(score: &mut Score) {
+    let num_parts = score.parts().len();
+    if num_parts < 2 {
+        return;
+    }
+
+    // Collect time sig and key sig events by measure index from all parts.
+    // Use the longest part's measure count as reference.
+    let max_measures = score
+        .parts()
+        .iter()
+        .map(|p| p.measures.len())
+        .max()
+        .unwrap_or(0);
+
+    // Build a unified timeline: for each measure index, the time sig and key sig
+    // that should apply (first non-None from any part wins).
+    let mut unified_time: Vec<Option<TimeSignature>> = vec![None; max_measures];
+    let mut unified_key: Vec<Option<crate::ir::measure::KeySignature>> = vec![None; max_measures];
+
+    for part in score.parts().iter() {
+        for (mi, m) in part.measures.iter().enumerate() {
+            if let Some(ref attrs) = m.attributes {
+                if attrs.time.is_some() && unified_time[mi].is_none() {
+                    unified_time[mi] = attrs.time.clone();
+                }
+                if attrs.key.is_some() && unified_key[mi].is_none() {
+                    unified_key[mi] = attrs.key;
+                }
+            }
+        }
+    }
+
+    // Apply unified attributes to all parts
+    for part in score.parts_mut().iter_mut() {
+        for (mi, m) in part.measures.iter_mut().enumerate() {
+            if mi >= max_measures {
+                break;
+            }
+            // Copy time sig if this measure doesn't have one but unified does
+            if let Some(ref ts) = unified_time[mi] {
+                let ma = m
+                    .attributes
+                    .get_or_insert_with(MeasureAttributes::default);
+                if ma.time.is_none() {
+                    ma.time = Some(ts.clone());
+                }
+            }
+            // Copy key sig if this measure doesn't have one but unified does
+            if let Some(ref ks) = unified_key[mi] {
+                let ma = m
+                    .attributes
+                    .get_or_insert_with(MeasureAttributes::default);
+                if ma.key.is_none() {
+                    ma.key = Some(*ks);
+                }
+            }
+        }
+    }
+}
+
+/// Re-split a part's measures using a sequence of time signature changes.
+///
+/// Similar to `resplit_measures_for_time_sig` but handles multiple time
+/// signature changes instead of a single target.
+#[allow(dead_code)]
+fn resplit_measures_with_time_changes(
+    measures: &[Measure],
+    time_events: &[(Frac, TimeSignature, Frac)],
+    initial_time_sig: Frac,
+) -> Vec<Measure> {
+    use std::collections::BTreeMap;
+
+    if measures.is_empty() {
+        return Vec::new();
+    }
+
+    // 1. Flatten: collect all voice elements and measure metadata
+    let mut voice_elements: BTreeMap<u8, Vec<VoiceElement>> = BTreeMap::new();
+    let mut measure_attrs: Vec<MeasureMeta> = Vec::new();
+    let mut cumul = Frac::from_integer(0);
+    let mut current_ts = initial_time_sig;
+
+    for m in measures {
+        if let Some(ref attrs) = m.attributes {
+            if let Some(ref ts) = attrs.time {
+                current_ts = ts.beats_fraction();
+            }
+        }
+        measure_attrs.push((
+            cumul,
+            m.attributes.clone(),
+            m.directions.clone(),
+            m.left_barline.clone(),
+            m.right_barline.clone(),
+        ));
+        let mut max_dur = Frac::from_integer(0);
+        for v in &m.voices {
+            let entry = voice_elements.entry(v.number).or_default();
+            let mut vdur = Frac::from_integer(0);
+            for e in &v.elements {
+                vdur += voice_element_duration(e);
+                entry.push(e.clone());
+            }
+            if vdur > max_dur {
+                max_dur = vdur;
+            }
+        }
+        if max_dur == Frac::from_integer(0) {
+            max_dur = current_ts;
+        }
+        cumul += max_dur;
+    }
+
+    let total_duration = cumul;
+    if voice_elements.is_empty() {
+        return measures.to_vec();
+    }
+
+    // 2. Build measure boundaries from time_events
+    let mut boundaries: Vec<(Frac, Option<TimeSignature>)> = Vec::new(); // (start_pos, time_sig_change)
+    let mut pos = Frac::from_integer(0);
+    let mut current_ts = initial_time_sig;
+
+    // Find the initial time sig from events at position 0
+    for (epos, _ets, efrac) in time_events {
+        if *epos == Frac::from_integer(0) {
+            current_ts = *efrac;
+            break;
+        }
+    }
+
+    while pos < total_duration {
+        // Check if there's a time sig change at this position
+        let mut ts_change: Option<TimeSignature> = None;
+        for (epos, ets, efrac) in time_events {
+            if *epos == pos {
+                ts_change = Some(ets.clone());
+                current_ts = *efrac;
+                break;
+            }
+        }
+        boundaries.push((pos, ts_change));
+        pos += current_ts;
+    }
+
+    // 3. Split each voice's elements at the computed boundaries
+    let voice_nums: Vec<u8> = voice_elements.keys().copied().collect();
+    let mut voice_split: BTreeMap<u8, Vec<Vec<VoiceElement>>> = BTreeMap::new();
+
+    for &vn in &voice_nums {
+        let elements = voice_elements.remove(&vn).unwrap();
+        let mut split_measures: Vec<Vec<VoiceElement>> = Vec::new();
+        let mut current: Vec<VoiceElement> = Vec::new();
+        let mut elem_pos = Frac::from_integer(0);
+        let mut boundary_idx = 1; // Start checking from 2nd boundary
+
+        for elem in elements {
+            let dur = voice_element_duration(&elem);
+            // Check if this element starts at or past the next boundary
+            while boundary_idx < boundaries.len()
+                && elem_pos >= boundaries[boundary_idx].0
+            {
+                split_measures.push(std::mem::take(&mut current));
+                boundary_idx += 1;
+            }
+            current.push(elem);
+            elem_pos += dur;
+        }
+        if !current.is_empty() {
+            split_measures.push(current);
+        }
+        voice_split.insert(vn, split_measures);
+    }
+
+    // 4. Build output measures
+    let num_measures = boundaries.len().max(
+        voice_split.values().map(|v| v.len()).max().unwrap_or(0),
+    );
+    let mut result: Vec<Measure> = Vec::new();
+    let mut attr_idx = 0usize;
+
+    for mi in 0..num_measures {
+        let mut m = Measure::new(mi as u32 + 1);
+
+        // Apply time sig change from the unified timeline
+        if mi < boundaries.len() {
+            if let Some(ref ts) = boundaries[mi].1 {
+                let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
+                if ma.time.is_none() {
+                    ma.time = Some(ts.clone());
+                }
+            }
+        }
+
+        // Apply attrs/dirs from original measures at overlapping positions
+        let out_start = if mi < boundaries.len() {
+            boundaries[mi].0
+        } else {
+            Frac::from_integer(0)
+        };
+        let out_end = if mi + 1 < boundaries.len() {
+            boundaries[mi + 1].0
+        } else {
+            total_duration
+        };
+
+        while attr_idx < measure_attrs.len() && measure_attrs[attr_idx].0 < out_end {
+            let (apos, ref attrs, ref dirs, ref lbar, ref rbar) = measure_attrs[attr_idx];
+            if apos >= out_start {
+                if let Some(ref a) = attrs {
+                    let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
+                    if ma.key.is_none() {
+                        ma.key = a.key;
+                    }
+                    // Don't override time sig from unified timeline
+                    if ma.time.is_none() {
+                        ma.time = a.time.clone();
+                    }
+                    if ma.clefs.is_empty() {
+                        ma.clefs = a.clefs.clone();
+                    }
+                    if ma.staves.is_none() {
+                        ma.staves = a.staves;
+                    }
+                    if ma.divisions == 0 && a.divisions > 0 {
+                        ma.divisions = a.divisions;
+                    }
+                }
+                m.directions.extend(dirs.iter().cloned());
+                if m.left_barline.is_none() {
+                    m.left_barline = lbar.clone();
+                }
+                if m.right_barline.is_none() {
+                    m.right_barline = rbar.clone();
+                }
+            }
+            attr_idx += 1;
+        }
+
+        // Add voices
         for &vn in &voice_nums {
             if let Some(split) = voice_split.get(&vn) {
                 if let Some(elems) = split.get(mi) {

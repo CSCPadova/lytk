@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Latest changes: look at the file docs/changelog.md to know about latest activity on the codebase.
+
+**Development plan and roadmap:** See [`docs/roadmap.md`](docs/roadmap.md) for the full epic/task breakdown, implementation sequence, and key decisions. After an epic/task has been completed update the roadmap file and write the latest changes to the [changelog file](docs/changelog.md), documenting what has been done and what to do next.
+
 ## Project
 
 `lytk` — a Rust library (with Python bindings via PyO3/maturin) for music notation conversion and augmentation. Converts between LilyPond, MusicXML, MXL (compressed MusicXML), and MIDI through a shared Internal Representation (IR).
@@ -10,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                          # build library + CLI
-cargo test                           # all unit tests (279) + CLI integration tests (15)
+cargo test                           # all unit tests (324) + CLI integration tests (15)
 cargo test <test_name>               # run a single test by name
 cargo test --test cli_tests          # CLI integration tests only
 cargo test -- --nocapture             # see stdout/eprintln during tests
@@ -32,17 +36,20 @@ MIDI support requires `cargo build --features midi`.
 
 ## Architecture
 
-```
-Score → Part → Measure → Voice → Note/Rest/Chord/Forward/Backup
-```
+Two-layer IR:
+- **Layer 1 (Music tree):** Format-agnostic recursive tree (`Music` enum — Sequential, Simultaneous, Context, Note, Chord, Rest, Skip, Grace, Tuplet, Repeat, Variable). No measures. Parsers produce this, transforms operate on it.
+- **Layer 2 (Score):** Measure-based tree (`Score → Part → Measure → Voice → Note/Rest/Chord/Forward/Backup`). Used for MusicXML/MIDI export.
+- **Bridging:** `lift_to_music()` converts Score → Music tree; `lower_to_score()` converts Music tree → Score.
 
 Five layers:
 
 1. **Parser** (`src/parser.rs`, `src/tree-sitter/`) — tree-sitter-lilypond grammar, C sources committed in-repo. Never modify `tree-sitter-lilypond/` (read-only reference).
 
-2. **IR** (`src/ir/`) — central data model. Two kinds of types:
-   - Tree nodes: `Score`, `Part`, `Measure`, `Voice` (mutable, own children)
-   - Value objects: `Pitch`, `Duration`, `KeySignature`, `TimeSignature` (small, `Clone + Copy`)
+2. **IR** (`src/ir/`) — central data model:
+   - Layer 1: `music.rs` (Music enum, MusicDocument), `annotation.rs`, `moment.rs`
+   - Layer 2: `score.rs`, `note.rs`, `measure.rs`, `voice.rs`
+   - Shared: `pitch.rs`, `duration.rs`, `direction.rs`, `harmony.rs`, `articulation.rs`, `language.rs`
+   - Bridging: `lift.rs` (Score → Music), `lower.rs` (Music → Score)
    - Durations use `Frac` = `num::Ratio<i64>` for precise fractional arithmetic
    - `TimeSignature.beats` is a `String` (supports compound like "3+2"), use `.beats_fraction()` for the `Frac` value
 
@@ -54,11 +61,11 @@ Five layers:
    - `mxl_zip.rs` — MXL (ZIP-compressed MusicXML) handling
    - `ly_flatten.rs` — `\include` expansion
    - `midi_to_ir.rs` / `ir_to_midi.rs` — behind `midi` feature flag
-   - Traits: `ToIrAdapter` (parse → Score), `FromIrAdapter` (Score → emit)
+   - Traits: `ToIrAdapter` (parse → Score), `FromIrAdapter` (Score → emit), `ToMusicAdapter` (parse → MusicDocument), `FromMusicAdapter` (MusicDocument → emit)
 
-4. **Transforms** (`src/transforms/`) — idempotent, composable passes returning new `Score`:
+4. **Transforms** (`src/transforms/`) — idempotent, composable passes:
    - `transpose`, `invert`, `retrograde`, `language` (pitch language translation)
-   - Each implements `Transform` trait with `apply(&self, &Score) -> Score`
+   - Each implements `Transform` trait (`apply(&self, &Score) -> Score`) and `MusicTransform` trait (`apply_music(&self, &MusicDocument) -> MusicDocument`)
 
 5. **CLI** (`src/main.rs`) — `clap` subcommands: `convert`, `transpose`, `info`, `flatten`. Batch mode uses `rayon` for parallelism.
 

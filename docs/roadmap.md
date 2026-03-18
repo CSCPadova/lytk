@@ -12,6 +12,12 @@ Complete `Score → Part → Voice → Measure → Note/Rest/Chord` tree with `P
 `PartGroup`, `PageLayout`, `Harmony`, `FiguredBass`. Pitch language data for all 11 LilyPond
 languages. Full serde serialisation.
 
+### Two-Layer IR Architecture (Layer 1)
+Music tree types (`Music` enum: Sequential, Simultaneous, Context, Note, Chord, Rest, Skip,
+Grace, Tuplet, Repeat, Variable, etc.), `MusicDocument`, lift/lower passes
+(`lift_to_music` / `lower_to_score`), `MusicTransform` trait with implementations for
+Transpose, Invert, Retrograde, ChangeLanguage. Adapter bridging via lift/lower.
+
 ### MusicXML → IR
 Parses all 143 MusicXML Test Suite fixtures. Supports MusicXML 4.0 including harmonies,
 figured bass, page layout, coda/segno, da capo/dal segno, glissando, arpeggio.
@@ -43,7 +49,7 @@ Recursive `\include` expander:
 
 ### Transforms
 `Transpose`, `ChangeLanguage`, `Invert`, `Retrograde`. Composable via `apply_all`.
-Dual OOP + functional API.
+Dual OOP + functional API. Both `Transform` (Score) and `MusicTransform` (MusicDocument) traits.
 
 ### MIDI Adapter (optional)
 `midly`-based `MidiToIr` and `IrToMidi` behind `--features midi`.
@@ -61,127 +67,143 @@ Full PyO3 API: `from_musicxml`, `from_lilypond`, `to_musicxml`, `to_lilypond`,
 25 Criterion benchmarks; 16 pytest-benchmark tests. ~52× faster than python-ly for
 transpose, ~40× for language change.
 
+### Epic 0: Housekeeping & Stabilization ✅
+- **E0T1:** Fixed all 76 clippy warnings (assign_op_pattern, unused imports/vars, clone on Copy, boxed Direction variant, etc.)
+- **E0T2:** Removed 12 debug `eprintln!` calls from `ly_to_ir.rs` and `lower.rs`
+- **E0T3:** Fixed `test_figuremode_distribution_across_measures` — root cause: `distribute_figured_bass` placed figures into leading attribute-only measures that later get drained by `merge_leading_attribute_measures`. Fix: skip leading empty measures in distribution; carry over figured bass during merge.
+- **E0T4:** Added gitignore patterns for scratch/test output files at root level
+- **E0T5:** Created `.github/workflows/ci.yml`: fmt, clippy (with midi feature), test (Linux/macOS/Windows), Python tests
+
 ---
 
 ## In Progress / Near-term
 
-### 1. MIDI — First-Class Dependency
+### Epic 1: Complete the Two-Layer IR Architecture
 
-Currently MIDI support is behind `--features midi`. Plan:
-- Move `midly` from optional to a regular dependency in `Cargo.toml`
-- Remove the `#[cfg(feature = "midi")]` guards from `src/lib.rs` and `src/main.rs`
-- Always compile and expose `from_midi`/`to_midi` in Python bindings
-- Update `pyproject.toml` to document MIDI support
-- Add MIDI to the default CLI format detection (`"mid" | "midi"` in `invert_ext`)
-- Add MIDI round-trip tests to the test suite
+**Goal:** Finish the architectural vision — Music tree as primary IR, Score only for export.
 
-Motivation: MIDI is fundamental to symbolic music research. Having it as an opt-in
-feature is an unnecessary barrier for users.
+| Task | Description | Status |
+|------|-------------|--------|
+| E1T1 | Remove Forward/Backup from VoiceElement — convert to spacer rests in mxml_to_ir, generate during serialization in ir_to_mxml | Planned |
+| E1T2 | Rewrite LilyPond parser to emit Music tree directly (after E2T1 split) | Planned |
+| E1T3 | Rewrite LilyPond emitter to consume Music tree directly | Planned |
+| E1T4 | Update CLI pipeline to use Music tree | Planned |
+| E1T5 | Update Python bindings for Music tree API | Planned |
 
-### 2. music21 Feature Parity
+### Epic 2: Break Up Monolithic Files
 
-[music21](https://web.mit.edu/music21/) is the standard Python toolkit for Music
-Information Retrieval (MIR) but is slow, poorly designed, and frequently buggy. lytk
-aims to provide equivalent or superior analytical capabilities with a clean API and
-Rust performance.
+**Goal:** Split large files into focused, testable modules. Pure refactor — no functional changes.
 
-Planned features (roughly in priority order):
+| Task | Description | Status |
+|------|-------------|--------|
+| E2T1 | Split `ly_to_ir.rs` (~8000 lines) into module directory | Planned |
+| E2T2 | Split `ir_to_ly.rs` (~3400 lines) into module directory | Planned |
+| E2T3 | Split `ir_to_mxml.rs` (~2800 lines) into module directory | Planned |
+| E2T4 | Split `mxml_to_ir.rs` (~2600 lines) into module directory | Planned |
+| E2T5 | Split `lower.rs` (~1400 lines) into sub-modules | Planned |
 
-#### 2a. Pitch & Interval Analysis
-- `Interval::from_pitches(p1, p2)` — compute named intervals (m3, P5, …)
-- `Interval::semitones()` / `Interval::diatonic_steps()`
-- Enharmonic equivalence: `Pitch::is_enharmonic(other)`
-- `Pitch::from_name("C#4")` / `Pitch::to_name()` with accidentals
-- `Scale::from_key(key, mode)` — major, minor, modes (dorian, etc.)
-- `Scale::contains(pitch)` / `Scale::degree_of(pitch)`
-- `Chord::from_pitches(pitches)` — stack + identify chord quality
-- `Chord::inversion()` / `Chord::root()` / `Chord::quality()` (major, minor, dim, aug, …)
+### Epic 3: Test Coverage
 
-#### 2b. Score Analysis
-- `Score::key_analysis()` — Krumhansl-Schmuckler key-finding algorithm
-- `Score::ambitus()` — pitch range (min, max) per part
-- `Score::pitch_histogram()` — pitch class distribution
-- `Part::note_density(measure_range)` — notes per beat
-- `Measure::beat_strength(note)` — metric weight of each note's onset
-- `Score::find_motif(pattern)` — melodic pattern search
-- `Score::chords_to_roman_numerals(key)` — harmonic analysis with Roman numerals
+**Goal:** Comprehensive unit, integration, round-trip, and property-based tests.
 
-#### 2c. Rhythm & Meter
-- `Duration::to_quarter_length()` — float representation
-- `Duration::from_quarter_length(f64)` — quantise to nearest notatable value
-- `TimeSignature::beat_duration()` / `TimeSignature::compound()`
-- `Score::tempo_map()` — ordered list of `(measure, beat, bpm)` changes
-- `Score::to_offset_seconds(note, tempo_map)` — absolute time of a note
+| Task | Description | Status |
+|------|-------------|--------|
+| E3T1 | Unit tests for `mxml_to_ir` parsing functions | Planned |
+| E3T2 | Unit tests for `ir_to_mxml` emission functions | Planned |
+| E3T3 | Unit tests for `ly_to_ir` sub-parsers | Planned |
+| E3T4 | Expand fixture-based regression tests | Planned |
+| E3T5 | Round-trip testing framework (MusicXML↔Score, LilyPond↔Score) | Planned |
+| E3T6 | Property-based tests with proptest | Planned |
 
-#### 2d. Harmony & Voice Leading
-- `Score::soprano_alto_tenor_bass()` — extract SATB voices
-- `VoiceLeadingChecker::parallel_fifths(voice1, voice2)` — detect parallel motion
-- `VoiceLeadingChecker::parallel_octaves(voice1, voice2)`
-- `Score::figured_bass_to_harmony()` — realise figured bass as chord symbols
+### Epic 4: MIDI as First-Class
 
-#### 2e. Melodic Analysis
-- `Part::contour()` — refined contour string (Marvin-Laprade)
-- `Part::intervals()` → `Vec<Interval>` — melodic interval sequence
-- `Part::melodic_profile()` — stepwise vs leap ratio
-- `Part::n_grams(n)` — pitch-class n-grams for pattern mining
+**Goal:** Remove feature gate, add full test coverage.
 
-#### 2f. Data Augmentation Transforms
-- `Augment` transform — stretch/compress rhythms by a ratio
-- `AddNoise` — randomly alter pitch/rhythm within tolerance (for ML dataset generation)
-- `Harmonise` — add a harmonised voice at a given interval
-- `Reduce` — remove ornaments and grace notes, keeping only structural notes
-- `NormaliseRhythm` — quantise all durations to the nearest grid point
-- `SplitMeasures` / `MergeMeasures` — restructure barring
+| Task | Description | Status |
+|------|-------------|--------|
+| E4T1 | Move midly to default dependency, remove feature gates | Planned |
+| E4T2 | MIDI round-trip tests | Planned |
+| E4T3 | ToMusicAdapter/FromMusicAdapter for MIDI | Planned |
 
-### 3. LilyPond Parser — Remaining Features
+### Epic 5: Complete LilyPond Parser
 
-| Feature | LilyPond syntax | IR target | Priority |
-|---|---|---|---|
-| Chord names | `\chordmode { c1 f g }` | `Measure.harmonies` | MEDIUM |
-| Figured bass parse | `\figuremode { <6 4> }` | `Measure.figured_bass` | LOW |
-| `\partial` in multi-movement | Anacrusis per movement | `ScoreMetadata.partial_duration` | LOW |
+| Task | Description | Status |
+|------|-------------|--------|
+| E5T1 | Add `\chordmode` support | Planned |
+| E5T2 | Improve `\figuremode` robustness | Planned |
+| E5T3 | Handle `\partial` in multi-movement contexts | Planned |
 
-### 4. MusicXML Parser — Remaining Gaps
+### Epic 6: Complete MusicXML Parser
 
-| Feature | Notes | Priority |
-|---|---|---|
-| `<measure-style>` (multi-rest, slash) | Needs `MeasureStyle` IR type | MEDIUM |
-| `<print>` element (new-system, new-page) | Needs `PrintDirective` IR type | MEDIUM |
-| `<dashes>` / `<bracket>` spanners | Needs spanner tracking | LOW |
-| Non-traditional key signatures | `<key-step>` / `<key-alter>` | LOW |
-| `<interchangeable>` time variants | Rare edge case | LOW |
+| Task | Description | Status |
+|------|-------------|--------|
+| E6T1 | `<measure-style>` support (multi-rest, slash notation) | Planned |
+| E6T2 | `<dashes>` / `<bracket>` spanner support | Planned |
+| E6T3 | Non-traditional key signature support | Planned |
+
+### Epic 7: LilyPond Export Completeness
+
+| Task | Description | Status |
+|------|-------------|--------|
+| E7T1 | Emit lyrics in LilyPond output | Planned |
+| E7T2 | Emit repeat structures | Planned |
+| E7T3 | Emit `\chordmode` and `\figuremode` | Planned |
 
 ---
 
 ## Planned (lower priority)
 
-### 5. Further Format Adapters
+### Epic 8: New Format Adapters
 
-- **ABC notation** — `src/adapters/abc_to_ir.rs`, `src/adapters/ir_to_abc.rs`
-  (Reference: abc2lilypond, abcmidi)
-- **MEI** — `src/adapters/mei_to_ir.rs` (Reference: `MEILER/`)
-- **Humdrum** — `src/adapters/hum_to_ir.rs` (Reference: `hum2ly/`)
+Priority order: ABC first (simplest, many folk datasets), then MEI, then Humdrum.
 
-### 6. Round-Trip Testing
+| Task | Description | Status |
+|------|-------------|--------|
+| E8T1 | ABC notation parser (`abc_to_ir.rs`) | Planned |
+| E8T2 | ABC notation emitter (`ir_to_abc.rs`) | Planned |
+| E8T3 | MEI parser (`mei_to_ir.rs`) | Planned |
+| E8T4 | MEI emitter (`ir_to_mei.rs`) | Planned |
+| E8T5 | Humdrum parser (`hum_to_ir.rs`) — import only | Planned |
 
-Systematic round-trip tests: `MusicXML → IR → LilyPond → IR → MusicXML`, comparing
-semantic equivalence (not byte equality). Use the 143-fixture test suite as input.
-Detect regressions in both adapter directions.
+### Epic 9: Python Bindings & Distribution
 
-### 7. Python Package Distribution
+| Task | Description | Status |
+|------|-------------|--------|
+| E9T1 | Python type stubs (`.pyi`) | Planned |
+| E9T2 | Python wrappers for new adapters | Planned |
+| E9T3 | maturin GitHub Actions for wheel building | Planned |
+| E9T4 | Update pyproject.toml for distribution | Planned |
 
-- Publish to PyPI via maturin + GitHub Actions
-- Multi-platform wheels (Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64)
-- `pip install lytk` with no Rust toolchain required
-- Stable API with semantic versioning
+### music21 Feature Parity (v2)
 
-### 8. LilyPond Toolchain Integration
+[music21](https://web.mit.edu/music21/) is the standard Python toolkit for Music
+Information Retrieval (MIR) but is slow, poorly designed, and frequently buggy. lytk
+aims to provide equivalent or superior analytical capabilities with a clean API and
+Rust performance. Planned for v2 or a separate package.
 
-- `lytk compile` — invoke `lilypond` to render `.ly` → PDF/PNG/SVG/MIDI
-- `lytk check` — validate a LilyPond file by attempting compilation
-- `lytk convert-ly` — wrap LilyPond's `convert-ly` syntax updater
+Areas: Pitch & Interval Analysis, Score Analysis (key-finding, ambitus, histograms),
+Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Transforms.
 
 ---
+
+## Implementation Sequence
+
+| Phase | Epics | Focus |
+|-------|-------|-------|
+| 1 | E0 ✅ | Stabilization: warnings, test fix, CI |
+| 2 | E2 | Modularity: split all large files |
+| 3 | E1 + E4T1 | Architecture: Forward/Backup removal, parser/emitter rewrite, MIDI ungating |
+| 4 | E3 + E4T2-3 | Test coverage: unit, round-trip, proptest, MIDI tests |
+| 5 | E5 + E6 + E7 | Feature completeness: remaining parser/emitter gaps |
+| 6 | E8 (ABC first) | New formats: ABC, then MEI, then Humdrum |
+| 7 | E9 + E1T5 | Distribution: Python stubs, wheels, PyPI |
+
+## Key Decisions
+
+- **Split before rewrite:** Split ly_to_ir.rs (E2T1) first as a pure refactor, then rewrite each sub-module to emit Music tree (E1T2). Lower risk, easier to review.
+- **Full Forward/Backup removal:** Remove from VoiceElement entirely (E1T1). Convert to spacer rests in mxml_to_ir, generate during serialization in ir_to_mxml. Clean break.
+- **Execution order:** E0 → E2 → E1 (stabilize → split → architecture). Safest progression.
+- **New formats priority:** ABC first (simplest, many folk datasets), then MEI, then Humdrum. All deferred until core is solid.
 
 ## Out of Scope (v1)
 

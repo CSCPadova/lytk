@@ -6,9 +6,10 @@
 //! # Idempotency
 //! Retrograde is self-inverse: `R(R(x)) == x`.
 
+use crate::ir::music::{Music, MusicDocument};
 use crate::ir::score::Score;
 
-use super::Transform;
+use super::{MusicTransform, Transform};
 
 /// Reverse the order of voice elements within every voice.
 ///
@@ -51,9 +52,55 @@ impl Transform for Retrograde {
     }
 }
 
+impl MusicTransform for Retrograde {
+    fn apply_music(&self, doc: &MusicDocument) -> MusicDocument {
+        let mut result = doc.clone();
+        retrograde_music_node(&mut result.music);
+        result
+    }
+}
+
+/// Recursively reverse Sequential children in a Music tree.
+fn retrograde_music_node(music: &mut Music) {
+    match music {
+        Music::Sequential(children) => {
+            children.reverse();
+            for child in children {
+                retrograde_music_node(child);
+            }
+        }
+        Music::Simultaneous(children) => {
+            // Don't reverse simultaneous — each voice gets retrograded independently
+            for child in children {
+                retrograde_music_node(child);
+            }
+        }
+        Music::Context { content, .. }
+        | Music::Grace { content, .. }
+        | Music::Tuplet { content, .. }
+        | Music::Variable { content, .. } => {
+            retrograde_music_node(content);
+        }
+        Music::Repeat {
+            body, alternatives, ..
+        } => {
+            retrograde_music_node(body);
+            for alt in alternatives {
+                retrograde_music_node(alt);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Functional API: reverse all voice elements and measure order.
 pub fn retrograde(score: &Score) -> Score {
     Retrograde::new().apply(score)
+}
+
+/// Functional API: reverse Sequential children in a Music tree.
+pub fn retrograde_music(doc: &MusicDocument) -> MusicDocument {
+    Retrograde::new().apply_music(doc)
 }
 
 #[cfg(test)]
@@ -142,5 +189,59 @@ mod tests {
         let score = Score::new();
         let result = retrograde(&score);
         assert_eq!(result, score);
+    }
+
+    #[test]
+    fn retrograde_music_basic() {
+        use crate::ir::music::{Music, MusicDocument};
+
+        let doc = MusicDocument::new(Music::Sequential(vec![
+            Music::Note {
+                pitch: Pitch::new(PitchStep::C, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+            Music::Note {
+                pitch: Pitch::new(PitchStep::D, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+            Music::Note {
+                pitch: Pitch::new(PitchStep::E, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+        ]));
+        let result = super::retrograde_music(&doc);
+        match &result.music {
+            Music::Sequential(children) => {
+                let steps: Vec<_> = children.iter().filter_map(|c| match c {
+                    Music::Note { pitch, .. } => Some(pitch.step),
+                    _ => None,
+                }).collect();
+                assert_eq!(steps, vec![PitchStep::E, PitchStep::D, PitchStep::C]);
+            }
+            _ => panic!("expected Sequential"),
+        }
+    }
+
+    #[test]
+    fn retrograde_music_self_inverse() {
+        use crate::ir::music::{Music, MusicDocument};
+
+        let doc = MusicDocument::new(Music::Sequential(vec![
+            Music::Note {
+                pitch: Pitch::new(PitchStep::C, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+            Music::Note {
+                pitch: Pitch::new(PitchStep::E, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+        ]));
+        let doubled = super::retrograde_music(&super::retrograde_music(&doc));
+        assert_eq!(doc, doubled);
     }
 }

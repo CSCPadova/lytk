@@ -8,6 +8,15 @@ wheels/
 
 .vscode/
 
+# Scratch / test output files (root-level only)
+/out.xml
+/example.xml
+/pedal.xml
+/rep.xml
+/test*.ly
+/test*.midi
+/test*.pdf
+
 # Virtual environments
 .venv
 lily/
@@ -30,4 +39,6 @@ python-ly/
 musicxml/
 symusic/
 MuseScore/
+lyp/
+music21/
 *.so

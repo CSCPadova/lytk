@@ -8,9 +8,10 @@
 //! `ChangeLanguage(L)(ChangeLanguage(L)(x)) == ChangeLanguage(L)(x)` — idempotent.
 
 use crate::ir::language::PitchLanguage;
+use crate::ir::music::MusicDocument;
 use crate::ir::score::Score;
 
-use super::Transform;
+use super::{MusicTransform, Transform};
 
 /// Change the pitch language stored in score metadata.
 ///
@@ -34,9 +35,22 @@ impl Transform for ChangeLanguage {
     }
 }
 
+impl MusicTransform for ChangeLanguage {
+    fn apply_music(&self, doc: &MusicDocument) -> MusicDocument {
+        let mut result = doc.clone();
+        result.metadata.pitch_language = Some(self.target);
+        result
+    }
+}
+
 /// Functional API: change the pitch language to `target`.
 pub fn change_language(score: &Score, target: PitchLanguage) -> Score {
     ChangeLanguage::new(target).apply(score)
+}
+
+/// Functional API: change the pitch language in a Music tree to `target`.
+pub fn change_language_music(doc: &MusicDocument, target: PitchLanguage) -> MusicDocument {
+    ChangeLanguage::new(target).apply_music(doc)
 }
 
 #[cfg(test)]
@@ -74,5 +88,14 @@ mod tests {
         score.metadata.pitch_language = Some(PitchLanguage::English);
         let result = change_language(&score, PitchLanguage::Nederlands);
         assert_eq!(result.metadata.pitch_language, Some(PitchLanguage::Nederlands));
+    }
+
+    #[test]
+    fn change_language_music_basic() {
+        use crate::ir::music::{Music, MusicDocument};
+
+        let doc = MusicDocument::new(Music::empty());
+        let result = super::change_language_music(&doc, PitchLanguage::Italiano);
+        assert_eq!(result.metadata.pitch_language, Some(PitchLanguage::Italiano));
     }
 }

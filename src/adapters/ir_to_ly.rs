@@ -20,6 +20,8 @@ use crate::ir::score::{PartGroup, Score, ScoreChild};
 use crate::ir::voice::Voice;
 use crate::ir::Part;
 
+use crate::ir::music::MusicDocument;
+
 use super::{FromIrAdapter, Result};
 
 // ---------------------------------------------------------------------------
@@ -488,6 +490,13 @@ impl FromIrAdapter for IrToLyAdapter {
 
         lines.push(String::new()); // trailing newline
         Ok(lines.join("\n"))
+    }
+}
+
+impl super::FromMusicAdapter for IrToLyAdapter {
+    fn convert_music(&self, doc: &MusicDocument) -> Result<String> {
+        let score = crate::ir::lower::lower_to_score(doc);
+        self.convert(&score)
     }
 }
 
@@ -1074,6 +1083,7 @@ struct EmitState {
     in_melisma: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_voice_elements(
     voice: &Voice,
     lang: PitchLanguage,
@@ -1615,7 +1625,7 @@ fn part_has_lyrics(part: &Part) -> bool {
         m.voices.iter().any(|v| {
             v.elements.iter().any(|e| match e {
                 VoiceElement::Note(n) => !n.lyrics.is_empty(),
-                VoiceElement::Chord(c) => c.notes.first().map_or(false, |n| !n.lyrics.is_empty()),
+                VoiceElement::Chord(c) => c.notes.first().is_some_and(|n| !n.lyrics.is_empty()),
                 _ => false,
             })
         })
@@ -1707,7 +1717,7 @@ fn emit_lyrics_refs(part: &Part, voice_name: &str, indent: usize, lines: &mut Ve
     let pad = " ".repeat(indent);
     let var = part_var_name(part);
 
-    for (&number, _) in &lyrics_map {
+    for &number in lyrics_map.keys() {
         let suffix = if lyrics_map.len() > 1 {
             format!("Verse{}", index_to_alpha(number as usize))
         } else {

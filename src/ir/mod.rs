@@ -43,6 +43,15 @@ pub mod pitch;
 pub mod score;
 pub mod voice;
 
+// Layer 1: Music tree (format-agnostic representation).
+pub mod annotation;
+pub mod moment;
+pub mod music;
+
+// Conversion between layers.
+pub mod lift;
+pub mod lower;
+
 // Re-export all public types for convenience.
 pub use articulation::*;
 pub use direction::*;
@@ -55,3 +64,8 @@ pub use part::Part;
 pub use pitch::*;
 pub use score::*;
 pub use voice::Voice;
+
+// Layer 1 re-exports.
+pub use annotation::Annotation;
+pub use moment::Moment;
+pub use music::{ContextType, Music, MusicDocument, RepeatType};

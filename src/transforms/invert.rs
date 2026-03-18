@@ -8,11 +8,12 @@
 //! Invert is self-inverse: `I(I(x)) == x` (reflecting twice around the same
 //! axis restores the original).
 
+use crate::ir::music::{Music, MusicDocument};
 use crate::ir::note::VoiceElement;
 use crate::ir::pitch::{Pitch, PitchStep};
 use crate::ir::score::Score;
 
-use super::Transform;
+use super::{MusicTransform, Transform};
 
 /// Invert all pitches around an axis pitch.
 ///
@@ -65,9 +66,57 @@ impl Transform for Invert {
     }
 }
 
+impl MusicTransform for Invert {
+    fn apply_music(&self, doc: &MusicDocument) -> MusicDocument {
+        let mut result = doc.clone();
+        let axis_midi = self.axis.midi_number();
+        invert_music_node(&mut result.music, axis_midi);
+        result
+    }
+}
+
+/// Recursively invert all pitches in a Music tree.
+fn invert_music_node(music: &mut Music, axis_midi: i32) {
+    match music {
+        Music::Note { pitch, .. } => {
+            *pitch = invert_pitch(*pitch, axis_midi);
+        }
+        Music::Chord { pitches, .. } => {
+            for (pitch, _) in pitches.iter_mut() {
+                *pitch = invert_pitch(*pitch, axis_midi);
+            }
+        }
+        Music::Sequential(children) | Music::Simultaneous(children) => {
+            for child in children {
+                invert_music_node(child, axis_midi);
+            }
+        }
+        Music::Context { content, .. }
+        | Music::Grace { content, .. }
+        | Music::Tuplet { content, .. }
+        | Music::Variable { content, .. } => {
+            invert_music_node(content, axis_midi);
+        }
+        Music::Repeat {
+            body, alternatives, ..
+        } => {
+            invert_music_node(body, axis_midi);
+            for alt in alternatives {
+                invert_music_node(alt, axis_midi);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Functional API: invert all pitches around `axis`.
 pub fn invert(score: &Score, axis: Pitch) -> Score {
     Invert::new(axis).apply(score)
+}
+
+/// Functional API: invert all pitches in a Music tree around `axis`.
+pub fn invert_music(doc: &MusicDocument, axis: Pitch) -> MusicDocument {
+    Invert::new(axis).apply_music(doc)
 }
 
 /// Reflect a single pitch across the axis MIDI number.
@@ -179,5 +228,37 @@ mod tests {
         let result = invert(&score, axis);
         let midi = extract_midi(&result);
         assert_eq!(midi, vec![axis.midi_number()]);
+    }
+
+    #[test]
+    fn invert_music_self_inverse() {
+        use crate::ir::music::{Music, MusicDocument};
+
+        let doc = MusicDocument::new(Music::Sequential(vec![
+            Music::Note {
+                pitch: Pitch::new(PitchStep::C, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+            Music::Note {
+                pitch: Pitch::new(PitchStep::E, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+        ]));
+        let axis = Pitch::new(PitchStep::C, 4);
+        let doubled = super::invert_music(&super::invert_music(&doc, axis), axis);
+
+        // Extract MIDI numbers from both
+        fn midi_from(m: &Music) -> Vec<i32> {
+            match m {
+                Music::Sequential(children) => children.iter().filter_map(|c| match c {
+                    Music::Note { pitch, .. } => Some(pitch.midi_number()),
+                    _ => None,
+                }).collect(),
+                _ => vec![],
+            }
+        }
+        assert_eq!(midi_from(&doc.music), midi_from(&doubled.music));
     }
 }

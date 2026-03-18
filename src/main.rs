@@ -153,7 +153,7 @@ fn run_convert(
     } else {
         let scores = parse_input_multi(input)?;
         if scores.len() <= 1 {
-            let score = scores.into_iter().next().unwrap_or_else(|| Score::new());
+            let score = scores.into_iter().next().unwrap_or_else(Score::new);
             write_output(&score, output, format)?;
         } else {
             // Multi-movement: write separate files with _01, _02, etc. suffixes
