@@ -207,8 +207,6 @@ fn detect_anacrusis(score: &mut Score) {
                     VoiceElement::Note(n) => &n.duration,
                     VoiceElement::Rest(r) => &r.duration,
                     VoiceElement::Chord(c) => &c.duration,
-                    VoiceElement::Forward(f) => &f.duration,
-                    VoiceElement::Backup(_) => continue,
                 };
                 total += dur.actual_duration();
             }

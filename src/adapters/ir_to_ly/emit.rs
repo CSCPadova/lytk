@@ -27,7 +27,6 @@ fn element_tuplet(elem: &VoiceElement) -> Option<&TupletDisplay> {
         VoiceElement::Note(n) => n.tuplet.as_ref(),
         VoiceElement::Chord(c) => c.notes.first().and_then(|n| n.tuplet.as_ref()),
         VoiceElement::Rest(r) => r.tuplet.as_ref(),
-        _ => None,
     }
 }
 
@@ -37,8 +36,6 @@ fn element_tuplet_ratio(elem: &VoiceElement) -> (u8, u8) {
         VoiceElement::Note(n) => &n.duration,
         VoiceElement::Rest(r) => &r.duration,
         VoiceElement::Chord(c) => &c.duration,
-        VoiceElement::Forward(f) => &f.duration,
-        VoiceElement::Backup(b) => &b.duration,
     };
     (dur.tuplet_actual, dur.tuplet_normal)
 }
@@ -437,16 +434,6 @@ fn emit_voice_elements(
                 let dur_divs = duration_to_divisions(&chord.duration, divisions);
                 fwd_pos += dur_divs;
                 tokens.push(token);
-            }
-            VoiceElement::Forward(fwd) => {
-                let dur_divs = duration_to_divisions(&fwd.duration, divisions);
-                fwd_pos += dur_divs;
-                tokens.push(format!("s{}", duration_to_ly(&fwd.duration)));
-            }
-            VoiceElement::Backup(bk) => {
-                let dur_divs = duration_to_divisions(&bk.duration, divisions);
-                fwd_pos -= dur_divs;
-                // Backups are structural; they don't emit LilyPond tokens
             }
         }
 

@@ -13,8 +13,9 @@ pub mod ir;
 pub mod parser;
 pub mod transforms;
 
-use adapters::{FromIrAdapter, ToIrAdapter};
+use adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
 use ir::language::PitchLanguage;
+use ir::music::MusicDocument;
 use ir::pitch::{Alter, Pitch, PitchStep};
 use ir::Score;
 
@@ -136,6 +137,64 @@ impl PyScore {
 }
 
 // ---------------------------------------------------------------------------
+// PyMusicDocument — opaque wrapper for the Music tree (Layer 1)
+// ---------------------------------------------------------------------------
+
+/// An opaque handle to a parsed music document (Layer 1 IR).
+///
+/// The Music tree preserves structural information (contexts, sequential/
+/// simultaneous blocks, variables) that is lost when converting to the
+/// measure-based Score (Layer 2) representation.
+#[pyclass(name = "MusicDocument")]
+#[derive(Clone)]
+struct PyMusicDocument {
+    inner: MusicDocument,
+}
+
+#[pymethods]
+impl PyMusicDocument {
+    /// Score title (from the header).
+    #[getter]
+    fn title(&self) -> Option<String> {
+        self.inner.metadata.title.clone()
+    }
+
+    /// Composer name.
+    #[getter]
+    fn composer(&self) -> Option<String> {
+        self.inner.metadata.composer.clone()
+    }
+
+    /// Serialize the music document to a JSON string.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string_pretty(&self.inner).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Deserialize a music document from a JSON string.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let doc: MusicDocument =
+            serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyMusicDocument { inner: doc })
+    }
+
+    /// Convert this music document to a measure-based :class:`Score`.
+    fn to_score(&self) -> PyScore {
+        PyScore {
+            inner: ir::lower::lower_to_score(&self.inner),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("MusicDocument(title={:?})", self.inner.metadata.title)
+    }
+
+    fn __eq__(&self, other: &PyMusicDocument) -> bool {
+        self.inner == other.inner
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Adapter functions
 // ---------------------------------------------------------------------------
 
@@ -190,6 +249,55 @@ fn from_lilypond_string(text: &str, language: Option<&str>) -> PyResult<PyScore>
         .convert_str(text)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(PyScore { inner: score })
+}
+
+/// Parse a LilyPond file into a :class:`MusicDocument` (Layer 1 Music tree).
+///
+/// This preserves structural information like contexts and simultaneous blocks.
+#[pyfunction]
+#[pyo3(signature = (path, *, language=None))]
+fn from_lilypond_music(path: &str, language: Option<&str>) -> PyResult<PyMusicDocument> {
+    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+    if let Some(lang_str) = language {
+        let lang = PitchLanguage::from_str_loose(lang_str)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown language: {lang_str}")))?;
+        adapter = adapter.with_language(lang);
+    }
+    let doc = adapter
+        .convert_file_to_music(Path::new(path))
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+    Ok(PyMusicDocument { inner: doc })
+}
+
+/// Parse a LilyPond string into a :class:`MusicDocument` (Layer 1 Music tree).
+#[pyfunction]
+#[pyo3(signature = (text, *, language=None))]
+fn from_lilypond_music_string(text: &str, language: Option<&str>) -> PyResult<PyMusicDocument> {
+    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+    if let Some(lang_str) = language {
+        let lang = PitchLanguage::from_str_loose(lang_str)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown language: {lang_str}")))?;
+        adapter = adapter.with_language(lang);
+    }
+    let doc = adapter
+        .convert_str_to_music(text)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(PyMusicDocument { inner: doc })
+}
+
+/// Emit a :class:`MusicDocument` as a LilyPond string.  If *path* is given the
+/// result is also written to that file.
+#[pyfunction]
+#[pyo3(signature = (doc, path=None))]
+fn to_lilypond_music(doc: &PyMusicDocument, path: Option<&str>) -> PyResult<String> {
+    let adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+    let output = adapter
+        .convert_music(&doc.inner)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    if let Some(p) = path {
+        std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    }
+    Ok(output)
 }
 
 /// Emit a :class:`Score` as a LilyPond string.  If *path* is given the result
@@ -314,13 +422,17 @@ fn retrograde(score: &PyScore) -> PyScore {
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Score class
     m.add_class::<PyScore>()?;
+    m.add_class::<PyMusicDocument>()?;
 
     // Adapter functions
     m.add_function(wrap_pyfunction!(from_musicxml, m)?)?;
     m.add_function(wrap_pyfunction!(from_musicxml_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_string, m)?)?;
+    m.add_function(wrap_pyfunction!(from_lilypond_music, m)?)?;
+    m.add_function(wrap_pyfunction!(from_lilypond_music_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond, m)?)?;
+    m.add_function(wrap_pyfunction!(to_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(to_musicxml, m)?)?;
 
     #[cfg(feature = "midi")]

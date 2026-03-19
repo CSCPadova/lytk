@@ -34,8 +34,6 @@ pub(super) fn voice_element_duration(elem: &VoiceElement) -> Frac {
         VoiceElement::Note(n) => n.duration.actual_duration(),
         VoiceElement::Rest(r) => r.duration.actual_duration(),
         VoiceElement::Chord(c) => c.duration.actual_duration(),
-        VoiceElement::Forward(f) => f.duration.actual_duration(),
-        VoiceElement::Backup(b) => -b.duration.actual_duration(),
     }
 }
 
@@ -65,7 +63,6 @@ pub(super) fn measures_are_spacer_only(measures: &[Measure]) -> bool {
                     VoiceElement::Rest(_) | VoiceElement::Note(_) | VoiceElement::Chord(_) => {
                         return false;
                     }
-                    _ => {} // Forward/Backup are structural, not music
                 }
             }
         }
@@ -197,8 +194,6 @@ pub(super) fn renumber_voices_in_measures(measures: Vec<Measure>, voice_num: u8)
                                 n.voice = voice_num;
                             }
                         }
-                        VoiceElement::Forward(f) => f.voice = voice_num,
-                        VoiceElement::Backup(_) => {}
                     }
                 }
             }
@@ -1023,7 +1018,6 @@ pub(super) fn apply_tuplet_ratio(elem: &mut VoiceElement, actual: u8, normal: u8
             c.duration.tuplet_actual = actual;
             c.duration.tuplet_normal = normal;
         }
-        _ => {}
     }
 }
 
@@ -1084,7 +1078,6 @@ pub(super) fn apply_tuplet_display(elements: &mut [VoiceElement], _actual: u8) {
                     }
                 }
             }
-            _ => {}
         }
     }
 }

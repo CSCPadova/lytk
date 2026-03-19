@@ -140,8 +140,6 @@ fn set_staff_number(elem: &mut VoiceElement, staff: u8) {
                 n.staff = staff;
             }
         }
-        VoiceElement::Forward(f) => f.staff = staff,
-        VoiceElement::Backup(_) => {}
     }
 }
 

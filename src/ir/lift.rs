@@ -187,16 +187,12 @@ fn lift_multi_staff_part(part: &super::part::Part) -> Music {
 
 /// Get the staff number for a voice (from its first element).
 fn voice_staff_number(voice: &super::voice::Voice) -> u8 {
-    for elem in &voice.elements {
-        match elem {
-            VoiceElement::Note(n) => return n.staff,
-            VoiceElement::Rest(r) => return r.staff,
-            VoiceElement::Chord(c) => return c.staff,
-            VoiceElement::Forward(f) => return f.staff,
-            VoiceElement::Backup(_) => {}
-        }
+    match voice.elements.first() {
+        Some(VoiceElement::Note(n)) => n.staff,
+        Some(VoiceElement::Rest(r)) => r.staff,
+        Some(VoiceElement::Chord(c)) => c.staff,
+        None => 1,
     }
-    1 // default
 }
 
 /// Lift a sequence of measures into a Music tree.
@@ -313,16 +309,6 @@ fn lift_voice_elements(elements: &[VoiceElement]) -> Vec<Music> {
                     duration: c.duration.clone(),
                     annotations,
                 });
-            }
-            VoiceElement::Forward(f) => {
-                // Convert Forward to Skip
-                result.push(Music::Skip {
-                    duration: f.duration.clone(),
-                });
-            }
-            VoiceElement::Backup(_) => {
-                // Backup is a MusicXML concept — skip it in the Music tree.
-                // The voice structure handles time positioning.
             }
         }
     }

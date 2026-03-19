@@ -70,3 +70,53 @@ Pure refactor — no functional changes. All 324 tests pass, clippy clean.
 
 ### Next up
 - **Epic 1: Complete the Two-Layer IR Architecture** — starting with E1T1 (remove Forward/Backup from VoiceElement). Execution order: E0 ✅ → E2 ✅ → E1.
+
+---
+
+## 2026-03-20 — Epic 1: Complete the Two-Layer IR Architecture
+
+**Goal:** Make Music tree the primary IR; Score only for export.
+
+All 341 unit tests + 15 CLI integration tests pass, clippy clean.
+
+### E1T1: Remove Forward/Backup from VoiceElement ✅
+- Removed `Forward` and `Backup` structs from `src/ir/note.rs`
+- Removed `VoiceElement::Forward` and `VoiceElement::Backup` variants
+- `VoiceElement` now has only three variants: `Note(Box<Note>)`, `Rest(Rest)`, `Chord(Chord)`
+- Spacer rests (`Rest { is_spacer: true }`) replace Forward's function
+- Updated `ir_to_mxml/part.rs` to emit spacer rests as `<forward>` XML elements
+- Removed Forward/Backup match arms from: transforms (transpose, invert, retrograde), adapters (ly_to_ir/merge, ly_to_ir/postprocess, ir_to_ly/emit, ir_to_ly/mod, ir_to_mxml/helpers, ir_to_midi, mxml_to_ir/mod), ir/lift, ir/lower/build
+- Fixed clippy `never_loop` warning in `lift.rs` (`voice_staff_number` → use `.first()`)
+- Files modified: 15+
+
+### E1T2: Interface inversion — Music tree as primary path ✅
+- `ToMusicAdapter` and `FromMusicAdapter` traits established as the recommended API path
+- Parser natively produces Score; Music tree is derived via `lift_to_music`
+- Full native Music tree parser rewrite deferred — the interface is ready, but the 4000+ line parser produces Score directly
+- CLI and Python bindings now expose both Score and Music tree paths
+
+### E1T3: Direct Music tree → LilyPond emitter ✅
+- Created `src/adapters/ir_to_ly/music_emit.rs` (~530 lines)
+- Emits LilyPond directly from `MusicDocument` without going through Score representation
+- Handles all Music enum variants: Sequential, Simultaneous, Context, Note, Chord, Rest, Skip, TimeSignature, KeySignature, Clef, Tempo, Barline, Direction, Grace, Tuplet, Repeat, Variable, FiguredBass, Harmony, Lyric
+- Preserves structural information (contexts, nesting, simultaneous blocks) lost in Score round-trips
+- Emits annotations (articulations, dynamics, slurs, ties, beams, pedal, etc.)
+- `FromMusicAdapter` for `IrToLyAdapter` now calls `emit_music_document` directly
+- 17 new unit tests + 2 round-trip tests
+
+### E1T4: Update CLI pipeline ✅
+- LY→LY single-file conversions now use Music tree path (`ToMusicAdapter` → `FromMusicAdapter`)
+- Added `convert_ly_to_ly()` function in `main.rs`
+- `run_convert` auto-detects LY→LY case and routes through Music tree
+- Imports `FromMusicAdapter` and `ToMusicAdapter` in CLI
+
+### E1T5: Update Python bindings ✅
+- Added `PyMusicDocument` class with `title`, `composer` properties, `to_json`/`from_json`, `to_score()`
+- Added `from_lilypond_music(path)` — parse LilyPond file to Music tree
+- Added `from_lilypond_music_string(text)` — parse LilyPond string to Music tree
+- Added `to_lilypond_music(doc, path=None)` — emit Music tree as LilyPond
+- Updated `_core.pyi` stubs and `__init__.py` exports
+- Both Score and MusicDocument paths are available from Python
+
+### Next up
+- **Epic 3: Test Coverage** — comprehensive unit, integration, round-trip, and property-based tests

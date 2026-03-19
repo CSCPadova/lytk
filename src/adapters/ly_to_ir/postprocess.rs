@@ -156,12 +156,6 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                     }
                 }
             }
-            VoiceElement::Forward(f) => {
-                pos += f.duration.actual_duration();
-            }
-            VoiceElement::Backup(b) => {
-                pos -= b.duration.actual_duration();
-            }
         }
     }
 

@@ -56,9 +56,7 @@ impl Transform for Transpose {
                                     n.pitch = n.pitch.transposed(self.semitones);
                                 }
                             }
-                            VoiceElement::Rest(_)
-                            | VoiceElement::Forward(_)
-                            | VoiceElement::Backup(_) => {}
+                            VoiceElement::Rest(_) => {}
                         }
                     }
                 }

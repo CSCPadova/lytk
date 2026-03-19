@@ -53,9 +53,7 @@ impl Transform for Invert {
                                     n.pitch = invert_pitch(n.pitch, axis_midi);
                                 }
                             }
-                            VoiceElement::Rest(_)
-                            | VoiceElement::Forward(_)
-                            | VoiceElement::Backup(_) => {}
+                            VoiceElement::Rest(_) => {}
                         }
                     }
                 }

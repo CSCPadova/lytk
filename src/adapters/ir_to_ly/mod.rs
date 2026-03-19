@@ -10,6 +10,7 @@ mod emit;
 mod helpers;
 mod lyrics;
 mod maps;
+mod music_emit;
 mod parts;
 #[cfg(test)]
 mod tests;
@@ -118,8 +119,14 @@ impl FromIrAdapter for IrToLyAdapter {
 
 impl super::FromMusicAdapter for IrToLyAdapter {
     fn convert_music(&self, doc: &MusicDocument) -> Result<String> {
-        let score = crate::ir::lower::lower_to_score(doc);
-        self.convert(&score)
+        let lang = doc.metadata.pitch_language.unwrap_or(self.language);
+        let mode = doc.metadata.pitch_mode;
+        Ok(music_emit::emit_music_document(
+            doc,
+            &self.version,
+            lang,
+            mode,
+        ))
     }
 }
 
@@ -360,15 +367,6 @@ fn voice_matches_staff(voice: &Voice, staff_num: u8) -> bool {
                     has_staff_info = true;
                 }
             }
-            VoiceElement::Forward(f) => {
-                if f.staff == staff_num {
-                    return true;
-                }
-                if f.staff != 0 {
-                    has_staff_info = true;
-                }
-            }
-            VoiceElement::Backup(_) => {}
         }
     }
     // If we found staff info but nothing matched, this voice belongs to a different staff

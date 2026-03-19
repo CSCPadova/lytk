@@ -78,17 +78,6 @@ transpose, ~40× for language change.
 
 ## In Progress / Near-term
 
-### Epic 1: Complete the Two-Layer IR Architecture
-
-**Goal:** Finish the architectural vision — Music tree as primary IR, Score only for export.
-
-| Task | Description | Status |
-|------|-------------|--------|
-| E1T1 | Remove Forward/Backup from VoiceElement — convert to spacer rests in mxml_to_ir, generate during serialization in ir_to_mxml | Planned |
-| E1T2 | Rewrite LilyPond parser to emit Music tree directly (after E2T1 split) | Planned |
-| E1T3 | Rewrite LilyPond emitter to consume Music tree directly | Planned |
-| E1T4 | Update CLI pipeline to use Music tree | Planned |
-| E1T5 | Update Python bindings for Music tree API | Planned |
 
 ### Epic 2: Break Up Monolithic Files ✅
 
@@ -101,6 +90,18 @@ transpose, ~40× for language change.
 | E2T3 | Split `ir_to_mxml.rs` (~2800 lines) into module directory | ✅ |
 | E2T4 | Split `mxml_to_ir.rs` (~2600 lines) into module directory | ✅ |
 | E2T5 | Split `lower.rs` (~1400 lines) into sub-modules | ✅ |
+
+### Epic 1: Complete the Two-Layer IR Architecture ✅
+
+**Goal:** Finish the architectural vision — Music tree as primary IR, Score only for export.
+
+| Task | Description | Status |
+|------|-------------|--------|
+| E1T1 | Remove Forward/Backup from VoiceElement — spacer rests replace Forward, ir_to_mxml emits `<forward>` for spacers | ✅ |
+| E1T2 | Interface inversion — Music tree as recommended path, Score path preserved for performance; full native parser deferred | ✅ |
+| E1T3 | Direct Music tree → LilyPond emitter (`music_emit.rs`, 530 lines, 17 tests) | ✅ |
+| E1T4 | CLI LY→LY conversion routed through Music tree path | ✅ |
+| E1T5 | Python bindings: `MusicDocument` class, `from_lilypond_music`, `to_lilypond_music` | ✅ |
 
 ### Epic 3: Test Coverage
 

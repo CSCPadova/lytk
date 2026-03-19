@@ -21,8 +21,7 @@
 //!                 ├── Note
 //!                 ├── Rest
 //!                 ├── Chord → [Note…]
-//!                 ├── Forward
-//!                 └── Backup
+//!                 └── Chord → [Note…]
 //! ```
 //!
 //! # Influences

@@ -221,40 +221,6 @@ impl std::fmt::Display for Chord {
     }
 }
 
-/// A forward movement in time (MusicXML `<forward>`).
-///
-/// From lytk-py's `Forward(IRNode)`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Forward {
-    pub duration: Duration,
-    pub voice: u8,
-    pub staff: u8,
-}
-
-impl Forward {
-    pub fn new(duration: Duration) -> Self {
-        Self {
-            duration,
-            voice: 1,
-            staff: 1,
-        }
-    }
-}
-
-/// A backward movement in time (MusicXML `<backup>`).
-///
-/// From lytk-py's `Backup(IRNode)`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Backup {
-    pub duration: Duration,
-}
-
-impl Backup {
-    pub fn new(duration: Duration) -> Self {
-        Self { duration }
-    }
-}
-
 /// A voice element — one of the things that can appear inside a voice.
 ///
 /// This enum replaces the dynamic-dispatch `IRNode` children list from the
@@ -264,8 +230,6 @@ pub enum VoiceElement {
     Note(Box<Note>),
     Rest(Rest),
     Chord(Chord),
-    Forward(Forward),
-    Backup(Backup),
 }
 
 #[cfg(test)]

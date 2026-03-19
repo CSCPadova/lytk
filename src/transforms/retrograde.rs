@@ -13,8 +13,7 @@ use super::{MusicTransform, Transform};
 
 /// Reverse the order of voice elements within every voice.
 ///
-/// Forward/Backup elements are also reversed, which preserves the overall
-/// time-shift structure when the voice is played back in reverse.
+/// Voice elements are reversed, producing a time-reversed version.
 pub struct Retrograde;
 
 impl Retrograde {

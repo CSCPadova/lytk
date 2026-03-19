@@ -152,8 +152,21 @@ impl IrToMxmlAdapter {
                         }
                     }
                     VoiceElement::Rest(r) => {
-                        self.write_rest(w, r, voice.number, part_staves)?;
-                        fwd_pos += self.duration_to_divisions(&r.duration);
+                        if r.is_spacer {
+                            // Emit spacer rests as MusicXML <forward>
+                            w.write_event(Event::Start(BytesStart::new("forward")))?;
+                            let dur_val = self.duration_to_divisions(&r.duration);
+                            text_element(w, "duration", &dur_val.to_string())?;
+                            text_element(w, "voice", &voice.number.to_string())?;
+                            if part_staves > 1 {
+                                text_element(w, "staff", &r.staff.to_string())?;
+                            }
+                            w.write_event(Event::End(BytesEnd::new("forward")))?;
+                            fwd_pos += dur_val;
+                        } else {
+                            self.write_rest(w, r, voice.number, part_staves)?;
+                            fwd_pos += self.duration_to_divisions(&r.duration);
+                        }
                     }
                     VoiceElement::Chord(c) => {
                         // Emit directions from the first note in the chord
@@ -162,24 +175,6 @@ impl IrToMxmlAdapter {
                         }
                         self.write_chord(w, c, voice.number, part_staves)?;
                         fwd_pos += self.duration_to_divisions(&c.duration);
-                    }
-                    VoiceElement::Forward(fwd) => {
-                        w.write_event(Event::Start(BytesStart::new("forward")))?;
-                        let dur_val = self.duration_to_divisions(&fwd.duration);
-                        text_element(w, "duration", &dur_val.to_string())?;
-                        text_element(w, "voice", &fwd.voice.to_string())?;
-                        if part_staves > 1 {
-                            text_element(w, "staff", &fwd.staff.to_string())?;
-                        }
-                        w.write_event(Event::End(BytesEnd::new("forward")))?;
-                        fwd_pos += dur_val;
-                    }
-                    VoiceElement::Backup(bk) => {
-                        w.write_event(Event::Start(BytesStart::new("backup")))?;
-                        let dur_val = self.duration_to_divisions(&bk.duration);
-                        text_element(w, "duration", &dur_val.to_string())?;
-                        w.write_event(Event::End(BytesEnd::new("backup")))?;
-                        fwd_pos -= dur_val;
                     }
                 }
             }
@@ -367,8 +362,6 @@ impl IrToMxmlAdapter {
                 VoiceElement::Note(n) => total += n.duration.actual_duration(),
                 VoiceElement::Rest(r) => total += r.duration.actual_duration(),
                 VoiceElement::Chord(c) => total += c.duration.actual_duration(),
-                VoiceElement::Forward(f) => total += f.duration.actual_duration(),
-                VoiceElement::Backup(_) => {} // backups don't advance time
             }
         }
         let result = total * crate::ir::duration::Frac::from_integer(4 * self.divisions as i64);

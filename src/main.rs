@@ -21,7 +21,7 @@ use _core::adapters::{
     ly_flatten::{flatten, FlattenOpts},
     ly_to_ir::LyToIrAdapter,
     mxml_to_ir::MxmlToIrAdapter,
-    FromIrAdapter, ToIrAdapter,
+    FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter,
 };
 use _core::ir::Score;
 use _core::transforms::transpose;
@@ -154,6 +154,13 @@ fn run_convert(
     if input.is_dir() {
         run_batch(input, output, format, jobs, None::<&fn(&Score) -> Score>)
     } else {
+        // LY→LY single-file: use Music tree path for better structural fidelity
+        let in_fmt = detect_input_format(input)?;
+        let out_fmt = detect_output_format(output, format)?;
+        if matches!(in_fmt, InputFormat::LilyPond) && matches!(out_fmt, OutputFormat::Ly) {
+            return convert_ly_to_ly(input, output);
+        }
+
         let scores = parse_input_multi(input)?;
         if scores.len() <= 1 {
             let score = scores.into_iter().next().unwrap_or_else(Score::new);
@@ -450,6 +457,17 @@ fn write_output(score: &Score, path: &Path, format: Option<OutputFormat>) -> any
             IrToMidiAdapter::new().write(score, path)?;
         }
     }
+    Ok(())
+}
+
+/// Convert LilyPond → LilyPond through the Music tree (Layer 1) for better
+/// structural preservation.
+fn convert_ly_to_ly(input: &Path, output: &Path) -> anyhow::Result<()> {
+    let parser = LyToIrAdapter::new();
+    let doc = parser.convert_file_to_music(input)?;
+    let emitter = IrToLyAdapter::new();
+    let ly = emitter.convert_music(&doc)?;
+    std::fs::write(output, ly)?;
     Ok(())
 }
 

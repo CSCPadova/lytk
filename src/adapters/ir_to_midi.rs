@@ -309,14 +309,6 @@ impl IrToMidiAdapter {
                             }
                             voice_tick += dur_ticks;
                         }
-                        VoiceElement::Forward(fwd) => {
-                            let dur_ticks = self.duration_to_ticks(&fwd.duration);
-                            voice_tick += dur_ticks;
-                        }
-                        VoiceElement::Backup(bk) => {
-                            let dur_ticks = self.duration_to_ticks(&bk.duration);
-                            voice_tick = voice_tick.saturating_sub(dur_ticks);
-                        }
                     }
                 }
 

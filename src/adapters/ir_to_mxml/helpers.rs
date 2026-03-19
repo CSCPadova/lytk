@@ -79,8 +79,6 @@ pub(super) fn compute_score_divisions(score: &Score, base: u16) -> u16 {
                         VoiceElement::Note(n) => &n.duration,
                         VoiceElement::Rest(r) => &r.duration,
                         VoiceElement::Chord(c) => &c.duration,
-                        VoiceElement::Forward(f) => &f.duration,
-                        VoiceElement::Backup(b) => &b.duration,
                     };
                     // Account for tuplet ratios
                     if dur.tuplet_actual > 1 {

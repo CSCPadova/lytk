@@ -17,7 +17,7 @@ use super::note::VoiceElement;
 pub struct Voice {
     /// Voice number (1-based, matches MusicXML `<voice>` element).
     pub number: u8,
-    /// Ordered sequence of notes, rests, chords, forwards, and backups.
+    /// Ordered sequence of notes, rests, and chords.
     pub elements: Vec<VoiceElement>,
 }
 
