@@ -11,15 +11,18 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use rayon::prelude::*;
 
-use _core::adapters::{
-    ir_to_ly::IrToLyAdapter, ir_to_mxml::IrToMxmlAdapter,
-    ly_flatten::{flatten, FlattenOpts},
-    ly_to_ir::LyToIrAdapter, mxml_to_ir::MxmlToIrAdapter, FromIrAdapter, ToIrAdapter,
-};
 #[cfg(feature = "midi")]
 use _core::adapters::ir_to_midi::IrToMidiAdapter;
 #[cfg(feature = "midi")]
 use _core::adapters::midi_to_ir::MidiToIrAdapter;
+use _core::adapters::{
+    ir_to_ly::IrToLyAdapter,
+    ir_to_mxml::IrToMxmlAdapter,
+    ly_flatten::{flatten, FlattenOpts},
+    ly_to_ir::LyToIrAdapter,
+    mxml_to_ir::MxmlToIrAdapter,
+    FromIrAdapter, ToIrAdapter,
+};
 use _core::ir::Score;
 use _core::transforms::transpose;
 
@@ -161,10 +164,7 @@ fn run_convert(
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("output");
-            let ext = output
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("xml");
+            let ext = output.extension().and_then(|s| s.to_str()).unwrap_or("xml");
             let parent = output.parent().unwrap_or(Path::new("."));
             for (idx, score) in scores.iter().enumerate() {
                 let filename = format!("{}_{:02}.{}", stem, idx + 1, ext);
@@ -271,9 +271,7 @@ where
 
     if jobs == 1 {
         for file in &files {
-            if let Err(e) =
-                process_one_file(file, input_dir, output_dir, format, transform)
-            {
+            if let Err(e) = process_one_file(file, input_dir, output_dir, format, transform) {
                 eprintln!("{}: {e}", file.display());
             }
         }
@@ -285,9 +283,7 @@ where
 
         pool.install(|| {
             files.par_iter().for_each(|file| {
-                if let Err(e) =
-                    process_one_file(file, input_dir, output_dir, format, transform)
-                {
+                if let Err(e) = process_one_file(file, input_dir, output_dir, format, transform) {
                     eprintln!("{}: {e}", file.display());
                 }
             });
@@ -378,10 +374,7 @@ fn invert_ext(path: &Path) -> &'static str {
 // ---------------------------------------------------------------------------
 
 fn detect_input_format(path: &Path) -> anyhow::Result<InputFormat> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
         "ly" | "ily" => Ok(InputFormat::LilyPond),
         "xml" | "musicxml" | "mxl" => Ok(InputFormat::MusicXml),
@@ -416,12 +409,8 @@ fn parse_input(path: &Path) -> anyhow::Result<Score> {
 fn parse_input_multi(path: &Path) -> anyhow::Result<Vec<Score>> {
     let fmt = detect_input_format(path)?;
     match fmt {
-        InputFormat::LilyPond => {
-            Ok(LyToIrAdapter::new().convert_file_multi(path)?)
-        }
-        InputFormat::MusicXml => {
-            Ok(vec![MxmlToIrAdapter::new().convert_file(path)?])
-        }
+        InputFormat::LilyPond => Ok(LyToIrAdapter::new().convert_file_multi(path)?),
+        InputFormat::MusicXml => Ok(vec![MxmlToIrAdapter::new().convert_file(path)?]),
         #[cfg(feature = "midi")]
         InputFormat::Midi => {
             let bytes = std::fs::read(path)?;
@@ -434,16 +423,15 @@ fn detect_output_format(path: &Path, forced: Option<OutputFormat>) -> anyhow::Re
     if let Some(f) = forced {
         return Ok(f);
     }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
         "ly" | "ily" => Ok(OutputFormat::Ly),
         "xml" | "musicxml" => Ok(OutputFormat::Xml),
         #[cfg(feature = "midi")]
         "mid" | "midi" => Ok(OutputFormat::Midi),
-        _ => Err(anyhow::anyhow!("cannot infer output format from .{ext}; use --format")),
+        _ => Err(anyhow::anyhow!(
+            "cannot infer output format from .{ext}; use --format"
+        )),
     }
 }
 

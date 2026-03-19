@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::ir::lower::{lower_music_to_score, lower_to_score};
     use crate::ir::duration::{Duration, Frac};
+    use crate::ir::lower::{lower_music_to_score, lower_to_score};
     use crate::ir::measure::*;
     use crate::ir::music::{ContextType, Music, MusicDocument};
     use crate::ir::note::VoiceElement;
@@ -35,8 +35,7 @@ mod tests {
 
     #[test]
     fn test_lower_single_note() {
-        let music = Music::Sequential(vec![c4_quarter()])
-            .in_context(ContextType::Staff, None);
+        let music = Music::Sequential(vec![c4_quarter()]).in_context(ContextType::Staff, None);
         let score = lower_music_to_score(&music);
         assert_eq!(score.parts().len(), 1);
         assert!(!score.parts()[0].measures.is_empty());
@@ -44,13 +43,8 @@ mod tests {
 
     #[test]
     fn test_lower_sequential_notes() {
-        let music = Music::Sequential(vec![
-            c4_quarter(),
-            d4_quarter(),
-            c4_quarter(),
-            d4_quarter(),
-        ])
-        .in_context(ContextType::Staff, None);
+        let music = Music::Sequential(vec![c4_quarter(), d4_quarter(), c4_quarter(), d4_quarter()])
+            .in_context(ContextType::Staff, None);
 
         let score = lower_music_to_score(&music);
         let parts = score.parts();
@@ -144,10 +138,7 @@ mod tests {
 
         let score = lower_music_to_score(&music);
         let parts = score.parts();
-        let m1_key = parts[0].measures[0]
-            .attributes
-            .as_ref()
-            .and_then(|a| a.key);
+        let m1_key = parts[0].measures[0].attributes.as_ref().and_then(|a| a.key);
         assert_eq!(m1_key.unwrap().fifths, -1);
         assert_eq!(m1_key.unwrap().mode, KeyMode::Minor);
     }
@@ -182,17 +173,14 @@ mod tests {
         let rh = Music::Sequential(vec![c4_quarter(), d4_quarter(), c4_quarter(), d4_quarter()])
             .in_context(ContextType::Staff, Some("rh".to_string()));
 
-        let lh = Music::Sequential(vec![
-            Music::Note {
-                pitch: Pitch::new(PitchStep::C, 3),
-                duration: Duration::whole(),
-                annotations: vec![],
-            },
-        ])
+        let lh = Music::Sequential(vec![Music::Note {
+            pitch: Pitch::new(PitchStep::C, 3),
+            duration: Duration::whole(),
+            annotations: vec![],
+        }])
         .in_context(ContextType::Staff, Some("lh".to_string()));
 
-        let music = Music::Simultaneous(vec![rh, lh])
-            .in_context(ContextType::PianoStaff, None);
+        let music = Music::Simultaneous(vec![rh, lh]).in_context(ContextType::PianoStaff, None);
 
         let score = lower_music_to_score(&music);
         // PianoStaff should result in a PartGroup with a single multi-staff part
@@ -282,15 +270,12 @@ mod tests {
         ])
         .in_context(ContextType::Staff, None);
 
-        let p2 = Music::Sequential(vec![
-            Music::Skip {
-                duration: Duration::new(Frac::new(3, 4)),
-            },
-        ])
+        let p2 = Music::Sequential(vec![Music::Skip {
+            duration: Duration::new(Frac::new(3, 4)),
+        }])
         .in_context(ContextType::Staff, None);
 
-        let music = Music::Simultaneous(vec![p1, p2])
-            .in_context(ContextType::Score, None);
+        let music = Music::Simultaneous(vec![p1, p2]).in_context(ContextType::Score, None);
 
         let score = lower_music_to_score(&music);
         let parts = score.parts();
@@ -310,7 +295,12 @@ mod tests {
         let boundaries = compute_measure_boundaries(&[], Frac::new(2, 1));
         // 2 whole notes in 4/4 = 2 measures
         // Expected boundaries: [(0, Some(4/4)), (1, None), (2, None)]
-        assert!(boundaries.len() >= 3, "got {} boundaries: {:?}", boundaries.len(), boundaries);
+        assert!(
+            boundaries.len() >= 3,
+            "got {} boundaries: {:?}",
+            boundaries.len(),
+            boundaries
+        );
     }
 
     #[test]

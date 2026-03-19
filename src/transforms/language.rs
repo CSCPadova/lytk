@@ -63,7 +63,10 @@ mod tests {
     fn change_language_basic() {
         let score = Score::new();
         let result = change_language(&score, PitchLanguage::Italiano);
-        assert_eq!(result.metadata.pitch_language, Some(PitchLanguage::Italiano));
+        assert_eq!(
+            result.metadata.pitch_language,
+            Some(PitchLanguage::Italiano)
+        );
     }
 
     #[test]
@@ -87,7 +90,10 @@ mod tests {
         let mut score = Score::new();
         score.metadata.pitch_language = Some(PitchLanguage::English);
         let result = change_language(&score, PitchLanguage::Nederlands);
-        assert_eq!(result.metadata.pitch_language, Some(PitchLanguage::Nederlands));
+        assert_eq!(
+            result.metadata.pitch_language,
+            Some(PitchLanguage::Nederlands)
+        );
     }
 
     #[test]
@@ -96,6 +102,9 @@ mod tests {
 
         let doc = MusicDocument::new(Music::empty());
         let result = super::change_language_music(&doc, PitchLanguage::Italiano);
-        assert_eq!(result.metadata.pitch_language, Some(PitchLanguage::Italiano));
+        assert_eq!(
+            result.metadata.pitch_language,
+            Some(PitchLanguage::Italiano)
+        );
     }
 }

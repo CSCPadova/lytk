@@ -195,11 +195,7 @@ fn convert_batch_directory() {
     let ly_files: Vec<_> = fs::read_dir(&out_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map_or(false, |ext| ext == "ly")
-        })
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "ly"))
         .collect();
     assert!(
         !ly_files.is_empty(),

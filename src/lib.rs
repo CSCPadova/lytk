@@ -92,8 +92,7 @@ impl PyScore {
 
     /// Serialize the full score IR to a JSON string.
     fn to_json(&self) -> PyResult<String> {
-        serde_json::to_string_pretty(&self.inner)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+        serde_json::to_string_pretty(&self.inner).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Deserialize a score from a JSON string.
@@ -106,8 +105,8 @@ impl PyScore {
 
     /// Serialize the score IR to a Python dict.
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let json_str = serde_json::to_string(&self.inner)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let json_str =
+            serde_json::to_string(&self.inner).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let json_mod = PyModule::import_bound(py, "json")?;
         json_mod.call_method1("loads", (json_str,))
     }

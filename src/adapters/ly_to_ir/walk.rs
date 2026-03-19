@@ -9,8 +9,7 @@ use crate::ir::pitch::Pitch;
 use crate::ir::score::{Score, ScoreChild};
 
 use super::consume::{
-    block_contains_named_context, extract_string_value, parse_paper_block,
-    score_block_output_types,
+    block_contains_named_context, extract_string_value, parse_paper_block, score_block_output_types,
 };
 use super::figured_bass::parse_figuremode_block;
 use super::lyrics::{attach_lyrics_to_part, extract_lyricsto_voice, parse_lyric_block};
@@ -49,7 +48,9 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                     "deutsch" | "german" => PitchLanguage::Deutsch,
                                     "italiano" | "italian" => PitchLanguage::Italiano,
                                     "espanol" | "español" | "spanish" => PitchLanguage::Espanol,
-                                    "français" | "francais" | "french" => PitchLanguage::Nederlands, // no dedicated French; default
+                                    "français" | "francais" | "french" => {
+                                        PitchLanguage::Nederlands
+                                    } // no dedicated French; default
                                     "portugues" | "português" | "portuguese" => {
                                         PitchLanguage::Portugues
                                     }
@@ -88,7 +89,8 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 state.flush_measure();
                                 let saved_parts = std::mem::take(&mut state.parts);
                                 let saved_counter = state.part_counter;
-                                let saved_pending_lyrics = std::mem::take(&mut state.pending_lyrics);
+                                let saved_pending_lyrics =
+                                    std::mem::take(&mut state.pending_lyrics);
                                 let saved_voice_map = std::mem::take(&mut state.voice_part_map);
                                 state.part_counter = 0;
                                 state.measure_num = 0;
@@ -209,17 +211,27 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                             let n = children[j];
                                             if n.kind() == "symbol" {
                                                 let sym = state.text(n).to_string();
-                                                if let Some((step, alter)) = parse_pitch_name(&sym, state.language) {
+                                                if let Some((step, alter)) =
+                                                    parse_pitch_name(&sym, state.language)
+                                                {
                                                     let mut rp = Pitch::with_alter(step, alter, 3);
                                                     j += 1;
                                                     while j < children.len() {
                                                         let m = children[j];
                                                         if m.kind() == "punctuation" {
                                                             let t = state.text(m);
-                                                            if t == "'" { octave_marks += 1; j += 1; }
-                                                            else if t == "," { octave_marks -= 1; j += 1; }
-                                                            else { break; }
-                                                        } else { break; }
+                                                            if t == "'" {
+                                                                octave_marks += 1;
+                                                                j += 1;
+                                                            } else if t == "," {
+                                                                octave_marks -= 1;
+                                                                j += 1;
+                                                            } else {
+                                                                break;
+                                                            }
+                                                        } else {
+                                                            break;
+                                                        }
                                                     }
                                                     rp.octave = 3 + octave_marks;
                                                     state.relative_ref = Some(rp);
@@ -228,7 +240,10 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                                 break;
                                             } else if n.kind() == "punctuation" {
                                                 let t = state.text(n);
-                                                if t == "'" || t == "," { j += 1; continue; }
+                                                if t == "'" || t == "," {
+                                                    j += 1;
+                                                    continue;
+                                                }
                                                 break;
                                             } else {
                                                 break;
@@ -248,7 +263,9 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 if next.kind() == "expression_block" && is_figuremode {
                                     // Parse figuremode block into figured bass entries
                                     let fb_measures = parse_figuremode_block(state, *next);
-                                    state.definitions.insert(var_name, VarDef::FiguredBass(fb_measures));
+                                    state
+                                        .definitions
+                                        .insert(var_name, VarDef::FiguredBass(fb_measures));
                                     i = j + 1;
                                     continue;
                                 } else if next.kind() == "expression_block" {
@@ -292,7 +309,9 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                             .map(|(name, idx)| (name.clone(), idx - parts_before))
                                             .collect();
                                         if !local_voice_map.is_empty() {
-                                            state.var_voice_maps.insert(var_name.clone(), local_voice_map);
+                                            state
+                                                .var_voice_maps
+                                                .insert(var_name.clone(), local_voice_map);
                                         }
                                         // Remove stale entries from voice_part_map
                                         state.voice_part_map.retain(|_, idx| *idx < parts_before);
@@ -321,12 +340,9 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                     let old_time_sig = state.current_time_sig;
                                     state.measure_num = 0;
                                     state.elapsed_in_measure = Frac::from_integer(0);
-                                    let (context, ctx_name) =
-                                        extract_named_context(state, *next);
+                                    let (context, ctx_name) = extract_named_context(state, *next);
                                     j += 1;
-                                    j = walk_context_body(
-                                        state, &children, j, &context, &ctx_name,
-                                    );
+                                    j = walk_context_body(state, &children, j, &context, &ctx_name);
                                     state.flush_measure();
                                     let new_parts: Vec<_> =
                                         state.parts.drain(parts_before..).collect();
@@ -338,13 +354,13 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                         .map(|(name, idx)| (name.clone(), idx - parts_before))
                                         .collect();
                                     if !local_voice_map.is_empty() {
-                                        state.var_voice_maps.insert(var_name.clone(), local_voice_map);
+                                        state
+                                            .var_voice_maps
+                                            .insert(var_name.clone(), local_voice_map);
                                     }
                                     // Remove stale entries from voice_part_map
                                     state.voice_part_map.retain(|_, idx| *idx < parts_before);
-                                    state
-                                        .definitions
-                                        .insert(var_name, VarDef::Parts(new_parts));
+                                    state.definitions.insert(var_name, VarDef::Parts(new_parts));
                                     state.measure_num = old_measure_num;
                                     state.elapsed_in_measure = old_elapsed;
                                     state.current_time_sig = old_time_sig;
@@ -374,7 +390,8 @@ pub(super) fn walk_header(state: &mut WalkState, block: Node) {
             let key = {
                 // assignment_lhs has a child symbol
                 let mut c = node.walk();
-                let result = node.children(&mut c)
+                let result = node
+                    .children(&mut c)
                     .find(|n| n.kind() == "symbol")
                     .map(|n| state.text(n).to_string())
                     .unwrap_or_default();
@@ -479,9 +496,13 @@ pub(super) fn walk_score_block(state: &mut WalkState, block: Node) {
                         i += 1;
                         while i < children.len() {
                             let peek = children[i].kind();
-                            if matches!(peek, "escaped_word" | "named_context"
-                                | "expression_block" | "parallel_music")
-                            {
+                            if matches!(
+                                peek,
+                                "escaped_word"
+                                    | "named_context"
+                                    | "expression_block"
+                                    | "parallel_music"
+                            ) {
                                 break;
                             }
                             i += 1;
@@ -873,9 +894,7 @@ pub(super) fn walk_context_body(
             let _part = state.ensure_part();
             // Store voice name → part index mapping
             let part_idx = state.parts.len().saturating_sub(1);
-            state
-                .voice_part_map
-                .insert(name.to_string(), part_idx);
+            state.voice_part_map.insert(name.to_string(), part_idx);
         }
         return i;
     }
@@ -1066,7 +1085,9 @@ fn walk_lyrics_context(
                 if let Some(voice) = &lyricsto_voice {
                     let var_name = text.trim_start_matches('\\');
                     if let Some(syllables) = state.lyric_definitions.get(var_name) {
-                        state.pending_lyrics.insert(voice.clone(), syllables.clone());
+                        state
+                            .pending_lyrics
+                            .insert(voice.clone(), syllables.clone());
                     }
                 }
                 i += 1;

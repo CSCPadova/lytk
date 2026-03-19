@@ -97,10 +97,7 @@ impl ContextType {
     pub fn is_staff_group(&self) -> bool {
         matches!(
             self,
-            Self::StaffGroup
-                | Self::ChoirStaff
-                | Self::PianoStaff
-                | Self::GrandStaff
+            Self::StaffGroup | Self::ChoirStaff | Self::PianoStaff | Self::GrandStaff
         )
     }
 }
@@ -125,7 +122,6 @@ pub enum RepeatType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Music {
     // ── Containers ──────────────────────────────────────────
-
     /// Notes played one after another: `{ c4 d e f }`
     Sequential(Vec<Music>),
 
@@ -140,7 +136,6 @@ pub enum Music {
     },
 
     // ── Pitched events ──────────────────────────────────────
-
     /// A single note with pitch, duration, and annotations.
     Note {
         pitch: Pitch,
@@ -158,7 +153,6 @@ pub enum Music {
     },
 
     // ── Unpitched events ────────────────────────────────────
-
     /// A visible rest.
     Rest {
         duration: Duration,
@@ -169,7 +163,6 @@ pub enum Music {
     Skip { duration: Duration },
 
     // ── Attribute events ────────────────────────────────────
-
     /// Time signature change (not a container — just an event).
     TimeSignature(TimeSignature),
 
@@ -186,14 +179,12 @@ pub enum Music {
     Barline(Barline),
 
     // ── Directions ──────────────────────────────────────────
-
     /// A standalone direction not attached to a note (dynamics, pedal, text, etc.)
     /// In most cases, annotations on `Note`/`Chord` are preferred.
     /// This variant is for directions that appear between notes.
     Direction(Box<super::direction::Direction>),
 
     // ── Wrappers ────────────────────────────────────────────
-
     /// Grace notes: `\grace { c16 d }` or `\acciaccatura c16`
     Grace {
         content: Box<Music>,
@@ -217,13 +208,9 @@ pub enum Music {
     },
 
     /// A resolved variable reference (keeps name for round-trip fidelity).
-    Variable {
-        name: String,
-        content: Box<Music>,
-    },
+    Variable { name: String, content: Box<Music> },
 
     // ── Lyrics / Harmony / Figured Bass ─────────────────────
-
     /// A figured bass entry.
     FiguredBass(FiguredBass),
 
@@ -396,10 +383,7 @@ mod tests {
             ContextType::from_ly_name("PianoStaff"),
             Some(ContextType::PianoStaff)
         );
-        assert_eq!(
-            ContextType::from_ly_name("Voice"),
-            Some(ContextType::Voice)
-        );
+        assert_eq!(ContextType::from_ly_name("Voice"), Some(ContextType::Voice));
         assert_eq!(ContextType::from_ly_name("Unknown"), None);
     }
 

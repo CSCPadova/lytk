@@ -1,6 +1,7 @@
 use super::*;
-use std::collections::HashMap;
-use crate::ir::articulation::{Articulation, LyricSyllable, Placement, SlurEvent, StartStop, SyllabicType, TieEvent};
+use crate::ir::articulation::{
+    Articulation, LyricSyllable, Placement, SlurEvent, StartStop, SyllabicType, TieEvent,
+};
 use crate::ir::duration::Duration;
 use crate::ir::measure::{Clef, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
 use crate::ir::note::{Note, Rest, VoiceElement};
@@ -8,9 +9,10 @@ use crate::ir::pitch::{Pitch, PitchStep};
 use crate::ir::score::{Score, ScoreChild};
 use crate::ir::voice::Voice;
 use num::rational::Ratio;
+use std::collections::HashMap;
 
-use maps::{clef_to_ly, duration_to_ly, figure_to_ly, harmony_kind_to_ly, key_to_ly, pitch_to_ly};
 use emit::{attachments_to_ly, chord_to_ly, rest_to_ly};
+use maps::{clef_to_ly, duration_to_ly, figure_to_ly, harmony_kind_to_ly, key_to_ly, pitch_to_ly};
 
 fn make_note(step: PitchStep, octave: i32, dur: Duration) -> Note {
     Note::new(Pitch::new(step, octave), dur)
@@ -112,11 +114,21 @@ fn test_emit_pitch_with_alter() {
     let bflat3 = Pitch::with_alter(PitchStep::B, Ratio::new(-1, 1), 3);
 
     assert_eq!(
-        pitch_to_ly(&fsharp4, PitchLanguage::Nederlands, None, PitchMode::Absolute),
+        pitch_to_ly(
+            &fsharp4,
+            PitchLanguage::Nederlands,
+            None,
+            PitchMode::Absolute
+        ),
         "fis'"
     );
     assert_eq!(
-        pitch_to_ly(&bflat3, PitchLanguage::Nederlands, None, PitchMode::Absolute),
+        pitch_to_ly(
+            &bflat3,
+            PitchLanguage::Nederlands,
+            None,
+            PitchMode::Absolute
+        ),
         "bes"
     );
 }
@@ -124,10 +136,7 @@ fn test_emit_pitch_with_alter() {
 #[test]
 fn test_emit_rest_types() {
     assert_eq!(rest_to_ly(&Rest::new(Duration::quarter())), "r4");
-    assert_eq!(
-        rest_to_ly(&Rest::measure_rest(Duration::whole())),
-        "R1"
-    );
+    assert_eq!(rest_to_ly(&Rest::measure_rest(Duration::whole())), "R1");
     let mut spacer = Rest::new(Duration::half());
     spacer.is_spacer = true;
     assert_eq!(rest_to_ly(&spacer), "s2");
@@ -415,10 +424,7 @@ fn test_roundtrip_musicxml_fixture_to_ly_and_back() {
     // LilyPond -> IR (re-parse)
     let ly_to_ir = LyToIrAdapter::new();
     let score2 = ly_to_ir.convert_str(&ly).unwrap();
-    assert!(
-        !score2.parts().is_empty(),
-        "re-parsed IR should have parts"
-    );
+    assert!(!score2.parts().is_empty(), "re-parsed IR should have parts");
 
     // IR -> MusicXML
     let ir_to_mxml = IrToMxmlAdapter::new();
@@ -440,10 +446,7 @@ fn test_emit_tuplet() {
     // Build a score with 3 notes in a 3/2 tuplet
     let notes: Vec<VoiceElement> = (0..3)
         .map(|i| {
-            let mut n = Note::new(
-                Pitch::new(PitchStep::C, 4),
-                Duration::quarter(),
-            );
+            let mut n = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
             n.duration.tuplet_actual = 3;
             n.duration.tuplet_normal = 2;
             if i == 0 {
@@ -463,7 +466,10 @@ fn test_emit_tuplet() {
         })
         .collect();
 
-    let voice = Voice { number: 1, elements: notes };
+    let voice = Voice {
+        number: 1,
+        elements: notes,
+    };
     let mut measure = Measure::new(1);
     measure.voices.push(voice);
 
@@ -474,7 +480,11 @@ fn test_emit_tuplet() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\tuplet 3/2"), "should emit \\tuplet 3/2: {}", ly);
+    assert!(
+        ly.contains("\\tuplet 3/2"),
+        "should emit \\tuplet 3/2: {}",
+        ly
+    );
 }
 
 #[test]
@@ -485,10 +495,7 @@ fn test_emit_acciaccatura() {
     );
     n.is_grace = true;
     n.grace_slash = true;
-    let main = Note::new(
-        Pitch::new(PitchStep::C, 4),
-        Duration::quarter(),
-    );
+    let main = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
     let voice = Voice {
         number: 1,
         elements: vec![
@@ -506,7 +513,11 @@ fn test_emit_acciaccatura() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\acciaccatura"), "should emit \\acciaccatura: {}", ly);
+    assert!(
+        ly.contains("\\acciaccatura"),
+        "should emit \\acciaccatura: {}",
+        ly
+    );
 }
 
 #[test]
@@ -517,10 +528,7 @@ fn test_emit_grace_not_acciaccatura() {
     );
     n.is_grace = true;
     n.grace_slash = false;
-    let main = Note::new(
-        Pitch::new(PitchStep::C, 4),
-        Duration::quarter(),
-    );
+    let main = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
     let voice = Voice {
         number: 1,
         elements: vec![
@@ -538,8 +546,16 @@ fn test_emit_grace_not_acciaccatura() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\appoggiatura"), "should emit \\appoggiatura: {}", ly);
-    assert!(!ly.contains("\\acciaccatura"), "should NOT emit \\acciaccatura: {}", ly);
+    assert!(
+        ly.contains("\\appoggiatura"),
+        "should emit \\appoggiatura: {}",
+        ly
+    );
+    assert!(
+        !ly.contains("\\acciaccatura"),
+        "should NOT emit \\acciaccatura: {}",
+        ly
+    );
 }
 
 #[test]
@@ -562,7 +578,11 @@ fn test_emit_glissando() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\glissando"), "should emit \\glissando: {}", ly);
+    assert!(
+        ly.contains("\\glissando"),
+        "should emit \\glissando: {}",
+        ly
+    );
 }
 
 #[test]
@@ -613,7 +633,11 @@ fn test_emit_slide() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\glissando"), "slide should emit \\glissando: {}", ly);
+    assert!(
+        ly.contains("\\glissando"),
+        "slide should emit \\glissando: {}",
+        ly
+    );
 }
 
 #[test]
@@ -638,7 +662,11 @@ fn test_emit_arpeggio() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\arpeggioArrowUp"), "should emit \\arpeggioArrowUp: {}", ly);
+    assert!(
+        ly.contains("\\arpeggioArrowUp"),
+        "should emit \\arpeggioArrowUp: {}",
+        ly
+    );
     assert!(ly.contains("\\arpeggio"), "should emit \\arpeggio: {}", ly);
 }
 
@@ -663,7 +691,11 @@ fn test_emit_non_arpeggio() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\arpeggioBracket"), "should emit \\arpeggioBracket: {}", ly);
+    assert!(
+        ly.contains("\\arpeggioBracket"),
+        "should emit \\arpeggioBracket: {}",
+        ly
+    );
 }
 
 #[test]
@@ -683,7 +715,11 @@ fn test_emit_after_grace() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\afterGrace"), "should emit \\afterGrace: {}", ly);
+    assert!(
+        ly.contains("\\afterGrace"),
+        "should emit \\afterGrace: {}",
+        ly
+    );
 }
 
 #[test]
@@ -696,15 +732,26 @@ fn test_emit_coda_segno() {
     let mut measure = Measure::new(1);
     measure.directions.push(dir);
     measure.directions.push(dir2);
-    measure.voices.push(Voice { number: 1, elements: vec![] });
+    measure.voices.push(Voice {
+        number: 1,
+        elements: vec![],
+    });
     let mut part = Part::new("P1");
     part.measures.push(measure);
     let mut score = Score::new();
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("scripts.coda"), "should emit coda markup: {}", ly);
-    assert!(ly.contains("scripts.segno"), "should emit segno markup: {}", ly);
+    assert!(
+        ly.contains("scripts.coda"),
+        "should emit coda markup: {}",
+        ly
+    );
+    assert!(
+        ly.contains("scripts.segno"),
+        "should emit segno markup: {}",
+        ly
+    );
 }
 
 #[test]
@@ -717,7 +764,10 @@ fn test_emit_da_capo_dal_segno() {
     let mut measure = Measure::new(1);
     measure.directions.push(dir);
     measure.directions.push(dir2);
-    measure.voices.push(Voice { number: 1, elements: vec![] });
+    measure.voices.push(Voice {
+        number: 1,
+        elements: vec![],
+    });
     let mut part = Part::new("P1");
     part.measures.push(measure);
     let mut score = Score::new();
@@ -725,16 +775,22 @@ fn test_emit_da_capo_dal_segno() {
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
     assert!(ly.contains("\\mark \"D.C.\""), "should emit D.C.: {}", ly);
-    assert!(ly.contains("\\mark \"D.S. al Coda\""), "should emit D.S. al Coda: {}", ly);
+    assert!(
+        ly.contains("\\mark \"D.S. al Coda\""),
+        "should emit D.S. al Coda: {}",
+        ly
+    );
 }
 
 #[test]
 fn test_emit_partial_anacrusis() {
     let voice = Voice {
         number: 1,
-        elements: vec![
-            VoiceElement::Note(Box::new(make_note(PitchStep::G, 4, Duration::quarter()))),
-        ],
+        elements: vec![VoiceElement::Note(Box::new(make_note(
+            PitchStep::G,
+            4,
+            Duration::quarter(),
+        )))],
     };
     let mut measure = Measure::new(0);
     measure.voices.push(voice);
@@ -745,7 +801,11 @@ fn test_emit_partial_anacrusis() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\partial 4"), "should emit \\partial 4: {}", ly);
+    assert!(
+        ly.contains("\\partial 4"),
+        "should emit \\partial 4: {}",
+        ly
+    );
 }
 
 #[test]
@@ -765,11 +825,27 @@ fn test_emit_paper_block() {
     });
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("#(set-global-staff-size 20.0)"), "should emit staff size: {}", ly);
+    assert!(
+        ly.contains("#(set-global-staff-size 20.0)"),
+        "should emit staff size: {}",
+        ly
+    );
     assert!(ly.contains("\\paper {"), "should emit paper block: {}", ly);
-    assert!(ly.contains("page-height = 29.70\\cm"), "should emit page height: {}", ly);
-    assert!(ly.contains("page-width = 21.00\\cm"), "should emit page width: {}", ly);
-    assert!(ly.contains("left-margin = 1.50\\cm"), "should emit left margin: {}", ly);
+    assert!(
+        ly.contains("page-height = 29.70\\cm"),
+        "should emit page height: {}",
+        ly
+    );
+    assert!(
+        ly.contains("page-width = 21.00\\cm"),
+        "should emit page width: {}",
+        ly
+    );
+    assert!(
+        ly.contains("left-margin = 1.50\\cm"),
+        "should emit left margin: {}",
+        ly
+    );
 }
 
 #[test]
@@ -781,7 +857,10 @@ fn test_emit_harmony_chordnames() {
         ..Default::default()
     });
     measure.harmonies.push(Harmony {
-        root: ChordPitch { step: "C".to_string(), alter: 0.0 },
+        root: ChordPitch {
+            step: "C".to_string(),
+            alter: 0.0,
+        },
         kind: "major".to_string(),
         bass: None,
         degrees: vec![],
@@ -789,9 +868,11 @@ fn test_emit_harmony_chordnames() {
     });
     measure.voices.push(Voice {
         number: 1,
-        elements: vec![
-            VoiceElement::Note(Box::new(make_note(PitchStep::C, 4, Duration::whole()))),
-        ],
+        elements: vec![VoiceElement::Note(Box::new(make_note(
+            PitchStep::C,
+            4,
+            Duration::whole(),
+        )))],
     });
     let mut part = Part::new("P1");
     part.measures.push(measure);
@@ -800,7 +881,11 @@ fn test_emit_harmony_chordnames() {
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
     assert!(ly.contains("\\chordmode"), "should emit chordmode: {}", ly);
-    assert!(ly.contains("ChordNames"), "should emit ChordNames context: {}", ly);
+    assert!(
+        ly.contains("ChordNames"),
+        "should emit ChordNames context: {}",
+        ly
+    );
 }
 
 #[test]
@@ -812,17 +897,25 @@ fn test_emit_harmony_minor_with_bass() {
         ..Default::default()
     });
     measure.harmonies.push(Harmony {
-        root: ChordPitch { step: "D".to_string(), alter: 0.0 },
+        root: ChordPitch {
+            step: "D".to_string(),
+            alter: 0.0,
+        },
         kind: "minor".to_string(),
-        bass: Some(ChordPitch { step: "F".to_string(), alter: 0.0 }),
+        bass: Some(ChordPitch {
+            step: "F".to_string(),
+            alter: 0.0,
+        }),
         degrees: vec![],
         offset: 0,
     });
     measure.voices.push(Voice {
         number: 1,
-        elements: vec![
-            VoiceElement::Note(Box::new(make_note(PitchStep::D, 4, Duration::whole()))),
-        ],
+        elements: vec![VoiceElement::Note(Box::new(make_note(
+            PitchStep::D,
+            4,
+            Duration::whole(),
+        )))],
     });
     let mut part = Part::new("P1");
     part.measures.push(measure);
@@ -835,7 +928,7 @@ fn test_emit_harmony_minor_with_bass() {
 
 #[test]
 fn test_emit_figured_bass() {
-    use crate::ir::harmony::{FiguredBass, Figure};
+    use crate::ir::harmony::{Figure, FiguredBass};
     let mut measure = Measure::new(1);
     measure.attributes = Some(MeasureAttributes {
         time: Some(TimeSignature::default()),
@@ -843,8 +936,16 @@ fn test_emit_figured_bass() {
     });
     measure.figured_bass.push(FiguredBass {
         figures: vec![
-            Figure { number: Some(6), prefix: None, suffix: None },
-            Figure { number: Some(4), prefix: None, suffix: None },
+            Figure {
+                number: Some(6),
+                prefix: None,
+                suffix: None,
+            },
+            Figure {
+                number: Some(4),
+                prefix: None,
+                suffix: None,
+            },
         ],
         duration: Duration::whole(),
         parentheses: false,
@@ -852,9 +953,11 @@ fn test_emit_figured_bass() {
     });
     measure.voices.push(Voice {
         number: 1,
-        elements: vec![
-            VoiceElement::Note(Box::new(make_note(PitchStep::C, 3, Duration::whole()))),
-        ],
+        elements: vec![VoiceElement::Note(Box::new(make_note(
+            PitchStep::C,
+            3,
+            Duration::whole(),
+        )))],
     });
     let mut part = Part::new("P1");
     part.measures.push(measure);
@@ -862,8 +965,16 @@ fn test_emit_figured_bass() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("\\figuremode"), "should emit figuremode: {}", ly);
-    assert!(ly.contains("FiguredBass"), "should emit FiguredBass context: {}", ly);
+    assert!(
+        ly.contains("\\figuremode"),
+        "should emit figuremode: {}",
+        ly
+    );
+    assert!(
+        ly.contains("FiguredBass"),
+        "should emit FiguredBass context: {}",
+        ly
+    );
     assert!(ly.contains("<6 4>"), "should emit <6 4> figures: {}", ly);
 }
 
@@ -882,15 +993,27 @@ fn test_helper_harmony_kind_to_ly() {
 fn test_helper_figure_to_ly() {
     use crate::ir::harmony::Figure;
     assert_eq!(
-        figure_to_ly(&Figure { number: Some(6), prefix: None, suffix: None }),
+        figure_to_ly(&Figure {
+            number: Some(6),
+            prefix: None,
+            suffix: None
+        }),
         "6"
     );
     assert_eq!(
-        figure_to_ly(&Figure { number: Some(6), prefix: None, suffix: Some("sharp".to_string()) }),
+        figure_to_ly(&Figure {
+            number: Some(6),
+            prefix: None,
+            suffix: Some("sharp".to_string())
+        }),
         "6+"
     );
     assert_eq!(
-        figure_to_ly(&Figure { number: None, prefix: None, suffix: None }),
+        figure_to_ly(&Figure {
+            number: None,
+            prefix: None,
+            suffix: None
+        }),
         "_"
     );
 }
@@ -934,7 +1057,10 @@ fn test_tuplet_starting_on_rest() {
         elements.push(VoiceElement::Note(Box::new(n)));
     }
 
-    let voice = Voice { number: 1, elements };
+    let voice = Voice {
+        number: 1,
+        elements,
+    };
     let mut measure = Measure::new(1);
     measure.voices.push(voice);
 
@@ -962,14 +1088,14 @@ fn test_wedge_position_aware_attachment() {
     // Build 4 quarter-note chords in 4/4 at divisions=4
     let mut elements: Vec<VoiceElement> = Vec::new();
     for _ in 0..4 {
-        let n = Note::new(
-            Pitch::new(PitchStep::C, 4),
-            Duration::quarter(),
-        );
+        let n = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
         elements.push(VoiceElement::Note(Box::new(n)));
     }
 
-    let voice = Voice { number: 1, elements };
+    let voice = Voice {
+        number: 1,
+        elements,
+    };
     let mut measure = Measure::new(1);
     measure.attributes = Some(MeasureAttributes {
         divisions: 4,
@@ -1103,7 +1229,10 @@ fn test_lyrics_emission() {
     let ly = adapter.convert(&score).unwrap();
 
     // Should have a lyrics variable with lyricmode
-    assert!(ly.contains("\\lyricmode"), "should contain \\lyricmode: {ly}");
+    assert!(
+        ly.contains("\\lyricmode"),
+        "should contain \\lyricmode: {ly}"
+    );
     // Should have syllable with hyphens
     assert!(ly.contains("Hel --"), "should contain 'Hel --': {ly}");
     assert!(ly.contains("lo"), "should contain 'lo': {ly}");
@@ -1111,7 +1240,10 @@ fn test_lyrics_emission() {
     // Should have \lyricsto reference
     assert!(ly.contains("\\lyricsto"), "should contain \\lyricsto: {ly}");
     // Should have named Voice
-    assert!(ly.contains("\\new Voice ="), "should contain named Voice: {ly}");
+    assert!(
+        ly.contains("\\new Voice ="),
+        "should contain named Voice: {ly}"
+    );
 }
 
 #[test]
@@ -1170,7 +1302,10 @@ fn test_melisma_emission() {
 
     // Should emit \melisma and \melismaEnd
     assert!(ly.contains("\\melisma"), "should contain \\melisma: {ly}");
-    assert!(ly.contains("\\melismaEnd"), "should contain \\melismaEnd: {ly}");
+    assert!(
+        ly.contains("\\melismaEnd"),
+        "should contain \\melismaEnd: {ly}"
+    );
     // Lyrics should only have "word" and "next" (no skips for melisma notes)
     assert!(ly.contains("word"), "should contain 'word': {ly}");
     assert!(ly.contains("next"), "should contain 'next': {ly}");
@@ -1217,9 +1352,15 @@ fn test_auto_beam_off_emission() {
     let ly = adapter.convert(&score).unwrap();
 
     // Should emit \autoBeamOff before first no_auto_beam note
-    assert!(ly.contains("\\autoBeamOff"), "should contain \\autoBeamOff: {ly}");
+    assert!(
+        ly.contains("\\autoBeamOff"),
+        "should contain \\autoBeamOff: {ly}"
+    );
     // Should emit \autoBeamOn when reverting
-    assert!(ly.contains("\\autoBeamOn"), "should contain \\autoBeamOn: {ly}");
+    assert!(
+        ly.contains("\\autoBeamOn"),
+        "should contain \\autoBeamOn: {ly}"
+    );
 }
 
 #[test]
@@ -1357,10 +1498,7 @@ fn test_pedal_emission() {
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
 
-    assert!(
-        ly.contains("\\sustainOn"),
-        "should emit \\sustainOn: {ly}"
-    );
+    assert!(ly.contains("\\sustainOn"), "should emit \\sustainOn: {ly}");
     assert!(
         ly.contains("\\sustainOff"),
         "should emit \\sustainOff: {ly}"
@@ -1404,10 +1542,7 @@ fn test_ottava_emission() {
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
 
-    assert!(
-        ly.contains("\\ottava #1"),
-        "should emit \\ottava #1: {ly}"
-    );
+    assert!(ly.contains("\\ottava #1"), "should emit \\ottava #1: {ly}");
 }
 
 #[test]

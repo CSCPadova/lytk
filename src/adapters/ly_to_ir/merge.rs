@@ -137,7 +137,11 @@ pub(super) fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure
             .position(|w| spacer_pos >= w[0] && spacer_pos < w[1])
             .unwrap_or_else(|| {
                 // If past the end, use last measure
-                if target.is_empty() { 0 } else { target.len() - 1 }
+                if target.is_empty() {
+                    0
+                } else {
+                    target.len() - 1
+                }
             });
 
         if target_idx < target.len() {
@@ -276,9 +280,10 @@ pub(super) fn merge_voice_measure_streams(streams: &[Vec<Measure>]) -> Vec<Measu
 /// removes the empty leading measures.
 pub(super) fn merge_leading_attribute_measures(part: &mut Part) {
     // Find the first measure with non-empty voice content
-    let first_music_idx = part.measures.iter().position(|m| {
-        m.voices.iter().any(|v| !v.elements.is_empty())
-    });
+    let first_music_idx = part
+        .measures
+        .iter()
+        .position(|m| m.voices.iter().any(|v| !v.elements.is_empty()));
 
     let idx = match first_music_idx {
         Some(0) | None => return, // nothing to merge or no music at all
@@ -405,7 +410,10 @@ pub(super) fn merge_dynamics_parts(parts: &mut Vec<(String, Part)>) {
             continue;
         }
         // Find nearest non-spacer part: prefer previous, fall back to next
-        let target = if i > 0 && !parts[i - 1].1.measures.is_empty() && !measures_are_spacer_only(&parts[i - 1].1.measures) {
+        let target = if i > 0
+            && !parts[i - 1].1.measures.is_empty()
+            && !measures_are_spacer_only(&parts[i - 1].1.measures)
+        {
             Some(i - 1)
         } else {
             (i + 1..parts.len()).find(|&j| {
@@ -601,7 +609,10 @@ pub(super) fn resplit_measures_to_match(
 /// is resolved in a context with a different time signature (e.g. 6/8), the measure
 /// boundaries are wrong. This function flattens each voice independently and
 /// re-distributes elements into new measures at the correct boundaries.
-pub(super) fn resplit_measures_for_time_sig(measures: &[Measure], target_time_sig: Frac) -> Vec<Measure> {
+pub(super) fn resplit_measures_for_time_sig(
+    measures: &[Measure],
+    target_time_sig: Frac,
+) -> Vec<Measure> {
     if measures.is_empty() || target_time_sig <= Frac::from_integer(0) {
         return measures.to_vec();
     }
@@ -785,18 +796,14 @@ pub(super) fn synchronize_time_signatures(score: &mut crate::ir::score::Score) {
             }
             // Copy time sig if this measure doesn't have one but unified does
             if let Some(ref ts) = unified_time[mi] {
-                let ma = m
-                    .attributes
-                    .get_or_insert_with(MeasureAttributes::default);
+                let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
                 if ma.time.is_none() {
                     ma.time = Some(ts.clone());
                 }
             }
             // Copy key sig if this measure doesn't have one but unified does
             if let Some(ref ks) = unified_key[mi] {
-                let ma = m
-                    .attributes
-                    .get_or_insert_with(MeasureAttributes::default);
+                let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
                 if ma.key.is_none() {
                     ma.key = Some(*ks);
                 }
@@ -902,9 +909,7 @@ pub(super) fn resplit_measures_with_time_changes(
         for elem in elements {
             let dur = voice_element_duration(&elem);
             // Check if this element starts at or past the next boundary
-            while boundary_idx < boundaries.len()
-                && elem_pos >= boundaries[boundary_idx].0
-            {
+            while boundary_idx < boundaries.len() && elem_pos >= boundaries[boundary_idx].0 {
                 split_measures.push(std::mem::take(&mut current));
                 boundary_idx += 1;
             }
@@ -918,9 +923,9 @@ pub(super) fn resplit_measures_with_time_changes(
     }
 
     // 4. Build output measures
-    let num_measures = boundaries.len().max(
-        voice_split.values().map(|v| v.len()).max().unwrap_or(0),
-    );
+    let num_measures = boundaries
+        .len()
+        .max(voice_split.values().map(|v| v.len()).max().unwrap_or(0));
     let mut result: Vec<Measure> = Vec::new();
     let mut attr_idx = 0usize;
 

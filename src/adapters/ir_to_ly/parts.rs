@@ -194,8 +194,8 @@ pub(super) fn emit_part_variable(
                 _ => None,
             });
         if let Some(p) = first_pitch {
-            let name = pitch_name(p.step, p.alter, lang)
-                .unwrap_or_else(|| p.step.name().to_lowercase());
+            let name =
+                pitch_name(p.step, p.alter, lang).unwrap_or_else(|| p.step.name().to_lowercase());
             let oct = p.octave - 3;
             let oct_marks = if oct > 0 {
                 "'".repeat(oct as usize)

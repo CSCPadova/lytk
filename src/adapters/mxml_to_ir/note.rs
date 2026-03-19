@@ -84,8 +84,7 @@ pub(super) fn parse_note(elem: &XmlNode, divisions: i64) -> Option<NoteOrRest> {
                     _ => StartStop::Start,
                 };
                 let bracket = tuplet.attr("bracket") == Some("yes");
-                let show_number =
-                    tuplet.attr("show-number").unwrap_or("actual").to_string();
+                let show_number = tuplet.attr("show-number").unwrap_or("actual").to_string();
                 rest.tuplet = Some(TupletDisplay {
                     tuplet_type,
                     bracket,
@@ -133,10 +132,7 @@ pub(super) fn parse_note(elem: &XmlNode, divisions: i64) -> Option<NoteOrRest> {
     note.voice = voice_num;
     note.staff = staff_num;
     note.is_grace = is_grace;
-    note.grace_slash = elem
-        .find("grace")
-        .and_then(|g| g.attr("slash"))
-        == Some("yes");
+    note.grace_slash = elem.find("grace").and_then(|g| g.attr("slash")) == Some("yes");
     note.after_grace = elem
         .find("grace")
         .and_then(|g| g.attr("steal-time-previous"))

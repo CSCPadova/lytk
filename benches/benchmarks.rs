@@ -135,9 +135,7 @@ fn bench_emit(c: &mut Criterion) {
     });
 
     // Multi-part score emission
-    let multi = adapter
-        .convert_file(Path::new(MXML_MULTI))
-        .unwrap();
+    let multi = adapter.convert_file(Path::new(MXML_MULTI)).unwrap();
 
     group.bench_function("ir_to_lilypond/multipart", |b| {
         let emitter = IrToLyAdapter::new();

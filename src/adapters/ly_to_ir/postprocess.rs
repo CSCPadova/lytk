@@ -23,13 +23,11 @@ pub(super) fn post_process_beams_and_stems(score: &mut Score) {
                         current_clef = *clef;
                     }
                 }
-                let ts = current_ts
-                    .clone()
-                    .unwrap_or(TimeSignature {
-                        beats: "4".to_string(),
-                        beat_type: 4,
-                        symbol: None,
-                    });
+                let ts = current_ts.clone().unwrap_or(TimeSignature {
+                    beats: "4".to_string(),
+                    beat_type: 4,
+                    symbol: None,
+                });
                 for voice in &mut measure.voices {
                     auto_beam_voice(&mut voice.elements, &ts);
                     auto_stem_voice(&mut voice.elements, &current_clef);
@@ -136,7 +134,10 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                 };
 
                 let level = beam_level_for_duration(&c.duration);
-                let has_beam = c.notes.first().is_some_and(|n| !n.beams.is_empty() || n.no_auto_beam);
+                let has_beam = c
+                    .notes
+                    .first()
+                    .is_some_and(|n| !n.beams.is_empty() || n.no_auto_beam);
                 if level > 0 {
                     infos.push(NoteInfo {
                         idx,
@@ -165,7 +166,9 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
     }
 
     let span_of = |pos: Frac, span: Frac| -> i64 {
-        if span <= Frac::from_integer(0) { return 0; }
+        if span <= Frac::from_integer(0) {
+            return 0;
+        }
         (pos / span).to_integer()
     };
 
@@ -274,9 +277,7 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                 si += 1;
                 while si < final_len {
                     let ni = &final_slice[si];
-                    if ni.beam_level < level
-                        || span_of(ni.position, sub_span) != sub_beat
-                    {
+                    if ni.beam_level < level || span_of(ni.position, sub_span) != sub_beat {
                         break;
                     }
                     si += 1;
@@ -285,7 +286,11 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
                 if sub_len < 2 {
                     // Single note at this level: use a hook
                     let is_at_end = sub_start + 1 >= final_len;
-                    let hook = if is_at_end { "backward hook" } else { "forward hook" };
+                    let hook = if is_at_end {
+                        "backward hook"
+                    } else {
+                        "forward hook"
+                    };
                     assignments[sub_start].1.push(BeamEvent {
                         beam_type: hook.to_string(),
                         number: level,
@@ -310,7 +315,9 @@ fn auto_beam_voice(elements: &mut [VoiceElement], ts: &TimeSignature) {
 
         // Apply to elements
         for (elem_idx, beams) in assignments {
-            if beams.is_empty() { continue; }
+            if beams.is_empty() {
+                continue;
+            }
             match &mut elements[elem_idx] {
                 VoiceElement::Note(n) => n.beams = beams,
                 VoiceElement::Chord(c) => {
@@ -375,7 +382,11 @@ fn auto_stem_voice(elements: &mut [VoiceElement], clef: &Clef) {
                 }
                 let has_explicit = c.notes.iter().any(|n| !n.stem_direction.is_empty());
                 if !has_explicit {
-                    let avg_midi: f64 = c.notes.iter().map(|n| n.pitch.midi_number() as f64).sum::<f64>()
+                    let avg_midi: f64 = c
+                        .notes
+                        .iter()
+                        .map(|n| n.pitch.midi_number() as f64)
+                        .sum::<f64>()
                         / c.notes.len() as f64;
                     let dir = if avg_midi >= mid as f64 { "down" } else { "up" };
                     for n in &mut c.notes {
@@ -391,15 +402,9 @@ fn auto_stem_voice(elements: &mut [VoiceElement], clef: &Clef) {
 /// MIDI number of the middle staff line for a given clef.
 fn middle_line_midi(clef: &Clef) -> i32 {
     let base = match clef.sign {
-        ClefSign::G => {
-            67 + (3 - clef.line as i32) * 2
-        }
-        ClefSign::F => {
-            53 + (3 - clef.line as i32) * 2
-        }
-        ClefSign::C => {
-            60 + (3 - clef.line as i32) * 2
-        }
+        ClefSign::G => 67 + (3 - clef.line as i32) * 2,
+        ClefSign::F => 53 + (3 - clef.line as i32) * 2,
+        ClefSign::C => 60 + (3 - clef.line as i32) * 2,
         _ => 71, // default to treble
     };
     base + clef.octave_change as i32 * 12

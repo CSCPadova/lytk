@@ -176,16 +176,23 @@ impl IrToMxmlAdapter {
         }
 
         // Score-instrument + MIDI instrument
-        let has_midi = part.midi_channel > 0
-            || part.midi_program > 0
-            || !part.midi_instrument.is_empty();
+        let has_midi =
+            part.midi_channel > 0 || part.midi_program > 0 || !part.midi_instrument.is_empty();
         if has_midi {
             let inst_id = format!("{}-I1", id);
 
             let mut si = BytesStart::new("score-instrument");
             si.push_attribute(("id", inst_id.as_str()));
             w.write_event(Event::Start(si))?;
-            text_element(w, "instrument-name", if part.name.is_empty() { "Instrument" } else { &part.name })?;
+            text_element(
+                w,
+                "instrument-name",
+                if part.name.is_empty() {
+                    "Instrument"
+                } else {
+                    &part.name
+                },
+            )?;
             w.write_event(Event::End(BytesEnd::new("score-instrument")))?;
 
             let mut mi = BytesStart::new("midi-instrument");
@@ -274,8 +281,7 @@ impl IrToMxmlAdapter {
         }
 
         // system-layout
-        let has_system =
-            pl.system_distance.is_some() || pl.top_system_distance.is_some();
+        let has_system = pl.system_distance.is_some() || pl.top_system_distance.is_some();
         if has_system {
             w.write_event(Event::Start(BytesStart::new("system-layout")))?;
             w.write_event(Event::Start(BytesStart::new("system-margins")))?;
@@ -286,11 +292,7 @@ impl IrToMxmlAdapter {
                 text_element(w, "system-distance", &format_float(cm_to_tenths(sd)))?;
             }
             if let Some(tsd) = pl.top_system_distance {
-                text_element(
-                    w,
-                    "top-system-distance",
-                    &format_float(cm_to_tenths(tsd)),
-                )?;
+                text_element(w, "top-system-distance", &format_float(cm_to_tenths(tsd)))?;
             }
             w.write_event(Event::End(BytesEnd::new("system-layout")))?;
         }

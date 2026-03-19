@@ -20,9 +20,9 @@ mod tests;
 
 use super::music::{Music, MusicDocument};
 use super::score::*;
+use build::build_score;
 use state::LowerState;
 use walk::walk_music;
-use build::build_score;
 
 /// Convert a `MusicDocument` to a `Score`.
 pub fn lower_to_score(doc: &MusicDocument) -> Score {

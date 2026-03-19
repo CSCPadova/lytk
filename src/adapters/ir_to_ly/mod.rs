@@ -86,10 +86,7 @@ impl Default for IrToLyAdapter {
 impl FromIrAdapter for IrToLyAdapter {
     fn convert(&self, score: &Score) -> Result<String> {
         // Resolve language: prefer score metadata, fall back to adapter config
-        let lang = score
-            .metadata
-            .pitch_language
-            .unwrap_or(self.language);
+        let lang = score.metadata.pitch_language.unwrap_or(self.language);
         let mode = score.metadata.pitch_mode;
 
         let mut lines: Vec<String> = Vec::new();
@@ -130,12 +127,7 @@ impl super::FromMusicAdapter for IrToLyAdapter {
 // Emission helpers
 // ---------------------------------------------------------------------------
 
-fn emit_preamble(
-    score: &Score,
-    version: &str,
-    lang: PitchLanguage,
-    lines: &mut Vec<String>,
-) {
+fn emit_preamble(score: &Score, version: &str, lang: PitchLanguage, lines: &mut Vec<String>) {
     lines.push(format!("\\version \"{version}\""));
     lines.push(format!("\\language \"{}\"", lang.as_str()));
     lines.push(String::new());
@@ -316,9 +308,7 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
         } else {
             lines.push(format!("{pad}\\new Staff <<"));
         }
-        lines.push(format!(
-            "{pad}  \\new Voice = \"{voice_name}\" \\{var}"
-        ));
+        lines.push(format!("{pad}  \\new Voice = \"{voice_name}\" \\{var}"));
         emit_lyrics_refs(part, &voice_name, indent + 2, lines);
         lines.push(format!("{pad}>>"));
     } else if !part.name.is_empty() {
@@ -334,9 +324,12 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
 /// Returns true if the voice contains any real music content (notes, rests, chords),
 /// not just timing elements (forward/backup).
 fn voice_has_content(voice: &Voice) -> bool {
-    voice.elements.iter().any(|e| matches!(e,
-        VoiceElement::Note(_) | VoiceElement::Rest(_) | VoiceElement::Chord(_)
-    ))
+    voice.elements.iter().any(|e| {
+        matches!(
+            e,
+            VoiceElement::Note(_) | VoiceElement::Rest(_) | VoiceElement::Chord(_)
+        )
+    })
 }
 
 fn voice_matches_staff(voice: &Voice, staff_num: u8) -> bool {

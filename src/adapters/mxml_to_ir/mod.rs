@@ -58,18 +58,12 @@ impl ToIrAdapter for MxmlToIrAdapter {
 }
 
 impl super::ToMusicAdapter for MxmlToIrAdapter {
-    fn convert_file_to_music(
-        &self,
-        path: &Path,
-    ) -> Result<crate::ir::music::MusicDocument> {
+    fn convert_file_to_music(&self, path: &Path) -> Result<crate::ir::music::MusicDocument> {
         let score = self.convert_file(path)?;
         Ok(crate::ir::lift::lift_to_music(&score))
     }
 
-    fn convert_str_to_music(
-        &self,
-        text: &str,
-    ) -> Result<crate::ir::music::MusicDocument> {
+    fn convert_str_to_music(&self, text: &str) -> Result<crate::ir::music::MusicDocument> {
         let score = self.convert_str(text)?;
         Ok(crate::ir::lift::lift_to_music(&score))
     }
@@ -199,10 +193,7 @@ fn parse_score_partwise(xml: &str) -> Result<Score> {
 /// pickup duration as the sum of actual note/rest durations in the first
 /// voice of the first part's first measure.
 fn detect_anacrusis(score: &mut Score) {
-    let first_measure = score
-        .parts()
-        .first()
-        .and_then(|p| p.measures.first());
+    let first_measure = score.parts().first().and_then(|p| p.measures.first());
 
     if let Some(measure) = first_measure {
         if !measure.implicit {
@@ -268,10 +259,7 @@ fn parse_metadata(root: &XmlNode) -> ScoreMetadata {
             .child_text("credit-type")
             .unwrap_or("")
             .to_lowercase();
-        let words = credit
-            .child_text("credit-words")
-            .unwrap_or("")
-            .to_string();
+        let words = credit.child_text("credit-words").unwrap_or("").to_string();
         if words.is_empty() {
             continue;
         }

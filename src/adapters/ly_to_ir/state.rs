@@ -14,11 +14,9 @@ use crate::ir::voice::Voice;
 use crate::ir::Part;
 
 use super::{
-    VarDef,
-    beam_level_for_duration, voice_element_duration, apply_tuplet_ratio,
-    measures_are_spacer_only, resplit_measures_for_time_sig,
-    merge_spacer_measures, merge_spacer_by_duration, resplit_measures_to_match,
-    distribute_figured_bass, find_relative_octave,
+    apply_tuplet_ratio, beam_level_for_duration, distribute_figured_bass, find_relative_octave,
+    measures_are_spacer_only, merge_spacer_by_duration, merge_spacer_measures,
+    resplit_measures_for_time_sig, resplit_measures_to_match, voice_element_duration, VarDef,
 };
 
 /// State accumulated while walking tree-sitter nodes.
@@ -251,7 +249,9 @@ impl<'src> WalkState<'src> {
 
         // Mark notes inside a \melisma ... \melismaEnd block
         if self.melisma_active {
-            if let VoiceElement::Note(n) = &mut elem { n.in_melisma = true }
+            if let VoiceElement::Note(n) = &mut elem {
+                n.in_melisma = true
+            }
         }
 
         // Grace notes don't consume time in the measure
@@ -357,8 +357,7 @@ impl<'src> WalkState<'src> {
                         let part_idx = self.parts.len() - 1;
                         if let Some(voice_map) = self.var_voice_maps.get(name) {
                             for voice_name in voice_map.keys() {
-                                self.voice_part_map
-                                    .insert(voice_name.clone(), part_idx);
+                                self.voice_part_map.insert(voice_name.clone(), part_idx);
                             }
                         }
                     }
@@ -368,10 +367,7 @@ impl<'src> WalkState<'src> {
                     // parallel music), merge attributes into existing measures
                     // rather than appending.
                     // Check if any existing measure has multi-voice content
-                    let _has_multi_voice = part
-                        .measures
-                        .iter()
-                        .any(|m| m.voices.len() > 1);
+                    let _has_multi_voice = part.measures.iter().any(|m| m.voices.len() > 1);
                     if !part.measures.is_empty() && measures_are_spacer_only(&measures) {
                         if measures.len() != part.measures.len() {
                             // Measure counts differ — spacer was pre-parsed at a
@@ -383,8 +379,7 @@ impl<'src> WalkState<'src> {
                             // Counts match — index-based merge is safe
                             merge_spacer_measures(&mut part.measures, &measures);
                         }
-                    } else if part.measures.is_empty()
-                        || !measures_are_spacer_only(&part.measures)
+                    } else if part.measures.is_empty() || !measures_are_spacer_only(&part.measures)
                     {
                         part.measures.extend(measures);
                     } else {
@@ -392,8 +387,7 @@ impl<'src> WalkState<'src> {
                         // re-split to match spacer boundaries if needed, then replace.
                         let incoming_multi_voice = measures.iter().any(|m| m.voices.len() > 1);
                         if measures.len() != part.measures.len() && !incoming_multi_voice {
-                            part.measures =
-                                resplit_measures_to_match(&measures, &part.measures);
+                            part.measures = resplit_measures_to_match(&measures, &part.measures);
                         } else {
                             // Merge spacer attributes/directions onto incoming measures
                             let mut incoming = measures;
@@ -421,7 +415,12 @@ impl<'src> WalkState<'src> {
     }
 
     /// Resolve a pitch from a symbol node, handling relative mode.
-    pub(super) fn resolve_pitch(&mut self, step: PitchStep, alter: Ratio<i32>, octave_marks: i32) -> Pitch {
+    pub(super) fn resolve_pitch(
+        &mut self,
+        step: PitchStep,
+        alter: Ratio<i32>,
+        octave_marks: i32,
+    ) -> Pitch {
         let pitch = if self.in_relative {
             if let Some(ref prev) = self.prev_pitch {
                 // In relative mode: find closest pitch within a fourth, then apply marks
@@ -432,11 +431,7 @@ impl<'src> WalkState<'src> {
                 p
             } else {
                 // First note after \relative: use the reference pitch's octave
-                let base_oct = self
-                    .relative_ref
-                    .as_ref()
-                    .map(|r| r.octave)
-                    .unwrap_or(4);
+                let base_oct = self.relative_ref.as_ref().map(|r| r.octave).unwrap_or(4);
                 let octave = base_oct + octave_marks;
                 let p = Pitch::with_alter(step, alter, octave);
                 self.prev_pitch = Some(p);

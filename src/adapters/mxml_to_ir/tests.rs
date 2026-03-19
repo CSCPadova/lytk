@@ -387,7 +387,9 @@ fn test_parse_grace_slash() {
 
     let adapter = MxmlToIrAdapter::new();
     let score = adapter.convert_str(xml).unwrap();
-    let elems: Vec<_> = score.parts()[0].measures.iter()
+    let elems: Vec<_> = score.parts()[0]
+        .measures
+        .iter()
         .flat_map(|m| &m.voices)
         .flat_map(|v| &v.elements)
         .collect();
@@ -510,7 +512,9 @@ fn test_parse_glissando() {
 
     let adapter = MxmlToIrAdapter::new();
     let score = adapter.convert_str(xml).unwrap();
-    let elems: Vec<_> = score.parts()[0].measures.iter()
+    let elems: Vec<_> = score.parts()[0]
+        .measures
+        .iter()
         .flat_map(|m| &m.voices)
         .flat_map(|v| &v.elements)
         .collect();
@@ -569,9 +573,15 @@ fn test_parse_coda_segno() {
     let adapter = MxmlToIrAdapter::new();
     let score = adapter.convert_str(xml).unwrap();
     let m1 = &score.parts()[0].measures[0];
-    assert!(m1.directions.iter().any(|d| d.coda), "measure 1 should have coda");
+    assert!(
+        m1.directions.iter().any(|d| d.coda),
+        "measure 1 should have coda"
+    );
     let m2 = &score.parts()[0].measures[1];
-    assert!(m2.directions.iter().any(|d| d.segno), "measure 2 should have segno");
+    assert!(
+        m2.directions.iter().any(|d| d.segno),
+        "measure 2 should have segno"
+    );
     assert!(
         m2.directions.iter().any(|d| d.dal_segno.is_some()),
         "measure 2 should have dal segno"
@@ -626,7 +636,10 @@ fn test_parse_defaults_page_layout() {
     // 7.05556mm / 40 tenths = 0.1763889 mm/tenth
     // page_height = 1683.36 * 0.1763889 / 10 ≈ 29.7 cm
     let h = layout.page_height.unwrap();
-    assert!((h - 29.7).abs() < 0.1, "page height should be ~29.7cm, got {h}");
+    assert!(
+        (h - 29.7).abs() < 0.1,
+        "page height should be ~29.7cm, got {h}"
+    );
 }
 
 #[test]
@@ -662,10 +675,17 @@ fn test_parse_anacrusis() {
 
     let adapter = MxmlToIrAdapter::new();
     let score = adapter.convert_str(xml).unwrap();
-    let partial = score.metadata.partial_duration.as_ref()
+    let partial = score
+        .metadata
+        .partial_duration
+        .as_ref()
         .expect("should detect anacrusis");
     // 1 quarter note in a 3/4 measure → partial duration = 1/4
-    assert_eq!(partial.base, Ratio::new(1, 4), "partial should be a quarter note");
+    assert_eq!(
+        partial.base,
+        Ratio::new(1, 4),
+        "partial should be a quarter note"
+    );
 }
 
 #[test]
@@ -761,8 +781,11 @@ fn parse_layout_break() {
 
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     let dirs = &score.parts()[0].measures[0].directions;
-    assert!(dirs.iter().any(|d| d.layout_break == Some(crate::ir::direction::LayoutBreakType::System)),
-        "should parse system break from <print>");
+    assert!(
+        dirs.iter()
+            .any(|d| d.layout_break == Some(crate::ir::direction::LayoutBreakType::System)),
+        "should parse system break from <print>"
+    );
 }
 
 #[test]
@@ -841,8 +864,14 @@ fn parse_wavy_line() {
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     let note = &score.parts()[0].measures[0].voices[0].elements[0];
     if let crate::ir::note::VoiceElement::Note(n) = note {
-        assert!(n.ornaments.iter().any(|o| o.name == "trill-mark"), "should have trill-mark");
-        assert!(n.ornaments.iter().any(|o| o.name == "wavy-line-start"), "should have wavy-line-start");
+        assert!(
+            n.ornaments.iter().any(|o| o.name == "trill-mark"),
+            "should have trill-mark"
+        );
+        assert!(
+            n.ornaments.iter().any(|o| o.name == "wavy-line-start"),
+            "should have wavy-line-start"
+        );
     } else {
         panic!("expected Note");
     }
@@ -872,6 +901,8 @@ fn tremolo_round_trip() {
     let score = import.convert_str(xml).unwrap();
     let export = crate::adapters::ir_to_mxml::IrToMxmlAdapter::new();
     let out_xml = export.convert(&score).unwrap();
-    assert!(out_xml.contains("<tremolo type=\"single\">3</tremolo>"),
-        "tremolo should round-trip: {out_xml}");
+    assert!(
+        out_xml.contains("<tremolo type=\"single\">3</tremolo>"),
+        "tremolo should round-trip: {out_xml}"
+    );
 }

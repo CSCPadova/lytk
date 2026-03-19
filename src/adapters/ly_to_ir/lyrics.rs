@@ -47,9 +47,17 @@ pub(super) fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyll
                 }
                 let next_is_hyphen = peek_lyric_hyphen(state, &children, i + 1);
                 let syllabic = if pending_hyphen {
-                    if next_is_hyphen { SyllabicType::Middle } else { SyllabicType::End }
+                    if next_is_hyphen {
+                        SyllabicType::Middle
+                    } else {
+                        SyllabicType::End
+                    }
                 } else {
-                    if next_is_hyphen { SyllabicType::Begin } else { SyllabicType::Single }
+                    if next_is_hyphen {
+                        SyllabicType::Begin
+                    } else {
+                        SyllabicType::Single
+                    }
                 };
                 syllables.push(LyricSyllable {
                     text,
@@ -177,8 +185,7 @@ pub(super) fn attach_lyrics_to_part(part: &mut Part, syllables: &[LyricSyllable]
                         }
 
                         // Tied continuation notes don't consume syllables.
-                        let is_tied_cont =
-                            note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
+                        let is_tied_cont = note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
 
                         // Slur melisma: with \autoBeamOff, notes 2..N of a slur don't consume
                         // syllables (LilyPond's slurMelismaBusy). A note is interior to a slur
@@ -215,8 +222,7 @@ pub(super) fn attach_lyrics_to_part(part: &mut Part, syllables: &[LyricSyllable]
                                 .iter()
                                 .filter(|s| s.slur_type == StartStop::Stop)
                                 .count() as u32;
-                            open_slurs =
-                                open_slurs.saturating_add(starts).saturating_sub(stops);
+                            open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
                         }
                         if syl_idx < syllables.len() {
                             let syl = &syllables[syl_idx];

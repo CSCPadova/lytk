@@ -252,10 +252,13 @@ mod tests {
         // Extract MIDI numbers from both
         fn midi_from(m: &Music) -> Vec<i32> {
             match m {
-                Music::Sequential(children) => children.iter().filter_map(|c| match c {
-                    Music::Note { pitch, .. } => Some(pitch.midi_number()),
-                    _ => None,
-                }).collect(),
+                Music::Sequential(children) => children
+                    .iter()
+                    .filter_map(|c| match c {
+                        Music::Note { pitch, .. } => Some(pitch.midi_number()),
+                        _ => None,
+                    })
+                    .collect(),
                 _ => vec![],
             }
         }

@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::ir::duration::Duration;
-use crate::ir::harmony::{FiguredBass, Figure};
+use crate::ir::harmony::{Figure, FiguredBass};
 use crate::ir::measure::Measure;
 
 use super::state::WalkState;
@@ -33,7 +33,12 @@ pub(super) fn parse_figuremode_block(state: &WalkState, block: Node) -> Vec<Figu
                 let figures = parse_figure_chord(state, node);
                 i += 1;
                 // Consume duration after chord
-                let dur = consume_duration_stateless(&children, &mut i, &mut last_dur, state.source.as_bytes());
+                let dur = consume_duration_stateless(
+                    &children,
+                    &mut i,
+                    &mut last_dur,
+                    state.source.as_bytes(),
+                );
                 entries.push(FiguredBassEntry::Figure(FiguredBass {
                     figures,
                     duration: dur,
@@ -47,7 +52,12 @@ pub(super) fn parse_figuremode_block(state: &WalkState, block: Node) -> Vec<Figu
                 if sym == "s" {
                     // Spacer — skip with duration
                     i += 1;
-                    let dur = consume_duration_stateless(&children, &mut i, &mut last_dur, state.source.as_bytes());
+                    let dur = consume_duration_stateless(
+                        &children,
+                        &mut i,
+                        &mut last_dur,
+                        state.source.as_bytes(),
+                    );
                     let count = consume_multiplier_stateless(state, &children, &mut i);
                     for _ in 0..count {
                         entries.push(FiguredBassEntry::Skip(dur.clone()));
@@ -120,7 +130,11 @@ fn parse_figure_chord(state: &WalkState, chord_node: Node) -> Vec<Figure> {
 }
 
 /// Peek at the next child to see if it's an accidental modifier (`+` or `-`).
-fn peek_accidental<'a>(state: &WalkState<'a>, children: &[Node<'a>], idx: usize) -> Option<&'static str> {
+fn peek_accidental<'a>(
+    state: &WalkState<'a>,
+    children: &[Node<'a>],
+    idx: usize,
+) -> Option<&'static str> {
     if let Some(next) = children.get(idx) {
         if next.kind() == "punctuation" {
             let text = state.text(*next);
@@ -136,7 +150,12 @@ fn peek_accidental<'a>(state: &WalkState<'a>, children: &[Node<'a>], idx: usize)
 
 /// Consume duration tokens without mutating WalkState (for figuremode parsing).
 /// Returns the duration found, updating `last_dur` for carry-forward.
-fn consume_duration_stateless(children: &[Node], i: &mut usize, last_dur: &mut Duration, source: &[u8]) -> Duration {
+fn consume_duration_stateless(
+    children: &[Node],
+    i: &mut usize,
+    last_dur: &mut Duration,
+    source: &[u8],
+) -> Duration {
     // Look for unsigned_integer (duration value) followed by optional dots
     let mut dur_val: Option<u32> = None;
     let mut dots = 0u8;

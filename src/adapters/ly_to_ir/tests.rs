@@ -17,9 +17,7 @@ mod tests {
     #[test]
     fn test_parse_simple_melody() {
         let adapter = LyToIrAdapter::new();
-        let score = adapter
-            .convert_str(r#"{ c'4 d' e' f' }"#)
-            .unwrap();
+        let score = adapter.convert_str(r#"{ c'4 d' e' f' }"#).unwrap();
 
         let parts = score.parts();
         assert!(!parts.is_empty());
@@ -27,7 +25,9 @@ mod tests {
         assert!(!part.measures.is_empty());
 
         // Should have 4 notes
-        let notes: Vec<&Note> = part.measures.iter()
+        let notes: Vec<&Note> = part
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -89,7 +89,9 @@ mod tests {
 
         let parts = score.parts();
         let part = &parts[0];
-        let notes: Vec<&Note> = part.measures.iter()
+        let notes: Vec<&Note> = part
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -116,7 +118,9 @@ mod tests {
 
         let parts = score.parts();
         let part = &parts[0];
-        let elems: Vec<&VoiceElement> = part.measures.iter()
+        let elems: Vec<&VoiceElement> = part
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .collect();
@@ -146,7 +150,9 @@ mod tests {
 
         let parts = score.parts();
         let part = &parts[0];
-        let elems: Vec<&VoiceElement> = part.measures.iter()
+        let elems: Vec<&VoiceElement> = part
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .collect();
@@ -183,12 +189,12 @@ mod tests {
     #[test]
     fn test_parse_dynamics_and_ties() {
         let adapter = LyToIrAdapter::new();
-        let score = adapter
-            .convert_str(r#"{ c'4\f~ c' d'\< e'\! }"#)
-            .unwrap();
+        let score = adapter.convert_str(r#"{ c'4\f~ c' d'\< e'\! }"#).unwrap();
 
         let parts = score.parts();
-        let notes: Vec<&Note> = parts[0].measures.iter()
+        let notes: Vec<&Note> = parts[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -218,7 +224,9 @@ mod tests {
             )
             .unwrap();
 
-        let notes: Vec<&Note> = score.parts()[0].measures.iter()
+        let notes: Vec<&Note> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -239,11 +247,11 @@ mod tests {
     #[test]
     fn test_parse_grace_note() {
         let adapter = LyToIrAdapter::new();
-        let score = adapter
-            .convert_str(r#"{ \grace { e'16 } c'4 }"#)
-            .unwrap();
+        let score = adapter.convert_str(r#"{ \grace { e'16 } c'4 }"#).unwrap();
 
-        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+        let elems: Vec<&VoiceElement> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .collect();
@@ -325,7 +333,11 @@ melody = { c'4 d' e' f' }
                 _ => None,
             })
             .collect();
-        assert_eq!(notes.len(), 4, "Variable \\melody should resolve to 4 notes");
+        assert_eq!(
+            notes.len(),
+            4,
+            "Variable \\melody should resolve to 4 notes"
+        );
         assert_eq!(notes[0].pitch.step, PitchStep::C);
         assert_eq!(notes[3].pitch.step, PitchStep::F);
     }
@@ -382,9 +394,7 @@ partB = { g'4 a' b' c'' }
     #[test]
     fn test_pitch_mode_preserved_in_metadata() {
         let adapter = LyToIrAdapter::new();
-        let score = adapter
-            .convert_str(r#"\relative c' { c4 d e f }"#)
-            .unwrap();
+        let score = adapter.convert_str(r#"\relative c' { c4 d e f }"#).unwrap();
 
         assert_eq!(
             score.metadata.pitch_mode,
@@ -435,7 +445,9 @@ pB = { g4 a b c' }
             .convert_str(r#"{ \acciaccatura { e'16 } c'4 }"#)
             .unwrap();
 
-        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+        let elems: Vec<&VoiceElement> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .collect();
@@ -453,11 +465,11 @@ pB = { g4 a b c' }
     #[test]
     fn test_parse_grace_not_slash() {
         let adapter = LyToIrAdapter::new();
-        let score = adapter
-            .convert_str(r#"{ \grace { d'16 } c'4 }"#)
-            .unwrap();
+        let score = adapter.convert_str(r#"{ \grace { d'16 } c'4 }"#).unwrap();
 
-        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+        let elems: Vec<&VoiceElement> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .collect();
@@ -478,7 +490,9 @@ pB = { g4 a b c' }
             .convert_str(r#"{ \tuplet 3/2 { c'4 d' e' } }"#)
             .unwrap();
 
-        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+        let elems: Vec<&VoiceElement> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .collect();
@@ -496,7 +510,10 @@ pB = { g4 a b c' }
         // First element should have TupletDisplay::Start
         match &elems[0] {
             VoiceElement::Note(n) => {
-                let td = n.tuplet.as_ref().expect("first note should have tuplet display");
+                let td = n
+                    .tuplet
+                    .as_ref()
+                    .expect("first note should have tuplet display");
                 assert_eq!(td.tuplet_type, StartStop::Start);
             }
             _ => {}
@@ -504,7 +521,10 @@ pB = { g4 a b c' }
         // Last element should have TupletDisplay::Stop
         match &elems[2] {
             VoiceElement::Note(n) => {
-                let td = n.tuplet.as_ref().expect("last note should have tuplet display");
+                let td = n
+                    .tuplet
+                    .as_ref()
+                    .expect("last note should have tuplet display");
                 assert_eq!(td.tuplet_type, StartStop::Stop);
             }
             _ => {}
@@ -519,7 +539,9 @@ pB = { g4 a b c' }
             .convert_str(r#"{ \times 2/3 { c'4 d' e' } }"#)
             .unwrap();
 
-        let elems: Vec<&VoiceElement> = score.parts()[0].measures.iter()
+        let elems: Vec<&VoiceElement> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .collect();
@@ -544,7 +566,12 @@ pB = { g4 a b c' }
         let parts = score.parts();
         let part = &parts[0];
         // Should be exactly 1 measure (3 quarters + sextuplet = 1 quarter = 4/4)
-        assert_eq!(part.measures.len(), 1, "sextuplet should fit in one measure, got {} measures", part.measures.len());
+        assert_eq!(
+            part.measures.len(),
+            1,
+            "sextuplet should fit in one measure, got {} measures",
+            part.measures.len()
+        );
 
         let elems: Vec<&VoiceElement> = part.measures[0].voices[0].elements.iter().collect();
         // c'4 r4 r4 + 6 tuplet notes = 9 elements
@@ -554,12 +581,24 @@ pB = { g4 a b c' }
         for elem in &elems[3..9] {
             match elem {
                 VoiceElement::Note(n) => {
-                    assert_eq!(n.duration.tuplet_actual, 6, "note should have tuplet_actual=6");
-                    assert_eq!(n.duration.tuplet_normal, 4, "note should have tuplet_normal=4");
+                    assert_eq!(
+                        n.duration.tuplet_actual, 6,
+                        "note should have tuplet_actual=6"
+                    );
+                    assert_eq!(
+                        n.duration.tuplet_normal, 4,
+                        "note should have tuplet_normal=4"
+                    );
                 }
                 VoiceElement::Rest(r) => {
-                    assert_eq!(r.duration.tuplet_actual, 6, "rest should have tuplet_actual=6");
-                    assert_eq!(r.duration.tuplet_normal, 4, "rest should have tuplet_normal=4");
+                    assert_eq!(
+                        r.duration.tuplet_actual, 6,
+                        "rest should have tuplet_actual=6"
+                    );
+                    assert_eq!(
+                        r.duration.tuplet_normal, 4,
+                        "rest should have tuplet_normal=4"
+                    );
                 }
                 _ => panic!("unexpected element in tuplet"),
             }
@@ -585,11 +624,11 @@ pB = { g4 a b c' }
     #[test]
     fn test_parse_glissando() {
         let adapter = LyToIrAdapter::new();
-        let score = adapter
-            .convert_str(r#"{ c'4\glissando d'4 }"#)
-            .unwrap();
+        let score = adapter.convert_str(r#"{ c'4\glissando d'4 }"#).unwrap();
 
-        let notes: Vec<&Note> = score.parts()[0].measures.iter()
+        let notes: Vec<&Note> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -610,7 +649,9 @@ pB = { g4 a b c' }
             .convert_str(r#"{ \arpeggioArrowUp <c' e' g'>4\arpeggio }"#)
             .unwrap();
 
-        let chords: Vec<&Chord> = score.parts()[0].measures.iter()
+        let chords: Vec<&Chord> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -630,7 +671,9 @@ pB = { g4 a b c' }
             .convert_str(r#"{ \arpeggioArrowDown <c' e' g'>4\arpeggio }"#)
             .unwrap();
 
-        let chords: Vec<&Chord> = score.parts()[0].measures.iter()
+        let chords: Vec<&Chord> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -650,7 +693,9 @@ pB = { g4 a b c' }
             .convert_str(r#"{ \arpeggioBracket <c' e' g'>4\arpeggio }"#)
             .unwrap();
 
-        let chords: Vec<&Chord> = score.parts()[0].measures.iter()
+        let chords: Vec<&Chord> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -670,7 +715,9 @@ pB = { g4 a b c' }
             .convert_str(r#"{ c'4 \afterGrace { d'16 } }"#)
             .unwrap();
 
-        let notes: Vec<&Note> = score.parts()[0].measures.iter()
+        let notes: Vec<&Note> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -695,12 +742,17 @@ pB = { g4 a b c' }
             .convert_str(r#"{ c'4 d' e' f' \mark "D.C." }"#)
             .unwrap();
 
-        let dirs: Vec<_> = score.parts()[0].measures.iter()
+        let dirs: Vec<_> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.directions)
             .collect();
 
         assert!(!dirs.is_empty());
-        let dc_dir = dirs.iter().find(|d| d.da_capo.is_some()).expect("expected D.C. direction");
+        let dc_dir = dirs
+            .iter()
+            .find(|d| d.da_capo.is_some())
+            .expect("expected D.C. direction");
         assert_eq!(dc_dir.da_capo.as_deref(), Some("D.C."));
     }
 
@@ -711,12 +763,17 @@ pB = { g4 a b c' }
             .convert_str(r#"{ c'4 d' e' f' \mark "D.S. al Coda" }"#)
             .unwrap();
 
-        let dirs: Vec<_> = score.parts()[0].measures.iter()
+        let dirs: Vec<_> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.directions)
             .collect();
 
         assert!(!dirs.is_empty());
-        let ds_dir = dirs.iter().find(|d| d.dal_segno.is_some()).expect("expected D.S. direction");
+        let ds_dir = dirs
+            .iter()
+            .find(|d| d.dal_segno.is_some())
+            .expect("expected D.S. direction");
         assert_eq!(ds_dir.dal_segno.as_deref(), Some("D.S. al Coda"));
     }
 
@@ -724,12 +781,12 @@ pB = { g4 a b c' }
     fn test_parse_mark_coda() {
         let adapter = LyToIrAdapter::new();
         let score = adapter
-            .convert_str(
-                r#"{ c'4 \mark \markup { \musicglyph "scripts.coda" } d'4 }"#,
-            )
+            .convert_str(r#"{ c'4 \mark \markup { \musicglyph "scripts.coda" } d'4 }"#)
             .unwrap();
 
-        let dirs: Vec<_> = score.parts()[0].measures.iter()
+        let dirs: Vec<_> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.directions)
             .collect();
 
@@ -741,12 +798,12 @@ pB = { g4 a b c' }
     fn test_parse_mark_segno() {
         let adapter = LyToIrAdapter::new();
         let score = adapter
-            .convert_str(
-                r#"{ c'4 \mark \markup { \musicglyph "scripts.segno" } d'4 }"#,
-            )
+            .convert_str(r#"{ c'4 \mark \markup { \musicglyph "scripts.segno" } d'4 }"#)
             .unwrap();
 
-        let dirs: Vec<_> = score.parts()[0].measures.iter()
+        let dirs: Vec<_> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.directions)
             .collect();
 
@@ -778,11 +835,11 @@ pB = { g4 a b c' }
     fn test_parse_arpeggio_default_up() {
         // Without explicit direction, \arpeggio should default to Up
         let adapter = LyToIrAdapter::new();
-        let score = adapter
-            .convert_str(r#"{ <c' e' g'>4\arpeggio }"#)
-            .unwrap();
+        let score = adapter.convert_str(r#"{ <c' e' g'>4\arpeggio }"#).unwrap();
 
-        let chords: Vec<&Chord> = score.parts()[0].measures.iter()
+        let chords: Vec<&Chord> = score.parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| match e {
@@ -826,9 +883,7 @@ pB = { g4 a b c' }
     #[test]
     fn test_single_note_grace() {
         let adapter = LyToIrAdapter::new();
-        let score = adapter
-            .convert_str(r#"{ \grace e'16 c'4 }"#)
-            .unwrap();
+        let score = adapter.convert_str(r#"{ \grace e'16 c'4 }"#).unwrap();
 
         let part = &score.parts()[0];
         let elems = &part.measures[0].voices[0].elements;
@@ -919,7 +974,11 @@ staffB = \new Staff {
             )
             .unwrap();
         let parts = score.parts();
-        assert_eq!(parts.len(), 1, "should be 1 part, Voice doesn't create a new part");
+        assert_eq!(
+            parts.len(),
+            1,
+            "should be 1 part, Voice doesn't create a new part"
+        );
         let notes: Vec<&Note> = parts[0]
             .measures
             .iter()
@@ -953,7 +1012,11 @@ staffSop = \new Staff {
             )
             .unwrap();
         let parts = score.parts();
-        assert_eq!(parts.len(), 1, "Lyrics context should not create an extra part");
+        assert_eq!(
+            parts.len(),
+            1,
+            "Lyrics context should not create an extra part"
+        );
         // Check that lyrics were attached to notes
         let notes: Vec<&Note> = parts[0]
             .measures
@@ -967,7 +1030,10 @@ staffSop = \new Staff {
             .collect();
         assert!(notes.len() >= 3, "should have at least 3 notes");
         // First note should have lyric "hel"
-        assert!(!notes[0].lyrics.is_empty(), "first note should have a lyric");
+        assert!(
+            !notes[0].lyrics.is_empty(),
+            "first note should have a lyric"
+        );
         assert_eq!(notes[0].lyrics[0].text, "hel");
         assert_eq!(notes[0].lyrics[0].syllabic, SyllabicType::Begin);
     }
@@ -1047,7 +1113,10 @@ staffSop = \new Staff {
             })
             .collect();
         // Should have parsed all notes without crashing
-        assert!(notes.len() >= 10, "should parse notes despite cadenza/melisma commands");
+        assert!(
+            notes.len() >= 10,
+            "should parse notes despite cadenza/melisma commands"
+        );
     }
 
     #[test]
@@ -1062,7 +1131,10 @@ staffSop = \new Staff {
 
         // Verify all 6 parts appear in XML
         let part_count = xml.matches("<score-part ").count();
-        assert_eq!(part_count, 6, "MusicXML should have 6 <score-part> elements");
+        assert_eq!(
+            part_count, 6,
+            "MusicXML should have 6 <score-part> elements"
+        );
 
         // Verify part names
         assert!(xml.contains("<part-name>Corno da Caccia</part-name>"));
@@ -1075,8 +1147,14 @@ staffSop = \new Staff {
         assert!(xml.contains("<midi-name>violin</midi-name>"));
 
         // Verify lyrics in soprano part
-        assert!(xml.contains("<lyric"), "Should contain lyrics in MusicXML output");
-        assert!(xml.contains("<text>Men</text>"), "Should contain first lyric syllable");
+        assert!(
+            xml.contains("<lyric"),
+            "Should contain lyrics in MusicXML output"
+        );
+        assert!(
+            xml.contains("<text>Men</text>"),
+            "Should contain first lyric syllable"
+        );
     }
 
     #[test]
@@ -1142,10 +1220,16 @@ forma = { \time 4/4 \key c\major s1*3 }
         let score = adapter.convert_str(source).unwrap();
         let parts = score.parts();
         assert_eq!(parts.len(), 1);
-        assert!(parts[0].measures.len() >= 3, "should have at least 3 measures");
+        assert!(
+            parts[0].measures.len() >= 3,
+            "should have at least 3 measures"
+        );
         // Measure 1: <6>
         assert_eq!(parts[0].measures[0].figured_bass.len(), 1);
-        assert_eq!(parts[0].measures[0].figured_bass[0].figures[0].number, Some(6));
+        assert_eq!(
+            parts[0].measures[0].figured_bass[0].figures[0].number,
+            Some(6)
+        );
         // Measure 2: skip (no figures)
         assert_eq!(parts[0].measures[1].figured_bass.len(), 0);
         // Measure 3: <4 3>
@@ -1164,11 +1248,18 @@ forma = { \time 4/4 \key c\major s1*3 }
         assert_eq!(part.measures.len(), 2, "Expected 2 measures");
         // Each measure should sum to exactly 1 whole note
         for m in &part.measures {
-            let total: Frac = m.voices.iter()
+            let total: Frac = m
+                .voices
+                .iter()
                 .flat_map(|v| &v.elements)
                 .map(voice_element_duration)
                 .fold(Frac::from_integer(0), |a, b| a + b);
-            assert_eq!(total, Frac::from_integer(1), "measure {} should be 1 whole note", m.number);
+            assert_eq!(
+                total,
+                Frac::from_integer(1),
+                "measure {} should be 1 whole note",
+                m.number
+            );
         }
     }
 
@@ -1188,15 +1279,25 @@ melB = { g'4 a' b' c'' }
         assert_eq!(scores[0].parts().len(), 1);
         assert_eq!(scores[1].parts().len(), 1);
         // Each part should have notes
-        let notes0: Vec<&Note> = scores[0].parts()[0].measures.iter()
+        let notes0: Vec<&Note> = scores[0].parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
-            .filter_map(|e| match e { VoiceElement::Note(n) => Some(n.as_ref()), _ => None })
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
             .collect();
-        let notes1: Vec<&Note> = scores[1].parts()[0].measures.iter()
+        let notes1: Vec<&Note> = scores[1].parts()[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
-            .filter_map(|e| match e { VoiceElement::Note(n) => Some(n.as_ref()), _ => None })
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
             .collect();
         assert_eq!(notes0.len(), 4);
         assert_eq!(notes1.len(), 4);
@@ -1235,24 +1336,36 @@ melB = { g'4 a' b' c'' }
         assert_eq!(notes.len(), 4);
         // First note: beam begin at level 1
         assert!(
-            notes[0].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1),
+            notes[0]
+                .beams
+                .iter()
+                .any(|b| b.beam_type == "begin" && b.number == 1),
             "first note should have beam begin: {:?}",
             notes[0].beams
         );
         // Middle notes: beam continue at level 1
         assert!(
-            notes[1].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1),
+            notes[1]
+                .beams
+                .iter()
+                .any(|b| b.beam_type == "continue" && b.number == 1),
             "second note should have beam continue: {:?}",
             notes[1].beams
         );
         assert!(
-            notes[2].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1),
+            notes[2]
+                .beams
+                .iter()
+                .any(|b| b.beam_type == "continue" && b.number == 1),
             "third note should have beam continue: {:?}",
             notes[2].beams
         );
         // Last note: beam end at level 1
         assert!(
-            notes[3].beams.iter().any(|b| b.beam_type == "end" && b.number == 1),
+            notes[3]
+                .beams
+                .iter()
+                .any(|b| b.beam_type == "end" && b.number == 1),
             "last note should have beam end: {:?}",
             notes[3].beams
         );
@@ -1269,18 +1382,46 @@ melB = { g'4 a' b' c'' }
             .elements
             .iter()
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(notes.len(), 8, "should have 8 eighth notes");
-        assert!(notes[0].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
-        assert!(notes[1].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
-        assert!(notes[2].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
-        assert!(notes[3].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
-        assert!(notes[4].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
-        assert!(notes[5].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
-        assert!(notes[6].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
-        assert!(notes[7].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+        assert!(notes[0]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[1]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[2]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[3]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "end" && b.number == 1));
+        assert!(notes[4]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[5]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[6]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[7]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "end" && b.number == 1));
     }
 
     #[test]
@@ -1294,7 +1435,11 @@ melB = { g'4 a' b' c'' }
             .elements
             .iter()
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(notes.len(), 6, "should have 6 eighth notes");
@@ -1318,7 +1463,11 @@ melB = { g'4 a' b' c'' }
             .elements
             .iter()
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(notes.len(), 8);
@@ -1340,7 +1489,11 @@ melB = { g'4 a' b' c'' }
             .elements
             .iter()
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(notes[0].stem_direction, "up", "C4 below middle -> up");
@@ -1355,7 +1508,11 @@ melB = { g'4 a' b' c'' }
         let score = adapter.convert_str(src).unwrap();
         let parts = score.parts();
         let part = &parts[0];
-        assert_eq!(part.measures.len(), 1, "acciaccatura should not cause extra measure split");
+        assert_eq!(
+            part.measures.len(),
+            1,
+            "acciaccatura should not cause extra measure split"
+        );
     }
 
     #[test]
@@ -1368,15 +1525,39 @@ melB = { g'4 a' b' c'' }
         let notes: Vec<&Note> = m.voices[0]
             .elements
             .iter()
-            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(notes.len(), 16);
-        assert!(notes[0].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
-        assert!(notes[3].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
-        assert!(notes[4].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
-        assert!(notes[7].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
-        assert!(notes[8].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
-        assert!(notes[11].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+        assert!(notes[0]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[3]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "end" && b.number == 1));
+        assert!(notes[4]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[7]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "end" && b.number == 1));
+        assert!(notes[8]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[11]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "end" && b.number == 1));
     }
 
     #[test]
@@ -1389,12 +1570,27 @@ melB = { g'4 a' b' c'' }
         let notes: Vec<&Note> = m.voices[0]
             .elements
             .iter()
-            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(notes.len(), 5);
-        assert!(notes[1].beams.iter().any(|b| b.beam_type == "begin" && b.number == 1));
-        assert!(notes[2].beams.iter().any(|b| b.beam_type == "continue" && b.number == 1));
-        assert!(notes[3].beams.iter().any(|b| b.beam_type == "end" && b.number == 1));
+        assert!(notes[1]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "begin" && b.number == 1));
+        assert!(notes[2]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "continue" && b.number == 1));
+        assert!(notes[3]
+            .beams
+            .iter()
+            .any(|b| b.beam_type == "end" && b.number == 1));
         assert!(notes[0].beams.is_empty());
         assert!(notes[4].beams.is_empty());
     }
@@ -1409,12 +1605,21 @@ melB = { g'4 a' b' c'' }
         let notes: Vec<&Note> = m.voices[0]
             .elements
             .iter()
-            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(notes.len(), 4);
         assert_eq!(notes[0].stem_direction, "up", "B3 below alto middle -> up");
         assert_eq!(notes[1].stem_direction, "down", "C4 on alto middle -> down");
-        assert_eq!(notes[2].stem_direction, "down", "D4 above alto middle -> down");
+        assert_eq!(
+            notes[2].stem_direction, "down",
+            "D4 above alto middle -> down"
+        );
     }
 
     #[test]
@@ -1430,18 +1635,32 @@ melB = { g'4 a' b' c'' }
 "#;
         let score = adapter.convert_str(src).unwrap();
         let parts = score.parts();
-        let notes: Vec<&Note> = parts[0].measures.iter()
+        let notes: Vec<&Note> = parts[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
-            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(notes.len() >= 4);
         assert_eq!(notes[0].lyrics.len(), 1, "note 0 should have a lyric");
         assert_eq!(notes[0].lyrics[0].text, "hello");
-        assert!(notes[1].lyrics.is_empty(), "note 1 should have no lyric (melisma skip)");
+        assert!(
+            notes[1].lyrics.is_empty(),
+            "note 1 should have no lyric (melisma skip)"
+        );
         assert_eq!(notes[2].lyrics.len(), 1, "note 2 should have a lyric");
         assert_eq!(notes[2].lyrics[0].text, "world");
-        assert!(notes[3].lyrics.is_empty(), "note 3 should have no lyric (melisma skip)");
+        assert!(
+            notes[3].lyrics.is_empty(),
+            "note 3 should have no lyric (melisma skip)"
+        );
     }
 
     #[test]
@@ -1457,10 +1676,18 @@ melB = { g'4 a' b' c'' }
 "#;
         let score = adapter.convert_str(src).unwrap();
         let parts = score.parts();
-        let notes: Vec<&Note> = parts[0].measures.iter()
+        let notes: Vec<&Note> = parts[0]
+            .measures
+            .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
-            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(notes.len() >= 4);
         assert_eq!(notes[0].lyrics[0].text, "fi");
@@ -1483,11 +1710,21 @@ melB = { g'4 a' b' c'' }
         let notes: Vec<&Note> = m.voices[0]
             .elements
             .iter()
-            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(notes.len(), 8);
         for (i, note) in notes.iter().enumerate() {
-            assert!(note.beams.is_empty(), "note {} should have no beams with \\autoBeamOff", i);
+            assert!(
+                note.beams.is_empty(),
+                "note {} should have no beams with \\autoBeamOff",
+                i
+            );
         }
     }
 
@@ -1501,7 +1738,13 @@ melB = { g'4 a' b' c'' }
         let notes: Vec<&Note> = m.voices[0]
             .elements
             .iter()
-            .filter_map(|e| if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None })
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(!notes[0].beams.is_empty(), "note 0 should have beam from [");
         assert!(!notes[1].beams.is_empty(), "note 1 should have beam from ]");
@@ -1517,11 +1760,17 @@ melB = { g'4 a' b' c'' }
         let parts = score.parts();
         let part = &parts[0];
         assert!(part.measures.len() >= 3, "should have at least 3 measures");
-        let m1_dur: Frac = part.measures[0].voices[0].elements.iter()
-            .map(|e| voice_element_duration(e)).sum();
+        let m1_dur: Frac = part.measures[0].voices[0]
+            .elements
+            .iter()
+            .map(|e| voice_element_duration(e))
+            .sum();
         assert_eq!(m1_dur, Frac::new(1, 1), "m1 should be 1 whole");
-        let m2_dur: Frac = part.measures[1].voices[0].elements.iter()
-            .map(|e| voice_element_duration(e)).sum();
+        let m2_dur: Frac = part.measures[1].voices[0]
+            .elements
+            .iter()
+            .map(|e| voice_element_duration(e))
+            .sum();
         assert_eq!(m2_dur, Frac::new(3, 4), "m2 should be 3/4");
     }
 
@@ -1544,14 +1793,24 @@ melB = { g'4 a' b' c'' }
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert!(notes.len() >= 4, "expected 4 notes, got {}", notes.len());
         assert_eq!(notes[0].lyrics.len(), 1, "note 0 should have 'word'");
         assert_eq!(notes[0].lyrics[0].text, "word");
-        assert!(notes[1].lyrics.is_empty(), "note 1 (d') should have no lyric (in melisma)");
-        assert!(notes[2].lyrics.is_empty(), "note 2 (e') should have no lyric (in melisma)");
+        assert!(
+            notes[1].lyrics.is_empty(),
+            "note 1 (d') should have no lyric (in melisma)"
+        );
+        assert!(
+            notes[2].lyrics.is_empty(),
+            "note 2 (e') should have no lyric (in melisma)"
+        );
         assert_eq!(notes[3].lyrics.len(), 1, "note 3 should have 'next'");
         assert_eq!(notes[3].lyrics[0].text, "next");
     }
@@ -1575,14 +1834,24 @@ melB = { g'4 a' b' c'' }
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert!(notes.len() >= 4, "expected 4 notes, got {}", notes.len());
         assert_eq!(notes[0].lyrics.len(), 1, "note 0 should have 'word'");
         assert_eq!(notes[0].lyrics[0].text, "word");
-        assert!(notes[1].lyrics.is_empty(), "note 1 (d') should have no lyric (slur melisma)");
-        assert!(notes[2].lyrics.is_empty(), "note 2 (e') should have no lyric (slur melisma)");
+        assert!(
+            notes[1].lyrics.is_empty(),
+            "note 1 (d') should have no lyric (slur melisma)"
+        );
+        assert!(
+            notes[2].lyrics.is_empty(),
+            "note 2 (e') should have no lyric (slur melisma)"
+        );
         assert_eq!(notes[3].lyrics.len(), 1, "note 3 should have 'next'");
         assert_eq!(notes[3].lyrics[0].text, "next");
     }
@@ -1607,14 +1876,26 @@ melB = { g'4 a' b' c'' }
             .flat_map(|v| &v.elements)
             .collect();
         let chord = elems.iter().find_map(|e| {
-            if let VoiceElement::Chord(c) = e { Some(c) } else { None }
+            if let VoiceElement::Chord(c) = e {
+                Some(c)
+            } else {
+                None
+            }
         });
         assert!(chord.is_some(), "should have a chord");
         let chord = chord.unwrap();
-        assert_eq!(chord.notes[0].lyrics.len(), 1, "chord's first note should have 'word'");
+        assert_eq!(
+            chord.notes[0].lyrics.len(),
+            1,
+            "chord's first note should have 'word'"
+        );
         assert_eq!(chord.notes[0].lyrics[0].text, "word");
         let f_note = elems.iter().find_map(|e| {
-            if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+            if let VoiceElement::Note(n) = e {
+                Some(n.as_ref())
+            } else {
+                None
+            }
         });
         assert!(f_note.is_some(), "should have a note after chord");
         let f_note = f_note.unwrap();
@@ -1688,13 +1969,26 @@ melB = { g'4 a' b' c'' }
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert!(notes.len() >= 3, "should have at least 3 notes");
-        assert_eq!(notes[0].pitch.accidental, crate::ir::pitch::AccidentalDisplay::Forced);
-        assert_eq!(notes[1].pitch.accidental, crate::ir::pitch::AccidentalDisplay::Cautionary);
-        assert_eq!(notes[2].pitch.accidental, crate::ir::pitch::AccidentalDisplay::None);
+        assert_eq!(
+            notes[0].pitch.accidental,
+            crate::ir::pitch::AccidentalDisplay::Forced
+        );
+        assert_eq!(
+            notes[1].pitch.accidental,
+            crate::ir::pitch::AccidentalDisplay::Cautionary
+        );
+        assert_eq!(
+            notes[2].pitch.accidental,
+            crate::ir::pitch::AccidentalDisplay::None
+        );
     }
 
     #[test]
@@ -1709,7 +2003,11 @@ melB = { g'4 a' b' c'' }
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(notes.len(), 3, "should have 3 notes");
@@ -1733,7 +2031,11 @@ melB = { g'4 a' b' c'' }
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(notes.len(), 3, "should have 3 notes");
@@ -1754,14 +2056,27 @@ melB = { g'4 a' b' c'' }
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .filter_map(|e| {
-                if let VoiceElement::Note(n) = e { Some(n.as_ref()) } else { None }
+                if let VoiceElement::Note(n) = e {
+                    Some(n.as_ref())
+                } else {
+                    None
+                }
             })
             .collect();
         assert!(notes.len() >= 3, "should have at least 3 notes");
-        assert_eq!(notes[0].tremolo_marks, 3, "c'4:32 should have 3 tremolo marks");
+        assert_eq!(
+            notes[0].tremolo_marks, 3,
+            "c'4:32 should have 3 tremolo marks"
+        );
         assert!(notes[0].ornaments.iter().any(|o| o.name == "tremolo"));
-        assert_eq!(notes[1].tremolo_marks, 1, "d'8:16 should have 1 tremolo mark");
-        assert_eq!(notes[2].tremolo_marks, 4, "e'2:32 should have 4 tremolo marks");
+        assert_eq!(
+            notes[1].tremolo_marks, 1,
+            "d'8:16 should have 1 tremolo mark"
+        );
+        assert_eq!(
+            notes[2].tremolo_marks, 4,
+            "e'2:32 should have 4 tremolo marks"
+        );
     }
 
     #[test]
@@ -1782,16 +2097,24 @@ melB = { g'4 a' b' c'' }
         let score = adapter.convert_str(src).unwrap();
         let parts = score.parts();
         let measures = &parts[0].measures;
-        assert!(measures.len() >= 4, "should have at least 4 measures, got {}", measures.len());
+        assert!(
+            measures.len() >= 4,
+            "should have at least 4 measures, got {}",
+            measures.len()
+        );
         assert!(measures[0].left_barline.is_some());
         let lb = measures[0].left_barline.as_ref().unwrap();
         assert_eq!(lb.style, BarlineType::RepeatForward);
         let alt1_start = measures.iter().position(|m| {
-            m.left_barline.as_ref().map_or(false, |bl| bl.ending_number == Some(1))
+            m.left_barline
+                .as_ref()
+                .map_or(false, |bl| bl.ending_number == Some(1))
         });
         assert!(alt1_start.is_some(), "should find ending 1 start");
         let alt2_start = measures.iter().position(|m| {
-            m.left_barline.as_ref().map_or(false, |bl| bl.ending_number == Some(2))
+            m.left_barline
+                .as_ref()
+                .map_or(false, |bl| bl.ending_number == Some(2))
         });
         assert!(alt2_start.is_some(), "should find ending 2 start");
     }
@@ -1810,9 +2133,14 @@ melB = { g'4 a' b' c'' }
         let parts = score.parts();
         let measures = &parts[0].measures;
         assert!(measures[0].left_barline.is_some());
-        assert_eq!(measures[0].left_barline.as_ref().unwrap().style, BarlineType::RepeatForward);
+        assert_eq!(
+            measures[0].left_barline.as_ref().unwrap().style,
+            BarlineType::RepeatForward
+        );
         let has_backward = measures.iter().any(|m| {
-            m.right_barline.as_ref().map_or(false, |bl| bl.style == BarlineType::RepeatBackward)
+            m.right_barline
+                .as_ref()
+                .map_or(false, |bl| bl.style == BarlineType::RepeatBackward)
         });
         assert!(has_backward, "should have backward repeat barline");
     }
@@ -1850,12 +2178,24 @@ scoreAll = {
 }"#;
         let score = adapter.convert_str(src).unwrap();
         let parts = score.parts();
-        let fwd = parts.iter().flat_map(|p| &p.measures)
-            .filter(|m| m.left_barline.as_ref().map_or(false, |bl| bl.style == BarlineType::RepeatForward))
+        let fwd = parts
+            .iter()
+            .flat_map(|p| &p.measures)
+            .filter(|m| {
+                m.left_barline
+                    .as_ref()
+                    .map_or(false, |bl| bl.style == BarlineType::RepeatForward)
+            })
             .count();
         assert!(fwd > 0, "should have forward repeat barlines");
-        let endings = parts.iter().flat_map(|p| &p.measures)
-            .filter(|m| m.left_barline.as_ref().map_or(false, |bl| bl.ending_number.is_some()))
+        let endings = parts
+            .iter()
+            .flat_map(|p| &p.measures)
+            .filter(|m| {
+                m.left_barline
+                    .as_ref()
+                    .map_or(false, |bl| bl.ending_number.is_some())
+            })
             .count();
         assert!(endings > 0, "should have ending markers");
     }
@@ -1865,10 +2205,23 @@ scoreAll = {
         let src = std::fs::read_to_string("tests/fixtures/ly/repeats.ly").unwrap();
         let adapter = LyToIrAdapter::new();
         let scores = adapter.convert_str_multi(&src).unwrap();
-        assert_eq!(scores.len(), 1, "should produce exactly 1 score (MIDI-only block skipped), got {}", scores.len());
-        assert_eq!(scores[0].parts().len(), 2, "should have 2 parts (RH + LH), got {}", scores[0].parts().len());
+        assert_eq!(
+            scores.len(),
+            1,
+            "should produce exactly 1 score (MIDI-only block skipped), got {}",
+            scores.len()
+        );
+        assert_eq!(
+            scores[0].parts().len(),
+            2,
+            "should have 2 parts (RH + LH), got {}",
+            scores[0].parts().len()
+        );
         let total_measures: usize = scores[0].parts().iter().map(|p| p.measures.len()).sum();
-        assert!(total_measures > 100, "should produce many measures, got {total_measures}");
+        assert!(
+            total_measures > 100,
+            "should produce many measures, got {total_measures}"
+        );
     }
 
     #[test]
@@ -1876,10 +2229,23 @@ scoreAll = {
         let src = std::fs::read_to_string("tests/fixtures/ly/pedal.ly").unwrap();
         let adapter = LyToIrAdapter::new();
         let scores = adapter.convert_str_multi(&src).unwrap();
-        assert_eq!(scores.len(), 1, "should produce exactly 1 score, got {}", scores.len());
+        assert_eq!(
+            scores.len(),
+            1,
+            "should produce exactly 1 score, got {}",
+            scores.len()
+        );
         let score = &scores[0];
-        assert_eq!(score.parts().len(), 2, "should have 2 parts (upper + lower), got {}", score.parts().len());
-        let pedal_count: usize = score.parts().iter().flat_map(|p| &p.measures)
+        assert_eq!(
+            score.parts().len(),
+            2,
+            "should have 2 parts (upper + lower), got {}",
+            score.parts().len()
+        );
+        let pedal_count: usize = score
+            .parts()
+            .iter()
+            .flat_map(|p| &p.measures)
             .flat_map(|m| &m.directions)
             .filter(|d| d.pedal.is_some())
             .count();
@@ -1891,10 +2257,23 @@ scoreAll = {
         let src = std::fs::read_to_string("tests/fixtures/ly/chopin_n.ly").unwrap();
         let adapter = LyToIrAdapter::new();
         let scores = adapter.convert_str_multi(&src).unwrap();
-        assert_eq!(scores.len(), 1, "should produce exactly 1 score, got {}", scores.len());
-        assert_eq!(scores[0].parts().len(), 2, "should have 2 parts (upper + lower), got {}", scores[0].parts().len());
+        assert_eq!(
+            scores.len(),
+            1,
+            "should produce exactly 1 score, got {}",
+            scores.len()
+        );
+        assert_eq!(
+            scores[0].parts().len(),
+            2,
+            "should have 2 parts (upper + lower), got {}",
+            scores[0].parts().len()
+        );
         let total_measures: usize = scores[0].parts().iter().map(|p| p.measures.len()).sum();
-        assert!(total_measures > 50, "should produce many measures, got {total_measures}");
+        assert!(
+            total_measures > 50,
+            "should produce many measures, got {total_measures}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1907,17 +2286,13 @@ scoreAll = {
         use crate::ir::music::Music;
 
         let adapter = LyToIrAdapter::new();
-        let doc = adapter
-            .convert_str_to_music(r#"{ c'4 d' e' f' }"#)
-            .unwrap();
+        let doc = adapter.convert_str_to_music(r#"{ c'4 d' e' f' }"#).unwrap();
 
         // The Music tree should contain note events
         fn count_notes(m: &Music) -> usize {
             match m {
                 Music::Note { .. } => 1,
-                Music::Sequential(v) | Music::Simultaneous(v) => {
-                    v.iter().map(count_notes).sum()
-                }
+                Music::Sequential(v) | Music::Simultaneous(v) => v.iter().map(count_notes).sum(),
                 Music::Context { content, .. }
                 | Music::Grace { content, .. }
                 | Music::Tuplet { content, .. }
@@ -1932,21 +2307,27 @@ scoreAll = {
 
     #[test]
     fn test_ly_to_music_round_trip() {
-        use crate::adapters::{FromMusicAdapter, ToMusicAdapter};
         use crate::adapters::ir_to_ly::IrToLyAdapter;
+        use crate::adapters::{FromMusicAdapter, ToMusicAdapter};
 
         let adapter = LyToIrAdapter::new();
-        let doc = adapter
-            .convert_str_to_music(r#"{ c'4 d' e' f' }"#)
-            .unwrap();
+        let doc = adapter.convert_str_to_music(r#"{ c'4 d' e' f' }"#).unwrap();
 
         // Convert Music tree back to LilyPond
         let emitter = IrToLyAdapter::new();
         let ly_output = emitter.convert_music(&doc).unwrap();
 
         // Should contain the note names
-        assert!(ly_output.contains("c'"), "output should contain c': {}", ly_output);
-        assert!(ly_output.contains("d'"), "output should contain d': {}", ly_output);
+        assert!(
+            ly_output.contains("c'"),
+            "output should contain c': {}",
+            ly_output
+        );
+        assert!(
+            ly_output.contains("d'"),
+            "output should contain d': {}",
+            ly_output
+        );
     }
 
     #[test]
@@ -1963,9 +2344,7 @@ scoreAll = {
         fn has_time_sig(m: &Music) -> bool {
             match m {
                 Music::TimeSignature(_) => true,
-                Music::Sequential(v) | Music::Simultaneous(v) => {
-                    v.iter().any(has_time_sig)
-                }
+                Music::Sequential(v) | Music::Simultaneous(v) => v.iter().any(has_time_sig),
                 Music::Context { content, .. } => has_time_sig(content),
                 _ => false,
             }

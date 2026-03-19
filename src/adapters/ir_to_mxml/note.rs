@@ -111,16 +111,8 @@ impl IrToMxmlAdapter {
         // Time modification (tuplets)
         if note.duration.tuplet_actual != 1 || note.duration.tuplet_normal != 1 {
             w.write_event(Event::Start(BytesStart::new("time-modification")))?;
-            text_element(
-                w,
-                "actual-notes",
-                &note.duration.tuplet_actual.to_string(),
-            )?;
-            text_element(
-                w,
-                "normal-notes",
-                &note.duration.tuplet_normal.to_string(),
-            )?;
+            text_element(w, "actual-notes", &note.duration.tuplet_actual.to_string())?;
+            text_element(w, "normal-notes", &note.duration.tuplet_normal.to_string())?;
             w.write_event(Event::End(BytesEnd::new("time-modification")))?;
         }
 
@@ -218,12 +210,17 @@ impl IrToMxmlAdapter {
                         // Tremolo needs text content (marks count) and type attribute
                         let mut el = BytesStart::new("tremolo");
                         if note.two_note_tremolo {
-                            el.push_attribute(("type", if note.tremolo_start { "start" } else { "stop" }));
+                            el.push_attribute((
+                                "type",
+                                if note.tremolo_start { "start" } else { "stop" },
+                            ));
                         } else {
                             el.push_attribute(("type", "single"));
                         }
                         w.write_event(Event::Start(el))?;
-                        w.write_event(Event::Text(BytesText::new(&note.tremolo_marks.to_string())))?;
+                        w.write_event(Event::Text(BytesText::new(
+                            &note.tremolo_marks.to_string(),
+                        )))?;
                         w.write_event(Event::End(BytesEnd::new("tremolo")))?;
                     } else if orn.name.starts_with("wavy-line-") {
                         // wavy-line-start, wavy-line-stop, wavy-line-continue
@@ -319,7 +316,13 @@ impl IrToMxmlAdapter {
         Ok(())
     }
 
-    pub(super) fn write_rest(&self, w: &mut W, rest: &Rest, voice_num: u8, part_staves: u8) -> Result<()> {
+    pub(super) fn write_rest(
+        &self,
+        w: &mut W,
+        rest: &Rest,
+        voice_num: u8,
+        part_staves: u8,
+    ) -> Result<()> {
         w.write_event(Event::Start(BytesStart::new("note")))?;
 
         let mut rest_el = BytesStart::new("rest");
@@ -359,16 +362,8 @@ impl IrToMxmlAdapter {
         // Time modification (tuplets)
         if rest.duration.tuplet_actual != 1 || rest.duration.tuplet_normal != 1 {
             w.write_event(Event::Start(BytesStart::new("time-modification")))?;
-            text_element(
-                w,
-                "actual-notes",
-                &rest.duration.tuplet_actual.to_string(),
-            )?;
-            text_element(
-                w,
-                "normal-notes",
-                &rest.duration.tuplet_normal.to_string(),
-            )?;
+            text_element(w, "actual-notes", &rest.duration.tuplet_actual.to_string())?;
+            text_element(w, "normal-notes", &rest.duration.tuplet_normal.to_string())?;
             w.write_event(Event::End(BytesEnd::new("time-modification")))?;
         }
 
@@ -408,7 +403,13 @@ impl IrToMxmlAdapter {
         Ok(())
     }
 
-    pub(super) fn write_chord(&self, w: &mut W, chord: &Chord, voice_num: u8, part_staves: u8) -> Result<()> {
+    pub(super) fn write_chord(
+        &self,
+        w: &mut W,
+        chord: &Chord,
+        voice_num: u8,
+        part_staves: u8,
+    ) -> Result<()> {
         for (i, note) in chord.notes.iter().enumerate() {
             self.write_note(w, note, voice_num, i > 0, chord.arpeggio, part_staves)?;
         }

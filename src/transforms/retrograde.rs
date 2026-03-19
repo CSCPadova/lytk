@@ -215,10 +215,13 @@ mod tests {
         let result = super::retrograde_music(&doc);
         match &result.music {
             Music::Sequential(children) => {
-                let steps: Vec<_> = children.iter().filter_map(|c| match c {
-                    Music::Note { pitch, .. } => Some(pitch.step),
-                    _ => None,
-                }).collect();
+                let steps: Vec<_> = children
+                    .iter()
+                    .filter_map(|c| match c {
+                        Music::Note { pitch, .. } => Some(pitch.step),
+                        _ => None,
+                    })
+                    .collect();
                 assert_eq!(steps, vec![PitchStep::E, PitchStep::D, PitchStep::C]);
             }
             _ => panic!("expected Sequential"),

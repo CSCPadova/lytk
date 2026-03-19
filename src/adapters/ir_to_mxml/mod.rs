@@ -88,10 +88,7 @@ impl FromIrAdapter for IrToMxmlAdapter {
 }
 
 impl super::FromMusicAdapter for IrToMxmlAdapter {
-    fn convert_music(
-        &self,
-        doc: &crate::ir::music::MusicDocument,
-    ) -> Result<String> {
+    fn convert_music(&self, doc: &crate::ir::music::MusicDocument) -> Result<String> {
         let score = crate::ir::lower::lower_to_score(doc);
         self.convert(&score)
     }

@@ -270,7 +270,9 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
                     }
                 }
             }
-            _ => { ci += 1; }
+            _ => {
+                ci += 1;
+            }
         }
     }
 
@@ -381,11 +383,7 @@ pub(super) fn consume_transpose(state: &mut WalkState, children: &[Node], mut i:
 }
 
 /// Helper: consume a single pitch (symbol + octave marks) for \transpose arguments.
-fn consume_transpose_pitch(
-    state: &WalkState,
-    children: &[Node],
-    i: &mut usize,
-) -> Option<Pitch> {
+fn consume_transpose_pitch(state: &WalkState, children: &[Node], i: &mut usize) -> Option<Pitch> {
     // Skip non-symbol tokens (whitespace, punctuation)
     while *i < children.len() {
         let node = children[*i];

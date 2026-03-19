@@ -152,7 +152,9 @@ fn lift_multi_staff_part(part: &super::part::Part) -> Music {
         // Group voices by staff
         for voice in &measure.voices {
             let staff_num = voice_staff_number(voice);
-            let idx = (staff_num as usize).saturating_sub(1).min(staff_contents.len() - 1);
+            let idx = (staff_num as usize)
+                .saturating_sub(1)
+                .min(staff_contents.len() - 1);
             let voice_music = lift_voice_elements(&voice.elements);
             staff_contents[idx].extend(voice_music);
         }
@@ -165,12 +167,10 @@ fn lift_multi_staff_part(part: &super::part::Part) -> Music {
 
     let staves: Vec<Music> = staff_contents
         .into_iter()
-        .map(|events| {
-            Music::Context {
-                context_type: ContextType::Staff,
-                name: None,
-                content: Box::new(Music::Sequential(events)),
-            }
+        .map(|events| Music::Context {
+            context_type: ContextType::Staff,
+            name: None,
+            content: Box::new(Music::Sequential(events)),
         })
         .collect();
 
@@ -469,9 +469,7 @@ mod tests {
         match &doc.music {
             Music::Context { content, .. } => match content.as_ref() {
                 Music::Sequential(items) => {
-                    assert!(items
-                        .iter()
-                        .any(|m| matches!(m, Music::TimeSignature(_))));
+                    assert!(items.iter().any(|m| matches!(m, Music::TimeSignature(_))));
                 }
                 _ => panic!("Expected Sequential"),
             },
@@ -498,9 +496,7 @@ mod tests {
         match &doc.music {
             Music::Context { content, .. } => match content.as_ref() {
                 Music::Sequential(items) => {
-                    assert!(items
-                        .iter()
-                        .any(|m| matches!(m, Music::Simultaneous(_))));
+                    assert!(items.iter().any(|m| matches!(m, Music::Simultaneous(_))));
                 }
                 _ => panic!("Expected Sequential"),
             },

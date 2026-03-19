@@ -6,9 +6,9 @@ use crate::ir::direction::{
 };
 use crate::ir::duration::Frac;
 use crate::ir::language::parse_pitch_name;
+use crate::ir::language::PitchMode;
 use crate::ir::measure::{Clef, KeyMode, KeySignature, MeasureAttributes, TimeSignature};
 use crate::ir::note::{ArpeggioType, Note, Rest, VoiceElement};
-use crate::ir::language::PitchMode;
 
 use super::apply::{
     apply_chord_attachments, apply_note_attachments, apply_rest_attachments, attach_articulation,
@@ -196,12 +196,7 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
 
 /// Handle an escaped_word node (\key, \time, \clef, \grace, etc.).
 /// Returns the next index.
-fn handle_escaped_word(
-    state: &mut WalkState,
-    children: &[Node],
-    i: usize,
-    text: &str,
-) -> usize {
+fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text: &str) -> usize {
     let mut i = i + 1;
 
     match text {
@@ -243,8 +238,7 @@ fn handle_escaped_word(
                     if let Some((num, den)) = parse_fraction(frac_text) {
                         // If current voice or measure already has notes/rests,
                         // flush the measure first so \time starts a new bar
-                        if state.elapsed_in_measure > Frac::from_integer(0)
-                        {
+                        if state.elapsed_in_measure > Frac::from_integer(0) {
                             state.bar_check();
                         }
                         let symbol = match (num, den) {
@@ -670,9 +664,8 @@ fn handle_escaped_word(
         "\\melismaEnd" => {
             state.melisma_active = false;
         }
-        "\\unset" | "\\cadenzaOn" | "\\cadenzaOff"
-        | "\\dynamicUp" | "\\dynamicDown" | "\\dynamicNeutral"
-        | "\\context" | "\\unfoldRepeats" => {
+        "\\unset" | "\\cadenzaOn" | "\\cadenzaOff" | "\\dynamicUp" | "\\dynamicDown"
+        | "\\dynamicNeutral" | "\\context" | "\\unfoldRepeats" => {
             // Skip these commands; some may consume the next token
             // \context within music blocks is handled by named_context at the
             // walk_music_block level, but if tree-sitter doesn't wrap it as
@@ -692,10 +685,7 @@ fn handle_escaped_word(
 /// Apply a `\set Context.property = "value"` command to the current part.
 pub(super) fn apply_set_property(state: &mut WalkState, property: &str, value: &str) {
     // property is like "Staff.instrumentName" or "Staff.midiInstrument"
-    let prop_name = property
-        .split('.')
-        .next_back()
-        .unwrap_or(property);
+    let prop_name = property.split('.').next_back().unwrap_or(property);
     match prop_name {
         "instrumentName" => {
             let part = state.ensure_part();

@@ -29,14 +29,9 @@ pub enum Annotation {
 
     // Spanning notations
     /// Start of a slur
-    SlurStart {
-        number: u8,
-        placement: Placement,
-    },
+    SlurStart { number: u8, placement: Placement },
     /// End of a slur
-    SlurStop {
-        number: u8,
-    },
+    SlurStop { number: u8 },
     /// Start of a tie
     TieStart,
     /// End of a tie
@@ -54,9 +49,7 @@ pub enum Annotation {
     /// Glissando
     Glissando(StartStop),
     /// Single-note tremolo (1-4 marks)
-    Tremolo {
-        marks: u8,
-    },
+    Tremolo { marks: u8 },
 
     // Pedal
     /// Sustain pedal down

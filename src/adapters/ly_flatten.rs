@@ -212,8 +212,8 @@ fn resolve_include(
     opts: &FlattenOpts,
 ) -> Result<PathBuf, FlattenError> {
     // Build candidate paths in order: base_dir first, then include_paths.
-    let search_dirs = std::iter::once(base_dir)
-        .chain(opts.include_paths.iter().map(PathBuf::as_path));
+    let search_dirs =
+        std::iter::once(base_dir).chain(opts.include_paths.iter().map(PathBuf::as_path));
 
     for dir in search_dirs {
         let base = dir.join(raw);
@@ -411,11 +411,7 @@ mod tests {
 { e' f' }
 "#,
         );
-        let result = flatten(
-            &dir.path().join("main.ly"),
-            FlattenOpts::default(),
-        )
-        .unwrap();
+        let result = flatten(&dir.path().join("main.ly"), FlattenOpts::default()).unwrap();
         assert!(result.contains("c' d'"));
         assert!(result.contains("e' f'"));
     }
@@ -425,11 +421,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         write(dir.path(), "part.ly", "{ c' }\n");
         write(dir.path(), "main.ly", r#"\include "part.ly""#);
-        let result = flatten(
-            &dir.path().join("main.ly"),
-            FlattenOpts::default(),
-        )
-        .unwrap();
+        let result = flatten(&dir.path().join("main.ly"), FlattenOpts::default()).unwrap();
         assert!(result.contains("% === BEGIN INCLUDE: part.ly ==="));
         assert!(result.contains("% === END INCLUDE: part.ly ==="));
     }
@@ -455,11 +447,7 @@ mod tests {
         write(dir.path(), "part.ly", "{ c' }\n");
         // Include without extension
         write(dir.path(), "main.ly", r#"\include "part""#);
-        let result = flatten(
-            &dir.path().join("main.ly"),
-            FlattenOpts::default(),
-        )
-        .unwrap();
+        let result = flatten(&dir.path().join("main.ly"), FlattenOpts::default()).unwrap();
         assert!(result.contains("c'"));
     }
 
@@ -469,11 +457,7 @@ mod tests {
         write(dir.path(), "part.ily", "{ d' }\n");
         // Include without extension — no .ly exists, should find .ily
         write(dir.path(), "main.ly", r#"\include "part""#);
-        let result = flatten(
-            &dir.path().join("main.ly"),
-            FlattenOpts::default(),
-        )
-        .unwrap();
+        let result = flatten(&dir.path().join("main.ly"), FlattenOpts::default()).unwrap();
         assert!(result.contains("d'"));
     }
 
@@ -499,7 +483,10 @@ mod tests {
         write(dir.path(), "a.ly", "\\include \"b.ly\"\n{ e' }\n");
         let result = flatten(
             &dir.path().join("a.ly"),
-            FlattenOpts { add_markers: false, ..Default::default() },
+            FlattenOpts {
+                add_markers: false,
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(result.contains("g'"));
@@ -524,7 +511,10 @@ mod tests {
         write(dir.path(), "main.ly", "\\include \"sub/b.ly\"\n");
         let result = flatten(
             &dir.path().join("main.ly"),
-            FlattenOpts { add_markers: false, ..Default::default() },
+            FlattenOpts {
+                add_markers: false,
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(result.contains("a'"));

@@ -65,7 +65,11 @@ pub(super) fn consume_accidental_marks(
 
 /// Consume an optional duration (unsigned_integer + dot punctuation).
 /// If no duration is found, returns the last used duration.
-pub(super) fn consume_duration(state: &mut WalkState, children: &[Node], i: &mut usize) -> Duration {
+pub(super) fn consume_duration(
+    state: &mut WalkState,
+    children: &[Node],
+    i: &mut usize,
+) -> Duration {
     // Look for unsigned_integer
     if *i < children.len() && children[*i].kind() == "unsigned_integer" {
         let num_text = state.text(children[*i]).to_string();
@@ -105,7 +109,11 @@ pub(super) fn consume_duration(state: &mut WalkState, children: &[Node], i: &mut
 /// Returns the integer multiplier count (1 if no multiplier found).
 /// For `R1*3` this returns 3; for `R1*3/4` this returns 1 (fraction multipliers
 /// are not used for multi-measure rest expansion).
-pub(super) fn consume_duration_multiplier(state: &WalkState, children: &[Node], i: &mut usize) -> u32 {
+pub(super) fn consume_duration_multiplier(
+    state: &WalkState,
+    children: &[Node],
+    i: &mut usize,
+) -> u32 {
     if *i < children.len() && children[*i].kind() == "punctuation" {
         let ptext = punct_text(state, children[*i]);
         if ptext == "*" {
@@ -148,7 +156,11 @@ pub(super) fn consume_duration_multiplier(state: &WalkState, children: &[Node], 
 /// Tree-sitter may produce `*N/M` as either:
 /// - `punctuation("*")` `fraction("N/M")` (single fraction token), or
 /// - `punctuation("*")` `unsigned_integer("N")` `punctuation("/")` `unsigned_integer("M")`
-pub(super) fn consume_duration_scale(state: &WalkState, children: &[Node], i: &mut usize) -> Option<Frac> {
+pub(super) fn consume_duration_scale(
+    state: &WalkState,
+    children: &[Node],
+    i: &mut usize,
+) -> Option<Frac> {
     if *i < children.len() && children[*i].kind() == "punctuation" {
         let ptext = punct_text(state, children[*i]);
         if ptext == "*" {
@@ -219,7 +231,11 @@ pub(super) fn consume_tremolo(
 
 /// Consume post-note attachments: dynamics, ties, slurs, articulations, etc.
 /// Returns a list of attachment tokens.
-pub(super) fn consume_attachments(state: &WalkState, children: &[Node], i: &mut usize) -> Vec<String> {
+pub(super) fn consume_attachments(
+    state: &WalkState,
+    children: &[Node],
+    i: &mut usize,
+) -> Vec<String> {
     let mut attachments = Vec::new();
     while *i < children.len() {
         let node = children[*i];
@@ -337,7 +353,8 @@ pub(super) fn is_post_note_command(text: &str) -> bool {
 pub(super) fn punct_text(state: &WalkState, node: Node) -> String {
     if node.child_count() > 0 {
         let mut c = node.walk();
-        let result = node.children(&mut c)
+        let result = node
+            .children(&mut c)
             .next()
             .map(|n| state.text(n).to_string())
             .unwrap_or_default();

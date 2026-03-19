@@ -9,7 +9,11 @@ use super::consume::is_dynamic_name;
 use super::merge::beam_level_for_duration;
 use super::state::WalkState;
 
-pub(super) fn apply_note_attachments(_state: &mut WalkState, note: &mut Note, attachments: &[String]) {
+pub(super) fn apply_note_attachments(
+    _state: &mut WalkState,
+    note: &mut Note,
+    attachments: &[String],
+) {
     for att in attachments {
         match att.as_str() {
             "[" => {
@@ -102,39 +106,34 @@ pub(super) fn apply_note_attachments(_state: &mut WalkState, note: &mut Note, at
                 });
             }
             "\\trill" => {
-                note.ornaments
-                    .push(crate::ir::articulation::Ornament {
-                        name: "trill-mark".to_string(),
-                        placement: Placement::Unspecified,
-                    });
+                note.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "trill-mark".to_string(),
+                    placement: Placement::Unspecified,
+                });
             }
             "\\mordent" => {
-                note.ornaments
-                    .push(crate::ir::articulation::Ornament {
-                        name: "mordent".to_string(),
-                        placement: Placement::Unspecified,
-                    });
+                note.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "mordent".to_string(),
+                    placement: Placement::Unspecified,
+                });
             }
             "\\prall" => {
-                note.ornaments
-                    .push(crate::ir::articulation::Ornament {
-                        name: "inverted-mordent".to_string(),
-                        placement: Placement::Unspecified,
-                    });
+                note.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "inverted-mordent".to_string(),
+                    placement: Placement::Unspecified,
+                });
             }
             "\\turn" => {
-                note.ornaments
-                    .push(crate::ir::articulation::Ornament {
-                        name: "turn".to_string(),
-                        placement: Placement::Unspecified,
-                    });
+                note.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "turn".to_string(),
+                    placement: Placement::Unspecified,
+                });
             }
             "\\reverseturn" => {
-                note.ornaments
-                    .push(crate::ir::articulation::Ornament {
-                        name: "inverted-turn".to_string(),
-                        placement: Placement::Unspecified,
-                    });
+                note.ornaments.push(crate::ir::articulation::Ornament {
+                    name: "inverted-turn".to_string(),
+                    placement: Placement::Unspecified,
+                });
             }
             "\\staccato" => {
                 note.articulations.push(Articulation {
@@ -227,7 +226,10 @@ pub(super) fn apply_chord_attachments(
             "\\arpeggio" => {
                 // Apply pending arpeggio type, defaulting to Up
                 chord.arpeggio = Some(
-                    _state.pending_arpeggio_type.take().unwrap_or(crate::ir::note::ArpeggioType::Up),
+                    _state
+                        .pending_arpeggio_type
+                        .take()
+                        .unwrap_or(crate::ir::note::ArpeggioType::Up),
                 );
                 continue;
             }

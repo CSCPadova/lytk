@@ -11,7 +11,7 @@ use crate::ir::voice::Voice;
 use crate::ir::Part;
 use std::collections::HashMap;
 
-    fn make_simple_score() -> Score {
+fn make_simple_score() -> Score {
     let mut attrs = MeasureAttributes {
         divisions: 4,
         key: Some(KeySignature {
@@ -26,10 +26,7 @@ use std::collections::HashMap;
     };
     attrs.clefs.insert(1, Clef::default());
 
-    let note = Note::new(
-        Pitch::new(PitchStep::C, 4),
-        Duration::quarter(),
-    );
+    let note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
     let voice = Voice {
         number: 1,
         elements: vec![VoiceElement::Note(Box::new(note))],
@@ -221,7 +218,10 @@ fn chord_emission() {
 
     // First note has no <chord/>, subsequent notes do
     let chord_count = xml.matches("<chord/>").count();
-    assert_eq!(chord_count, 2, "expected 2 <chord/> tags for a 3-note chord");
+    assert_eq!(
+        chord_count, 2,
+        "expected 2 <chord/> tags for a 3-note chord"
+    );
     assert!(xml.contains("<step>C</step>"));
     assert!(xml.contains("<step>E</step>"));
     assert!(xml.contains("<step>G</step>"));
@@ -513,10 +513,7 @@ fn test_emit_after_grace_steal_time() {
     note.after_grace = true;
 
     let xml = emit_single_note(note);
-    assert!(
-        xml.contains("steal-time-previous=\"100\""),
-        "{xml}"
-    );
+    assert!(xml.contains("steal-time-previous=\"100\""), "{xml}");
 }
 
 #[test]
@@ -594,7 +591,10 @@ fn test_emit_harmony_basic() {
     use crate::ir::harmony::{ChordPitch, Harmony};
 
     let harmony = Harmony {
-        root: ChordPitch { step: "C".to_string(), alter: 0.0 },
+        root: ChordPitch {
+            step: "C".to_string(),
+            alter: 0.0,
+        },
         kind: "major".to_string(),
         bass: None,
         degrees: vec![],
@@ -612,9 +612,15 @@ fn test_emit_harmony_with_bass() {
     use crate::ir::harmony::{ChordPitch, Harmony};
 
     let harmony = Harmony {
-        root: ChordPitch { step: "G".to_string(), alter: 0.0 },
+        root: ChordPitch {
+            step: "G".to_string(),
+            alter: 0.0,
+        },
         kind: "major".to_string(),
-        bass: Some(ChordPitch { step: "B".to_string(), alter: 0.0 }),
+        bass: Some(ChordPitch {
+            step: "B".to_string(),
+            alter: 0.0,
+        }),
         degrees: vec![],
         offset: 0,
     };
@@ -628,7 +634,10 @@ fn test_emit_harmony_with_offset() {
     use crate::ir::harmony::{ChordPitch, Harmony};
 
     let harmony = Harmony {
-        root: ChordPitch { step: "F".to_string(), alter: 0.0 },
+        root: ChordPitch {
+            step: "F".to_string(),
+            alter: 0.0,
+        },
         kind: "minor".to_string(),
         bass: None,
         degrees: vec![],
@@ -647,8 +656,16 @@ fn test_emit_figured_bass() {
 
     let fb = FiguredBass {
         figures: vec![
-            Figure { number: Some(6), prefix: None, suffix: None },
-            Figure { number: Some(4), prefix: None, suffix: None },
+            Figure {
+                number: Some(6),
+                prefix: None,
+                suffix: None,
+            },
+            Figure {
+                number: Some(4),
+                prefix: None,
+                suffix: None,
+            },
         ],
         duration: Duration::quarter(),
         parentheses: false,
@@ -888,7 +905,10 @@ fn tremolo_single_note_emission() {
     let mut measure = make_empty_measure();
     measure.voices.push(voice);
     let xml = emit_measure(measure);
-    assert!(xml.contains("<tremolo type=\"single\">3</tremolo>"), "should emit tremolo with type and marks: {xml}");
+    assert!(
+        xml.contains("<tremolo type=\"single\">3</tremolo>"),
+        "should emit tremolo with type and marks: {xml}"
+    );
 }
 
 #[test]
@@ -919,8 +939,14 @@ fn tremolo_two_note_emission() {
     let mut measure = make_empty_measure();
     measure.voices.push(voice);
     let xml = emit_measure(measure);
-    assert!(xml.contains("<tremolo type=\"start\">2</tremolo>"), "first note should have tremolo start: {xml}");
-    assert!(xml.contains("<tremolo type=\"stop\">2</tremolo>"), "second note should have tremolo stop: {xml}");
+    assert!(
+        xml.contains("<tremolo type=\"start\">2</tremolo>"),
+        "first note should have tremolo start: {xml}"
+    );
+    assert!(
+        xml.contains("<tremolo type=\"stop\">2</tremolo>"),
+        "second note should have tremolo stop: {xml}"
+    );
 }
 
 #[test]
@@ -931,8 +957,14 @@ fn layout_break_emission() {
         ..Default::default()
     });
     let xml = emit_measure(measure);
-    assert!(xml.contains("<print new-page=\"yes\""), "should emit page break as <print>: {xml}");
-    assert!(!xml.contains("<direction>"), "layout-break-only directions should not emit <direction>: {xml}");
+    assert!(
+        xml.contains("<print new-page=\"yes\""),
+        "should emit page break as <print>: {xml}"
+    );
+    assert!(
+        !xml.contains("<direction>"),
+        "layout-break-only directions should not emit <direction>: {xml}"
+    );
 }
 
 #[test]
@@ -943,7 +975,10 @@ fn system_break_emission() {
         ..Default::default()
     });
     let xml = emit_measure(measure);
-    assert!(xml.contains("<print new-system=\"yes\""), "should emit system break: {xml}");
+    assert!(
+        xml.contains("<print new-system=\"yes\""),
+        "should emit system break: {xml}"
+    );
 }
 
 #[test]
@@ -954,8 +989,14 @@ fn staff_lines_emission() {
         ..Default::default()
     });
     let xml = emit_measure(measure);
-    assert!(xml.contains("<staff-details>"), "should emit staff-details: {xml}");
-    assert!(xml.contains("<staff-lines>1</staff-lines>"), "should emit staff-lines: {xml}");
+    assert!(
+        xml.contains("<staff-details>"),
+        "should emit staff-details: {xml}"
+    );
+    assert!(
+        xml.contains("<staff-lines>1</staff-lines>"),
+        "should emit staff-lines: {xml}"
+    );
 }
 
 #[test]
@@ -966,7 +1007,10 @@ fn staff_lines_5_not_emitted() {
         ..Default::default()
     });
     let xml = emit_measure(measure);
-    assert!(!xml.contains("<staff-details>"), "standard 5-line staff should not emit staff-details: {xml}");
+    assert!(
+        !xml.contains("<staff-details>"),
+        "standard 5-line staff should not emit staff-details: {xml}"
+    );
 }
 
 #[test]
@@ -975,8 +1019,14 @@ fn multi_measure_rest_emission() {
     measure.attributes = Some(crate::ir::measure::MeasureAttributes::default());
     measure.multi_measure_rest = Some(4);
     let xml = emit_measure(measure);
-    assert!(xml.contains("<measure-style>"), "should emit measure-style: {xml}");
-    assert!(xml.contains("<multiple-rest>4</multiple-rest>"), "should emit multiple-rest count: {xml}");
+    assert!(
+        xml.contains("<measure-style>"),
+        "should emit measure-style: {xml}"
+    );
+    assert!(
+        xml.contains("<multiple-rest>4</multiple-rest>"),
+        "should emit multiple-rest count: {xml}"
+    );
 }
 
 #[test]
@@ -994,7 +1044,10 @@ fn sound_tempo_with_metronome() {
     });
     let xml = emit_measure(measure);
     assert!(xml.contains("<metronome>"), "should emit metronome: {xml}");
-    assert!(xml.contains("<sound tempo=\"120\""), "should also emit sound tempo: {xml}");
+    assert!(
+        xml.contains("<sound tempo=\"120\""),
+        "should also emit sound tempo: {xml}"
+    );
 }
 
 #[test]
@@ -1015,15 +1068,24 @@ fn wavy_line_emission() {
     let mut measure = make_empty_measure();
     measure.voices.push(voice);
     let xml = emit_measure(measure);
-    assert!(xml.contains("<trill-mark/>"), "should emit trill-mark: {xml}");
-    assert!(xml.contains("<wavy-line type=\"start\""), "should emit wavy-line with type: {xml}");
+    assert!(
+        xml.contains("<trill-mark/>"),
+        "should emit trill-mark: {xml}"
+    );
+    assert!(
+        xml.contains("<wavy-line type=\"start\""),
+        "should emit wavy-line with type: {xml}"
+    );
 }
 
 // ── Phase 5: tests for newly-added emission features ─────────────────
 
 #[test]
 fn grace_slash_attribute() {
-    let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::new(num::rational::Ratio::new(1, 16)));
+    let mut note = Note::new(
+        Pitch::new(PitchStep::C, 4),
+        Duration::new(num::rational::Ratio::new(1, 16)),
+    );
     note.is_grace = true;
     note.grace_slash = true;
     let voice = Voice {
@@ -1033,7 +1095,10 @@ fn grace_slash_attribute() {
     let mut measure = make_empty_measure();
     measure.voices.push(voice);
     let xml = emit_measure(measure);
-    assert!(xml.contains("slash=\"yes\""), "should emit slash=yes on grace: {xml}");
+    assert!(
+        xml.contains("slash=\"yes\""),
+        "should emit slash=yes on grace: {xml}"
+    );
 }
 
 #[test]
@@ -1047,7 +1112,10 @@ fn print_object_no() {
     let mut measure = make_empty_measure();
     measure.voices.push(voice);
     let xml = emit_measure(measure);
-    assert!(xml.contains("print-object=\"no\""), "should emit print-object=no: {xml}");
+    assert!(
+        xml.contains("print-object=\"no\""),
+        "should emit print-object=no: {xml}"
+    );
 }
 
 #[test]
@@ -1061,7 +1129,10 @@ fn notehead_emission() {
     let mut measure = make_empty_measure();
     measure.voices.push(voice);
     let xml = emit_measure(measure);
-    assert!(xml.contains("<notehead>x</notehead>"), "should emit notehead: {xml}");
+    assert!(
+        xml.contains("<notehead>x</notehead>"),
+        "should emit notehead: {xml}"
+    );
 }
 
 #[test]
@@ -1084,8 +1155,14 @@ fn text_direction_font_attrs() {
         ..Direction::default()
     };
     let xml = emit_direction(dir);
-    assert!(xml.contains("font-style=\"italic\""), "should emit font-style: {xml}");
-    assert!(xml.contains("font-weight=\"bold\""), "should emit font-weight: {xml}");
+    assert!(
+        xml.contains("font-style=\"italic\""),
+        "should emit font-style: {xml}"
+    );
+    assert!(
+        xml.contains("font-weight=\"bold\""),
+        "should emit font-weight: {xml}"
+    );
 }
 
 #[test]
@@ -1137,11 +1214,26 @@ fn midi_instrument_in_score_part() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToMxmlAdapter::new();
     let xml = adapter.convert(&score).unwrap();
-    assert!(xml.contains("<midi-instrument"), "should emit midi-instrument: {xml}");
-    assert!(xml.contains("<midi-channel>1</midi-channel>"), "should emit midi-channel: {xml}");
-    assert!(xml.contains("<midi-program>43</midi-program>"), "should emit midi-program: {xml}");
-    assert!(xml.contains("<midi-name>Cello</midi-name>"), "should emit midi-name: {xml}");
-    assert!(xml.contains("<score-instrument"), "should emit score-instrument: {xml}");
+    assert!(
+        xml.contains("<midi-instrument"),
+        "should emit midi-instrument: {xml}"
+    );
+    assert!(
+        xml.contains("<midi-channel>1</midi-channel>"),
+        "should emit midi-channel: {xml}"
+    );
+    assert!(
+        xml.contains("<midi-program>43</midi-program>"),
+        "should emit midi-program: {xml}"
+    );
+    assert!(
+        xml.contains("<midi-name>Cello</midi-name>"),
+        "should emit midi-name: {xml}"
+    );
+    assert!(
+        xml.contains("<score-instrument"),
+        "should emit score-instrument: {xml}"
+    );
 }
 
 #[test]
@@ -1152,19 +1244,31 @@ fn subtitle_credit() {
     let adapter = IrToMxmlAdapter::new();
     let xml = adapter.convert(&score).unwrap();
     assert!(xml.contains("<credit>"), "should emit credit: {xml}");
-    assert!(xml.contains("<credit-type>subtitle</credit-type>"), "should emit credit-type: {xml}");
+    assert!(
+        xml.contains("<credit-type>subtitle</credit-type>"),
+        "should emit credit-type: {xml}"
+    );
     assert!(xml.contains("Op. 1"), "should contain subtitle text: {xml}");
 }
 
 #[test]
 fn extra_creators() {
     let mut score = Score::new();
-    score.metadata.extra.insert("editor".to_string(), "John".to_string());
+    score
+        .metadata
+        .extra
+        .insert("editor".to_string(), "John".to_string());
     score.children.push(ScoreChild::Part(Part::new("P1")));
     let adapter = IrToMxmlAdapter::new();
     let xml = adapter.convert(&score).unwrap();
-    assert!(xml.contains("type=\"editor\""), "should emit extra creator type: {xml}");
-    assert!(xml.contains("John"), "should emit extra creator value: {xml}");
+    assert!(
+        xml.contains("type=\"editor\""),
+        "should emit extra creator type: {xml}"
+    );
+    assert!(
+        xml.contains("John"),
+        "should emit extra creator value: {xml}"
+    );
 }
 
 #[test]
@@ -1176,7 +1280,10 @@ fn part_group_number_preserved() {
     score.children.push(ScoreChild::PartGroup(group));
     let adapter = IrToMxmlAdapter::new();
     let xml = adapter.convert(&score).unwrap();
-    assert!(xml.contains("number=\"3\""), "should preserve group number: {xml}");
+    assert!(
+        xml.contains("number=\"3\""),
+        "should preserve group number: {xml}"
+    );
 }
 
 #[test]
@@ -1192,12 +1299,18 @@ fn tempo_text_as_words() {
         ..Direction::default()
     };
     let xml = emit_direction(dir);
-    assert!(xml.contains("<words>Allegro</words>"), "should emit tempo text as words: {xml}");
+    assert!(
+        xml.contains("<words>Allegro</words>"),
+        "should emit tempo text as words: {xml}"
+    );
     assert!(xml.contains("<metronome>"), "should emit metronome: {xml}");
     // Words should come before metronome
     let words_pos = xml.find("<words>Allegro</words>").unwrap();
     let metro_pos = xml.find("<metronome>").unwrap();
-    assert!(words_pos < metro_pos, "words should precede metronome: {xml}");
+    assert!(
+        words_pos < metro_pos,
+        "words should precede metronome: {xml}"
+    );
 }
 
 #[test]
@@ -1215,11 +1328,20 @@ fn sound_element_merged() {
     };
     let xml = emit_direction(dir);
     // Should have a single <sound with both tempo and dacapo
-    assert!(xml.contains("tempo=\"120\""), "should emit tempo in sound: {xml}");
-    assert!(xml.contains("dacapo=\"yes\""), "should emit dacapo in sound: {xml}");
+    assert!(
+        xml.contains("tempo=\"120\""),
+        "should emit tempo in sound: {xml}"
+    );
+    assert!(
+        xml.contains("dacapo=\"yes\""),
+        "should emit dacapo in sound: {xml}"
+    );
     // Count <sound occurrences — should be exactly 1
     let sound_count = xml.matches("<sound ").count();
-    assert_eq!(sound_count, 1, "should merge into single sound element: {xml}");
+    assert_eq!(
+        sound_count, 1,
+        "should merge into single sound element: {xml}"
+    );
 }
 
 #[test]

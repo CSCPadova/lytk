@@ -42,22 +42,16 @@ fn extract_lyrics(part: &Part) -> std::collections::BTreeMap<u8, Vec<LyricEvent>
                             .count() as u32;
 
                         if note.is_grace {
-                            open_slurs =
-                                open_slurs.saturating_add(starts).saturating_sub(stops);
+                            open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
                             continue;
                         }
 
-                        let is_tied_cont =
-                            note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
+                        let is_tied_cont = note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
                         let in_slur_melisma = note.no_auto_beam
                             && open_slurs > 0
-                            && !note
-                                .slurs
-                                .iter()
-                                .any(|s| s.slur_type == StartStop::Start);
+                            && !note.slurs.iter().any(|s| s.slur_type == StartStop::Start);
 
-                        open_slurs =
-                            open_slurs.saturating_add(starts).saturating_sub(stops);
+                        open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
 
                         // These notes are automatically skipped -- no lyric event needed
                         if is_tied_cont || note.in_melisma || in_slur_melisma {
@@ -91,8 +85,7 @@ fn extract_lyrics(part: &Part) -> std::collections::BTreeMap<u8, Vec<LyricEvent>
                                 .iter()
                                 .filter(|s| s.slur_type == StartStop::Stop)
                                 .count() as u32;
-                            open_slurs =
-                                open_slurs.saturating_add(starts).saturating_sub(stops);
+                            open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
 
                             if !first.lyrics.is_empty() {
                                 for syl in &first.lyrics {
@@ -206,7 +199,12 @@ fn escape_lyric_text(text: &str) -> String {
 }
 
 /// Emit lyrics references in the score block for a part.
-pub(super) fn emit_lyrics_refs(part: &Part, voice_name: &str, indent: usize, lines: &mut Vec<String>) {
+pub(super) fn emit_lyrics_refs(
+    part: &Part,
+    voice_name: &str,
+    indent: usize,
+    lines: &mut Vec<String>,
+) {
     let lyrics_map = extract_lyrics(part);
     if lyrics_map.is_empty() {
         return;

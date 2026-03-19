@@ -96,7 +96,8 @@ pub(super) fn emit_measures(
         // Separate directions into standalone (tempo, rehearsal) and note-attached (dynamics, wedges, markup).
         // Note-attached directions are grouped by their forward-position offset
         // (populated in mxml_to_ir) so they attach to the correct voice element.
-        let mut dir_at_offset: std::collections::BTreeMap<i32, Vec<String>> = std::collections::BTreeMap::new();
+        let mut dir_at_offset: std::collections::BTreeMap<i32, Vec<String>> =
+            std::collections::BTreeMap::new();
         for dir in &measure.directions {
             // Tempo and rehearsal marks can stand alone
             if let Some(tempo) = &dir.tempo {
@@ -216,7 +217,16 @@ pub(super) fn emit_measures(
 
         if voices.len() <= 1 {
             if let Some(voice) = voices.first() {
-                emit_voice_elements(voice, lang, mode, &mut emit_state, &pad, &dir_at_offset, divisions, lines);
+                emit_voice_elements(
+                    voice,
+                    lang,
+                    mode,
+                    &mut emit_state,
+                    &pad,
+                    &dir_at_offset,
+                    divisions,
+                    lines,
+                );
             }
         } else {
             // Multi-voice: << \\ >> syntax
@@ -230,7 +240,16 @@ pub(super) fn emit_measures(
                 let inner_pad = format!("{pad}    ");
                 // Only attach directions to the first voice
                 let dirs_for_voice = if i == 0 { &dir_at_offset } else { &empty_dirs };
-                emit_voice_elements(voice, lang, mode, &mut emit_state, &inner_pad, dirs_for_voice, divisions, lines);
+                emit_voice_elements(
+                    voice,
+                    lang,
+                    mode,
+                    &mut emit_state,
+                    &inner_pad,
+                    dirs_for_voice,
+                    divisions,
+                    lines,
+                );
                 lines.push(format!("{pad}  }}"));
             }
             lines.push(format!("{pad}>>"));
@@ -357,9 +376,7 @@ fn emit_voice_elements(
                             _ => None,
                         };
                         if let Some(s) = style {
-                            tokens.push(format!(
-                                "\\once \\override Glissando.style = #'{s}"
-                            ));
+                            tokens.push(format!("\\once \\override Glissando.style = #'{s}"));
                         }
                     }
                 }
@@ -477,12 +494,7 @@ fn emit_voice_elements(
     }
 }
 
-fn note_to_ly(
-    note: &Note,
-    lang: PitchLanguage,
-    mode: PitchMode,
-    prev: Option<&Pitch>,
-) -> String {
+fn note_to_ly(note: &Note, lang: PitchLanguage, mode: PitchMode, prev: Option<&Pitch>) -> String {
     if note.is_grace {
         return grace_note_to_ly(note, lang, mode, prev);
     }

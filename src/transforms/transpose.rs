@@ -83,14 +83,10 @@ impl MusicTransform for Transpose {
 /// Recursively transpose all pitches and key signatures in a Music tree.
 fn transpose_music_node(music: &mut Music, semitones: i32) {
     match music {
-        Music::Note {
-            pitch, ..
-        } => {
+        Music::Note { pitch, .. } => {
             *pitch = pitch.transposed(semitones);
         }
-        Music::Chord {
-            pitches, ..
-        } => {
+        Music::Chord { pitches, .. } => {
             for (pitch, _) in pitches.iter_mut() {
                 *pitch = pitch.transposed(semitones);
             }
@@ -283,7 +279,10 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(orig_notes, rest_notes, "transpose roundtrip must preserve MIDI numbers");
+        assert_eq!(
+            orig_notes, rest_notes,
+            "transpose roundtrip must preserve MIDI numbers"
+        );
     }
 
     #[test]
@@ -347,24 +346,20 @@ mod tests {
     fn transpose_music_roundtrip() {
         use crate::ir::music::{Music, MusicDocument};
 
-        let doc = MusicDocument::new(Music::Sequential(vec![
-            Music::Note {
-                pitch: Pitch::new(PitchStep::C, 4),
-                duration: Duration::quarter(),
-                annotations: vec![],
-            },
-        ]));
+        let doc = MusicDocument::new(Music::Sequential(vec![Music::Note {
+            pitch: Pitch::new(PitchStep::C, 4),
+            duration: Duration::quarter(),
+            annotations: vec![],
+        }]));
         let up = super::transpose_music(&doc, 5);
         let restored = super::transpose_music(&up, -5);
         match (&doc.music, &restored.music) {
-            (Music::Sequential(orig), Music::Sequential(rest)) => {
-                match (&orig[0], &rest[0]) {
-                    (Music::Note { pitch: p1, .. }, Music::Note { pitch: p2, .. }) => {
-                        assert_eq!(p1.midi_number(), p2.midi_number());
-                    }
-                    _ => panic!("expected Notes"),
+            (Music::Sequential(orig), Music::Sequential(rest)) => match (&orig[0], &rest[0]) {
+                (Music::Note { pitch: p1, .. }, Music::Note { pitch: p2, .. }) => {
+                    assert_eq!(p1.midi_number(), p2.midi_number());
                 }
-            }
+                _ => panic!("expected Notes"),
+            },
             _ => panic!("expected Sequential"),
         }
     }

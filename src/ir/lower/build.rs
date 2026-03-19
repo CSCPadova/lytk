@@ -90,8 +90,7 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
                     };
                     let mut pg = PartGroup::new(group_type);
                     pg.bracket = "brace".to_string();
-                    pg.children
-                        .push(ScoreChild::Part(merged_part));
+                    pg.children.push(ScoreChild::Part(merged_part));
                     score.children.push(ScoreChild::PartGroup(pg));
 
                     for &si in staff_indices {
@@ -100,9 +99,7 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
                 } else {
                     // Single staff in group — just add as part
                     let si = staff_indices[0];
-                    score
-                        .children
-                        .push(ScoreChild::Part(parts[si].1.clone()));
+                    score.children.push(ScoreChild::Part(parts[si].1.clone()));
                     staff_assigned[si] = true;
                 }
             }
@@ -110,8 +107,7 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
                 let group_type = ctx_type.ly_name();
                 let mut pg = PartGroup::new(group_type);
                 for &si in staff_indices {
-                    pg.children
-                        .push(ScoreChild::Part(parts[si].1.clone()));
+                    pg.children.push(ScoreChild::Part(parts[si].1.clone()));
                     staff_assigned[si] = true;
                 }
                 score.children.push(ScoreChild::PartGroup(pg));
@@ -123,9 +119,7 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
     // Add any unassigned staves as standalone parts
     for (i, assigned) in staff_assigned.iter().enumerate() {
         if !assigned {
-            score
-                .children
-                .push(ScoreChild::Part(parts[i].1.clone()));
+            score.children.push(ScoreChild::Part(parts[i].1.clone()));
         }
     }
 
@@ -254,7 +248,14 @@ pub(super) fn compute_measure_boundaries(
 
     let mut current_ts_frac = initial_ts.beats_fraction();
     // Only store the time sig on the boundary if it was explicit
-    boundaries.push((zero, if has_initial_ts { Some(initial_ts) } else { None }));
+    boundaries.push((
+        zero,
+        if has_initial_ts {
+            Some(initial_ts)
+        } else {
+            None
+        },
+    ));
 
     let mut pos = zero;
 
@@ -282,8 +283,7 @@ pub(super) fn compute_measure_boundaries(
                 current_ts_frac = new_ts.beats_fraction();
                 pos = *change_time;
                 // Advance ts_idx past all changes at this position
-                while ts_idx < time_sig_changes.len()
-                    && time_sig_changes[ts_idx].0 <= *change_time
+                while ts_idx < time_sig_changes.len() && time_sig_changes[ts_idx].0 <= *change_time
                 {
                     ts_idx += 1;
                 }
@@ -292,9 +292,7 @@ pub(super) fn compute_measure_boundaries(
                 boundaries.push((next_bar, Some(new_ts.clone())));
                 current_ts_frac = new_ts.beats_fraction();
                 pos = next_bar;
-                while ts_idx < time_sig_changes.len()
-                    && time_sig_changes[ts_idx].0 <= next_bar
-                {
+                while ts_idx < time_sig_changes.len() && time_sig_changes[ts_idx].0 <= next_bar {
                     ts_idx += 1;
                 }
             }
@@ -374,12 +372,7 @@ fn build_voice_from_events(
 }
 
 /// Legacy helper: build a single voice from all events in a time range.
-fn events_to_voice(
-    events: &[(Frac, TimedEvent)],
-    voice_num: u8,
-    start: Frac,
-    end: Frac,
-) -> Voice {
+fn events_to_voice(events: &[(Frac, TimedEvent)], voice_num: u8, start: Frac, end: Frac) -> Voice {
     let mut voice = Voice::new(voice_num);
     for ev in events {
         if ev.0 >= start && ev.0 < end {

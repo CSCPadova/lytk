@@ -18,7 +18,11 @@ pub(super) fn part_var_name(part: &Part) -> String {
     let alpha: String = raw.chars().filter(|c| c.is_alphabetic()).collect();
     let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
 
-    let base = if alpha.is_empty() { "part".to_string() } else { alpha };
+    let base = if alpha.is_empty() {
+        "part".to_string()
+    } else {
+        alpha
+    };
     let mut name = camel_to_lower(&base);
 
     if !digits.is_empty() {

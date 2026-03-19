@@ -8,15 +8,13 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use midly::{MetaMessage, MidiMessage, Smf, TrackEventKind, Timing, Format};
+use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
 use super::{AdapterError, Result, ToIrAdapter};
 use crate::ir::articulation::Placement;
 use crate::ir::direction::{Direction, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
-use crate::ir::measure::{
-    Clef, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature,
-};
+use crate::ir::measure::{Clef, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
 use crate::ir::note::{Note, Rest, VoiceElement};
 use crate::ir::part::Part;
 use crate::ir::pitch::{Alter, Pitch, PitchStep};
@@ -104,9 +102,7 @@ struct TrackMeta {
 }
 
 /// Collect raw note pairs and meta events from a single MIDI track.
-fn collect_track_events(
-    events: &[midly::TrackEvent<'_>],
-) -> (Vec<RawNote>, TrackMeta) {
+fn collect_track_events(events: &[midly::TrackEvent<'_>]) -> (Vec<RawNote>, TrackMeta) {
     let mut notes: Vec<RawNote> = Vec::new();
     let mut meta = TrackMeta::default();
     // Pending note-ons: (key, channel) → (start_tick, velocity)
@@ -151,8 +147,7 @@ fn collect_track_events(
                         }
                     }
                     MidiMessage::ProgramChange { program } => {
-                        meta.program_changes
-                            .push((abs_tick, ch, program.as_int()));
+                        meta.program_changes.push((abs_tick, ch, program.as_int()));
                     }
                     _ => {}
                 }
@@ -389,7 +384,11 @@ fn build_part(
             if let Some(&(_, fifths, minor)) = key_sigs.first() {
                 attrs.key = Some(KeySignature {
                     fifths,
-                    mode: if minor { KeyMode::Minor } else { KeyMode::Major },
+                    mode: if minor {
+                        KeyMode::Minor
+                    } else {
+                        KeyMode::Major
+                    },
                 });
             }
             attrs.clefs.insert(1, Clef::default());
@@ -418,7 +417,11 @@ fn build_part(
                     });
                     a.key = Some(KeySignature {
                         fifths,
-                        mode: if minor { KeyMode::Minor } else { KeyMode::Major },
+                        mode: if minor {
+                            KeyMode::Minor
+                        } else {
+                            KeyMode::Major
+                        },
                     });
                 }
             }
@@ -495,10 +498,7 @@ fn build_part(
 // ---------------------------------------------------------------------------
 
 /// Resolve time signature events into (abs_tick, numerator, denominator_power).
-fn resolve_time_signatures(
-    meta: &TrackMeta,
-    _divisions: u32,
-) -> Vec<(u64, u8, u8)> {
+fn resolve_time_signatures(meta: &TrackMeta, _divisions: u32) -> Vec<(u64, u8, u8)> {
     if meta.time_sig_changes.is_empty() {
         vec![(0, 4, 2)] // default 4/4
     } else {
@@ -547,28 +547,35 @@ fn compute_measure_boundaries(
 /// All are fractions of a whole note.
 const CANDIDATES: &[(i64, i64, u8, u8, u8)] = &[
     // Standard durations
-    (1, 1, 0, 1, 1),   // whole
-    (1, 1, 1, 1, 1),   // dotted whole
-    (1, 2, 0, 1, 1),   // half
-    (1, 2, 1, 1, 1),   // dotted half
-    (1, 4, 0, 1, 1),   // quarter
-    (1, 4, 1, 1, 1),   // dotted quarter
-    (1, 8, 0, 1, 1),   // eighth
-    (1, 8, 1, 1, 1),   // dotted eighth
-    (1, 16, 0, 1, 1),  // 16th
-    (1, 16, 1, 1, 1),  // dotted 16th
-    (1, 32, 0, 1, 1),  // 32nd
-    (1, 32, 1, 1, 1),  // dotted 32nd
-    (1, 64, 0, 1, 1),  // 64th
+    (1, 1, 0, 1, 1),  // whole
+    (1, 1, 1, 1, 1),  // dotted whole
+    (1, 2, 0, 1, 1),  // half
+    (1, 2, 1, 1, 1),  // dotted half
+    (1, 4, 0, 1, 1),  // quarter
+    (1, 4, 1, 1, 1),  // dotted quarter
+    (1, 8, 0, 1, 1),  // eighth
+    (1, 8, 1, 1, 1),  // dotted eighth
+    (1, 16, 0, 1, 1), // 16th
+    (1, 16, 1, 1, 1), // dotted 16th
+    (1, 32, 0, 1, 1), // 32nd
+    (1, 32, 1, 1, 1), // dotted 32nd
+    (1, 64, 0, 1, 1), // 64th
     // Triplets
-    (1, 4, 0, 3, 2),   // triplet quarter
-    (1, 8, 0, 3, 2),   // triplet eighth
-    (1, 16, 0, 3, 2),  // triplet 16th
-    (1, 2, 0, 3, 2),   // triplet half
+    (1, 4, 0, 3, 2),  // triplet quarter
+    (1, 8, 0, 3, 2),  // triplet eighth
+    (1, 16, 0, 3, 2), // triplet 16th
+    (1, 2, 0, 3, 2),  // triplet half
 ];
 
 /// Compute the tick count for a candidate at the given divisions.
-fn candidate_ticks(base_n: i64, base_d: i64, dots: u8, tuplet_actual: u8, tuplet_normal: u8, divisions: u32) -> i64 {
+fn candidate_ticks(
+    base_n: i64,
+    base_d: i64,
+    dots: u8,
+    tuplet_actual: u8,
+    tuplet_normal: u8,
+    divisions: u32,
+) -> i64 {
     let base = Frac::new(base_n, base_d);
     let dot_mult = Frac::from_integer(2) - Frac::new(1, 1_i64 << dots as u32);
     let tuplet_mult = Frac::new(tuplet_normal as i64, tuplet_actual as i64);

@@ -1,10 +1,10 @@
 //! Direction, dynamics, wedge, pedal, harmony, and figured bass parsing.
 
-use crate::ir::direction::*;
-use crate::ir::duration::Duration;
-use crate::ir::harmony::{ChordDegree, ChordPitch, FiguredBass, Figure, Harmony};
 use crate::ir::articulation::DynamicMark;
 use crate::ir::articulation::Wedge;
+use crate::ir::direction::*;
+use crate::ir::duration::Duration;
+use crate::ir::harmony::{ChordDegree, ChordPitch, Figure, FiguredBass, Harmony};
 use crate::ir::Placement;
 
 use super::helpers::XmlNode;
@@ -21,10 +21,7 @@ pub(super) fn parse_harmony_elem(elem: &XmlNode) -> Option<Harmony> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0);
 
-    let kind = elem
-        .child_text("kind")
-        .unwrap_or("major")
-        .to_string();
+    let kind = elem.child_text("kind").unwrap_or("major").to_string();
 
     let bass = elem.find("bass").and_then(|b| {
         let step = b.child_text("bass-step")?.to_string();
@@ -44,10 +41,7 @@ pub(super) fn parse_harmony_elem(elem: &XmlNode) -> Option<Harmony> {
                 .child_text("degree-alter")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
-            let degree_type = d
-                .child_text("degree-type")
-                .unwrap_or("add")
-                .to_string();
+            let degree_type = d.child_text("degree-type").unwrap_or("add").to_string();
             Some(ChordDegree {
                 value,
                 alter,
@@ -82,9 +76,7 @@ pub(super) fn parse_figured_bass_elem(elem: &XmlNode, divisions: i64) -> Figured
         .find_all("figure")
         .iter()
         .map(|f| {
-            let number: Option<u8> = f
-                .child_text("figure-number")
-                .and_then(|s| s.parse().ok());
+            let number: Option<u8> = f.child_text("figure-number").and_then(|s| s.parse().ok());
             let prefix = f.child_text("prefix").map(|s| s.to_string());
             let suffix = f.child_text("suffix").map(|s| s.to_string());
             Figure {

@@ -66,7 +66,13 @@ use postprocess::post_process_beams_and_stems;
 
 /// Tuple of (cumulative position, attributes, directions, left barline, right barline)
 /// used when collecting per-measure metadata for re-splitting.
-type MeasureMeta = (Frac, Option<MeasureAttributes>, Vec<Direction>, Option<Barline>, Option<Barline>);
+type MeasureMeta = (
+    Frac,
+    Option<MeasureAttributes>,
+    Vec<Direction>,
+    Option<Barline>,
+    Option<Barline>,
+);
 
 // ---------------------------------------------------------------------------
 // Clef name → (sign, line)
@@ -217,8 +223,7 @@ impl LyToIrAdapter {
 
     /// Parse LilyPond source text into one or more IR Scores (one per `\score` block).
     fn parse_source_multi(&self, source: &str) -> Result<Vec<Score>> {
-        let mut parser =
-            LilyPondParser::new().map_err(|e| AdapterError::Parse(e.to_string()))?;
+        let mut parser = LilyPondParser::new().map_err(|e| AdapterError::Parse(e.to_string()))?;
         let tree = parser
             .parse(source)
             .map_err(|e| AdapterError::Parse(e.to_string()))?;

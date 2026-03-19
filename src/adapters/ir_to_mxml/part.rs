@@ -29,7 +29,12 @@ impl IrToMxmlAdapter {
         Ok(())
     }
 
-    pub(super) fn write_measure(&self, w: &mut W, measure: &Measure, part_staves: u8) -> Result<()> {
+    pub(super) fn write_measure(
+        &self,
+        w: &mut W,
+        measure: &Measure,
+        part_staves: u8,
+    ) -> Result<()> {
         let mut el = BytesStart::new("measure");
         el.push_attribute(("number", measure.number.to_string().as_str()));
         if measure.implicit {
@@ -208,7 +213,12 @@ impl IrToMxmlAdapter {
         Ok(())
     }
 
-    pub(super) fn write_attributes(&self, w: &mut W, attrs: &MeasureAttributes, multi_measure_rest: Option<u16>) -> Result<()> {
+    pub(super) fn write_attributes(
+        &self,
+        w: &mut W,
+        attrs: &MeasureAttributes,
+        multi_measure_rest: Option<u16>,
+    ) -> Result<()> {
         w.write_event(Event::Start(BytesStart::new("attributes")))?;
         text_element(w, "divisions", &self.divisions.to_string())?;
 
@@ -361,8 +371,7 @@ impl IrToMxmlAdapter {
                 VoiceElement::Backup(_) => {} // backups don't advance time
             }
         }
-        let result =
-            total * crate::ir::duration::Frac::from_integer(4 * self.divisions as i64);
+        let result = total * crate::ir::duration::Frac::from_integer(4 * self.divisions as i64);
         *result.numer() / *result.denom()
     }
 }

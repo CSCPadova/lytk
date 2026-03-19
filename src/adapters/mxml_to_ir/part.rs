@@ -107,21 +107,19 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                 let is_chord = child.find("chord").is_some();
                 let is_grace = child.find("grace").is_some();
                 // Detect arpeggio from notations (applies to chord)
-                let arpeggio = child
-                    .find("notations")
-                    .and_then(|n| {
-                        if let Some(arp) = n.find("arpeggiate") {
-                            Some(match arp.attr("direction").unwrap_or("") {
-                                "up" => ArpeggioType::Up,
-                                "down" => ArpeggioType::Down,
-                                _ => ArpeggioType::Up,
-                            })
-                        } else if n.find("non-arpeggiate").is_some() {
-                            Some(ArpeggioType::NonArpeggio)
-                        } else {
-                            None
-                        }
-                    });
+                let arpeggio = child.find("notations").and_then(|n| {
+                    if let Some(arp) = n.find("arpeggiate") {
+                        Some(match arp.attr("direction").unwrap_or("") {
+                            "up" => ArpeggioType::Up,
+                            "down" => ArpeggioType::Down,
+                            _ => ArpeggioType::Up,
+                        })
+                    } else if n.find("non-arpeggiate").is_some() {
+                        Some(ArpeggioType::NonArpeggio)
+                    } else {
+                        None
+                    }
+                });
                 let result = parse_note(child, divisions);
                 // Advance forward position for non-chord, non-grace notes
                 let dur_val = child.child_i64("duration", 0);
@@ -234,11 +232,7 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
 /// When a `<chord/>` flag is present, merge the note into the previous note
 /// or chord in the voice element list. If `arpeggio` is provided, it is
 /// applied when a new Chord is formed from Note→Chord conversion.
-fn merge_chord(
-    elements: &mut Vec<VoiceElement>,
-    note: Note,
-    arpeggio: Option<ArpeggioType>,
-) {
+fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note, arpeggio: Option<ArpeggioType>) {
     if let Some(last) = elements.last_mut() {
         match last {
             VoiceElement::Chord(chord) => {

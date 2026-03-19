@@ -9,10 +9,8 @@
 
 use std::path::Path;
 
-use midly::num::{u4, u7, u15, u24, u28};
-use midly::{
-    Format, Header, MidiMessage, MetaMessage, Smf, Timing, TrackEvent, TrackEventKind,
-};
+use midly::num::{u15, u24, u28, u4, u7};
+use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
 use num::rational::Ratio;
 
 use super::{AdapterError, FromIrAdapter, Result};
@@ -55,10 +53,7 @@ impl IrToMidiAdapter {
 
     /// Render a score to raw MIDI bytes.
     pub fn convert_bytes(&self, score: &Score) -> Result<Vec<u8>> {
-        let header = Header::new(
-            Format::Parallel,
-            Timing::Metrical(u15::new(self.divisions)),
-        );
+        let header = Header::new(Format::Parallel, Timing::Metrical(u15::new(self.divisions)));
         let mut smf = Smf::new(header);
 
         // Track 0: conductor (tempo, time sig, key sig)
@@ -122,9 +117,7 @@ impl IrToMidiAdapter {
                                 let delta = abs_tick - last_emit_tick;
                                 events.push(TrackEvent {
                                     delta: u28::new(delta as u32),
-                                    kind: TrackEventKind::Meta(MetaMessage::Tempo(
-                                        u24::new(uspq),
-                                    )),
+                                    kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(uspq))),
                                 });
                                 last_emit_tick = abs_tick;
                                 if abs_tick == 0 {
@@ -148,9 +141,7 @@ impl IrToMidiAdapter {
                         events.push(TrackEvent {
                             delta: u28::new(delta as u32),
                             kind: TrackEventKind::Meta(MetaMessage::TimeSignature(
-                                num,
-                                den_pow,
-                                24, // MIDI clocks per metronome click
+                                num, den_pow, 24, // MIDI clocks per metronome click
                                 8,  // 32nd notes per quarter note
                             )),
                         });
@@ -371,8 +362,7 @@ impl IrToMidiAdapter {
                 let beats_frac = ts.beats_fraction();
                 // beats_fraction is already beats/beat_type
                 // ticks = beats_frac * 4 * divisions  (since quarter=1/4 of whole)
-                let ticks_frac =
-                    beats_frac * Ratio::from_integer(4 * self.divisions as i64);
+                let ticks_frac = beats_frac * Ratio::from_integer(4 * self.divisions as i64);
                 return (*ticks_frac.numer() / *ticks_frac.denom()).max(0) as u64;
             }
         }
