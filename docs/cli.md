@@ -19,20 +19,11 @@ cargo build --release
 export PATH="$PATH:$(pwd)/target/release"
 ```
 
-Build with MIDI support:
-
-```bash
-cargo build --release --features midi
-```
-
 ### Python package
 
 ```bash
 # Development install (requires Rust toolchain)
 uv sync && maturin develop
-
-# With MIDI support
-maturin develop --features midi
 ```
 
 ---
@@ -234,9 +225,6 @@ between using the CLI and the Python API.
 ```bash
 # Development
 uv sync && maturin develop
-
-# With MIDI
-maturin develop --features midi
 ```
 
 ### Format conversion
@@ -264,7 +252,7 @@ xml_text = lytk.to_musicxml(score)
 ly_text = lytk.to_lilypond(score, language="deutsch")
 ```
 
-### MIDI (requires `--features midi`)
+### MIDI
 
 ```python
 score = lytk.from_midi("input.mid")

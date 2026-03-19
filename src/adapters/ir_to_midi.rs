@@ -91,6 +91,19 @@ impl FromIrAdapter for IrToMidiAdapter {
     }
 }
 
+impl super::FromMusicAdapter for IrToMidiAdapter {
+    fn convert_music(&self, _doc: &crate::ir::music::MusicDocument) -> Result<String> {
+        Err(AdapterError::Unsupported(
+            "MIDI is binary; use write_music()".into(),
+        ))
+    }
+
+    fn write_music(&self, doc: &crate::ir::music::MusicDocument, path: &Path) -> Result<()> {
+        let score = crate::ir::lower::lower_to_score(doc);
+        self.write(&score, path)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Conductor track (tempo, time signature, key signature)
 // ---------------------------------------------------------------------------
@@ -403,6 +416,7 @@ mod tests {
         part.measures.push(measure);
         Score {
             metadata: ScoreMetadata::default(),
+            page_layout: None,
             children: vec![ScoreChild::Part(part)],
         }
     }

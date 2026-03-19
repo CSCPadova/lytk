@@ -91,7 +91,6 @@ MIDI (.mid)           ──→  IR (Score tree)  ──→  LilyPond / MusicXML
 
 ### Not yet implemented
 
-- MIDI first-class (currently behind `--features midi`; planned as default)
 - music21-parity MIR features (see roadmap)
 - ABC notation adapter
 - MEI adapter
@@ -106,10 +105,6 @@ See [docs/development.md](docs/development.md) for the full guide.
 # Rust — compile and test
 cargo build
 cargo test
-
-# With MIDI support
-cargo build --features midi
-cargo test --features midi
 
 # Python extension — dev install
 uv sync && maturin develop

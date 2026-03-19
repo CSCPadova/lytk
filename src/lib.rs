@@ -338,7 +338,6 @@ fn to_musicxml(score: &PyScore, path: Option<&str>) -> PyResult<String> {
 }
 
 /// Parse a Standard MIDI File into a :class:`Score`.
-#[cfg(feature = "midi")]
 #[pyfunction]
 fn from_midi(path: &str) -> PyResult<PyScore> {
     let bytes = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
@@ -350,7 +349,6 @@ fn from_midi(path: &str) -> PyResult<PyScore> {
 }
 
 /// Write a :class:`Score` to a Standard MIDI File.
-#[cfg(feature = "midi")]
 #[pyfunction]
 fn to_midi(score: &PyScore, path: &str) -> PyResult<()> {
     let adapter = adapters::ir_to_midi::IrToMidiAdapter::new();
@@ -435,11 +433,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(to_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(to_musicxml, m)?)?;
 
-    #[cfg(feature = "midi")]
-    {
-        m.add_function(wrap_pyfunction!(from_midi, m)?)?;
-        m.add_function(wrap_pyfunction!(to_midi, m)?)?;
-    }
+    m.add_function(wrap_pyfunction!(from_midi, m)?)?;
+    m.add_function(wrap_pyfunction!(to_midi, m)?)?;
 
     // Transform functions
     m.add_function(wrap_pyfunction!(transpose, m)?)?;

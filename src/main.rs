@@ -11,9 +11,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use rayon::prelude::*;
 
-#[cfg(feature = "midi")]
 use _core::adapters::ir_to_midi::IrToMidiAdapter;
-#[cfg(feature = "midi")]
 use _core::adapters::midi_to_ir::MidiToIrAdapter;
 use _core::adapters::{
     ir_to_ly::IrToLyAdapter,
@@ -106,7 +104,6 @@ enum Command {
 enum OutputFormat {
     Ly,
     Xml,
-    #[cfg(feature = "midi")]
     Midi,
 }
 
@@ -318,7 +315,6 @@ where
     let out_ext = match format {
         Some(OutputFormat::Ly) => "ly",
         Some(OutputFormat::Xml) => "xml",
-        #[cfg(feature = "midi")]
         Some(OutputFormat::Midi) => "mid",
         None => invert_ext(file),
     };
@@ -359,10 +355,10 @@ fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
 
 fn is_supported_ext(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str());
-    let base = matches!(ext, Some("ly" | "ily" | "xml" | "musicxml" | "mxl"));
-    #[cfg(feature = "midi")]
-    let base = base || matches!(ext, Some("mid" | "midi"));
-    base
+    matches!(
+        ext,
+        Some("ly" | "ily" | "xml" | "musicxml" | "mxl" | "mid" | "midi")
+    )
 }
 
 /// Infer the "opposite" output extension for convert.
@@ -370,7 +366,6 @@ fn invert_ext(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("ly" | "ily") => "xml",
         Some("xml" | "musicxml" | "mxl") => "ly",
-        #[cfg(feature = "midi")]
         Some("mid" | "midi") => "ly",
         _ => "ly",
     }
@@ -385,7 +380,6 @@ fn detect_input_format(path: &Path) -> anyhow::Result<InputFormat> {
     match ext {
         "ly" | "ily" => Ok(InputFormat::LilyPond),
         "xml" | "musicxml" | "mxl" => Ok(InputFormat::MusicXml),
-        #[cfg(feature = "midi")]
         "mid" | "midi" => Ok(InputFormat::Midi),
         _ => Err(anyhow::anyhow!("unsupported input format: .{ext}")),
     }
@@ -394,7 +388,6 @@ fn detect_input_format(path: &Path) -> anyhow::Result<InputFormat> {
 enum InputFormat {
     LilyPond,
     MusicXml,
-    #[cfg(feature = "midi")]
     Midi,
 }
 
@@ -403,7 +396,6 @@ fn parse_input(path: &Path) -> anyhow::Result<Score> {
     let score = match fmt {
         InputFormat::LilyPond => LyToIrAdapter::new().convert_file(path)?,
         InputFormat::MusicXml => MxmlToIrAdapter::new().convert_file(path)?,
-        #[cfg(feature = "midi")]
         InputFormat::Midi => {
             let bytes = std::fs::read(path)?;
             MidiToIrAdapter::new().convert_bytes(&bytes)?
@@ -418,7 +410,6 @@ fn parse_input_multi(path: &Path) -> anyhow::Result<Vec<Score>> {
     match fmt {
         InputFormat::LilyPond => Ok(LyToIrAdapter::new().convert_file_multi(path)?),
         InputFormat::MusicXml => Ok(vec![MxmlToIrAdapter::new().convert_file(path)?]),
-        #[cfg(feature = "midi")]
         InputFormat::Midi => {
             let bytes = std::fs::read(path)?;
             Ok(vec![MidiToIrAdapter::new().convert_bytes(&bytes)?])
@@ -434,7 +425,6 @@ fn detect_output_format(path: &Path, forced: Option<OutputFormat>) -> anyhow::Re
     match ext {
         "ly" | "ily" => Ok(OutputFormat::Ly),
         "xml" | "musicxml" => Ok(OutputFormat::Xml),
-        #[cfg(feature = "midi")]
         "mid" | "midi" => Ok(OutputFormat::Midi),
         _ => Err(anyhow::anyhow!(
             "cannot infer output format from .{ext}; use --format"
@@ -452,7 +442,6 @@ fn write_output(score: &Score, path: &Path, format: Option<OutputFormat>) -> any
         OutputFormat::Xml => {
             IrToMxmlAdapter::new().write(score, path)?;
         }
-        #[cfg(feature = "midi")]
         OutputFormat::Midi => {
             IrToMidiAdapter::new().write(score, path)?;
         }

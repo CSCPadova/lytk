@@ -51,8 +51,9 @@ Recursive `\include` expander:
 `Transpose`, `ChangeLanguage`, `Invert`, `Retrograde`. Composable via `apply_all`.
 Dual OOP + functional API. Both `Transform` (Score) and `MusicTransform` (MusicDocument) traits.
 
-### MIDI Adapter (optional)
-`midly`-based `MidiToIr` and `IrToMidi` behind `--features midi`.
+### MIDI Adapter
+`midly`-based `MidiToIr` and `IrToMidi`, included by default. `ToMusicAdapter`/`FromMusicAdapter`
+bridging via lift/lower passes.
 
 ### CLI
 `convert`, `transpose`, `info`, `flatten` subcommands. Batch mode with rayon (`-j`).
@@ -60,7 +61,7 @@ Format auto-detection. Multi-movement output (`_01`, `_02`, …).
 
 ### Python Bindings
 Full PyO3 API: `from_musicxml`, `from_lilypond`, `to_musicxml`, `to_lilypond`,
-`from_midi`/`to_midi` (feature-gated), `transpose`, `change_language`, `invert`,
+`from_midi`/`to_midi`, `transpose`, `change_language`, `invert`,
 `retrograde`, `Score.to_json`/`from_json`/`to_dict`/`from_dict`.
 
 ### Benchmarks
@@ -95,17 +96,21 @@ Expanded test suite from 357 to 691 tests:
 
 ---
 
-## In Progress / Near-term
+## Completed ✅
 
-### Epic 4: MIDI as First-Class
+### Epic 4: MIDI as First-Class ✅
 
 **Goal:** Remove feature gate, add full test coverage.
 
 | Task | Description | Status |
 |------|-------------|--------|
-| E4T1 | Move midly to default dependency, remove feature gates | Planned |
-| E4T2 | MIDI round-trip tests | Planned |
-| E4T3 | ToMusicAdapter/FromMusicAdapter for MIDI | Planned |
+| E4T1 | Move midly to default dependency, remove feature gates | ✅ Done |
+| E4T2 | MIDI round-trip tests | ✅ Done |
+| E4T3 | ToMusicAdapter/FromMusicAdapter for MIDI | ✅ Done |
+
+---
+
+## In Progress / Near-term
 
 ### Epic 5: Complete LilyPond Parser
 
@@ -174,8 +179,8 @@ Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Tra
 |-------|-------|-------|
 | 1 | E0 ✅ | Stabilization: warnings, test fix, CI |
 | 2 | E2 ✅ | Modularity: split all large files |
-| 3 | E1 + E4T1 | Architecture: Forward/Backup removal, parser/emitter rewrite, MIDI ungating |
-| 4 | E3 + E4T2-3 | Test coverage: unit, round-trip, proptest, MIDI tests |
+| 3 | E1 ✅ | Architecture: Forward/Backup removal, parser/emitter rewrite |
+| 4 | E3 ✅ + E4 ✅ | Test coverage + MIDI as first-class |
 | 5 | E5 + E6 + E7 | Feature completeness: remaining parser/emitter gaps |
 | 6 | E8 (ABC first) | New formats: ABC, then MEI, then Humdrum |
 | 7 | E9 + E1T5 | Distribution: Python stubs, wheels, PyPI |

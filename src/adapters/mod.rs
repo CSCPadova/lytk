@@ -2,9 +2,6 @@
 //!
 //! Every adapter implements [`ToIrAdapter`] (parse a format into IR) or
 //! [`FromIrAdapter`] (emit IR into a format), or both.
-//!
-//! MusicXML and LilyPond adapters are always compiled. Optional adapters
-//! (MIDI, ABC) are gated behind Cargo feature flags.
 
 use std::path::Path;
 
@@ -20,9 +17,7 @@ pub mod ly_to_ir;
 pub mod mxl_zip;
 pub mod mxml_to_ir;
 
-#[cfg(feature = "midi")]
 pub mod ir_to_midi;
-#[cfg(feature = "midi")]
 pub mod midi_to_ir;
 
 // ---------------------------------------------------------------------------

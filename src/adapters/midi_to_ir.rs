@@ -15,6 +15,7 @@ use crate::ir::articulation::Placement;
 use crate::ir::direction::{Direction, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{Clef, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
+use crate::ir::music::MusicDocument;
 use crate::ir::note::{Note, Rest, VoiceElement};
 use crate::ir::part::Part;
 use crate::ir::pitch::{Alter, Pitch, PitchStep};
@@ -68,6 +69,19 @@ impl ToIrAdapter for MidiToIrAdapter {
     fn convert_str(&self, _text: &str) -> Result<Score> {
         Err(AdapterError::Unsupported(
             "MIDI is binary; use convert_file() or convert_bytes()".into(),
+        ))
+    }
+}
+
+impl super::ToMusicAdapter for MidiToIrAdapter {
+    fn convert_file_to_music(&self, path: &Path) -> Result<MusicDocument> {
+        let score = self.convert_file(path)?;
+        Ok(crate::ir::lift::lift_to_music(&score))
+    }
+
+    fn convert_str_to_music(&self, _text: &str) -> Result<MusicDocument> {
+        Err(AdapterError::Unsupported(
+            "MIDI is binary; use convert_file_to_music()".into(),
         ))
     }
 }

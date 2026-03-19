@@ -32,7 +32,7 @@ cargo run -- transpose input.ly -o output.ly -s 3
 cargo run -- flatten input.ly -o output.ly
 ```
 
-MIDI support requires `cargo build --features midi`.
+MIDI support is included by default.
 
 ## Architecture
 

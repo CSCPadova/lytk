@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-03-20 — Epic 4: MIDI as First-Class ✅
+
+### E4T1: Remove MIDI feature gate
+- Moved `midly` from optional dependency (`dep:midly` behind `midi` feature) to default dependency
+- Removed all 17 `#[cfg(feature = "midi")]` gates across `src/adapters/mod.rs`, `src/lib.rs`, `src/main.rs`
+- Updated CI workflow (`.github/workflows/ci.yml`) — removed `--features midi` from clippy and test jobs
+- Updated docs: `README.md`, `CLAUDE.md`, `docs/development.md`, `docs/cli.md` — all `--features midi` references removed
+- MIDI support is now always compiled; no flag needed
+
+### E4T2: MIDI round-trip tests
+- Added 17 MIDI round-trip integration tests in `tests/round_trip.rs`:
+  - Simple melody, mixed durations, dotted notes, rests, multiple measures
+  - Two parts, 3/4 time, 6/8 time, key signatures with sharps, whole notes
+  - Tempo markings, chromatic pitches/accidentals, wide pitch range, eighth notes
+  - Cross-format tests: LilyPond→MIDI→Score, MusicXML→MIDI→MusicXML
+  - CLI MIDI round-trip test
+- Added 4 MIDI CLI integration tests in `tests/cli.rs`:
+  - XML→MIDI conversion, MIDI→LY, MIDI→XML, `info` on MIDI file
+- Fixed missing `page_layout` field in `ir_to_midi.rs` test helper
+
+### E4T3: ToMusicAdapter/FromMusicAdapter for MIDI
+- Implemented `ToMusicAdapter` for `MidiToIrAdapter` — bridges via `convert_file` → `lift_to_music`
+- Implemented `FromMusicAdapter` for `IrToMidiAdapter` — bridges via `lower_to_score` → `write`
+- Binary format: `convert_music()` / `convert_str_to_music()` return `Unsupported`; `write_music()` / `convert_file_to_music()` work
+- Added 3 Music adapter integration tests: MIDI→Music, Music→MIDI, full LY→Music→MIDI→Music→LY round-trip
+
+### Test counts
+- Total: 731 tests (437 unit + 19 CLI + 209 fixture regression + 20 proptest + 45 round-trip + 1 doc)
+- All passing, clippy clean
+
+### Next up
+- **Epic 5: Complete LilyPond Parser** — `\chordmode`, `\figuremode` robustness, `\partial` in multi-movement
+
+---
+
 ## 2026-03-18 — Epic 0: Housekeeping & Stabilization ✅
 
 ### E0T1: Fix compiler warnings

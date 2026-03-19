@@ -304,3 +304,120 @@ fn convert_unknown_output_format_fails() {
         .failure()
         .stderr(predicate::str::contains("cannot infer output format"));
 }
+
+// ---------------------------------------------------------------------------
+// MIDI CLI tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn convert_xml_to_midi() {
+    let tmp = TempDir::new().unwrap();
+    let out = tmp.path().join("output.mid");
+
+    lytk()
+        .args([
+            "convert",
+            "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let bytes = fs::read(&out).unwrap();
+    assert_eq!(&bytes[0..4], b"MThd", "output should be a valid MIDI file");
+}
+
+#[test]
+fn convert_midi_to_ly() {
+    let tmp = TempDir::new().unwrap();
+    let mid_out = tmp.path().join("test.mid");
+    let ly_out = tmp.path().join("output.ly");
+
+    // First create a MIDI file from XML
+    lytk()
+        .args([
+            "convert",
+            "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+            "-o",
+            mid_out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Then convert MIDI back to LilyPond
+    lytk()
+        .args([
+            "convert",
+            mid_out.to_str().unwrap(),
+            "-o",
+            ly_out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let ly = fs::read_to_string(&ly_out).unwrap();
+    assert!(
+        ly.contains("\\version"),
+        "LilyPond output should contain version"
+    );
+}
+
+#[test]
+fn convert_midi_to_xml() {
+    let tmp = TempDir::new().unwrap();
+    let mid_out = tmp.path().join("test.mid");
+    let xml_out = tmp.path().join("output.xml");
+
+    // First create a MIDI file
+    lytk()
+        .args([
+            "convert",
+            "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+            "-o",
+            mid_out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // MIDI → MusicXML
+    lytk()
+        .args([
+            "convert",
+            mid_out.to_str().unwrap(),
+            "-o",
+            xml_out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let xml = fs::read_to_string(&xml_out).unwrap();
+    assert!(
+        xml.contains("score-partwise"),
+        "should produce valid MusicXML"
+    );
+}
+
+#[test]
+fn info_midi_file() {
+    let tmp = TempDir::new().unwrap();
+    let mid_out = tmp.path().join("test.mid");
+
+    // Create a MIDI file
+    lytk()
+        .args([
+            "convert",
+            "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+            "-o",
+            mid_out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Run info on it
+    lytk()
+        .args(["info", mid_out.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Parts:"));
+}

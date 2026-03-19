@@ -47,12 +47,6 @@ target/debug/lytk          # debug
 target/release/lytk        # release
 ```
 
-Build with the MIDI feature:
-
-```bash
-cargo build --features midi
-```
-
 Check for errors without producing a binary (fastest feedback loop):
 
 ```bash
@@ -74,12 +68,6 @@ Or in one step via uv:
 
 ```bash
 uv run maturin develop
-```
-
-Build with MIDI support enabled:
-
-```bash
-maturin develop --features midi
 ```
 
 Build a wheel (for distribution):
@@ -204,16 +192,7 @@ lytk info input.xml
 
 ## Cargo Features
 
-| Feature | Default | Description |
-|---|---|---|
-| `midi` | off | Enable MIDI adapter (adds `midly` dependency). Planned to become a default dependency in a future release. |
-
-Enable a feature at build time:
-
-```bash
-cargo build --features midi
-cargo test --features midi
-```
+MIDI support is included by default (the `midly` crate is a standard dependency).
 
 ---
 
