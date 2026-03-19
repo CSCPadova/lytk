@@ -1389,3 +1389,287 @@ fn test_music_to_mxml_round_trip() {
     assert!(xml.contains("<time>"), "should contain time signature");
     assert!(xml.contains("<step>C</step>"), "should contain C note");
 }
+
+// ---------------------------------------------------------------------------
+// E3T2: Extended unit tests for ir_to_mxml emission
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_emit_spacer_rest_as_forward() {
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        let mut spacer = crate::ir::note::Rest::new(Duration::quarter());
+        spacer.is_spacer = true;
+        spacer.voice = 2;
+        part.measures[0].voices.push(Voice {
+            number: 2,
+            elements: vec![VoiceElement::Rest(spacer)],
+        });
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<forward>"),
+        "spacer rest should emit as <forward>: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_dotted_note() {
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::C, 4),
+            Duration::dotted(num::rational::Ratio::new(1, 2), 1),
+        )))];
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(xml.contains("<dot/>"), "should emit dot element: {xml}");
+    assert!(
+        xml.contains("<type>half</type>"),
+        "should emit half type: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_key_signature_minor() {
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        part.measures[0].attributes.as_mut().unwrap().key = Some(KeySignature {
+            fifths: -3,
+            mode: crate::ir::measure::KeyMode::Minor,
+        });
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<fifths>-3</fifths>"),
+        "should emit key: {xml}"
+    );
+    assert!(
+        xml.contains("<mode>minor</mode>"),
+        "should emit mode: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_tuplet_display() {
+    use crate::ir::articulation::TupletDisplay;
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        let mut note = Note::new(
+            Pitch::new(PitchStep::C, 4),
+            Duration {
+                base: num::rational::Ratio::new(1, 8),
+                dots: 0,
+                tuplet_normal: 2,
+                tuplet_actual: 3,
+            },
+        );
+        note.tuplet = Some(TupletDisplay {
+            tuplet_type: StartStop::Start,
+            bracket: true,
+            show_number: "actual".to_string(),
+        });
+        part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(note))];
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<time-modification>"),
+        "should emit time-modification: {xml}"
+    );
+    assert!(
+        xml.contains("<actual-notes>3</actual-notes>"),
+        "should emit actual-notes: {xml}"
+    );
+    assert!(
+        xml.contains("<normal-notes>2</normal-notes>"),
+        "should emit normal-notes: {xml}"
+    );
+    assert!(
+        xml.contains("<tuplet type=\"start\""),
+        "should emit tuplet display: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_metadata_fields() {
+    let mut score = make_simple_score();
+    score.metadata.title = Some("Test Title".to_string());
+    score.metadata.composer = Some("Test Composer".to_string());
+    score.metadata.arranger = Some("Test Arranger".to_string());
+    score.metadata.lyricist = Some("Test Lyricist".to_string());
+
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<movement-title>Test Title</movement-title>"),
+        "title: {xml}"
+    );
+    assert!(xml.contains("Test Composer"), "composer: {xml}");
+    assert!(xml.contains("Test Arranger"), "arranger: {xml}");
+    assert!(xml.contains("Test Lyricist"), "lyricist: {xml}");
+}
+
+#[test]
+fn test_emit_anacrusis_partial() {
+    let mut score = make_simple_score();
+    score.metadata.partial_duration = Some(Duration::quarter());
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        part.measures[0].implicit = true;
+        part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::G, 4),
+            Duration::quarter(),
+        )))];
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("implicit=\"yes\""),
+        "should emit implicit measure: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_slur_start_stop() {
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        let mut n1 = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        n1.slurs.push(SlurEvent {
+            slur_type: StartStop::Start,
+            number: 1,
+            placement: Placement::Above,
+        });
+        let mut n2 = Note::new(Pitch::new(PitchStep::D, 4), Duration::quarter());
+        n2.slurs.push(SlurEvent {
+            slur_type: StartStop::Stop,
+            number: 1,
+            placement: Placement::Unspecified,
+        });
+        part.measures[0].voices[0].elements = vec![
+            VoiceElement::Note(Box::new(n1)),
+            VoiceElement::Note(Box::new(n2)),
+        ];
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<slur type=\"start\""),
+        "should emit slur start: {xml}"
+    );
+    assert!(
+        xml.contains("<slur type=\"stop\""),
+        "should emit slur stop: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_lyrics() {
+    use crate::ir::articulation::{LyricSyllable, SyllabicType};
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.lyrics.push(LyricSyllable {
+            text: "Hel".to_string(),
+            syllabic: SyllabicType::Begin,
+            number: 1,
+            extend: false,
+            elision: false,
+        });
+        part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(note))];
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(xml.contains("<lyric"), "should emit lyric: {xml}");
+    assert!(
+        xml.contains("<syllabic>begin</syllabic>"),
+        "should emit syllabic: {xml}"
+    );
+    assert!(xml.contains("<text>Hel</text>"), "should emit text: {xml}");
+}
+
+#[test]
+fn test_emit_ornaments() {
+    use crate::ir::articulation::Ornament;
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.ornaments.push(Ornament {
+            name: "trill-mark".to_string(),
+            placement: Placement::Above,
+        });
+        note.ornaments.push(Ornament {
+            name: "mordent".to_string(),
+            placement: Placement::Unspecified,
+        });
+        part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(note))];
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(xml.contains("<trill-mark"), "should emit trill-mark: {xml}");
+    assert!(xml.contains("<mordent"), "should emit mordent: {xml}");
+}
+
+#[test]
+fn test_emit_technicals() {
+    use crate::ir::articulation::Technical;
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.technicals.push(Technical {
+            name: "up-bow".to_string(),
+            value: String::new(),
+        });
+        note.technicals.push(Technical {
+            name: "fingering".to_string(),
+            value: "3".to_string(),
+        });
+        part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(note))];
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(xml.contains("<up-bow"), "should emit up-bow: {xml}");
+    assert!(
+        xml.contains("<fingering>3</fingering>"),
+        "should emit fingering: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_rights_metadata() {
+    let mut score = make_simple_score();
+    score
+        .metadata
+        .rights
+        .push(("".to_string(), "Copyright 2024".to_string()));
+
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<rights>Copyright 2024</rights>"),
+        "should emit rights: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_transpose_attribute() {
+    use crate::ir::measure::Transpose;
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        part.measures[0].attributes.as_mut().unwrap().transpose = Some(Transpose {
+            diatonic: -1,
+            chromatic: -2,
+            octave_change: 0,
+        });
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(xml.contains("<transpose>"), "should emit transpose: {xml}");
+    assert!(
+        xml.contains("<chromatic>-2</chromatic>"),
+        "should emit chromatic: {xml}"
+    );
+}
+
+#[test]
+fn test_emit_divisions_auto_computed() {
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::C, 4),
+            Duration::new(num::rational::Ratio::new(1, 32)),
+        )))];
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(xml.contains("<divisions>"), "should emit divisions: {xml}");
+}

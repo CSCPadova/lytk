@@ -74,47 +74,28 @@ transpose, ~40× for language change.
 - **E0T4:** Added gitignore patterns for scratch/test output files at root level
 - **E0T5:** Created `.github/workflows/ci.yml`: fmt, clippy (with midi feature), test (Linux/macOS/Windows), Python tests
 
+### Epic 1: Complete the Two-Layer IR Architecture ✅
+Music tree types (`Music` enum), `MusicDocument`, lift/lower passes, `MusicTransform` trait
+(Transpose, Invert, Retrograde, ChangeLanguage), direct Music tree → LilyPond emitter,
+CLI LY→LY via Music tree path, Python `MusicDocument` bindings.
+
+### Epic 2: Break Up Monolithic Files ✅
+Split `ly_to_ir.rs` (~8000→module dir), `ir_to_ly.rs` (~3400→module dir),
+`ir_to_mxml.rs` (~2800→module dir), `mxml_to_ir.rs` (~2600→module dir),
+`lower.rs` (~1400→sub-modules). Pure refactor, no functional changes.
+
+### Epic 3: Test Coverage ✅
+Expanded test suite from 357 to 691 tests:
+- **E3T1:** mxml_to_ir unit tests — 50 new tests (20→70 total)
+- **E3T2:** ir_to_mxml unit tests — 14 new tests (55→69 total)
+- **E3T3:** ly_to_ir unit tests — 20 new tests (81→101 total)
+- **E3T4:** Fixture regression tests — 209 tests covering all 143 XML, 10 MXL, 35 LY fixtures + cross-format (XML→LY, XML→MusicXML)
+- **E3T5:** Round-trip testing framework — 25 integration tests (MusicXML↔Score, LilyPond↔Score, cross-format, fixture-based)
+- **E3T6:** Property-based tests with proptest — 20 tests for Pitch/Duration/Transform algebraic properties (transpose round-trip, invert self-inverse, retrograde self-inverse, duration monotonicity)
+
 ---
 
 ## In Progress / Near-term
-
-
-### Epic 2: Break Up Monolithic Files ✅
-
-**Goal:** Split large files into focused, testable modules. Pure refactor — no functional changes.
-
-| Task | Description | Status |
-|------|-------------|--------|
-| E2T1 | Split `ly_to_ir.rs` (~8000 lines) into module directory | ✅ |
-| E2T2 | Split `ir_to_ly.rs` (~3400 lines) into module directory | ✅ |
-| E2T3 | Split `ir_to_mxml.rs` (~2800 lines) into module directory | ✅ |
-| E2T4 | Split `mxml_to_ir.rs` (~2600 lines) into module directory | ✅ |
-| E2T5 | Split `lower.rs` (~1400 lines) into sub-modules | ✅ |
-
-### Epic 1: Complete the Two-Layer IR Architecture ✅
-
-**Goal:** Finish the architectural vision — Music tree as primary IR, Score only for export.
-
-| Task | Description | Status |
-|------|-------------|--------|
-| E1T1 | Remove Forward/Backup from VoiceElement — spacer rests replace Forward, ir_to_mxml emits `<forward>` for spacers | ✅ |
-| E1T2 | Interface inversion — Music tree as recommended path, Score path preserved for performance; full native parser deferred | ✅ |
-| E1T3 | Direct Music tree → LilyPond emitter (`music_emit.rs`, 530 lines, 17 tests) | ✅ |
-| E1T4 | CLI LY→LY conversion routed through Music tree path | ✅ |
-| E1T5 | Python bindings: `MusicDocument` class, `from_lilypond_music`, `to_lilypond_music` | ✅ |
-
-### Epic 3: Test Coverage
-
-**Goal:** Comprehensive unit, integration, round-trip, and property-based tests.
-
-| Task | Description | Status |
-|------|-------------|--------|
-| E3T1 | Unit tests for `mxml_to_ir` parsing functions | Planned |
-| E3T2 | Unit tests for `ir_to_mxml` emission functions | Planned |
-| E3T3 | Unit tests for `ly_to_ir` sub-parsers | Planned |
-| E3T4 | Expand fixture-based regression tests | Planned |
-| E3T5 | Round-trip testing framework (MusicXML↔Score, LilyPond↔Score) | Planned |
-| E3T6 | Property-based tests with proptest | Planned |
 
 ### Epic 4: MIDI as First-Class
 

@@ -119,4 +119,54 @@ All 341 unit tests + 15 CLI integration tests pass, clippy clean.
 - Both Score and MusicDocument paths are available from Python
 
 ### Next up
-- **Epic 3: Test Coverage** — comprehensive unit, integration, round-trip, and property-based tests
+- **Epic 4: MIDI as First-Class** — remove feature gate, add full test coverage, Music tree adapters
+
+---
+
+## 2025-07-14 — Epic 3: Test Coverage ✅
+
+**Goal:** Comprehensive unit, integration, round-trip, and property-based tests.
+
+Expanded test suite from 357 to 691 tests. All pass, clippy clean.
+
+### E3T1: mxml_to_ir unit tests ✅
+- Added 50 new tests to `src/adapters/mxml_to_ir/tests.rs` (20→70 total)
+- Coverage: XmlNode helpers, note parsing edge cases (dotted, tuplets, ties, slurs, articulations, ornaments, technicals, fermata, lyrics, beams), direction parsing, barlines, attributes, metadata, harmony, figured bass
+
+### E3T2: ir_to_mxml unit tests ✅
+- Added 14 new tests to `src/adapters/ir_to_mxml/tests.rs` (55→69 total)
+- Coverage: spacer-as-forward, dotted note, key signature minor, tuplet display, metadata fields, anacrusis partial, slur start/stop, lyrics, ornaments, technicals, rights metadata, transpose attribute, divisions auto-computed
+- Pattern: `if let ScoreChild::Part(ref mut part) = score.children[0]` blocks to avoid borrow checker conflicts
+
+### E3T3: ly_to_ir unit tests ✅
+- Added 20 new tests to `src/adapters/ly_to_ir/tests.rs` (81→101 total)
+- Coverage: multi-measure rest expansion, barline types (`\bar "|."`, `\bar "||"`), tempo parsing, multi-voice `\\`, shorthand articulations, slur events, appoggiatura, dynamics context merge, time signature synchronization, chained variable resolution, voiceOne/Two, `\once \override`, `\skip`, fermata, PianoStaff, tied notes, relative octave
+
+### E3T4: Fixture regression tests ✅
+- Created `tests/fixture_regression.rs` with 209 tests
+- All 143 XML fixtures: parse → Score, assert non-empty parts
+- All 10 MXL fixtures: decompress → parse → Score
+- All 35 LY fixtures (named + UUID): parse → Score, no panic
+- 14 cross-format XML→LY regression tests
+- 8 cross-format XML→MusicXML regression tests
+- Uses macro-generated test functions for per-fixture isolation
+
+### E3T5: Round-trip testing framework ✅
+- Created `tests/round_trip.rs` with 25 integration tests
+- Helper functions: `count_notes()`, `count_rests()`, `collect_pitches()`, `assert_mxml_roundtrip()`, `assert_ly_roundtrip()`
+- Categories: MusicXML round-trips (simple melody, chords, dotted, two parts), LilyPond round-trips (simple, key+time, chords), cross-format (MusicXML→LY), MXL fixture round-trips (4), XML test suite round-trips (13)
+
+### E3T6: Property-based tests with proptest ✅
+- Created `tests/proptest_tests.rs` with 20 property tests
+- Strategies: `arb_pitch_step()`, `arb_pitch()` (integer alters for MIDI safety), `arb_pitch_microtonal()`, `arb_duration()`, `arb_base_duration()`
+- Pitch properties: transpose round-trip, zero identity, semitone addition, associativity, MIDI range, step index round-trip/wrapping
+- Duration properties: actual_duration positivity, dot monotonicity, single dot = 1.5×, no-dot/no-tuplet = base, tuplet scaling
+- Transform properties: transpose inverse, invert self-inverse, retrograde self-inverse, note count preservation (all 3 transforms), retrograde reverses order, composed transforms preserve count
+
+### New files
+- `tests/fixture_regression.rs` — 209 fixture regression tests
+- `tests/round_trip.rs` — 25 round-trip integration tests
+- `tests/proptest_tests.rs` — 20 property-based tests
+
+### Next up
+- **Epic 4: MIDI as First-Class** — remove feature gate, add full test coverage, Music tree adapters

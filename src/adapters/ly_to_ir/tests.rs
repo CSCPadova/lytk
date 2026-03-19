@@ -2352,4 +2352,360 @@ scoreAll = {
 
         assert!(has_time_sig(&doc.music), "should contain a TimeSignature");
     }
+
+    // -----------------------------------------------------------------------
+    // E3T3: Extended unit tests for ly_to_ir parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_multi_measure_rest_expansion() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \time 4/4 c'4 d' e' f' | R1*3 | g'4 a' b' c'' }"#)
+            .unwrap();
+        let parts = score.parts();
+        let part = &parts[0];
+        // Should have 5 measures: 1 notes + 3 multi-measure rests + 1 notes
+        assert!(
+            part.measures.len() >= 5,
+            "R1*3 should expand to 3 rest measures; got {}",
+            part.measures.len()
+        );
+    }
+
+    #[test]
+    fn test_bar_type_final() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ c'4 d' e' f' \bar "|." }"#)
+            .unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        assert!(m.right_barline.is_some(), "should have a final barline");
+        assert_eq!(m.right_barline.as_ref().unwrap().style, BarlineType::Final);
+    }
+
+    #[test]
+    fn test_bar_type_double() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ c'4 d' e' f' \bar "||" g' a' b' c'' }"#)
+            .unwrap();
+        let parts = score.parts();
+        let m = &parts[0].measures[0];
+        assert!(m.right_barline.is_some(), "should have a double barline");
+        assert_eq!(m.right_barline.as_ref().unwrap().style, BarlineType::Double);
+    }
+
+    #[test]
+    fn test_tempo_parsing() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \tempo 4 = 120 c'4 d' e' f' }"#)
+            .unwrap();
+        let parts = score.parts();
+        let dirs = &parts[0].measures[0].directions;
+        let has_tempo = dirs.iter().any(|d| d.tempo.is_some());
+        assert!(has_tempo, "should have tempo direction: {dirs:?}");
+        if let Some(t) = dirs.iter().find_map(|d| d.tempo.as_ref()) {
+            assert!(
+                (t.per_minute.unwrap_or(0.0) - 120.0).abs() < 0.1,
+                "tempo should be 120 BPM"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tempo_with_text() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \tempo "Allegro" 4 = 144 c'4 d' e' f' }"#)
+            .unwrap();
+        let parts = score.parts();
+        let dirs = &parts[0].measures[0].directions;
+        let has_tempo = dirs.iter().any(|d| d.tempo.is_some());
+        assert!(has_tempo, "should have tempo with text: {dirs:?}");
+    }
+
+    #[test]
+    fn test_multi_voice_backslash_separator() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"\new Staff { << { c'4 d' e' f' } \\ { a4 b c' d' } >> }"#)
+            .unwrap();
+        let parts = score.parts();
+        assert!(!parts.is_empty(), "should have at least 1 part");
+        let m = &parts[0].measures[0];
+        assert!(
+            m.voices.len() >= 2,
+            "should have 2+ voices from \\\\; got {}",
+            m.voices.len()
+        );
+    }
+
+    #[test]
+    fn test_shorthand_articulation_staccato() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter.convert_str(r#"{ c'4-. d'-> e'-^ f'-! }"#).unwrap();
+        let parts = score.parts();
+        let elems = &parts[0].measures[0].voices[0].elements;
+
+        fn note_arts(e: &VoiceElement) -> Vec<String> {
+            if let VoiceElement::Note(n) = e {
+                n.articulations.iter().map(|a| a.name.clone()).collect()
+            } else {
+                vec![]
+            }
+        }
+
+        let a0 = note_arts(&elems[0]);
+        assert!(
+            a0.iter().any(|a| a.contains("staccato")),
+            "-. should be staccato: {a0:?}"
+        );
+        let a1 = note_arts(&elems[1]);
+        assert!(
+            a1.iter().any(|a| a.contains("accent")),
+            "-> should be accent: {a1:?}"
+        );
+    }
+
+    #[test]
+    fn test_slur_events_on_notes() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter.convert_str(r#"{ c'4( d' e') f' }"#).unwrap();
+        let parts = score.parts();
+        let elems = &parts[0].measures[0].voices[0].elements;
+
+        if let VoiceElement::Note(n) = &elems[0] {
+            assert!(
+                n.slurs.iter().any(|s| s.slur_type == StartStop::Start),
+                "first note should have slur start: {:?}",
+                n.slurs
+            );
+        } else {
+            panic!("expected Note");
+        }
+
+        // Find closing slur
+        if let VoiceElement::Note(n) = &elems[2] {
+            assert!(
+                n.slurs.iter().any(|s| s.slur_type == StartStop::Stop),
+                "third note should have slur stop: {:?}",
+                n.slurs
+            );
+        } else {
+            panic!("expected Note");
+        }
+    }
+
+    #[test]
+    fn test_appoggiatura_grace() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \appoggiatura c'8 d'4 e' f' g' }"#)
+            .unwrap();
+        let parts = score.parts();
+        let elems = &parts[0].measures[0].voices[0].elements;
+        // First element should be a grace note
+        if let VoiceElement::Note(n) = &elems[0] {
+            assert!(n.is_grace, "appoggiatura should produce grace note");
+            assert!(!n.grace_slash, "appoggiatura should NOT have slash");
+        } else {
+            panic!("expected grace Note, got {:?}", elems[0]);
+        }
+    }
+
+    #[test]
+    fn test_dynamics_context_merge() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\score {
+  <<
+    \new Staff { c'4 d' e' f' }
+    \new Dynamics { s4\f s\p s\ff s\pp }
+  >>
+}"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        // Dynamics context should be merged — either 1 enriched part or
+        // 2 parts where the dynamics part is folded
+        assert!(
+            parts.len() <= 2,
+            "dynamics should fold or merge: got {} parts",
+            parts.len()
+        );
+    }
+
+    #[test]
+    fn test_time_sig_synchronize_across_parts() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\score {
+  <<
+    \new Staff { \time 3/4 c'4 d' e' }
+    \new Staff { g4 a b }
+  >>
+}"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        assert!(parts.len() >= 2);
+        // Both parts should have time sig in measure 1
+        for (i, part) in parts.iter().enumerate() {
+            let attr = part.measures[0].attributes.as_ref();
+            assert!(
+                attr.is_some(),
+                "part {i} should have attributes in measure 1"
+            );
+            let time = attr.unwrap().time.as_ref();
+            assert!(time.is_some(), "part {i} should have time signature");
+        }
+    }
+
+    #[test]
+    fn test_chained_variable_resolution() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"inner = { c'4 d' }
+middle = { \inner e' f' }
+\score { \new Staff \middle }"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        assert!(!parts.is_empty());
+        let elems = &parts[0].measures[0].voices[0].elements;
+        // Should have at least 4 notes from the chain
+        let note_count: usize = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter(|e| matches!(e, VoiceElement::Note(_)))
+            .count();
+        assert!(
+            note_count >= 4,
+            "chained variables should resolve to ≥4 notes; got {note_count}"
+        );
+    }
+
+    #[test]
+    fn test_voice_one_two_direction() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\new Staff { << { \voiceOne c'4 d' e' f' } \\ { \voiceTwo a4 b c' d' } >> }"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        assert!(!parts.is_empty());
+        // Multi-voice should produce ≥2 voices
+        let total_voices: usize = parts[0]
+            .measures
+            .iter()
+            .map(|m| m.voices.len())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            total_voices >= 2,
+            "should have ≥2 voices: got {total_voices}"
+        );
+    }
+
+    #[test]
+    fn test_once_override_no_crash() {
+        let adapter = LyToIrAdapter::new();
+        // \once \override is very common; should not crash
+        let result =
+            adapter.convert_str(r#"{ \once \override NoteHead.color = #red c'4 d' e' f' }"#);
+        assert!(
+            result.is_ok(),
+            "\\once \\override should not crash: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_skip_as_spacer() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \time 4/4 \skip 1 c'4 d' e' f' }"#)
+            .unwrap();
+        let parts = score.parts();
+        // Should have at least 2 measures (1 skip + 1 notes)
+        assert!(
+            parts[0].measures.len() >= 2,
+            "\\skip should create a spacer measure: got {} measures",
+            parts[0].measures.len()
+        );
+    }
+
+    #[test]
+    fn test_fermata_on_note() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter.convert_str(r#"{ c'4 d' e' f'\fermata }"#).unwrap();
+        let parts = score.parts();
+        let elems = &parts[0].measures[0].voices[0].elements;
+        // Last note should have fermata
+        if let VoiceElement::Note(n) = elems.last().unwrap() {
+            assert!(n.fermata.is_some(), "should have fermata: {n:?}");
+        } else {
+            panic!("expected Note");
+        }
+    }
+
+    #[test]
+    fn test_multi_staff_piano_pattern_basic() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\new PianoStaff <<
+  \new Staff { c'4 d' e' f' }
+  \new Staff { c4 d e f }
+>>"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        // PianoStaff should create a single part with 2 staves
+        // or 2 parts grouped
+        assert!(!parts.is_empty());
+    }
+
+    #[test]
+    fn test_tied_note_pair() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter.convert_str(r#"{ c'4~ c' d' e' }"#).unwrap();
+        let parts = score.parts();
+        let elems = &parts[0].measures[0].voices[0].elements;
+        if let VoiceElement::Note(n) = &elems[0] {
+            assert!(
+                n.ties.iter().any(|t| t.tie_type == StartStop::Start),
+                "first note should have tie start"
+            );
+        }
+    }
+
+    #[test]
+    fn test_relative_octave_preservation() {
+        // Relative mode should correctly determine octaves
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"\relative c' { c d e f g a b c }"#)
+            .unwrap();
+        let parts = score.parts();
+        let elems = &parts[0].measures[0].voices[0].elements;
+        // First note should be C4 (c')
+        if let VoiceElement::Note(first) = &elems[0] {
+            assert_eq!(first.pitch.octave, 4, "first note c' should be octave 4");
+        }
+        // Second note should be D4 (step up from C4)
+        if let VoiceElement::Note(n) = &elems[1] {
+            assert_eq!(n.pitch.step, PitchStep::D);
+            assert_eq!(n.pitch.octave, 4, "d should be octave 4");
+        }
+    }
 }
