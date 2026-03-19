@@ -1132,3 +1132,54 @@ fn midi_music_roundtrip_ly_to_midi_to_ly() {
     );
     assert!(ly2.contains("\\version"), "should contain LilyPond version");
 }
+
+/// Regression: pedal.ly has multi-voice/multi-staff content that previously
+/// caused a subtract-with-overflow panic in build_part_track.
+#[test]
+fn midi_roundtrip_multivoice_pedal() {
+    let ly_path = Path::new("tests/fixtures/ly/pedal.ly");
+    let score = LyToIrAdapter::new()
+        .convert_file(ly_path)
+        .expect("LilyPond parse failed");
+
+    let adapter = IrToMidiAdapter::new();
+    let bytes = adapter.convert_bytes(&score).expect("MIDI export panicked");
+
+    // Parse back — must be valid MIDI.
+    let score2 = MidiToIrAdapter::new()
+        .convert_bytes(&bytes)
+        .expect("MIDI re-import failed");
+
+    assert!(
+        !score2.parts().is_empty(),
+        "Round-tripped MIDI should have parts"
+    );
+    assert!(
+        count_notes(&score2) > 0,
+        "Round-tripped MIDI should have notes"
+    );
+}
+
+/// Regression: Rossini orchestral score (18 parts, multi-voice) previously
+/// caused a subtract-with-overflow panic in build_part_track.
+#[test]
+fn midi_roundtrip_multivoice_mxl() {
+    let mxl_path = Path::new("tests/fixtures/musicxml/Stabat_Mater_Rossini_1_-_Introduzione.mxl");
+    let score = MxmlToIrAdapter::new()
+        .convert_file(mxl_path)
+        .expect("MXL parse failed");
+
+    let adapter = IrToMidiAdapter::new();
+    let bytes = adapter.convert_bytes(&score).expect("MIDI export panicked");
+
+    // Parse back — must be valid MIDI.
+    let score2 = MidiToIrAdapter::new()
+        .convert_bytes(&bytes)
+        .expect("MIDI re-import failed");
+
+    assert_eq!(score2.parts().len(), 18, "Rossini has 18 parts");
+    assert!(
+        count_notes(&score2) > 100,
+        "Round-tripped Rossini should have many notes"
+    );
+}

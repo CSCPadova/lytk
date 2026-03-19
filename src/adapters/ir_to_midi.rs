@@ -205,7 +205,6 @@ impl IrToMidiAdapter {
 
     fn build_part_track<'a>(&self, part: &crate::ir::part::Part) -> Vec<TrackEvent<'a>> {
         let mut events: Vec<TrackEvent<'a>> = Vec::new();
-        let mut last_emit_tick: u64 = 0;
         let mut abs_tick: u64 = 0;
 
         // Track name
@@ -237,11 +236,15 @@ impl IrToMidiAdapter {
         let channel = u4::new(part.midi_channel.min(15));
         let vel = u7::new(self.velocity.min(127));
 
+        // Collect all note events with absolute ticks, then sort.
+        // This is necessary because multiple voices in a measure overlap
+        // in time, and MIDI delta encoding requires chronological order.
+        let mut timed: Vec<(u64, TrackEventKind<'a>)> = Vec::new();
+
         for measure in &part.measures {
             let measure_start = abs_tick;
 
             for voice in &measure.voices {
-                // Reset voice cursor to measure start.
                 let mut voice_tick = measure_start;
 
                 for elem in &voice.elements {
@@ -250,34 +253,26 @@ impl IrToMidiAdapter {
                             let dur_ticks = self.duration_to_ticks(&note.duration);
                             let midi_key = note.pitch.midi_number().clamp(0, 127) as u8;
 
-                            // NoteOn
-                            let on_delta = voice_tick - last_emit_tick;
-                            events.push(TrackEvent {
-                                delta: u28::new(on_delta as u32),
-                                kind: TrackEventKind::Midi {
+                            timed.push((
+                                voice_tick,
+                                TrackEventKind::Midi {
                                     channel,
                                     message: MidiMessage::NoteOn {
                                         key: u7::new(midi_key),
                                         vel,
                                     },
                                 },
-                            });
-                            last_emit_tick = voice_tick;
-
-                            // NoteOff
-                            let off_tick = voice_tick + dur_ticks;
-                            let off_delta = off_tick - last_emit_tick;
-                            events.push(TrackEvent {
-                                delta: u28::new(off_delta as u32),
-                                kind: TrackEventKind::Midi {
+                            ));
+                            timed.push((
+                                voice_tick + dur_ticks,
+                                TrackEventKind::Midi {
                                     channel,
                                     message: MidiMessage::NoteOff {
                                         key: u7::new(midi_key),
                                         vel: u7::new(64),
                                     },
                                 },
-                            });
-                            last_emit_tick = off_tick;
+                            ));
 
                             voice_tick += dur_ticks;
                         }
@@ -287,45 +282,34 @@ impl IrToMidiAdapter {
                         }
                         VoiceElement::Chord(chord) => {
                             let dur_ticks = self.duration_to_ticks(&chord.duration);
-                            // All notes on simultaneously
                             for cn in &chord.notes {
                                 let midi_key = cn.pitch.midi_number().clamp(0, 127) as u8;
-                                let on_delta = voice_tick - last_emit_tick;
-                                events.push(TrackEvent {
-                                    delta: u28::new(on_delta as u32),
-                                    kind: TrackEventKind::Midi {
+                                timed.push((
+                                    voice_tick,
+                                    TrackEventKind::Midi {
                                         channel,
                                         message: MidiMessage::NoteOn {
                                             key: u7::new(midi_key),
                                             vel,
                                         },
                                     },
-                                });
-                                last_emit_tick = voice_tick;
-                            }
-                            // All notes off
-                            let off_tick = voice_tick + dur_ticks;
-                            for cn in &chord.notes {
-                                let midi_key = cn.pitch.midi_number().clamp(0, 127) as u8;
-                                let off_delta = off_tick - last_emit_tick;
-                                events.push(TrackEvent {
-                                    delta: u28::new(off_delta as u32),
-                                    kind: TrackEventKind::Midi {
+                                ));
+                                timed.push((
+                                    voice_tick + dur_ticks,
+                                    TrackEventKind::Midi {
                                         channel,
                                         message: MidiMessage::NoteOff {
                                             key: u7::new(midi_key),
                                             vel: u7::new(64),
                                         },
                                     },
-                                });
-                                last_emit_tick = off_tick;
+                                ));
                             }
                             voice_tick += dur_ticks;
                         }
                     }
                 }
 
-                // Update abs_tick to the furthest voice position.
                 if voice_tick > abs_tick {
                     abs_tick = voice_tick;
                 }
@@ -336,6 +320,21 @@ impl IrToMidiAdapter {
             if abs_tick < expected_end {
                 abs_tick = expected_end;
             }
+        }
+
+        // Sort by absolute tick (stable sort preserves NoteOn-before-NoteOff
+        // for simultaneous events within the same voice).
+        timed.sort_by_key(|&(tick, _)| tick);
+
+        // Convert absolute ticks to delta encoding.
+        let mut last_tick: u64 = 0;
+        for (tick, kind) in timed {
+            let delta = tick - last_tick;
+            events.push(TrackEvent {
+                delta: u28::new(delta as u32),
+                kind,
+            });
+            last_tick = tick;
         }
 
         // End of track
@@ -481,5 +480,141 @@ mod tests {
         let score = Score::new();
         let adapter = IrToMidiAdapter::new();
         assert!(adapter.convert(&score).is_err());
+    }
+
+    /// Two voices in the same measure must not panic (regression for
+    /// subtract-with-overflow when voice_tick < last_emit_tick).
+    #[test]
+    fn test_multi_voice_no_overflow() {
+        let mut voice1 = Voice::new(1);
+        voice1.elements.push(VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::C, 4),
+            Duration::quarter(),
+        ))));
+        voice1.elements.push(VoiceElement::Rest(Rest::new(Duration {
+            base: Frac::new(3, 4),
+            dots: 0,
+            tuplet_normal: 1,
+            tuplet_actual: 1,
+        })));
+
+        let mut voice2 = Voice::new(2);
+        voice2.elements.push(VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::E, 3),
+            Duration::half(),
+        ))));
+        voice2
+            .elements
+            .push(VoiceElement::Rest(Rest::new(Duration::half())));
+
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            divisions: 480,
+            time: Some(TimeSignature::default()),
+            key: Some(KeySignature::default()),
+            ..MeasureAttributes::default()
+        });
+        measure.voices.push(voice1);
+        measure.voices.push(voice2);
+
+        let mut part = Part::new("P1");
+        part.name = "Multi".to_string();
+        part.measures.push(measure);
+        let score = Score {
+            metadata: ScoreMetadata::default(),
+            page_layout: None,
+            children: vec![ScoreChild::Part(part)],
+        };
+
+        let adapter = IrToMidiAdapter::new();
+        let bytes = adapter.convert_bytes(&score).unwrap();
+
+        // Must be valid MIDI.
+        let smf = Smf::parse(&bytes).unwrap();
+        assert_eq!(smf.tracks.len(), 2);
+
+        // Verify both pitches round-trip.
+        let reader = crate::adapters::midi_to_ir::MidiToIrAdapter::new();
+        let score2 = reader.convert_bytes(&bytes).unwrap();
+        let midi_nums: Vec<u8> = score2.parts()[0].measures[0]
+            .voices
+            .iter()
+            .flat_map(|v| v.elements.iter())
+            .filter_map(|e| {
+                if let VoiceElement::Note(n) = e {
+                    Some(n.pitch.midi_number() as u8)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(midi_nums.contains(&60), "Expected C4 (60)");
+        assert!(midi_nums.contains(&52), "Expected E3 (52)");
+    }
+
+    /// Chords interleaved with a second voice must produce valid MIDI.
+    #[test]
+    fn test_multi_voice_with_chords() {
+        use crate::ir::note::Chord;
+
+        let mut voice1 = Voice::new(1);
+        let chord = Chord::new(
+            Duration::half(),
+            vec![
+                Note::new(Pitch::new(PitchStep::C, 4), Duration::half()),
+                Note::new(Pitch::new(PitchStep::E, 4), Duration::half()),
+            ],
+        );
+        voice1.elements.push(VoiceElement::Chord(chord));
+        voice1
+            .elements
+            .push(VoiceElement::Rest(Rest::new(Duration::half())));
+
+        let mut voice2 = Voice::new(2);
+        voice2.elements.push(VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::G, 3),
+            Duration::whole(),
+        ))));
+
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            divisions: 480,
+            time: Some(TimeSignature::default()),
+            key: Some(KeySignature::default()),
+            ..MeasureAttributes::default()
+        });
+        measure.voices.push(voice1);
+        measure.voices.push(voice2);
+
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let score = Score {
+            metadata: ScoreMetadata::default(),
+            page_layout: None,
+            children: vec![ScoreChild::Part(part)],
+        };
+
+        let adapter = IrToMidiAdapter::new();
+        let bytes = adapter.convert_bytes(&score).unwrap();
+
+        // Parse back — valid MIDI with notes from both voices + chord.
+        let reader = crate::adapters::midi_to_ir::MidiToIrAdapter::new();
+        let score2 = reader.convert_bytes(&bytes).unwrap();
+        let midi_nums: Vec<u8> = score2.parts()[0].measures[0]
+            .voices
+            .iter()
+            .flat_map(|v| v.elements.iter())
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.pitch.midi_number() as u8),
+                VoiceElement::Chord(c) => Some(c.notes[0].pitch.midi_number() as u8),
+                _ => None,
+            })
+            .collect();
+        // C4=60, E4=64, G3=55
+        assert!(
+            midi_nums.contains(&60) || midi_nums.contains(&64),
+            "Expected chord notes"
+        );
+        assert!(midi_nums.contains(&55), "Expected G3 (55)");
     }
 }
