@@ -76,6 +76,25 @@ Five layers:
 - **Multi-staff parts** (piano): `Part.staves` > 1, voices carry `staff` numbers. `ir_to_ly` filters voices by staff using `voice_matches_staff` + `voice_has_content`. `ir_to_mxml` threads `part_staves` to conditionally emit `<staff>` elements.
 - **Post-processing** in `ly_to_ir`: `merge_leading_attribute_measures` (merges key/time-only measures), `merge_dynamics_parts` (folds Dynamics-only parts), `post_process_beams_and_stems`.
 
+### General
+- **TDD** — every feature must have tests before implementation.
+- **DRY / modularity / composability** — no ad-hoc one-offs; prefer extending the transform/adapter framework.
+- **Performance baseline first** — profile `python-ly/` and record the baseline (time, memory). The Rust target must beat it.
+
+### Rust specifics
+- Prefer arena/bump allocation (`bumpalo`) for AST nodes to reduce allocator pressure.
+- Use `Arc<Node>` for cheap shared ownership; avoid unnecessary `clone()` on large trees.
+- `rayon` for data-parallel batch CLI operations.
+- Cross-language ABI: expose C-compatible types where needed; use `abi3` for Python.
+- Define `benches/` with `criterion` benchmarks for all hot paths.
+
+### Python specifics
+- `pyproject.toml` uses `maturin` build backend; `uv` for env management.
+- `lytk._core` is the compiled Rust extension; the installable Python package lives in **`src/lytk/`** (`python-source = "src"` in `pyproject.toml`).
+- `.pyi` stub files alongside every `_core` sub-module.
+- `__slots__` on all `IRNode` subclasses.
+- `from __future__ import annotations` in every module.
+
 ## Test Fixtures
 
 - `tests/fixtures/ly/` — LilyPond source files (pedal, chopin, repeats)
@@ -94,6 +113,7 @@ Five layers:
 | `abjad/` | Score-building API, visitor patterns |
 | `tree-sitter-lilypond/` | Upstream grammar reference — copy into `src/tree-sitter/` to update |
 | `symusic/` | Fast MIDI IR reference |
+| `PDMX/` | Dataset IR for MusicXML + MSCZ; internal representation reference |
 | `lilypond/` | The original lilypond compiler, reference to tokenize and handle ly files |
 
 ## Common Pitfalls

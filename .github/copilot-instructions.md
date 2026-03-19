@@ -108,12 +108,11 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 ## Key Design Decisions & Conventions
 
 ### General
-- **TDD** — every feature must have tests before or alongside implementation.
+- **TDD** — every feature must have tests before implementation.
 - **DRY / modularity / composability** — no ad-hoc one-offs; prefer extending the transform/adapter framework.
 - **Performance baseline first** — profile `python-ly/` and record the baseline (time, memory). The Rust target must beat it.
 
 ### Rust specifics
-- `feature` flags in `Cargo.toml` for heavy adapters: `midi`, `mxl`, `abc`, etc.
 - Prefer arena/bump allocation (`bumpalo`) for AST nodes to reduce allocator pressure.
 - Use `Arc<Node>` for cheap shared ownership; avoid unnecessary `clone()` on large trees.
 - `rayon` for data-parallel batch CLI operations.
