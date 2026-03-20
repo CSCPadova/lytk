@@ -2708,4 +2708,22 @@ middle = { \inner e' f' }
             assert_eq!(n.pitch.octave, 4, "d should be octave 4");
         }
     }
+
+    #[test]
+    fn test_set_midi_instrument_scheme_string() {
+        // \set Staff.midiInstrument = #"flute" (scheme string syntax)
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\score {
+    \new Staff <<
+        \set Staff.midiInstrument = #"flute"
+        \relative c'' { c4 d e f }
+    >>
+}"#,
+            )
+            .unwrap();
+        let part = &score.parts()[0];
+        assert_eq!(part.midi_instrument, "flute");
+    }
 }

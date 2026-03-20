@@ -108,6 +108,18 @@ Expanded test suite from 357 to 691 tests:
 | E4T2 | MIDI round-trip tests | ✅ Done |
 | E4T3 | ToMusicAdapter/FromMusicAdapter for MIDI | ✅ Done |
 
+### Epic 4b: MIDI Reference Fidelity ✅
+
+**Goal:** Fix systematic differences between our MIDI output and LilyPond reference MIDIs.
+
+| Task | Description | Status |
+|------|-------------|--------|
+| E4bT1 | Fix chord relative pitch drift (first note of chord inherits wrong relative ref) | ✅ Done |
+| E4bT2 | Fix tempo beat-unit handling (dotted quarter tempos, beat-unit→quarter conversion) | ✅ Done |
+| E4bT3 | GM instrument→program lookup (`gm_program_from_name`, scheme string `\set` handling) | ✅ Done |
+| E4bT4 | Change default PPQN from 480 to 384 to match LilyPond | ✅ Done |
+| E4bT5 | MIDI reference regression tests (14 tests across 4 fixtures: pedal, example, example2, chopin) | ✅ Done |
+
 ---
 
 ## In Progress / Near-term
@@ -180,7 +192,7 @@ Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Tra
 | 1 | E0 ✅ | Stabilization: warnings, test fix, CI |
 | 2 | E2 ✅ | Modularity: split all large files |
 | 3 | E1 ✅ | Architecture: Forward/Backup removal, parser/emitter rewrite |
-| 4 | E3 ✅ + E4 ✅ | Test coverage + MIDI as first-class |
+| 4 | E3 ✅ + E4 ✅ + E4b ✅ | Test coverage + MIDI as first-class + MIDI reference fidelity |
 | 5 | E5 + E6 + E7 | Feature completeness: remaining parser/emitter gaps |
 | 6 | E8 (ABC first) | New formats: ABC, then MEI, then Humdrum |
 | 7 | E9 + E1T5 | Distribution: Python stubs, wheels, PyPI |

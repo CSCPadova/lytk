@@ -6,7 +6,7 @@ use crate::ir::direction::{Direction, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::parse_pitch_name;
 use crate::ir::note::{Chord, Note};
-use crate::ir::pitch::AccidentalDisplay;
+use crate::ir::pitch::{AccidentalDisplay, Pitch};
 use crate::ir::score::PageLayout;
 
 use super::state::WalkState;
@@ -369,8 +369,10 @@ pub(super) fn consume_tempo(state: &mut WalkState, children: &[Node], mut i: usi
     let mut text_label: Option<String> = None;
     let mut beat_unit: Option<String> = None;
     let mut per_minute: Option<u32> = None;
+    let mut dots: u8 = 0;
 
     // \tempo "Allegro" 4 = 120
+    // \tempo 4. = 60
     // \tempo 4 = 120
     // \tempo "Allegro"
     while i < children.len() {
@@ -396,6 +398,9 @@ pub(super) fn consume_tempo(state: &mut WalkState, children: &[Node], mut i: usi
                 let pt = punct_text(state, node);
                 if pt == "=" {
                     i += 1; // skip equals sign
+                } else if pt == "." && beat_unit.is_some() && per_minute.is_none() {
+                    dots += 1;
+                    i += 1;
                 } else {
                     break;
                 }
@@ -408,7 +413,7 @@ pub(super) fn consume_tempo(state: &mut WalkState, children: &[Node], mut i: usi
         let tempo_dir = TempoDirection {
             text: text_label,
             beat_unit,
-            dots: 0,
+            dots,
             per_minute: per_minute.map(|v| v as f64),
             placement: Placement::Unspecified,
         };
@@ -749,12 +754,28 @@ pub(super) fn parse_ly_make_moment(text: &str) -> Option<(u32, u32)> {
     None
 }
 
+/// Extract a string from a scheme expression like `#"flute"`.
+/// Returns `None` if the expression doesn't contain a quoted string.
+pub(super) fn extract_scheme_string(text: &str) -> Option<String> {
+    let inner = text.trim_start_matches('#').trim();
+    if inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2 {
+        Some(inner[1..inner.len() - 1].to_string())
+    } else {
+        None
+    }
+}
+
 /// Build a Chord from a `chord` node (< ... >).
+///
+/// LilyPond relative-mode chord semantics (from quickly `relative.py`):
+///   - Within a chord, each note is relative to the **previous** note (stack).
+///   - After the chord, `prev_pitch` resets to the chord's **first** pitch.
 pub(super) fn build_chord(state: &mut WalkState, chord_node: Node, dur: Duration) -> Chord {
     let mut notes = Vec::new();
     let mut cursor = chord_node.walk();
     let children: Vec<Node> = chord_node.children(&mut cursor).collect();
     let mut i = 0;
+    let mut first_pitch: Option<Pitch> = None;
 
     while i < children.len() {
         let child = children[i];
@@ -766,12 +787,21 @@ pub(super) fn build_chord(state: &mut WalkState, chord_node: Node, dur: Duration
                 let acc_display = consume_accidental_marks(state, &children, &mut i);
                 let mut pitch = state.resolve_pitch(step, alter, octave_marks);
                 pitch.accidental = acc_display;
+                if first_pitch.is_none() {
+                    first_pitch = Some(pitch);
+                }
                 let note = Note::new(pitch, dur.clone());
                 notes.push(note);
                 continue;
             }
         }
         i += 1;
+    }
+    // After a chord, the next note is relative to the chord's first pitch.
+    if let Some(fp) = first_pitch {
+        if state.in_relative {
+            state.prev_pitch = Some(fp);
+        }
     }
     Chord::new(dur, notes)
 }

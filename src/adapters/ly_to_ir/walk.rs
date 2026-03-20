@@ -594,7 +594,15 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
         state.current_measure = None;
         state.current_voice = Vec::new();
         state.current_time_sig = saved_time_sig;
-        state.prev_pitch = saved_prev_pitch;
+        // LilyPond relative mode: within << { v1 } \\ { v2 } >>, pitch context
+        // flows sequentially — voice 2 starts from voice 1's last note, etc.
+        // Only the first voice resets to saved_prev_pitch; subsequent voices
+        // continue from the previous voice's ending pitch. This matches
+        // python-ly / quickly's left-to-right sequential processing.
+        if voice_idx == 0 {
+            state.prev_pitch = saved_prev_pitch;
+        }
+        // (for voice_idx > 0, prev_pitch continues from previous voice)
         state.relative_ref = saved_relative_ref;
         state.in_relative = saved_in_relative;
         state.stem_direction = saved_stem_direction.clone();
@@ -628,6 +636,11 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
     state.current_measure = saved_current_measure;
     state.current_voice = saved_current_voice;
     state.current_time_sig = saved_time_sig;
+    // Note: prev_pitch is NOT restored — it continues from the last voice's
+    // final note. This matches LilyPond/python-ly's left-to-right sequential
+    // pitch processing across << \\ >> voice branches.
+    state.relative_ref = saved_relative_ref;
+    state.in_relative = saved_in_relative;
     state.stem_direction = saved_stem_direction;
     state.current_voice_number = saved_voice_number;
     state.tuplet_stack = saved_tuplet_stack;
@@ -760,6 +773,10 @@ fn walk_voice_branch(state: &mut WalkState, children: &[Node], branch_indices: &
 /// This handles simultaneous staves/contexts (\new Staff, \new Voice, etc.).
 fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
     let mut i = 0;
+    // Track parts that existed before this block so we can apply deferred
+    // \set properties to all parts created within it.
+    let parts_before = state.parts.len();
+    let mut deferred_props: Vec<(String, String)> = Vec::new();
 
     while i < children.len() {
         let child = children[i];
@@ -787,7 +804,63 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                     continue;
                 } else if text == "\\unfoldRepeats" {
                     // Transparent wrapper — just skip the keyword
-                } else if matches!(text.as_str(), "\\set" | "\\override" | "\\revert") {
+                } else if text == "\\set" {
+                    // Handle \set property assignments (e.g. midiInstrument)
+                    // AST: escaped_word(\set) assignment_lhs punctuation(=) value
+                    i += 1; // skip past \set
+                    if let Some(lhs) = children.get(i) {
+                        if lhs.kind() == "assignment_lhs" {
+                            let prop_text = state.text(*lhs).to_string();
+                            i += 1;
+                            // Skip "="
+                            if let Some(eq) = children.get(i) {
+                                if eq.kind() == "punctuation" && state.text(*eq) == "=" {
+                                    i += 1;
+                                }
+                            }
+                            // Read value (string or scheme)
+                            if let Some(val_node) = children.get(i) {
+                                let val_opt = if val_node.kind() == "string" {
+                                    let v =
+                                        crate::adapters::ly_to_ir::consume::extract_string_value(
+                                            state, *val_node,
+                                        );
+                                    i += 1;
+                                    Some(v)
+                                } else if val_node.kind() == "embedded_scheme" {
+                                    let scheme_text = state.text(*val_node).to_string();
+                                    i += 1;
+                                    crate::adapters::ly_to_ir::consume::extract_scheme_string(
+                                        &scheme_text,
+                                    )
+                                } else {
+                                    i += 1;
+                                    None
+                                };
+                                if let Some(val) = val_opt {
+                                    // Check if this is a grouping-context property
+                                    // (e.g. PianoStaff.midiInstrument) that should propagate
+                                    // to child staves created later in this block.
+                                    let ctx_prefix = prop_text.split('.').next().unwrap_or("");
+                                    let is_grouping = matches!(
+                                        ctx_prefix,
+                                        "PianoStaff" | "GrandStaff" | "StaffGroup" | "ChoirStaff"
+                                    );
+                                    if !is_grouping && !state.parts.is_empty() {
+                                        // Staff-level \set — apply to existing current part
+                                        crate::adapters::ly_to_ir::music::apply_set_property(
+                                            state, &prop_text, &val,
+                                        );
+                                    } else {
+                                        // Grouping-level or no part yet — defer
+                                        deferred_props.push((prop_text, val));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                } else if matches!(text.as_str(), "\\override" | "\\revert") {
                     // Skip property assignments
                     i += 1;
                     while i < children.len() {
@@ -812,6 +885,21 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
             _ => {}
         }
         i += 1;
+    }
+
+    // Apply deferred \set properties to all parts created in this block
+    if !deferred_props.is_empty() {
+        for (_, part) in state.parts[parts_before..].iter_mut() {
+            for (prop, val) in &deferred_props {
+                let prop_name = prop.split('.').next_back().unwrap_or(prop);
+                match prop_name {
+                    "instrumentName" => part.name = val.clone(),
+                    "shortInstrumentName" => part.abbreviation = val.clone(),
+                    "midiInstrument" => part.midi_instrument = val.clone(),
+                    _ => {}
+                }
+            }
+        }
     }
 }
 

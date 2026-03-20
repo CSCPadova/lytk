@@ -20,6 +20,157 @@ use crate::ir::note::VoiceElement;
 use crate::ir::Score;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a beat_unit name + dots to a duration in quarter-note units.
+/// E.g. "half" → 2.0, "quarter" → 1.0, "eighth" → 0.5, dotted "quarter" → 1.5.
+fn beat_unit_to_quarters(beat_unit: Option<&str>, dots: u8) -> f64 {
+    let base = match beat_unit.unwrap_or("quarter") {
+        "whole" => 4.0,
+        "half" => 2.0,
+        "quarter" => 1.0,
+        "eighth" => 0.5,
+        "16th" => 0.25,
+        "32nd" => 0.125,
+        "64th" => 0.0625,
+        _ => 1.0,
+    };
+    // Each dot adds half the remaining value: 1 dot → ×1.5, 2 dots → ×1.75
+    let mut total = base;
+    let mut add = base / 2.0;
+    for _ in 0..dots {
+        total += add;
+        add /= 2.0;
+    }
+    total
+}
+
+/// Map a LilyPond `\set Staff.midiInstrument` name to a General MIDI program number (0–127).
+/// Returns 0 (Acoustic Grand Piano) for unrecognised names.
+fn gm_program_from_name(name: &str) -> u8 {
+    match name.to_ascii_lowercase().trim() {
+        // Piano
+        "acoustic grand" | "acoustic grand piano" => 0,
+        "bright acoustic" | "bright acoustic piano" => 1,
+        "electric grand" | "electric grand piano" => 2,
+        "honky-tonk" | "honky-tonk piano" => 3,
+        "electric piano 1" | "rhodes piano" => 4,
+        "electric piano 2" | "chorused piano" => 5,
+        "harpsichord" => 6,
+        "clavinet" | "clav" => 7,
+        // Chromatic percussion
+        "celesta" => 8,
+        "glockenspiel" => 9,
+        "music box" => 10,
+        "vibraphone" => 11,
+        "marimba" => 12,
+        "xylophone" => 13,
+        "tubular bells" => 14,
+        "dulcimer" => 15,
+        // Organ
+        "drawbar organ" => 16,
+        "percussive organ" => 17,
+        "rock organ" => 18,
+        "church organ" | "church organ reed" => 19,
+        "reed organ" => 20,
+        "accordion" => 21,
+        "harmonica" => 22,
+        "concertina" => 23,
+        // Guitar
+        "acoustic guitar (nylon)" | "nylon string guitar" => 24,
+        "acoustic guitar (steel)" | "steel string guitar" => 25,
+        "electric guitar (jazz)" => 26,
+        "electric guitar (clean)" => 27,
+        "electric guitar (muted)" => 28,
+        "overdriven guitar" => 29,
+        "distorted guitar" => 30,
+        "guitar harmonics" => 31,
+        // Bass
+        "acoustic bass" => 32,
+        "electric bass (finger)" | "electric bass" => 33,
+        "electric bass (pick)" => 34,
+        "fretless bass" => 35,
+        "slap bass 1" => 36,
+        "slap bass 2" => 37,
+        "synth bass 1" => 38,
+        "synth bass 2" => 39,
+        // Strings
+        "violin" => 40,
+        "viola" => 41,
+        "cello" => 42,
+        "contrabass" | "double bass" => 43,
+        "tremolo strings" => 44,
+        "pizzicato strings" => 45,
+        "orchestral harp" | "harp" => 46,
+        "timpani" => 47,
+        // Ensemble
+        "string ensemble 1" | "string ensemble" => 48,
+        "string ensemble 2" => 49,
+        "synthstrings 1" | "synth strings 1" => 50,
+        "synthstrings 2" | "synth strings 2" => 51,
+        "choir aahs" => 52,
+        "voice oohs" => 53,
+        "synth voice" => 54,
+        "orchestra hit" => 55,
+        // Brass
+        "trumpet" => 56,
+        "trombone" => 57,
+        "tuba" => 58,
+        "muted trumpet" => 59,
+        "french horn" => 60,
+        "brass section" => 61,
+        "synthbrass 1" | "synth brass 1" => 62,
+        "synthbrass 2" | "synth brass 2" => 63,
+        // Reed
+        "soprano sax" => 64,
+        "alto sax" => 65,
+        "tenor sax" => 66,
+        "baritone sax" => 67,
+        "oboe" => 68,
+        "english horn" => 69,
+        "bassoon" => 70,
+        "clarinet" => 71,
+        // Pipe
+        "piccolo" => 72,
+        "flute" => 73,
+        "recorder" => 74,
+        "pan flute" => 75,
+        "blown bottle" | "bottle" => 76,
+        "shakuhachi" => 77,
+        "whistle" => 78,
+        "ocarina" => 79,
+        // Synth lead
+        "lead 1 (square)" | "square" => 80,
+        "lead 2 (sawtooth)" | "sawtooth" => 81,
+        "lead 3 (calliope)" => 82,
+        "lead 4 (chiff)" => 83,
+        "lead 5 (charang)" => 84,
+        "lead 6 (voice)" => 85,
+        "lead 7 (fifths)" => 86,
+        "lead 8 (bass+lead)" => 87,
+        // Synth pad
+        "pad 1 (new age)" => 88,
+        "pad 2 (warm)" => 89,
+        "pad 3 (polysynth)" => 90,
+        "pad 4 (choir)" => 91,
+        "pad 5 (bowed)" => 92,
+        "pad 6 (metallic)" => 93,
+        "pad 7 (halo)" => 94,
+        "pad 8 (sweep)" => 95,
+        // Ethnic / Percussive / Sound effects
+        "sitar" => 104,
+        "banjo" => 105,
+        "shamisen" => 106,
+        "koto" => 107,
+        "bagpipe" => 109,
+        "fiddle" => 110,
+        "shanai" => 111,
+        _ => 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public adapter
 // ---------------------------------------------------------------------------
 
@@ -35,7 +186,7 @@ impl IrToMidiAdapter {
     pub fn new() -> Self {
         Self {
             velocity: 80,
-            divisions: 480,
+            divisions: 384,
         }
     }
 
@@ -59,9 +210,20 @@ impl IrToMidiAdapter {
         // Track 0: conductor (tempo, time sig, key sig)
         smf.tracks.push(self.build_conductor_track(score));
 
-        // One track per part
+        // One track per part (assign channels sequentially, skip ch 9 = percussion)
+        let mut ch: u8 = 0;
         for part in score.parts() {
-            smf.tracks.push(self.build_part_track(part));
+            let channel = if part.midi_channel != 0 {
+                part.midi_channel
+            } else {
+                let c = ch;
+                ch += 1;
+                if ch == 9 {
+                    ch = 10; // skip GM percussion channel
+                }
+                c
+            };
+            smf.tracks.push(self.build_part_track(part, channel));
         }
 
         let mut buf = Vec::new();
@@ -126,7 +288,12 @@ impl IrToMidiAdapter {
                     if let Some(tempo) = &dir.tempo {
                         if let Some(bpm) = tempo.per_minute {
                             if bpm > 0.0 {
-                                let uspq = (60_000_000.0 / bpm).round() as u32;
+                                // Convert beat-unit BPM to quarter-note BPM.
+                                // MIDI tempo is always µs per quarter note.
+                                let beat_quarters =
+                                    beat_unit_to_quarters(tempo.beat_unit.as_deref(), tempo.dots);
+                                let quarter_bpm = bpm * beat_quarters;
+                                let uspq = (60_000_000.0 / quarter_bpm).round() as u32;
                                 let delta = abs_tick - last_emit_tick;
                                 events.push(TrackEvent {
                                     delta: u28::new(delta as u32),
@@ -203,7 +370,11 @@ impl IrToMidiAdapter {
     // Part track
     // -----------------------------------------------------------------------
 
-    fn build_part_track<'a>(&self, part: &crate::ir::part::Part) -> Vec<TrackEvent<'a>> {
+    fn build_part_track<'a>(
+        &self,
+        part: &crate::ir::part::Part,
+        midi_channel: u8,
+    ) -> Vec<TrackEvent<'a>> {
         let mut events: Vec<TrackEvent<'a>> = Vec::new();
         let mut abs_tick: u64 = 0;
 
@@ -222,18 +393,23 @@ impl IrToMidiAdapter {
             kind: TrackEventKind::Meta(MetaMessage::TrackName(name_bytes)),
         });
 
-        // Program change
+        // Program change — resolve from midi_instrument name if midi_program is 0
+        let program = if part.midi_program != 0 {
+            part.midi_program
+        } else {
+            gm_program_from_name(&part.midi_instrument)
+        };
         events.push(TrackEvent {
             delta: u28::new(0),
             kind: TrackEventKind::Midi {
-                channel: u4::new(part.midi_channel.min(15)),
+                channel: u4::new(midi_channel.min(15)),
                 message: MidiMessage::ProgramChange {
-                    program: u7::new(part.midi_program.min(127)),
+                    program: u7::new(program.min(127)),
                 },
             },
         });
 
-        let channel = u4::new(part.midi_channel.min(15));
+        let channel = u4::new(midi_channel.min(15));
         let vel = u7::new(self.velocity.min(127));
 
         // Collect all note events with absolute ticks, then sort.
@@ -422,11 +598,11 @@ mod tests {
 
     #[test]
     fn test_duration_to_ticks() {
-        let adapter = IrToMidiAdapter::new(); // divisions=480
-        assert_eq!(adapter.duration_to_ticks(&Duration::quarter()), 480);
-        assert_eq!(adapter.duration_to_ticks(&Duration::half()), 960);
-        assert_eq!(adapter.duration_to_ticks(&Duration::whole()), 1920);
-        assert_eq!(adapter.duration_to_ticks(&Duration::eighth()), 240);
+        let adapter = IrToMidiAdapter::new(); // divisions=384
+        assert_eq!(adapter.duration_to_ticks(&Duration::quarter()), 384);
+        assert_eq!(adapter.duration_to_ticks(&Duration::half()), 768);
+        assert_eq!(adapter.duration_to_ticks(&Duration::whole()), 1536);
+        assert_eq!(adapter.duration_to_ticks(&Duration::eighth()), 192);
     }
 
     #[test]

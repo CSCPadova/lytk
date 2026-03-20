@@ -17,8 +17,9 @@ use super::apply::{
 use super::consume::{
     build_chord, consume_accidental_marks, consume_attachments, consume_duration,
     consume_duration_multiplier, consume_duration_scale, consume_mark, consume_octave_marks,
-    consume_override, consume_tempo, consume_tremolo, extract_string_value, is_dynamic_name,
-    parse_fraction, parse_grace_block, parse_ly_make_moment, parse_paper_block, punct_text,
+    consume_override, consume_tempo, consume_tremolo, extract_scheme_string, extract_string_value,
+    is_dynamic_name, parse_fraction, parse_grace_block, parse_ly_make_moment, parse_paper_block,
+    punct_text,
 };
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
@@ -611,11 +612,14 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                             apply_set_property(state, &prop_text, &val);
                         } else if val_node.kind() == "embedded_scheme" {
                             // Handle \set Score.measureLength = #(ly:make-moment N D)
+                            // Handle \set Staff.midiInstrument = #"flute"
                             let scheme_text = state.text(*val_node);
                             if prop_text.contains("measureLength") {
                                 if let Some((num, den)) = parse_ly_make_moment(scheme_text) {
                                     state.set_time_signature(num, den);
                                 }
+                            } else if let Some(s) = extract_scheme_string(scheme_text) {
+                                apply_set_property(state, &prop_text, &s);
                             }
                             i += 1;
                         } else {

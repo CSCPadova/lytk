@@ -1,5 +1,41 @@
 # Changelog
 
+## 2025-07-16 — Epic 4b: MIDI Reference Fidelity ✅
+
+### E4bT1: Fix chord relative pitch drift
+- First note of a chord was using the wrong relative reference pitch, causing pitch drift across chord sequences
+- Fixed relative pitch tracking for chord elements in `ly_to_ir`
+
+### E4bT2: Fix tempo beat-unit handling
+- `consume_tempo()` now correctly parses dots on beat-unit durations
+- Added `beat_unit_to_quarters()` to convert beat-unit names (with dots) to quarter-note duration ratios
+- Tempo microseconds-per-quarter now correctly accounts for dotted beat units (e.g. dotted quarter = 120 BPM → 166667 µs/quarter)
+
+### E4bT3: GM instrument→program lookup
+- Added `gm_program_from_name()` with ~100 General MIDI instrument name → program number mappings
+- Added `extract_scheme_string()` for parsing `#"string"` embedded scheme values
+- `\set Staff.midiInstrument` in `walk_parallel_music_staves` now correctly handles both plain strings and embedded scheme strings
+- Added deferred property mechanism for grouping contexts (PianoStaff, GrandStaff, etc.): `\set` properties on grouping contexts are collected and applied post-loop to all newly-created parts, preventing orphan part creation
+
+### E4bT4: Change default PPQN from 480 to 384
+- MIDI output now uses 384 PPQN (matching LilyPond's default) instead of 480
+
+### E4bT5: MIDI reference regression tests
+- Added 14 MIDI reference regression tests in `tests/round_trip.rs` across 4 fixtures (pedal, example, example2, chopin)
+- Tests cover: track count, PPQN, program changes, tempos, note count, pitch range
+- Helper functions: `extract_programs`, `extract_tempos`, `count_midi_note_ons`, `collect_midi_note_on_pitches`, `ly_to_midi_vs_ref`, `ly_to_midi_vs_ref_movement`
+- Program comparison uses deduplicated `(channel, program)` tuples (LilyPond emits duplicate ProgramChange events)
+- Track count allows ±1 tolerance (LilyPond may emit extra tracks for Lyrics contexts)
+
+### Test counts
+- Total: 729 tests (440 unit + 19 CLI + 209 fixture regression + 61 round-trip + 18/20 proptest)
+- 2 pre-existing proptest failures (double-flat pitch transpose edge case, unchanged)
+
+### Next up
+- **Epic 5: Complete LilyPond Parser** — `\chordmode`, `\figuremode` robustness, `\partial` in multi-movement
+
+---
+
 ## 2026-03-20 — Epic 4: MIDI as First-Class ✅
 
 ### E4T1: Remove MIDI feature gate
