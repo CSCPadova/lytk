@@ -37,6 +37,7 @@ lilypond-rs/
 quickly/
 python-ly/
 musicxml/
+musicxml-std/
 symusic/
 MuseScore/
 lyp/

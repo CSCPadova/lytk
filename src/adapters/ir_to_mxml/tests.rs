@@ -581,7 +581,7 @@ fn test_emit_non_arpeggiate() {
     chord.arpeggio = Some(ArpeggioType::NonArpeggio);
 
     let xml = emit_chord(chord);
-    assert!(xml.contains("<non-arpeggiate/>"), "{xml}");
+    assert!(xml.contains("<non-arpeggiate"), "{xml}");
 }
 
 // ── harmony tests ─────────────────────────────────────────────────────

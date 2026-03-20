@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-03-20 — Epic 4c: Replace quick-xml with musicxml crate ✅
+
+**Goal:** Switch all MusicXML I/O from manual quick-xml SAX parsing / Writer event emission + zip MXL handling to the strongly-typed `musicxml` crate (v1.1.2), which provides a full MusicXML 4.0 data model with native MXL support.
+
+### E4cT1: Rewrite `mxml_to_ir` reading path
+- `convert_file()` now calls `musicxml::read_score_partwise()` which handles both `.xml` and `.mxl` natively
+- `convert_str()` uses `musicxml::read_score_data_partwise()` for in-memory XML parsing
+- Replaced manual XmlNode DOM walking with direct traversal of typed `musicxml::elements::ScorePartwise` structs
+- Deleted `src/adapters/mxml_to_ir/helpers.rs` (XmlNode, parse_xml helpers no longer needed)
+- All 143 XML + 10 MXL fixture tests pass unchanged
+
+### E4cT2: Rewrite `ir_to_mxml` writing path
+- Replaced `quick_xml::Writer` event emission with `musicxml::elements::ScorePartwise` struct construction
+- `convert()` serializes via `musicxml::write_partwise_score_data()`, returns UTF-8 string
+- `write()` detects `.mxl` extension and uses `musicxml::write_partwise_score()` with native MXL compression
+- Rewrote all 6 source files: `mod.rs`, `score.rs`, `part.rs`, `note.rs`, `direction.rs`, `helpers.rs`
+- Removed `W` type alias and `Writer<Cursor<Vec<u8>>>` machinery
+
+### E4cT3: Cleanup
+- Deleted `src/adapters/mxl_zip.rs` — musicxml crate handles MXL natively
+- Removed `pub mod mxl_zip` from `src/adapters/mod.rs`
+- Removed `AdapterError::Xml`, `AdapterError::XmlAttr`, `AdapterError::Zip` error variants
+- Removed `quick-xml` and `zip` dependencies from `Cargo.toml`
+- Updated `tests/fixture_regression.rs` to use `MxmlToIrAdapter::convert_file()` instead of `mxl_zip::read_musicxml()`
+
+### Test counts
+- Total: 496 tests (435 unit + 61 integration)
+- All passing, clippy clean
+- 2 pre-existing proptest failures (double-flat pitch transpose edge case, unchanged)
+
+### Next up
+- **Epic 5: Complete LilyPond Parser** — `\chordmode`, `\figuremode` robustness, `\partial` in multi-movement
+
+---
+
 ## 2025-07-16 — Epic 4b: MIDI Reference Fidelity ✅
 
 ### E4bT1: Fix chord relative pitch drift

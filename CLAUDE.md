@@ -55,12 +55,11 @@ Five layers:
 
 3. **Adapters** (`src/adapters/`) — format converters, all go through IR:
    - `ly_to_ir.rs` (~8000 lines) — LilyPond parser using tree-sitter AST walk. Handles `\relative`, variables, `<< \\ >>` multi-voice, `\include`, figured bass, lyrics
-   - `mxml_to_ir.rs` — MusicXML reader (quick-xml SAX-style)
-   - `ir_to_ly.rs` (~3400 lines) — IR to LilyPond emitter. Handles multi-staff piano scores, voice filtering, relative pitch mode
-   - `ir_to_mxml.rs` (~2800 lines) — IR to MusicXML writer
-   - `mxl_zip.rs` — MXL (ZIP-compressed MusicXML) handling
+   - `mxml_to_ir/` — MusicXML reader using `musicxml` crate (typed struct traversal). Handles `.xml` and `.mxl` natively.
+   - `ir_to_ly/` (~3400 lines) — IR to LilyPond emitter. Handles multi-staff piano scores, voice filtering, relative pitch mode
+   - `ir_to_mxml/` — IR to MusicXML writer using `musicxml` crate (struct construction + serialization). Native MXL support.
    - `ly_flatten.rs` — `\include` expansion
-   - `midi_to_ir.rs` / `ir_to_midi.rs` — behind `midi` feature flag
+   - `midi_to_ir.rs` / `ir_to_midi.rs` — MIDI I/O via `midly`
    - Traits: `ToIrAdapter` (parse → Score), `FromIrAdapter` (Score → emit), `ToMusicAdapter` (parse → MusicDocument), `FromMusicAdapter` (MusicDocument → emit)
 
 4. **Transforms** (`src/transforms/`) — idempotent, composable passes:
@@ -119,7 +118,7 @@ Five layers:
 ## Common Pitfalls
 
 - `tree-sitter-lilypond/` is read-only reference; build reads only `src/tree-sitter/`
-- MXL files are ZIP archives — `mxl_zip.rs` handles extraction before XML parsing
+- MXL files are ZIP archives — the `musicxml` crate handles them natively via `read_score_partwise()` / `write_partwise_score()`
 - LilyPond `\relative` changes pitch semantics — tracked via `in_relative` / `relative_ref` state
 - `TimeSignature.beats` is a String, not a number — always use `.beats_fraction()` for arithmetic
 - Round-trip fidelity: test semantic equivalence (pitch, duration, structure), not string equality

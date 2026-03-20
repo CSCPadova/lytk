@@ -1,4 +1,4 @@
-//! Part-level and measure-level parsing, attributes, barlines, chord merging.
+//! Part-level and measure-level conversion from musicxml crate types to IR.
 
 use std::collections::HashMap;
 
@@ -9,17 +9,19 @@ use crate::ir::note::*;
 use crate::ir::part::Part;
 use crate::ir::voice::Voice;
 
-use super::direction::{parse_direction, parse_figured_bass_elem, parse_harmony_elem};
-use super::helpers::XmlNode;
-use super::note::{parse_note, NoteOrRest};
+use super::direction::{convert_direction, convert_figured_bass_elem, convert_harmony_elem};
+use super::note::{convert_note, NoteOrRest};
 use super::PartInfo;
 use super::Result;
 
+use musicxml::datatypes as mdt;
+use musicxml::elements as mxml;
+
 // ---------------------------------------------------------------------------
-// Part & measure parsing
+// Part & measure conversion
 // ---------------------------------------------------------------------------
 
-pub(super) fn parse_part(elem: &XmlNode, info: &PartInfo) -> Result<Part> {
+pub(super) fn convert_part(mxml_part: &mxml::Part, info: &PartInfo) -> Result<Part> {
     let mut part = Part {
         name: info.name.clone(),
         abbreviation: info.abbreviation.clone(),
@@ -33,30 +35,31 @@ pub(super) fn parse_part(elem: &XmlNode, info: &PartInfo) -> Result<Part> {
 
     let mut divisions: i64 = 1;
 
-    for measure_elem in elem.find_all("measure") {
-        let (measure, new_divisions) = parse_measure(measure_elem, divisions)?;
-        divisions = new_divisions;
-        // Update staves count from attributes.
-        if let Some(ref attrs) = measure.attributes {
-            if let Some(s) = attrs.staves {
-                part.staves = s;
+    for part_elem in &mxml_part.content {
+        if let mxml::PartElement::Measure(mxml_measure) = part_elem {
+            let (measure, new_divisions) = convert_measure(mxml_measure, divisions)?;
+            divisions = new_divisions;
+            if let Some(ref attrs) = measure.attributes {
+                if let Some(s) = attrs.staves {
+                    part.staves = s;
+                }
             }
+            part.measures.push(measure);
         }
-        part.measures.push(measure);
     }
 
     Ok(part)
 }
 
-fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
-    let number: u32 = elem
-        .attr("number")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let implicit = elem.attr("implicit") == Some("yes");
-    let width: Option<f32> = elem.attr("width").and_then(|s| s.parse().ok());
+fn convert_measure(
+    mxml_measure: &mxml::Measure,
+    mut divisions: i64,
+) -> Result<(crate::ir::measure::Measure, i64)> {
+    let number: u32 = mxml_measure.attributes.number.0.parse().unwrap_or(0);
+    let implicit = mxml_measure.attributes.implicit == Some(mdt::YesNo::Yes);
+    let width: Option<f32> = mxml_measure.attributes.width.as_ref().map(|w| w.0 as f32);
 
-    let mut measure = Measure {
+    let mut measure = crate::ir::measure::Measure {
         number,
         implicit,
         width,
@@ -73,65 +76,54 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
 
     let mut voice_elements: HashMap<u8, Vec<VoiceElement>> = HashMap::new();
     let mut pending_arpeggio: HashMap<u8, ArpeggioType> = HashMap::new();
-    // Running forward position in divisions — used to attach directions to the
-    // correct voice element based on document order.
     let mut forward_position: i64 = 0;
 
-    for child in &elem.children {
-        match child.tag.as_str() {
-            "attributes" => {
-                let (attrs, new_div) = parse_attributes(child, divisions);
+    for elem in &mxml_measure.content {
+        match elem {
+            mxml::MeasureElement::Attributes(attrs) => {
+                let (ir_attrs, new_div) = convert_attributes(attrs, divisions);
                 divisions = new_div;
-                measure.attributes = Some(attrs);
-                // <measure-style> lives inside <attributes>
-                if let Some(ms) = child.find("measure-style") {
-                    if let Some(mr) = ms.find("multiple-rest") {
-                        measure.multi_measure_rest = Some(mr.text_i64(1) as u16);
+                measure.attributes = Some(ir_attrs);
+                // <measure-style> for multiple-rest
+                for ms in &attrs.content.measure_style {
+                    if let mxml::MeasureStyleContents::MultipleRest(mr) = &ms.content {
+                        measure.multi_measure_rest = Some(mr.content.0 as u16);
                     }
                 }
             }
-            "print" => {
-                if child.attr("new-page") == Some("yes") {
+            mxml::MeasureElement::Print(print) => {
+                if print.attributes.new_page == Some(mdt::YesNo::Yes) {
                     measure.directions.push(Direction {
                         layout_break: Some(crate::ir::direction::LayoutBreakType::Page),
                         ..Default::default()
                     });
-                } else if child.attr("new-system") == Some("yes") {
+                } else if print.attributes.new_system == Some(mdt::YesNo::Yes) {
                     measure.directions.push(Direction {
                         layout_break: Some(crate::ir::direction::LayoutBreakType::System),
                         ..Default::default()
                     });
                 }
             }
-            "note" => {
-                let is_chord = child.find("chord").is_some();
-                let is_grace = child.find("grace").is_some();
-                // Detect arpeggio from notations (applies to chord)
-                let arpeggio = child.find("notations").and_then(|n| {
-                    if let Some(arp) = n.find("arpeggiate") {
-                        Some(match arp.attr("direction").unwrap_or("") {
-                            "up" => ArpeggioType::Up,
-                            "down" => ArpeggioType::Down,
-                            _ => ArpeggioType::Up,
-                        })
-                    } else if n.find("non-arpeggiate").is_some() {
-                        Some(ArpeggioType::NonArpeggio)
-                    } else {
-                        None
-                    }
-                });
-                let result = parse_note(child, divisions);
+            mxml::MeasureElement::Note(mxml_note) => {
+                let is_chord = note_is_chord(mxml_note);
+                let is_grace = note_is_grace(mxml_note);
+
+                // Detect arpeggio from notations
+                let arpeggio = detect_arpeggio(mxml_note);
+
+                let result = convert_note(mxml_note, divisions);
+
                 // Advance forward position for non-chord, non-grace notes
-                let dur_val = child.child_i64("duration", 0);
+                let dur_val = note_duration_divisions(mxml_note);
                 if !is_chord && !is_grace && dur_val > 0 {
                     forward_position += dur_val;
                 }
+
                 match result {
                     Some(NoteOrRest::Note(note)) => {
                         let voice_num = note.voice;
                         let elements = voice_elements.entry(voice_num).or_default();
                         if is_chord {
-                            // Get pending arpeggio from the first note of this chord
                             let pending = pending_arpeggio.remove(&voice_num);
                             let arp = arpeggio.or(pending);
                             merge_chord(elements, *note, arp);
@@ -150,15 +142,23 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                     None => {}
                 }
             }
-            "forward" => {
-                let dur_val = child.child_i64("duration", 0);
+            mxml::MeasureElement::Forward(fwd) => {
+                let dur_val = fwd.content.duration.content.0 as i64;
                 if dur_val > 0 {
                     forward_position += dur_val;
-                    let dots = child.find_all("dot").len() as u8;
-                    let duration = Duration::from_divisions(dur_val, divisions, dots);
-                    let voice_num = child.child_i64("voice", 1) as u8;
-                    let staff_num = child.child_i64("staff", 1) as u8;
-                    // Convert Forward to spacer rest
+                    let duration = Duration::from_divisions(dur_val, divisions, 0);
+                    let voice_num: u8 = fwd
+                        .content
+                        .voice
+                        .as_ref()
+                        .and_then(|v| v.content.parse().ok())
+                        .unwrap_or(1);
+                    let staff_num: u8 = fwd
+                        .content
+                        .staff
+                        .as_ref()
+                        .map(|s| s.content.0 as u8)
+                        .unwrap_or(1);
                     let mut rest = Rest::new(duration);
                     rest.is_spacer = true;
                     rest.voice = voice_num;
@@ -169,42 +169,37 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
                         .push(VoiceElement::Rest(rest));
                 }
             }
-            "backup" => {
-                let dur_val = child.child_i64("duration", 0);
+            mxml::MeasureElement::Backup(bak) => {
+                let dur_val = bak.content.duration.content.0 as i64;
                 if dur_val > 0 {
                     forward_position -= dur_val;
-                    // Backup is a MusicXML time-positioning concept. The voice
-                    // separation logic already handles positioning, so we
-                    // simply adjust forward_position and drop the element.
                 }
             }
-            "direction" => {
-                if let Some(mut dir) = parse_direction(child) {
-                    // Store the current forward position so ir_to_ly can
-                    // attach this direction to the correct voice element.
-                    dir.offset = forward_position as i32;
-                    measure.directions.push(dir);
+            mxml::MeasureElement::Direction(dir) => {
+                if let Some(mut ir_dir) = convert_direction(dir) {
+                    ir_dir.offset = forward_position as i32;
+                    measure.directions.push(ir_dir);
                 }
             }
-            "harmony" => {
-                if let Some(harmony) = parse_harmony_elem(child) {
+            mxml::MeasureElement::Harmony(harm) => {
+                if let Some(harmony) = convert_harmony_elem(harm) {
                     measure.harmonies.push(harmony);
                 }
             }
-            "figured-bass" => {
+            mxml::MeasureElement::FiguredBass(fb) => {
                 measure
                     .figured_bass
-                    .push(parse_figured_bass_elem(child, divisions));
+                    .push(convert_figured_bass_elem(fb, divisions));
             }
-            "barline" => {
-                let barline = parse_barline(child);
+            mxml::MeasureElement::Barline(bl) => {
+                let barline = convert_barline(bl);
                 if barline.location == "left" {
                     measure.left_barline = Some(barline);
                 } else {
                     measure.right_barline = Some(barline);
                 }
             }
-            _ => {}
+            _ => {} // Sound, Listening, Grouping, Link, Bookmark
         }
     }
 
@@ -226,12 +221,57 @@ fn parse_measure(elem: &XmlNode, mut divisions: i64) -> Result<(Measure, i64)> {
 }
 
 // ---------------------------------------------------------------------------
+// Note helpers
+// ---------------------------------------------------------------------------
+
+fn note_is_chord(note: &mxml::Note) -> bool {
+    match &note.content.info {
+        mxml::NoteType::Normal(info) => info.chord.is_some(),
+        mxml::NoteType::Grace(info) => match &info.info {
+            mxml::GraceType::Normal(n) => n.chord.is_some(),
+            mxml::GraceType::Cue(c) => c.chord.is_some(),
+        },
+        mxml::NoteType::Cue(info) => info.chord.is_some(),
+    }
+}
+
+fn note_is_grace(note: &mxml::Note) -> bool {
+    matches!(&note.content.info, mxml::NoteType::Grace(_))
+}
+
+fn note_duration_divisions(note: &mxml::Note) -> i64 {
+    match &note.content.info {
+        mxml::NoteType::Normal(info) => info.duration.content.0 as i64,
+        mxml::NoteType::Cue(info) => info.duration.content.0 as i64,
+        mxml::NoteType::Grace(_) => 0,
+    }
+}
+
+fn detect_arpeggio(note: &mxml::Note) -> Option<ArpeggioType> {
+    for notations in &note.content.notations {
+        for notation in &notations.content.notations {
+            match notation {
+                mxml::NotationContentTypes::Arpeggiate(arp) => {
+                    return Some(match arp.attributes.direction {
+                        Some(mdt::UpDown::Up) => ArpeggioType::Up,
+                        Some(mdt::UpDown::Down) => ArpeggioType::Down,
+                        None => ArpeggioType::Up,
+                    });
+                }
+                mxml::NotationContentTypes::NonArpeggiate(_) => {
+                    return Some(ArpeggioType::NonArpeggio);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Chord merging
 // ---------------------------------------------------------------------------
 
-/// When a `<chord/>` flag is present, merge the note into the previous note
-/// or chord in the voice element list. If `arpeggio` is provided, it is
-/// applied when a new Chord is formed from Note→Chord conversion.
 fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note, arpeggio: Option<ArpeggioType>) {
     if let Some(last) = elements.last_mut() {
         match last {
@@ -244,7 +284,6 @@ fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note, arpeggio: Option<Ar
                 }
             }
             VoiceElement::Note(prev_note) => {
-                // Convert the previous Note into a Chord.
                 let prev = std::mem::replace(
                     prev_note,
                     Box::new(Note::new(note.pitch, note.duration.clone())),
@@ -259,49 +298,78 @@ fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note, arpeggio: Option<Ar
                 *last = VoiceElement::Chord(chord);
             }
             _ => {
-                // If previous element isn't a note/chord, just append as note.
                 elements.push(VoiceElement::Note(Box::new(note)));
             }
         }
     } else {
-        // Empty list — just push as a note.
         elements.push(VoiceElement::Note(Box::new(note)));
     }
 }
 
 // ---------------------------------------------------------------------------
-// Attributes parsing
+// Attributes conversion
 // ---------------------------------------------------------------------------
 
-fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttributes, i64) {
-    let divisions = elem
-        .find("divisions")
-        .map(|d| d.text_i64(current_divisions) as u16)
+fn convert_attributes(
+    attrs: &mxml::Attributes,
+    current_divisions: i64,
+) -> (MeasureAttributes, i64) {
+    let divisions = attrs
+        .content
+        .divisions
+        .as_ref()
+        .map(|d| d.content.0 as u16)
         .unwrap_or(current_divisions as u16);
     let new_divisions = divisions as i64;
 
-    let key = elem.find("key").map(|k| {
-        let fifths = k.child_i64("fifths", 0) as i8;
-        let mode_str = k.child_text("mode").unwrap_or("major");
-        KeySignature {
-            fifths,
-            mode: KeyMode::from_str_loose(mode_str),
+    let key = attrs.content.key.first().and_then(|k| {
+        match &k.content {
+            mxml::KeyContents::Explicit(explicit) => {
+                let fifths = explicit.fifths.content.0;
+                let mode = explicit
+                    .mode
+                    .as_ref()
+                    .map(|m| convert_mode(&m.content))
+                    .unwrap_or(KeyMode::Major);
+                Some(KeySignature { fifths, mode })
+            }
+            mxml::KeyContents::Relative(_) => {
+                // Non-traditional key signatures — not yet supported in our IR
+                None
+            }
         }
     });
 
-    let time = elem.find("time").map(|t| {
-        let beats_parts: Vec<&str> = t
-            .find_all("beats")
+    let time = attrs.content.time.first().map(|t| {
+        // Collect all beats parts (for compound signatures like "3+2")
+        let beats_parts: Vec<String> = t
+            .content
+            .beats
             .iter()
-            .map(|b| b.text_content())
+            .map(|b| b.beats.content.clone())
             .collect();
         let beats = if beats_parts.is_empty() {
             "4".to_string()
         } else {
             beats_parts.join("+")
         };
-        let beat_type = t.child_i64("beat-type", 4) as u8;
-        let symbol = t.attr("symbol").map(|s| s.to_string());
+        let beat_type: u8 = t
+            .content
+            .beats
+            .first()
+            .map(|b| b.beat_type.content.parse().unwrap_or(4))
+            .unwrap_or(4);
+        let symbol = t.attributes.symbol.as_ref().map(|s| {
+            use mdt::TimeSymbol;
+            match s {
+                TimeSymbol::Common => "common".to_string(),
+                TimeSymbol::Cut => "cut".to_string(),
+                TimeSymbol::SingleNumber => "single-number".to_string(),
+                TimeSymbol::Normal => "normal".to_string(),
+                TimeSymbol::Note => "note".to_string(),
+                TimeSymbol::DottedNote => "dotted-note".to_string(),
+            }
+        });
         TimeSignature {
             beats,
             beat_type,
@@ -310,17 +378,25 @@ fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttribute
     });
 
     let mut clefs: HashMap<u8, Clef> = HashMap::new();
-    for clef_elem in elem.find_all("clef") {
+    for clef_elem in &attrs.content.clef {
         let staff_num: u8 = clef_elem
-            .attr("number")
-            .and_then(|s| s.parse().ok())
+            .attributes
+            .number
+            .as_ref()
+            .map(|n| n.0)
             .unwrap_or(1);
-        let sign_str = clef_elem.child_text("sign").unwrap_or("G");
-        let sign = ClefSign::from_str_loose(sign_str);
-        let line = clef_elem.child_i64("line", 2) as u8;
+        let sign = convert_clef_sign(&clef_elem.content.sign.content);
+        let line = clef_elem
+            .content
+            .line
+            .as_ref()
+            .map(|l| l.content.0 as u8)
+            .unwrap_or(2);
         let octave_change = clef_elem
-            .find("clef-octave-change")
-            .map(|o| o.text_i64(0) as i8)
+            .content
+            .clef_octave_change
+            .as_ref()
+            .map(|o| o.content)
             .unwrap_or(0);
         clefs.insert(
             staff_num,
@@ -332,10 +408,20 @@ fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttribute
         );
     }
 
-    let transpose = elem.find("transpose").map(|t| {
-        let diatonic = t.child_i64("diatonic", 0) as i8;
-        let chromatic = t.child_i64("chromatic", 0) as i8;
-        let octave_change = t.child_i64("octave-change", 0) as i8;
+    let transpose = attrs.content.transpose.first().map(|t| {
+        let diatonic = t
+            .content
+            .diatonic
+            .as_ref()
+            .map(|d| d.content as i8)
+            .unwrap_or(0);
+        let chromatic = t.content.chromatic.content.0 as i8;
+        let octave_change = t
+            .content
+            .octave_change
+            .as_ref()
+            .map(|o| o.content)
+            .unwrap_or(0);
         Transpose {
             diatonic,
             chromatic,
@@ -343,12 +429,14 @@ fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttribute
         }
     });
 
-    let staves = elem.find("staves").map(|s| s.text_i64(1) as u8);
+    let staves = attrs.content.staves.as_ref().map(|s| s.content.0 as u8);
 
-    let staff_lines = elem
-        .find("staff-details")
-        .and_then(|sd| sd.find("staff-lines"))
-        .map(|sl| sl.text_i64(5) as u8);
+    let staff_lines = attrs
+        .content
+        .staff_details
+        .first()
+        .and_then(|sd| sd.content.staff_lines.as_ref())
+        .map(|sl| sl.content.0 as u8);
 
     (
         MeasureAttributes {
@@ -365,39 +453,54 @@ fn parse_attributes(elem: &XmlNode, current_divisions: i64) -> (MeasureAttribute
 }
 
 // ---------------------------------------------------------------------------
-// Barline parsing
+// Barline conversion
 // ---------------------------------------------------------------------------
 
-fn parse_barline(elem: &XmlNode) -> Barline {
-    let bar_style = elem.child_text("bar-style").unwrap_or("regular");
-    let style = match bar_style {
-        "regular" => BarlineType::Regular,
-        "light-light" | "double" => BarlineType::Double,
-        "light-heavy" | "final" => BarlineType::Final,
-        "dashed" => BarlineType::Dashed,
-        "dotted" => BarlineType::Dotted,
-        "tick" => BarlineType::Tick,
-        "short" => BarlineType::Short,
-        "none" => BarlineType::None,
-        _ => BarlineType::Regular,
-    };
+fn convert_barline(bl: &mxml::Barline) -> Barline {
+    let style = bl
+        .content
+        .bar_style
+        .as_ref()
+        .map(|bs| convert_bar_style(&bs.content))
+        .unwrap_or(BarlineType::Regular);
 
-    let repeat_direction =
-        elem.find("repeat")
-            .and_then(|r| match r.attr("direction").unwrap_or("") {
-                "forward" => Some(RepeatDirection::Forward),
-                "backward" => Some(RepeatDirection::Backward),
-                _ => None,
-            });
+    let repeat_direction = bl
+        .content
+        .repeat
+        .as_ref()
+        .map(|r| match r.attributes.direction {
+            mdt::BackwardForward::Forward => RepeatDirection::Forward,
+            mdt::BackwardForward::Backward => RepeatDirection::Backward,
+        });
 
-    let ending_number = elem
-        .find("ending")
-        .and_then(|e| e.attr("number").and_then(|s| s.parse::<u8>().ok()));
-    let ending_type = elem
-        .find("ending")
-        .and_then(|e| e.attr("type").map(|s| s.to_string()));
+    let ending_number = bl
+        .content
+        .ending
+        .as_ref()
+        .and_then(|e| e.attributes.number.0.parse::<u8>().ok());
+    let ending_type = bl.content.ending.as_ref().map(|e| {
+        use mdt::StartStopDiscontinue;
+        match e.attributes.r#type {
+            StartStopDiscontinue::Start => "start".to_string(),
+            StartStopDiscontinue::Stop => "stop".to_string(),
+            StartStopDiscontinue::Discontinue => "discontinue".to_string(),
+        }
+    });
 
-    let location = elem.attr("location").unwrap_or("right").to_string();
+    let location = bl
+        .attributes
+        .location
+        .as_ref()
+        .map(|l| {
+            use mdt::RightLeftMiddle;
+            match l {
+                RightLeftMiddle::Right => "right",
+                RightLeftMiddle::Left => "left",
+                RightLeftMiddle::Middle => "middle",
+            }
+        })
+        .unwrap_or("right")
+        .to_string();
 
     Barline {
         style,
@@ -405,5 +508,51 @@ fn parse_barline(elem: &XmlNode) -> Barline {
         repeat_direction,
         ending_number,
         ending_type,
+    }
+}
+
+fn convert_bar_style(bs: &mdt::BarStyle) -> BarlineType {
+    match bs {
+        mdt::BarStyle::Regular => BarlineType::Regular,
+        mdt::BarStyle::LightLight => BarlineType::Double,
+        mdt::BarStyle::LightHeavy => BarlineType::Final,
+        mdt::BarStyle::Dashed => BarlineType::Dashed,
+        mdt::BarStyle::Dotted => BarlineType::Dotted,
+        mdt::BarStyle::Tick => BarlineType::Tick,
+        mdt::BarStyle::Short => BarlineType::Short,
+        mdt::BarStyle::None => BarlineType::None,
+        mdt::BarStyle::Heavy | mdt::BarStyle::HeavyHeavy | mdt::BarStyle::HeavyLight => {
+            BarlineType::Final
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared type conversions
+// ---------------------------------------------------------------------------
+
+pub(super) fn convert_mode(mode: &mdt::Mode) -> KeyMode {
+    match mode {
+        mdt::Mode::Major => KeyMode::Major,
+        mdt::Mode::Minor => KeyMode::Minor,
+        mdt::Mode::Dorian => KeyMode::Dorian,
+        mdt::Mode::Phrygian => KeyMode::Phrygian,
+        mdt::Mode::Lydian => KeyMode::Lydian,
+        mdt::Mode::Mixolydian => KeyMode::Mixolydian,
+        mdt::Mode::Aeolian => KeyMode::Aeolian,
+        mdt::Mode::Ionian => KeyMode::Ionian,
+        mdt::Mode::Locrian => KeyMode::Locrian,
+        mdt::Mode::None => KeyMode::Major,
+    }
+}
+
+pub(super) fn convert_clef_sign(sign: &mdt::ClefSign) -> ClefSign {
+    match sign {
+        mdt::ClefSign::G => ClefSign::G,
+        mdt::ClefSign::F => ClefSign::F,
+        mdt::ClefSign::C => ClefSign::C,
+        mdt::ClefSign::Percussion => ClefSign::Percussion,
+        mdt::ClefSign::TAB => ClefSign::Tab,
+        mdt::ClefSign::Jianpu | mdt::ClefSign::None => ClefSign::G,
     }
 }

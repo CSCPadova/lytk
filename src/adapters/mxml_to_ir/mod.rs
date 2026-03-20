@@ -1,12 +1,9 @@
 //! MusicXML → IR adapter.
 //!
-//! Parses MusicXML (both `.xml` and `.mxl`) into the lytk IR tree.
-//!
-//! # Reference
-//! Ported from `lytk-py/converters/mxml_to_ir.py`.
+//! Parses MusicXML (both `.xml` and `.mxl`) into the lytk IR tree,
+//! using the `musicxml` crate for XML/MXL parsing.
 
 mod direction;
-mod helpers;
 mod note;
 mod part;
 #[cfg(test)]
@@ -18,14 +15,14 @@ use std::path::Path;
 
 use num::rational::Ratio;
 
-use super::mxl_zip;
 use super::{AdapterError, Result, ToIrAdapter};
 use crate::ir::duration::Duration;
 use crate::ir::note::*;
 use crate::ir::score::*;
 
-use helpers::{parse_xml, XmlNode};
-use part::parse_part;
+use musicxml::elements as mxml;
+
+use part::convert_part;
 
 // ---------------------------------------------------------------------------
 // Adapter struct
@@ -48,12 +45,17 @@ impl Default for MxmlToIrAdapter {
 
 impl ToIrAdapter for MxmlToIrAdapter {
     fn convert_file(&self, path: &Path) -> Result<Score> {
-        let xml = mxl_zip::read_musicxml(path)?;
-        self.convert_str(&xml)
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| AdapterError::Parse("Invalid path".into()))?;
+        let mxml_score = musicxml::read_score_partwise(path_str).map_err(AdapterError::Parse)?;
+        convert_mxml_score(&mxml_score)
     }
 
     fn convert_str(&self, text: &str) -> Result<Score> {
-        parse_score_partwise(text)
+        let data = text.as_bytes().to_vec();
+        let mxml_score = musicxml::read_score_data_partwise(data).map_err(AdapterError::Parse)?;
+        convert_mxml_score(&mxml_score)
     }
 }
 
@@ -84,18 +86,13 @@ pub(super) struct PartInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Score-level parsing
+// Score-level conversion
 // ---------------------------------------------------------------------------
 
-fn parse_score_partwise(xml: &str) -> Result<Score> {
-    let root = parse_xml(xml)?;
-    if root.tag != "score-partwise" {
-        return Err(AdapterError::MissingElement("score-partwise".into()));
-    }
-
-    let metadata = parse_metadata(&root);
-    let page_layout = parse_defaults(&root);
-    let mut score = Score {
+fn convert_mxml_score(score: &mxml::ScorePartwise) -> Result<Score> {
+    let metadata = parse_metadata(score);
+    let page_layout = parse_defaults(score);
+    let mut ir_score = Score {
         metadata,
         page_layout,
         children: Vec::new(),
@@ -107,40 +104,40 @@ fn parse_score_partwise(xml: &str) -> Result<Score> {
     let mut completed_groups: Vec<(PartGroup, Vec<String>)> = Vec::new();
     let mut active_groups: Vec<(PartGroup, Vec<String>)> = Vec::new();
 
-    if let Some(part_list) = root.find("part-list") {
-        for child in &part_list.children {
-            match child.tag.as_str() {
-                "score-part" => {
-                    let info = parse_score_part(child);
-                    let id = info.id.clone();
-                    part_info.insert(id.clone(), info);
-                    part_order.push(id.clone());
-                    for (_, parts) in &mut active_groups {
-                        parts.push(id.clone());
-                    }
+    for item in &score.content.part_list.content.content {
+        match item {
+            mxml::PartListElement::ScorePart(sp) => {
+                let info = parse_score_part(sp);
+                let id = info.id.clone();
+                part_info.insert(id.clone(), info);
+                part_order.push(id.clone());
+                for (_, parts) in &mut active_groups {
+                    parts.push(id.clone());
                 }
-                "part-group" => {
-                    let group_type = child.attr("type").unwrap_or("");
-                    if group_type == "start" {
-                        let group = parse_part_group(child);
+            }
+            mxml::PartListElement::PartGroup(pg) => {
+                use musicxml::datatypes::StartStop;
+                match pg.attributes.r#type {
+                    StartStop::Start => {
+                        let group = parse_part_group(pg);
                         active_groups.push((group, Vec::new()));
-                    } else if group_type == "stop" {
+                    }
+                    StartStop::Stop => {
                         if let Some(completed) = active_groups.pop() {
                             completed_groups.push(completed);
                         }
                     }
                 }
-                _ => {}
             }
         }
     }
 
     // Parse each <part> element.
     let mut parsed_parts: HashMap<String, crate::ir::part::Part> = HashMap::new();
-    for part_elem in root.find_all("part") {
-        let id = part_elem.attr("id").unwrap_or("").to_string();
+    for mxml_part in &score.content.part {
+        // In partwise, part.content contains PartElement::Measure(...)
+        let id = mxml_part.attributes.id.0.clone();
         let info = if id.is_empty() {
-            // No id — if there's exactly one score-part, use that.
             if part_info.len() == 1 {
                 part_info.values().next().cloned().unwrap_or_default()
             } else {
@@ -150,7 +147,7 @@ fn parse_score_partwise(xml: &str) -> Result<Score> {
             part_info.get(&id).cloned().unwrap_or_default()
         };
         let resolved_id = if id.is_empty() { info.id.clone() } else { id };
-        let part = parse_part(part_elem, &info)?;
+        let part = convert_part(mxml_part, &info)?;
         parsed_parts.insert(resolved_id, part);
     }
 
@@ -168,7 +165,7 @@ fn parse_score_partwise(xml: &str) -> Result<Score> {
             }
         }
         if !pg.children.is_empty() {
-            score.children.push(ScoreChild::PartGroup(pg));
+            ir_score.children.push(ScoreChild::PartGroup(pg));
         }
     }
 
@@ -176,22 +173,18 @@ fn parse_score_partwise(xml: &str) -> Result<Score> {
     for id in &part_order {
         if !grouped_ids.contains(id) {
             if let Some(part) = parsed_parts.remove(id) {
-                score.children.push(ScoreChild::Part(part));
+                ir_score.children.push(ScoreChild::Part(part));
             }
         }
     }
 
     // Detect anacrusis: check if the first measure is implicit (pickup)
-    detect_anacrusis(&mut score);
+    detect_anacrusis(&mut ir_score);
 
-    Ok(score)
+    Ok(ir_score)
 }
 
 /// Detect anacrusis (pickup measure) and set `score.metadata.partial_duration`.
-///
-/// A measure is an anacrusis if it has `implicit="yes"`. We compute the
-/// pickup duration as the sum of actual note/rest durations in the first
-/// voice of the first part's first measure.
 fn detect_anacrusis(score: &mut Score) {
     let first_measure = score.parts().first().and_then(|p| p.measures.first());
 
@@ -199,7 +192,6 @@ fn detect_anacrusis(score: &mut Score) {
         if !measure.implicit {
             return;
         }
-        // Sum the durations in the first voice
         if let Some(voice) = measure.voices.first() {
             let mut total = Ratio::new(0i64, 1);
             for elem in &voice.elements {
@@ -211,30 +203,39 @@ fn detect_anacrusis(score: &mut Score) {
                 total += dur.actual_duration();
             }
             if total > Ratio::new(0i64, 1) {
-                // Find the score as mutable to set partial_duration.
-                // We need to find the first part mutably.
                 let partial = Duration::new(total);
-                // Since we have &mut Score, set it directly.
                 score.metadata.partial_duration = Some(partial);
             }
         }
     }
 }
 
-fn parse_metadata(root: &XmlNode) -> ScoreMetadata {
+fn parse_metadata(score: &mxml::ScorePartwise) -> ScoreMetadata {
     let mut meta = ScoreMetadata::default();
 
-    if let Some(work) = root.find("work") {
-        meta.title = work.child_text("work-title").map(|s| s.to_string());
+    // Work title
+    if let Some(ref work) = score.content.work {
+        if let Some(ref wt) = work.content.work_title {
+            meta.title = Some(wt.content.clone());
+        }
     }
+    // Movement title as fallback
     if meta.title.is_none() {
-        meta.title = root.child_text("movement-title").map(|s| s.to_string());
+        if let Some(ref mt) = score.content.movement_title {
+            meta.title = Some(mt.content.clone());
+        }
     }
 
-    if let Some(ident) = root.find("identification") {
-        for creator in ident.find_all("creator") {
-            let creator_type = creator.attr("type").unwrap_or("");
-            let text = creator.text_content().to_string();
+    // Identification
+    if let Some(ref ident) = score.content.identification {
+        for creator in &ident.content.creator {
+            let creator_type = creator
+                .attributes
+                .r#type
+                .as_ref()
+                .map(|t| t.0.as_str())
+                .unwrap_or("");
+            let text = creator.content.clone();
             match creator_type {
                 "composer" => meta.composer = Some(text),
                 "arranger" => meta.arranger = Some(text),
@@ -244,20 +245,34 @@ fn parse_metadata(root: &XmlNode) -> ScoreMetadata {
                 }
             }
         }
-        for rights in ident.find_all("rights") {
-            let rights_type = rights.attr("type").unwrap_or("").to_string();
-            meta.rights
-                .push((rights_type, rights.text_content().to_string()));
+        for rights in &ident.content.rights {
+            let rights_type = rights
+                .attributes
+                .r#type
+                .as_ref()
+                .map(|t| t.0.as_str())
+                .unwrap_or("")
+                .to_string();
+            meta.rights.push((rights_type, rights.content.clone()));
         }
     }
 
-    // Fallback: <credit> elements (MuseScore exports title/composer here)
-    for credit in root.find_all("credit") {
+    // Fallback: <credit> elements
+    for credit in &score.content.credit {
         let credit_type = credit
-            .child_text("credit-type")
-            .unwrap_or("")
-            .to_lowercase();
-        let words = credit.child_text("credit-words").unwrap_or("").to_string();
+            .content
+            .credit_type
+            .first()
+            .map(|ct| ct.content.to_lowercase())
+            .unwrap_or_default();
+        let words = match &credit.content.credit {
+            mxml::CreditSubcontents::Text(text) => text
+                .credit_words
+                .as_ref()
+                .map(|cw| cw.content.clone())
+                .unwrap_or_default(),
+            mxml::CreditSubcontents::Image(_) => String::new(),
+        };
         if words.is_empty() {
             continue;
         }
@@ -298,33 +313,19 @@ fn parse_metadata(root: &XmlNode) -> ScoreMetadata {
 // Defaults / page layout parsing
 // ---------------------------------------------------------------------------
 
-/// Parse `<defaults>` element for page layout and staff sizing.
-///
-/// MusicXML dimensions are in "tenths" (1/10 of a staff space). The
-/// `<scaling>` element provides the ratio: millimeters / tenths. We convert
-/// to cm and points for the IR.
-fn parse_defaults(root: &XmlNode) -> Option<PageLayout> {
-    let defaults = root.find("defaults")?;
+fn parse_defaults(score: &mxml::ScorePartwise) -> Option<PageLayout> {
+    let defaults = score.content.defaults.as_ref()?;
 
-    // Scaling factor: millimeters per tenth
-    let (mm, tenths) = if let Some(scaling) = defaults.find("scaling") {
-        let mm_val: f64 = scaling
-            .child_text("millimeters")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(7.056);
-        let tenths_val: f64 = scaling
-            .child_text("tenths")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(40.0);
-        (mm_val, tenths_val)
+    let (mm, tenths_val) = if let Some(ref scaling) = defaults.content.scaling {
+        let mm_val: f64 = scaling.content.millimeters.content.0;
+        let tenths_v: f64 = scaling.content.tenths.content.0;
+        (mm_val, tenths_v)
     } else {
         return None;
     };
 
-    let scale = mm / tenths; // mm per tenth
+    let scale = mm / tenths_val;
     let to_cm = |val: f64| val * scale / 10.0;
-
-    // Staff size: 40 tenths (one staff height) converted to points
     let staff_size = 40.0 * scale * 72.27 / 25.4;
 
     let mut layout = PageLayout {
@@ -339,46 +340,29 @@ fn parse_defaults(root: &XmlNode) -> Option<PageLayout> {
         staff_size: Some(staff_size),
     };
 
-    if let Some(pl) = defaults.find("page-layout") {
-        layout.page_height = pl
-            .child_text("page-height")
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(&to_cm);
-        layout.page_width = pl
-            .child_text("page-width")
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(&to_cm);
+    if let Some(ref pl) = defaults.content.page_layout {
+        layout.page_height = pl.content.page_height.as_ref().map(|h| to_cm(h.content.0));
+        layout.page_width = pl.content.page_width.as_ref().map(|w| to_cm(w.content.0));
 
-        // Page margins (use first <page-margins> element)
-        if let Some(margins) = pl.find("page-margins") {
-            layout.left_margin = margins
-                .child_text("left-margin")
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(&to_cm);
-            layout.right_margin = margins
-                .child_text("right-margin")
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(&to_cm);
-            layout.top_margin = margins
-                .child_text("top-margin")
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(&to_cm);
-            layout.bottom_margin = margins
-                .child_text("bottom-margin")
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(&to_cm);
+        if let Some(margins) = pl.content.page_margins.first() {
+            layout.left_margin = Some(to_cm(margins.content.left_margin.content.0));
+            layout.right_margin = Some(to_cm(margins.content.right_margin.content.0));
+            layout.top_margin = Some(to_cm(margins.content.top_margin.content.0));
+            layout.bottom_margin = Some(to_cm(margins.content.bottom_margin.content.0));
         }
     }
 
-    if let Some(sl) = defaults.find("system-layout") {
+    if let Some(ref sl) = defaults.content.system_layout {
         layout.system_distance = sl
-            .child_text("system-distance")
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(&to_cm);
+            .content
+            .system_distance
+            .as_ref()
+            .map(|d| to_cm(d.content.0));
         layout.top_system_distance = sl
-            .child_text("top-system-distance")
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(&to_cm);
+            .content
+            .top_system_distance
+            .as_ref()
+            .map(|d| to_cm(d.content.0));
     }
 
     Some(layout)
@@ -388,45 +372,51 @@ fn parse_defaults(root: &XmlNode) -> Option<PageLayout> {
 // Part-list parsing
 // ---------------------------------------------------------------------------
 
-fn parse_score_part(elem: &XmlNode) -> PartInfo {
+fn parse_score_part(sp: &mxml::ScorePart) -> PartInfo {
     let mut info = PartInfo {
-        id: elem.attr("id").unwrap_or("").to_string(),
+        id: sp.attributes.id.0.clone(),
         ..Default::default()
     };
 
-    if let Some(name) = elem.child_text("part-name") {
-        info.name = name.to_string();
-    }
-    if let Some(abbrev) = elem.child_text("part-abbreviation") {
-        info.abbreviation = abbrev.to_string();
+    info.name = sp.content.part_name.content.clone();
+
+    if let Some(ref abbrev) = sp.content.part_abbreviation {
+        info.abbreviation = abbrev.content.clone();
     }
 
     // MIDI instrument info (first <midi-instrument> child).
-    if let Some(midi) = elem.find("midi-instrument") {
-        if let Some(ch) = midi.find("midi-channel") {
-            info.midi_channel = ch.text_i64(1) as u8;
+    if let Some(midi) = sp.content.midi_instrument.first() {
+        if let Some(ref ch) = midi.content.midi_channel {
+            info.midi_channel = ch.content.0;
         }
-        if let Some(prog) = midi.find("midi-program") {
-            info.midi_program = prog.text_i64(1) as u8;
+        if let Some(ref prog) = midi.content.midi_program {
+            info.midi_program = prog.content.0;
         }
-        if let Some(name) = midi.child_text("midi-name") {
-            info.midi_instrument = name.to_string();
+        if let Some(ref name) = midi.content.midi_name {
+            info.midi_instrument = name.content.clone();
         }
     }
 
     info
 }
 
-fn parse_part_group(elem: &XmlNode) -> PartGroup {
+fn parse_part_group(pg: &mxml::PartGroup) -> PartGroup {
     let mut group = PartGroup::new("StaffGroup");
 
-    if let Some(name) = elem.child_text("group-name") {
-        group.name = name.to_string();
+    if let Some(ref name) = pg.content.group_name {
+        group.name = name.content.clone();
     }
-    if let Some(sym) = elem.child_text("group-symbol") {
-        group.bracket = sym.to_string();
-        // Map bracket style to LilyPond context type.
-        group.group_type = match sym {
+    if let Some(ref sym) = pg.content.group_symbol {
+        use musicxml::datatypes::GroupSymbolValue;
+        let sym_str = match sym.content {
+            GroupSymbolValue::Brace => "brace",
+            GroupSymbolValue::Bracket => "bracket",
+            GroupSymbolValue::Line => "line",
+            GroupSymbolValue::Square => "square",
+            GroupSymbolValue::None => "none",
+        };
+        group.bracket = sym_str.to_string();
+        group.group_type = match sym_str {
             "brace" => "PianoStaff",
             "bracket" => "StaffGroup",
             "line" => "ChoirStaff",
@@ -434,8 +424,8 @@ fn parse_part_group(elem: &XmlNode) -> PartGroup {
         }
         .to_string();
     }
-    if let Some(num) = elem.attr("number") {
-        group.number = num.parse().unwrap_or(1);
+    if let Some(ref num) = pg.attributes.number {
+        group.number = num.0.parse().unwrap_or(1);
     }
 
     group

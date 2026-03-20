@@ -1,81 +1,97 @@
-//! Part-level and measure-level MusicXML emission.
+//! Part-level and measure-level musicxml element construction.
 
-use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
-
-use super::helpers::{format_float, text_element};
-use super::{IrToMxmlAdapter, W};
-use crate::adapters::Result;
+use super::IrToMxmlAdapter;
 use crate::ir::direction::BarlineType;
 use crate::ir::harmony::FiguredBass;
 use crate::ir::measure::{ClefSign, Measure, MeasureAttributes};
 use crate::ir::note::VoiceElement;
 
+use musicxml::datatypes as mdt;
+use musicxml::elements as mxml;
+
 impl IrToMxmlAdapter {
-    pub(super) fn write_part(&self, w: &mut W, part: &crate::ir::Part) -> Result<()> {
-        let mut el = BytesStart::new("part");
+    pub(super) fn build_part(&self, part: &crate::ir::Part) -> mxml::Part {
         let id = if part.part_id.is_empty() {
             "P1"
         } else {
             &part.part_id
         };
-        el.push_attribute(("id", id));
-        w.write_event(Event::Start(el))?;
 
-        for measure in &part.measures {
-            self.write_measure(w, measure, part.staves)?;
+        let content: Vec<mxml::PartElement> = part
+            .measures
+            .iter()
+            .map(|m| mxml::PartElement::Measure(self.build_measure(m, part.staves)))
+            .collect();
+
+        mxml::Part {
+            attributes: mxml::PartAttributes {
+                id: mdt::IdRef(id.to_string()),
+            },
+            content,
         }
-
-        w.write_event(Event::End(BytesEnd::new("part")))?;
-        Ok(())
     }
 
-    pub(super) fn write_measure(
+    fn build_measure(&self, measure: &Measure, part_staves: u8) -> mxml::Measure {
+        let attrs = mxml::MeasureAttributes {
+            number: mdt::Token(measure.number.to_string()),
+            id: None,
+            implicit: if measure.implicit {
+                Some(mdt::YesNo::Yes)
+            } else {
+                None
+            },
+            non_controlling: None,
+            text: None,
+            width: measure.width.map(|w| mdt::Tenths(w as f64)),
+        };
+
+        let content = self.build_measure_elements(measure, part_staves);
+
+        mxml::Measure {
+            attributes: attrs,
+            content,
+        }
+    }
+
+    fn build_measure_elements(
         &self,
-        w: &mut W,
         measure: &Measure,
         part_staves: u8,
-    ) -> Result<()> {
-        let mut el = BytesStart::new("measure");
-        el.push_attribute(("number", measure.number.to_string().as_str()));
-        if measure.implicit {
-            el.push_attribute(("implicit", "yes"));
-        }
-        if let Some(w_val) = measure.width {
-            let w_str = format_float(w_val as f64);
-            el.push_attribute(("width", w_str.as_str()));
-        }
-        w.write_event(Event::Start(el))?;
+    ) -> Vec<mxml::MeasureElement> {
+        let mut elements: Vec<mxml::MeasureElement> = Vec::new();
 
         // <print> element for layout breaks (emitted before attributes)
-        let has_layout_break = measure.directions.iter().any(|d| d.layout_break.is_some());
-        if has_layout_break {
-            for dir in &measure.directions {
-                if let Some(ref lb) = dir.layout_break {
-                    let mut print_el = BytesStart::new("print");
-                    match lb {
-                        crate::ir::direction::LayoutBreakType::Page => {
-                            print_el.push_attribute(("new-page", "yes"));
-                        }
-                        crate::ir::direction::LayoutBreakType::System => {
-                            print_el.push_attribute(("new-system", "yes"));
-                        }
-                        crate::ir::direction::LayoutBreakType::Section => {
-                            print_el.push_attribute(("new-system", "yes"));
-                        }
+        for dir in &measure.directions {
+            if let Some(ref lb) = dir.layout_break {
+                let mut print_attrs = mxml::PrintAttributes::default();
+                match lb {
+                    crate::ir::direction::LayoutBreakType::Page => {
+                        print_attrs.new_page = Some(mdt::YesNo::Yes);
                     }
-                    w.write_event(Event::Empty(print_el))?;
+                    crate::ir::direction::LayoutBreakType::System
+                    | crate::ir::direction::LayoutBreakType::Section => {
+                        print_attrs.new_system = Some(mdt::YesNo::Yes);
+                    }
                 }
+                elements.push(mxml::MeasureElement::Print(mxml::Print {
+                    attributes: print_attrs,
+                    content: mxml::PrintContents::default(),
+                }));
             }
         }
 
         // Attributes
         if let Some(attrs) = &measure.attributes {
-            self.write_attributes(w, attrs, measure.multi_measure_rest)?;
+            elements.push(mxml::MeasureElement::Attributes(
+                self.build_attributes(attrs, measure.multi_measure_rest),
+            ));
         }
 
         // Left barline
         if let Some(bl) = &measure.left_barline {
-            self.write_barline(w, bl, "left")?;
+            elements.push(mxml::MeasureElement::Barline(
+                self.build_barline(bl, "left"),
+            ));
         }
 
         // Directions (skip layout-break-only directions; those are emitted as <print>)
@@ -96,23 +112,20 @@ impl IrToMxmlAdapter {
             {
                 continue;
             }
-            self.write_direction(w, dir)?;
+            elements.push(mxml::MeasureElement::Direction(self.build_direction(dir)));
         }
 
         // Harmony / chord symbols (before notes; offset positions within measure)
         for harmony in &measure.harmonies {
-            self.write_harmony(w, harmony)?;
+            elements.push(mxml::MeasureElement::Harmony(self.build_harmony(harmony)));
         }
 
         // Build an index of figured bass keyed by measure-offset (in divisions).
-        // We'll interleave them into the first voice's note stream.
-        // Sort by offset so they land in temporal order.
         let mut fb_by_offset: std::collections::BTreeMap<i32, Vec<&FiguredBass>> =
             std::collections::BTreeMap::new();
         for fb in &measure.figured_bass {
             fb_by_offset.entry(fb.offset).or_default().push(fb);
         }
-        // Offset of the last emitted figure group — to avoid double-emitting
         let mut fb_emitted_up_to: i32 = -1;
 
         // Voices with backup between them
@@ -123,21 +136,30 @@ impl IrToMxmlAdapter {
                 let prev = &voices[vi - 1];
                 let total_dur = self.voice_duration(prev);
                 if total_dur > 0 {
-                    w.write_event(Event::Start(BytesStart::new("backup")))?;
-                    text_element(w, "duration", &total_dur.to_string())?;
-                    w.write_event(Event::End(BytesEnd::new("backup")))?;
+                    elements.push(mxml::MeasureElement::Backup(mxml::Backup {
+                        attributes: (),
+                        content: mxml::BackupContents {
+                            duration: mxml::Duration {
+                                attributes: (),
+                                content: mdt::PositiveDivisions(total_dur as u32),
+                            },
+                            footnote: None,
+                            level: None,
+                        },
+                    }));
                 }
             }
 
             let mut fwd_pos: i64 = 0;
             for elem in &voice.elements {
                 // Interleave figured bass into voice 1's note stream.
-                // Emit all figures whose offset falls at the current note position.
                 if vi == 0 {
                     let cur_divs = fwd_pos as i32;
                     for (&off, fbs) in fb_by_offset.range(fb_emitted_up_to + 1..=cur_divs) {
                         for fb in fbs {
-                            self.write_figured_bass(w, fb)?;
+                            elements.push(mxml::MeasureElement::FiguredBass(
+                                self.build_figured_bass(fb),
+                            ));
                         }
                         fb_emitted_up_to = off;
                     }
@@ -145,8 +167,12 @@ impl IrToMxmlAdapter {
 
                 match elem {
                     VoiceElement::Note(n) => {
-                        self.emit_note_directions(w, n)?;
-                        self.write_note(w, n, voice.number, false, None, part_staves)?;
+                        // Note-level directions (dynamics, wedges, text)
+                        for dir in self.build_note_direction_elements(n) {
+                            elements.push(mxml::MeasureElement::Direction(dir));
+                        }
+                        let note = self.build_note(n, voice.number, false, None, part_staves);
+                        elements.push(mxml::MeasureElement::Note(note));
                         if !n.is_grace {
                             fwd_pos += self.duration_to_divisions(&n.duration);
                         }
@@ -154,26 +180,48 @@ impl IrToMxmlAdapter {
                     VoiceElement::Rest(r) => {
                         if r.is_spacer {
                             // Emit spacer rests as MusicXML <forward>
-                            w.write_event(Event::Start(BytesStart::new("forward")))?;
                             let dur_val = self.duration_to_divisions(&r.duration);
-                            text_element(w, "duration", &dur_val.to_string())?;
-                            text_element(w, "voice", &voice.number.to_string())?;
+                            let mut fwd_content = mxml::ForwardContents {
+                                duration: mxml::Duration {
+                                    attributes: (),
+                                    content: mdt::PositiveDivisions(dur_val.max(1) as u32),
+                                },
+                                footnote: None,
+                                level: None,
+                                voice: Some(mxml::Voice {
+                                    attributes: (),
+                                    content: voice.number.to_string(),
+                                }),
+                                staff: None,
+                            };
                             if part_staves > 1 {
-                                text_element(w, "staff", &r.staff.to_string())?;
+                                fwd_content.staff = Some(mxml::Staff {
+                                    attributes: (),
+                                    content: mdt::PositiveInteger(r.staff as u32),
+                                });
                             }
-                            w.write_event(Event::End(BytesEnd::new("forward")))?;
+                            elements.push(mxml::MeasureElement::Forward(mxml::Forward {
+                                attributes: (),
+                                content: fwd_content,
+                            }));
                             fwd_pos += dur_val;
                         } else {
-                            self.write_rest(w, r, voice.number, part_staves)?;
+                            let rest_note = self.build_rest_note(r, voice.number, part_staves);
+                            elements.push(mxml::MeasureElement::Note(rest_note));
                             fwd_pos += self.duration_to_divisions(&r.duration);
                         }
                     }
                     VoiceElement::Chord(c) => {
                         // Emit directions from the first note in the chord
                         if let Some(first) = c.notes.first() {
-                            self.emit_note_directions(w, first)?;
+                            for dir in self.build_note_direction_elements(first) {
+                                elements.push(mxml::MeasureElement::Direction(dir));
+                            }
                         }
-                        self.write_chord(w, c, voice.number, part_staves)?;
+                        let chord_notes = self.build_chord_notes(c, voice.number, part_staves);
+                        for note in chord_notes {
+                            elements.push(mxml::MeasureElement::Note(note));
+                        }
                         fwd_pos += self.duration_to_divisions(&c.duration);
                     }
                 }
@@ -183,7 +231,9 @@ impl IrToMxmlAdapter {
             if vi == 0 {
                 for (&off, fbs) in fb_by_offset.range(fb_emitted_up_to + 1..) {
                     for fb in fbs {
-                        self.write_figured_bass(w, fb)?;
+                        elements.push(mxml::MeasureElement::FiguredBass(
+                            self.build_figured_bass(fb),
+                        ));
                     }
                     fb_emitted_up_to = off;
                 }
@@ -194,153 +244,334 @@ impl IrToMxmlAdapter {
         if voices.is_empty() {
             for fbs in fb_by_offset.values() {
                 for fb in fbs {
-                    self.write_figured_bass(w, fb)?;
+                    elements.push(mxml::MeasureElement::FiguredBass(
+                        self.build_figured_bass(fb),
+                    ));
                 }
             }
         }
 
         // Right barline
         if let Some(bl) = &measure.right_barline {
-            self.write_barline(w, bl, "right")?;
+            elements.push(mxml::MeasureElement::Barline(
+                self.build_barline(bl, "right"),
+            ));
         }
 
-        w.write_event(Event::End(BytesEnd::new("measure")))?;
-        Ok(())
+        elements
     }
 
-    pub(super) fn write_attributes(
+    fn build_attributes(
         &self,
-        w: &mut W,
         attrs: &MeasureAttributes,
         multi_measure_rest: Option<u16>,
-    ) -> Result<()> {
-        w.write_event(Event::Start(BytesStart::new("attributes")))?;
-        text_element(w, "divisions", &self.divisions.to_string())?;
+    ) -> mxml::Attributes {
+        let divisions = Some(mxml::Divisions {
+            attributes: (),
+            content: mdt::PositiveDivisions(self.divisions as u32),
+        });
 
-        if let Some(key) = &attrs.key {
-            w.write_event(Event::Start(BytesStart::new("key")))?;
-            text_element(w, "fifths", &key.fifths.to_string())?;
-            text_element(w, "mode", key.mode.as_str())?;
-            w.write_event(Event::End(BytesEnd::new("key")))?;
-        }
+        // Key
+        let key: Vec<mxml::Key> = if let Some(k) = &attrs.key {
+            let mode_val = match k.mode.as_str() {
+                "major" => mdt::Mode::Major,
+                "minor" => mdt::Mode::Minor,
+                "dorian" => mdt::Mode::Dorian,
+                "phrygian" => mdt::Mode::Phrygian,
+                "lydian" => mdt::Mode::Lydian,
+                "mixolydian" => mdt::Mode::Mixolydian,
+                "aeolian" => mdt::Mode::Aeolian,
+                "locrian" => mdt::Mode::Locrian,
+                _ => mdt::Mode::Major,
+            };
+            vec![mxml::Key {
+                attributes: mxml::KeyAttributes::default(),
+                content: mxml::KeyContents::Explicit(mxml::ExplicitKeyContents {
+                    cancel: None,
+                    fifths: mxml::Fifths {
+                        attributes: (),
+                        content: mdt::Fifths(k.fifths),
+                    },
+                    mode: Some(mxml::Mode {
+                        attributes: (),
+                        content: mode_val,
+                    }),
+                    key_octave: vec![],
+                }),
+            }]
+        } else {
+            vec![]
+        };
 
-        if let Some(time) = &attrs.time {
-            let mut time_el = BytesStart::new("time");
-            if let Some(sym) = &time.symbol {
-                time_el.push_attribute(("symbol", sym.as_str()));
+        // Time
+        let time: Vec<mxml::Time> = if let Some(t) = &attrs.time {
+            let mut time_attrs = mxml::TimeAttributes::default();
+            if let Some(sym) = &t.symbol {
+                time_attrs.symbol = match sym.as_str() {
+                    "common" => Some(mdt::TimeSymbol::Common),
+                    "cut" => Some(mdt::TimeSymbol::Cut),
+                    "single-number" => Some(mdt::TimeSymbol::SingleNumber),
+                    "normal" => Some(mdt::TimeSymbol::Normal),
+                    _ => None,
+                };
             }
-            w.write_event(Event::Start(time_el))?;
             // Handle compound beats like "3+2"
-            for beat_part in time.beats.split('+') {
-                text_element(w, "beats", beat_part.trim())?;
-            }
-            text_element(w, "beat-type", &time.beat_type.to_string())?;
-            w.write_event(Event::End(BytesEnd::new("time")))?;
-        }
+            let beats: Vec<mxml::TimeBeatContents> = t
+                .beats
+                .split('+')
+                .map(|beat_part| mxml::TimeBeatContents {
+                    beats: mxml::Beats {
+                        attributes: (),
+                        content: beat_part.trim().to_string(),
+                    },
+                    beat_type: mxml::BeatType {
+                        attributes: (),
+                        content: t.beat_type.to_string(),
+                    },
+                })
+                .collect();
+            vec![mxml::Time {
+                attributes: time_attrs,
+                content: mxml::TimeContents {
+                    beats,
+                    interchangeable: None,
+                    senza_misura: None,
+                },
+            }]
+        } else {
+            vec![]
+        };
 
-        if let Some(staves) = attrs.staves {
-            text_element(w, "staves", &staves.to_string())?;
-        }
+        // Staves
+        let staves = attrs.staves.map(|s| mxml::Staves {
+            attributes: (),
+            content: mdt::NonNegativeInteger(s as u32),
+        });
 
+        // Clefs (sorted by staff number)
         let mut sorted_clefs: Vec<_> = attrs.clefs.iter().collect();
         sorted_clefs.sort_by_key(|(num, _)| **num);
-        for (&staff_num, clef) in &sorted_clefs {
-            let mut clef_el = BytesStart::new("clef");
-            if sorted_clefs.len() > 1 {
-                clef_el.push_attribute(("number", staff_num.to_string().as_str()));
-            }
-            w.write_event(Event::Start(clef_el))?;
-            let sign = match clef.sign {
-                ClefSign::G => "G",
-                ClefSign::F => "F",
-                ClefSign::C => "C",
-                ClefSign::Percussion => "percussion",
-                ClefSign::Tab => "TAB",
-            };
-            text_element(w, "sign", sign)?;
-            text_element(w, "line", &clef.line.to_string())?;
-            if clef.octave_change != 0 {
-                text_element(w, "clef-octave-change", &clef.octave_change.to_string())?;
-            }
-            w.write_event(Event::End(BytesEnd::new("clef")))?;
-        }
+        let clef: Vec<mxml::Clef> = sorted_clefs
+            .iter()
+            .map(|(&staff_num, c)| {
+                let mut clef_attrs = mxml::ClefAttributes::default();
+                if sorted_clefs.len() > 1 {
+                    clef_attrs.number = Some(mdt::StaffNumber(staff_num));
+                }
+                let sign = match c.sign {
+                    ClefSign::G => mdt::ClefSign::G,
+                    ClefSign::F => mdt::ClefSign::F,
+                    ClefSign::C => mdt::ClefSign::C,
+                    ClefSign::Percussion => mdt::ClefSign::Percussion,
+                    ClefSign::Tab => mdt::ClefSign::TAB,
+                };
+                let clef_octave_change = if c.octave_change != 0 {
+                    Some(mxml::ClefOctaveChange {
+                        attributes: (),
+                        content: c.octave_change,
+                    })
+                } else {
+                    None
+                };
+                mxml::Clef {
+                    attributes: clef_attrs,
+                    content: mxml::ClefContents {
+                        sign: mxml::Sign {
+                            attributes: (),
+                            content: sign,
+                        },
+                        line: Some(mxml::Line {
+                            attributes: (),
+                            content: mdt::StaffLinePosition(c.line as i16),
+                        }),
+                        clef_octave_change,
+                    },
+                }
+            })
+            .collect();
 
-        if let Some(tr) = &attrs.transpose {
-            w.write_event(Event::Start(BytesStart::new("transpose")))?;
-            text_element(w, "diatonic", &tr.diatonic.to_string())?;
-            text_element(w, "chromatic", &tr.chromatic.to_string())?;
-            if tr.octave_change != 0 {
-                text_element(w, "octave-change", &tr.octave_change.to_string())?;
-            }
-            w.write_event(Event::End(BytesEnd::new("transpose")))?;
-        }
+        // Transpose
+        let transpose: Vec<mxml::Transpose> = if let Some(tr) = &attrs.transpose {
+            let octave_change = if tr.octave_change != 0 {
+                Some(mxml::OctaveChange {
+                    attributes: (),
+                    content: tr.octave_change,
+                })
+            } else {
+                None
+            };
+            vec![mxml::Transpose {
+                attributes: mxml::TransposeAttributes::default(),
+                content: mxml::TransposeContents {
+                    diatonic: Some(mxml::Diatonic {
+                        attributes: (),
+                        content: tr.diatonic as i16,
+                    }),
+                    chromatic: mxml::Chromatic {
+                        attributes: (),
+                        content: mdt::Semitones(tr.chromatic as i16),
+                    },
+                    octave_change,
+                    double: None,
+                },
+            }]
+        } else {
+            vec![]
+        };
 
         // Staff details (non-default staff lines)
-        if let Some(lines) = attrs.staff_lines {
+        let staff_details: Vec<mxml::StaffDetails> = if let Some(lines) = attrs.staff_lines {
             if lines != 5 {
-                w.write_event(Event::Start(BytesStart::new("staff-details")))?;
-                text_element(w, "staff-lines", &lines.to_string())?;
-                w.write_event(Event::End(BytesEnd::new("staff-details")))?;
+                vec![mxml::StaffDetails {
+                    attributes: mxml::StaffDetailsAttributes::default(),
+                    content: mxml::StaffDetailsContents {
+                        staff_type: None,
+                        staff_lines: Some(mxml::StaffLines {
+                            attributes: (),
+                            content: mdt::NonNegativeInteger(lines as u32),
+                        }),
+                        line_detail: vec![],
+                        staff_tuning: vec![],
+                        capo: None,
+                        staff_size: None,
+                    },
+                }]
+            } else {
+                vec![]
             }
-        }
+        } else {
+            vec![]
+        };
 
         // Measure style (multi-measure rest)
-        if let Some(count) = multi_measure_rest {
-            w.write_event(Event::Start(BytesStart::new("measure-style")))?;
-            w.write_event(Event::Start(BytesStart::new("multiple-rest")))?;
-            w.write_event(Event::Text(BytesText::new(&count.to_string())))?;
-            w.write_event(Event::End(BytesEnd::new("multiple-rest")))?;
-            w.write_event(Event::End(BytesEnd::new("measure-style")))?;
-        }
+        let measure_style: Vec<mxml::MeasureStyle> = if let Some(count) = multi_measure_rest {
+            vec![mxml::MeasureStyle {
+                attributes: mxml::MeasureStyleAttributes::default(),
+                content: mxml::MeasureStyleContents::MultipleRest(mxml::MultipleRest {
+                    attributes: mxml::MultipleRestAttributes::default(),
+                    content: mdt::PositiveInteger(count as u32),
+                }),
+            }]
+        } else {
+            vec![]
+        };
 
-        w.write_event(Event::End(BytesEnd::new("attributes")))?;
-        Ok(())
+        mxml::Attributes {
+            attributes: (),
+            content: mxml::AttributesContents {
+                footnote: None,
+                level: None,
+                divisions,
+                key,
+                time,
+                staves,
+                part_symbol: None,
+                instruments: None,
+                clef,
+                staff_details,
+                transpose,
+                for_part: vec![],
+                directive: vec![],
+                measure_style,
+            },
+        }
     }
 
-    pub(super) fn write_barline(
+    fn build_barline(
         &self,
-        w: &mut W,
         barline: &crate::ir::direction::Barline,
         location: &str,
-    ) -> Result<()> {
-        let mut el = BytesStart::new("barline");
-        el.push_attribute(("location", location));
-        w.write_event(Event::Start(el))?;
+    ) -> mxml::Barline {
+        let bar_location = match location {
+            "left" => Some(mdt::RightLeftMiddle::Left),
+            "right" => Some(mdt::RightLeftMiddle::Right),
+            "middle" => Some(mdt::RightLeftMiddle::Middle),
+            _ => None,
+        };
 
         let style = match barline.style {
-            BarlineType::Regular => "regular",
-            BarlineType::Double => "light-light",
-            BarlineType::Final => "light-heavy",
-            BarlineType::RepeatForward => "heavy-light",
-            BarlineType::RepeatBackward => "light-heavy",
-            BarlineType::RepeatBoth => "light-heavy",
-            BarlineType::Dashed => "dashed",
-            BarlineType::Dotted => "dotted",
-            BarlineType::Tick => "tick",
-            BarlineType::Short => "short",
-            BarlineType::None => "none",
+            BarlineType::Regular => mdt::BarStyle::Regular,
+            BarlineType::Double => mdt::BarStyle::LightLight,
+            BarlineType::Final => mdt::BarStyle::LightHeavy,
+            BarlineType::RepeatForward => mdt::BarStyle::HeavyLight,
+            BarlineType::RepeatBackward => mdt::BarStyle::LightHeavy,
+            BarlineType::RepeatBoth => mdt::BarStyle::LightHeavy,
+            BarlineType::Dashed => mdt::BarStyle::Dashed,
+            BarlineType::Dotted => mdt::BarStyle::Dotted,
+            BarlineType::Tick => mdt::BarStyle::Tick,
+            BarlineType::Short => mdt::BarStyle::Short,
+            BarlineType::None => mdt::BarStyle::None,
         };
-        text_element(w, "bar-style", style)?;
 
-        if let Some(rd) = &barline.repeat_direction {
-            let dir_str = match rd {
-                crate::ir::direction::RepeatDirection::Forward => "forward",
-                crate::ir::direction::RepeatDirection::Backward => "backward",
+        let repeat = barline.repeat_direction.as_ref().map(|rd| {
+            let dir = match rd {
+                crate::ir::direction::RepeatDirection::Forward => mdt::BackwardForward::Forward,
+                crate::ir::direction::RepeatDirection::Backward => mdt::BackwardForward::Backward,
             };
-            let mut rep = BytesStart::new("repeat");
-            rep.push_attribute(("direction", dir_str));
-            w.write_event(Event::Empty(rep))?;
-        }
+            mxml::Repeat {
+                attributes: mxml::RepeatAttributes {
+                    direction: dir,
+                    after_jump: None,
+                    times: None,
+                    winged: None,
+                },
+                content: (),
+            }
+        });
 
-        if let (Some(num), Some(etype)) = (&barline.ending_number, &barline.ending_type) {
-            let mut ending = BytesStart::new("ending");
-            ending.push_attribute(("number", num.to_string().as_str()));
-            ending.push_attribute(("type", etype.as_str()));
-            w.write_event(Event::Empty(ending))?;
-        }
+        let ending =
+            if let (Some(num), Some(etype)) = (&barline.ending_number, &barline.ending_type) {
+                let ending_type = match etype.as_str() {
+                    "start" => mdt::StartStopDiscontinue::Start,
+                    "stop" => mdt::StartStopDiscontinue::Stop,
+                    "discontinue" => mdt::StartStopDiscontinue::Discontinue,
+                    _ => mdt::StartStopDiscontinue::Start,
+                };
+                Some(mxml::Ending {
+                    attributes: mxml::EndingAttributes {
+                        number: mdt::EndingNumber(num.to_string()),
+                        r#type: ending_type,
+                        color: None,
+                        default_x: None,
+                        default_y: None,
+                        end_length: None,
+                        font_family: None,
+                        font_size: None,
+                        font_style: None,
+                        font_weight: None,
+                        print_object: None,
+                        relative_x: None,
+                        relative_y: None,
+                        system: None,
+                        text_x: None,
+                        text_y: None,
+                    },
+                    content: String::new(),
+                })
+            } else {
+                None
+            };
 
-        w.write_event(Event::End(BytesEnd::new("barline")))?;
-        Ok(())
+        mxml::Barline {
+            attributes: mxml::BarlineAttributes {
+                location: bar_location,
+                ..Default::default()
+            },
+            content: mxml::BarlineContents {
+                bar_style: Some(mxml::BarStyle {
+                    attributes: mxml::BarStyleAttributes::default(),
+                    content: style,
+                }),
+                footnote: None,
+                level: None,
+                wavy_line: None,
+                segno: None,
+                coda: None,
+                fermata: vec![],
+                ending,
+                repeat,
+            },
+        }
     }
 
     /// Convert an IR Duration to MusicXML duration value.

@@ -14,7 +14,6 @@ pub mod ir_to_ly;
 pub mod ir_to_mxml;
 pub mod ly_flatten;
 pub mod ly_to_ir;
-pub mod mxl_zip;
 pub mod mxml_to_ir;
 
 pub mod ir_to_midi;
@@ -29,15 +28,6 @@ pub mod midi_to_ir;
 pub enum AdapterError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("XML parse error: {0}")]
-    Xml(#[from] quick_xml::Error),
-
-    #[error("XML attribute error: {0}")]
-    XmlAttr(#[from] quick_xml::events::attributes::AttrError),
-
-    #[error("ZIP error: {0}")]
-    Zip(#[from] zip::result::ZipError),
 
     #[error("missing required element: {0}")]
     MissingElement(String),

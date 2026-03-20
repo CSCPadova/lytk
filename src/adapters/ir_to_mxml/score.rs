@@ -1,78 +1,101 @@
-//! Score-level MusicXML emission.
+//! Score-level musicxml element construction.
 
-use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
-
-use super::helpers::{format_float, text_element};
-use super::{IrToMxmlAdapter, W};
-use crate::adapters::Result;
+use super::IrToMxmlAdapter;
 use crate::ir::score::{PageLayout, Score, ScoreChild};
 
+use musicxml::datatypes as mdt;
+use musicxml::elements as mxml;
+
 impl IrToMxmlAdapter {
-    /// Write the top-level `<score-partwise>` element.
-    pub(super) fn write_score(&self, w: &mut W, score: &Score) -> Result<()> {
-        let mut root = BytesStart::new("score-partwise");
-        root.push_attribute(("version", self.version.as_str()));
-        w.write_event(Event::Start(root))?;
+    /// Build the top-level `ScorePartwise` element.
+    pub(super) fn build_score_partwise(&self, score: &Score) -> mxml::ScorePartwise {
+        let version = Some(mdt::Token(self.version.clone()));
 
         // Movement title
-        if let Some(title) = &score.metadata.title {
-            text_element(w, "movement-title", title)?;
-        }
+        let movement_title = score.metadata.title.as_ref().map(|t| mxml::MovementTitle {
+            attributes: (),
+            content: t.clone(),
+        });
 
         // Identification
-        self.write_identification(w, score)?;
+        let identification = Some(self.build_identification(score));
 
         // Defaults (page layout / scaling)
-        if let Some(pl) = &score.page_layout {
-            self.write_defaults(w, pl)?;
-        }
+        let defaults = score.page_layout.as_ref().map(|pl| self.build_defaults(pl));
 
         // Credit elements (subtitle)
-        if let Some(subtitle) = &score.metadata.subtitle {
-            w.write_event(Event::Start(BytesStart::new("credit")))?;
-            text_element(w, "credit-type", "subtitle")?;
-            w.write_event(Event::Start(BytesStart::new("credit-words")))?;
-            w.write_event(Event::Text(BytesText::new(subtitle)))?;
-            w.write_event(Event::End(BytesEnd::new("credit-words")))?;
-            w.write_event(Event::End(BytesEnd::new("credit")))?;
-        }
+        let credit: Vec<mxml::Credit> = if let Some(subtitle) = &score.metadata.subtitle {
+            vec![mxml::Credit {
+                attributes: mxml::CreditAttributes::default(),
+                content: mxml::CreditContents {
+                    credit_type: vec![mxml::CreditType {
+                        attributes: (),
+                        content: "subtitle".to_string(),
+                    }],
+                    link: vec![],
+                    bookmark: vec![],
+                    credit: mxml::CreditSubcontents::Text(mxml::CreditTextContents {
+                        credit_words: Some(mxml::CreditWords {
+                            attributes: mxml::CreditWordsAttributes::default(),
+                            content: subtitle.clone(),
+                        }),
+                        credit_symbol: None,
+                        additional: vec![],
+                    }),
+                },
+            }]
+        } else {
+            vec![]
+        };
 
         // Part list
-        self.write_part_list(w, score)?;
+        let part_list = self.build_part_list(score);
 
         // Parts
-        for part in score.parts() {
-            self.write_part(w, part)?;
-        }
+        let part: Vec<mxml::Part> = score.parts().iter().map(|p| self.build_part(p)).collect();
 
-        w.write_event(Event::End(BytesEnd::new("score-partwise")))?;
-        Ok(())
+        mxml::ScorePartwise {
+            attributes: mxml::ScorePartwiseAttributes { version },
+            content: mxml::ScorePartwiseContents {
+                work: None,
+                movement_number: None,
+                movement_title,
+                identification,
+                defaults,
+                credit,
+                part_list,
+                part,
+            },
+        }
     }
 
-    fn write_identification(&self, w: &mut W, score: &Score) -> Result<()> {
+    fn build_identification(&self, score: &Score) -> mxml::Identification {
         let meta = &score.metadata;
-        w.write_event(Event::Start(BytesStart::new("identification")))?;
+        let mut creator: Vec<mxml::Creator> = Vec::new();
 
         if let Some(composer) = &meta.composer {
-            let mut el = BytesStart::new("creator");
-            el.push_attribute(("type", "composer"));
-            w.write_event(Event::Start(el))?;
-            w.write_event(Event::Text(BytesText::new(composer)))?;
-            w.write_event(Event::End(BytesEnd::new("creator")))?;
+            creator.push(mxml::Creator {
+                attributes: mxml::CreatorAttributes {
+                    r#type: Some(mdt::Token("composer".to_string())),
+                },
+                content: composer.clone(),
+            });
         }
         if let Some(arranger) = &meta.arranger {
-            let mut el = BytesStart::new("creator");
-            el.push_attribute(("type", "arranger"));
-            w.write_event(Event::Start(el))?;
-            w.write_event(Event::Text(BytesText::new(arranger)))?;
-            w.write_event(Event::End(BytesEnd::new("creator")))?;
+            creator.push(mxml::Creator {
+                attributes: mxml::CreatorAttributes {
+                    r#type: Some(mdt::Token("arranger".to_string())),
+                },
+                content: arranger.clone(),
+            });
         }
         if let Some(lyricist) = &meta.lyricist {
-            let mut el = BytesStart::new("creator");
-            el.push_attribute(("type", "lyricist"));
-            w.write_event(Event::Start(el))?;
-            w.write_event(Event::Text(BytesText::new(lyricist)))?;
-            w.write_event(Event::End(BytesEnd::new("creator")))?;
+            creator.push(mxml::Creator {
+                attributes: mxml::CreatorAttributes {
+                    r#type: Some(mdt::Token("lyricist".to_string())),
+                },
+                content: lyricist.clone(),
+            });
         }
 
         // Extra creators (sorted for deterministic output)
@@ -80,41 +103,62 @@ impl IrToMxmlAdapter {
         extra_keys.sort();
         for key in extra_keys {
             if let Some(value) = meta.extra.get(key) {
-                let mut el = BytesStart::new("creator");
-                el.push_attribute(("type", key.as_str()));
-                w.write_event(Event::Start(el))?;
-                w.write_event(Event::Text(BytesText::new(value)))?;
-                w.write_event(Event::End(BytesEnd::new("creator")))?;
+                creator.push(mxml::Creator {
+                    attributes: mxml::CreatorAttributes {
+                        r#type: Some(mdt::Token(key.clone())),
+                    },
+                    content: value.clone(),
+                });
             }
         }
 
-        for (rtype, rtext) in &meta.rights {
-            let mut el = BytesStart::new("rights");
-            if !rtype.is_empty() {
-                el.push_attribute(("type", rtype.as_str()));
-            }
-            w.write_event(Event::Start(el))?;
-            w.write_event(Event::Text(BytesText::new(rtext)))?;
-            w.write_event(Event::End(BytesEnd::new("rights")))?;
-        }
+        let rights: Vec<mxml::Rights> = meta
+            .rights
+            .iter()
+            .map(|(rtype, rtext)| mxml::Rights {
+                attributes: mxml::RightsAttributes {
+                    r#type: if rtype.is_empty() {
+                        None
+                    } else {
+                        Some(mdt::Token(rtype.clone()))
+                    },
+                },
+                content: rtext.clone(),
+            })
+            .collect();
 
         // Encoding
-        w.write_event(Event::Start(BytesStart::new("encoding")))?;
-        text_element(w, "software", "lytk")?;
-        w.write_event(Event::End(BytesEnd::new("encoding")))?;
+        let encoding = Some(mxml::Encoding {
+            attributes: (),
+            content: vec![mxml::EncodingContents::Software(mxml::Software {
+                attributes: (),
+                content: "lytk".to_string(),
+            })],
+        });
 
-        w.write_event(Event::End(BytesEnd::new("identification")))?;
-        Ok(())
+        mxml::Identification {
+            attributes: (),
+            content: mxml::IdentificationContents {
+                creator,
+                rights,
+                encoding,
+                source: None,
+                relation: vec![],
+                miscellaneous: None,
+            },
+        }
     }
 
-    pub(super) fn write_part_list(&self, w: &mut W, score: &Score) -> Result<()> {
-        w.write_event(Event::Start(BytesStart::new("part-list")))?;
-
+    fn build_part_list(&self, score: &Score) -> mxml::PartList {
+        let mut content: Vec<mxml::PartListElement> = Vec::new();
         let mut auto_group_number: u8 = 0;
+
         for child in &score.children {
             match child {
                 ScoreChild::Part(part) => {
-                    self.write_score_part(w, part)?;
+                    content.push(mxml::PartListElement::ScorePart(
+                        self.build_score_part(part),
+                    ));
                 }
                 ScoreChild::PartGroup(group) => {
                     let num = if group.number > 0 {
@@ -125,99 +169,176 @@ impl IrToMxmlAdapter {
                     };
 
                     // part-group start
-                    let mut pg = BytesStart::new("part-group");
-                    pg.push_attribute(("type", "start"));
-                    pg.push_attribute(("number", num.to_string().as_str()));
-                    w.write_event(Event::Start(pg))?;
-                    if !group.name.is_empty() {
-                        text_element(w, "group-name", &group.name)?;
-                    }
                     let symbol = match group.bracket.as_str() {
-                        "brace" => "brace",
-                        "line" => "line",
-                        "square" => "square",
-                        _ => "bracket",
+                        "brace" => mdt::GroupSymbolValue::Brace,
+                        "line" => mdt::GroupSymbolValue::Line,
+                        "square" => mdt::GroupSymbolValue::Square,
+                        _ => mdt::GroupSymbolValue::Bracket,
                     };
-                    text_element(w, "group-symbol", symbol)?;
-                    w.write_event(Event::End(BytesEnd::new("part-group")))?;
+                    content.push(mxml::PartListElement::PartGroup(mxml::PartGroup {
+                        attributes: mxml::PartGroupAttributes {
+                            r#type: mdt::StartStop::Start,
+                            number: Some(mdt::Token(num.to_string())),
+                        },
+                        content: mxml::PartGroupContents {
+                            group_name: if group.name.is_empty() {
+                                None
+                            } else {
+                                Some(mxml::GroupName {
+                                    attributes: mxml::GroupNameAttributes::default(),
+                                    content: group.name.clone(),
+                                })
+                            },
+                            group_name_display: None,
+                            group_abbreviation: None,
+                            group_abbreviation_display: None,
+                            group_symbol: Some(mxml::GroupSymbol {
+                                attributes: mxml::GroupSymbolAttributes::default(),
+                                content: symbol,
+                            }),
+                            group_barline: None,
+                            group_time: None,
+                            footnote: None,
+                            level: None,
+                        },
+                    }));
 
-                    // nested score-parts
+                    // Nested score-parts
                     for sc in &group.children {
                         if let ScoreChild::Part(p) = sc {
-                            self.write_score_part(w, p)?;
+                            content
+                                .push(mxml::PartListElement::ScorePart(self.build_score_part(p)));
                         }
                     }
 
                     // part-group stop
-                    let mut pg_stop = BytesStart::new("part-group");
-                    pg_stop.push_attribute(("type", "stop"));
-                    pg_stop.push_attribute(("number", num.to_string().as_str()));
-                    w.write_event(Event::Empty(pg_stop))?;
+                    content.push(mxml::PartListElement::PartGroup(mxml::PartGroup {
+                        attributes: mxml::PartGroupAttributes {
+                            r#type: mdt::StartStop::Stop,
+                            number: Some(mdt::Token(num.to_string())),
+                        },
+                        content: mxml::PartGroupContents::default(),
+                    }));
                 }
             }
         }
 
-        w.write_event(Event::End(BytesEnd::new("part-list")))?;
-        Ok(())
+        mxml::PartList {
+            attributes: (),
+            content: mxml::PartListContents { content },
+        }
     }
 
-    fn write_score_part(&self, w: &mut W, part: &crate::ir::Part) -> Result<()> {
-        let mut sp = BytesStart::new("score-part");
+    fn build_score_part(&self, part: &crate::ir::Part) -> mxml::ScorePart {
         let id = if part.part_id.is_empty() {
             "P1"
         } else {
             &part.part_id
         };
-        sp.push_attribute(("id", id));
-        w.write_event(Event::Start(sp))?;
-        text_element(w, "part-name", &part.name)?;
-        if !part.abbreviation.is_empty() {
-            text_element(w, "part-abbreviation", &part.abbreviation)?;
-        }
+
+        let part_abbreviation = if part.abbreviation.is_empty() {
+            None
+        } else {
+            Some(mxml::PartAbbreviation {
+                attributes: mxml::PartAbbreviationAttributes::default(),
+                content: part.abbreviation.clone(),
+            })
+        };
 
         // Score-instrument + MIDI instrument
         let has_midi =
             part.midi_channel > 0 || part.midi_program > 0 || !part.midi_instrument.is_empty();
-        if has_midi {
+
+        let (score_instrument, midi_instrument) = if has_midi {
             let inst_id = format!("{}-I1", id);
 
-            let mut si = BytesStart::new("score-instrument");
-            si.push_attribute(("id", inst_id.as_str()));
-            w.write_event(Event::Start(si))?;
-            text_element(
-                w,
-                "instrument-name",
-                if part.name.is_empty() {
-                    "Instrument"
-                } else {
-                    &part.name
+            let si = mxml::ScoreInstrument {
+                attributes: mxml::ScoreInstrumentAttributes {
+                    id: mdt::Id(inst_id.clone()),
                 },
-            )?;
-            w.write_event(Event::End(BytesEnd::new("score-instrument")))?;
+                content: mxml::ScoreInstrumentContents {
+                    instrument_name: mxml::InstrumentName {
+                        attributes: (),
+                        content: if part.name.is_empty() {
+                            "Instrument".to_string()
+                        } else {
+                            part.name.clone()
+                        },
+                    },
+                    instrument_abbreviation: None,
+                    instrument_sound: None,
+                    solo: None,
+                    ensemble: None,
+                    virtual_instrument: None,
+                },
+            };
 
-            let mut mi = BytesStart::new("midi-instrument");
-            mi.push_attribute(("id", inst_id.as_str()));
-            w.write_event(Event::Start(mi))?;
+            let mut mi_content = mxml::MidiInstrumentContents {
+                midi_channel: None,
+                midi_name: None,
+                midi_bank: None,
+                midi_program: None,
+                midi_unpitched: None,
+                volume: None,
+                pan: None,
+                elevation: None,
+            };
             if part.midi_channel > 0 {
-                text_element(w, "midi-channel", &part.midi_channel.to_string())?;
+                mi_content.midi_channel = Some(mxml::MidiChannel {
+                    attributes: (),
+                    content: mdt::Midi16(part.midi_channel),
+                });
             }
             if !part.midi_instrument.is_empty() {
-                text_element(w, "midi-name", &part.midi_instrument)?;
+                mi_content.midi_name = Some(mxml::MidiName {
+                    attributes: (),
+                    content: part.midi_instrument.clone(),
+                });
             }
             if part.midi_program > 0 {
-                text_element(w, "midi-program", &part.midi_program.to_string())?;
+                mi_content.midi_program = Some(mxml::MidiProgram {
+                    attributes: (),
+                    content: mdt::Midi128(part.midi_program),
+                });
             }
-            w.write_event(Event::End(BytesEnd::new("midi-instrument")))?;
-        }
 
-        w.write_event(Event::End(BytesEnd::new("score-part")))?;
-        Ok(())
+            let mi = mxml::MidiInstrument {
+                attributes: mxml::MidiInstrumentAttributes {
+                    id: mdt::IdRef(inst_id),
+                },
+                content: mi_content,
+            };
+
+            (vec![si], vec![mi])
+        } else {
+            (vec![], vec![])
+        };
+
+        mxml::ScorePart {
+            attributes: mxml::ScorePartAttributes {
+                id: mdt::Id(id.to_string()),
+            },
+            content: mxml::ScorePartContents {
+                identification: None,
+                part_link: vec![],
+                part_name: mxml::PartName {
+                    attributes: mxml::PartNameAttributes::default(),
+                    content: part.name.clone(),
+                },
+                part_name_display: None,
+                part_abbreviation,
+                part_abbreviation_display: None,
+                group: vec![],
+                score_instrument,
+                player: vec![],
+                midi_device: vec![],
+                midi_instrument,
+            },
+        }
     }
 
-    /// Write `<defaults>` element with page layout and scaling.
-    pub(super) fn write_defaults(&self, w: &mut W, pl: &PageLayout) -> Result<()> {
-        w.write_event(Event::Start(BytesStart::new("defaults")))?;
-
+    /// Build `<defaults>` element with page layout and scaling.
+    fn build_defaults(&self, pl: &PageLayout) -> mxml::Defaults {
         // Compute mm-per-tenth from stored staff_size (points), falling back to
         // the standard MusicXML value of 7.056 mm / 40 tenths.
         let mm_per_tenth = if let Some(ss) = pl.staff_size {
@@ -231,73 +352,138 @@ impl IrToMxmlAdapter {
             || pl.left_margin.is_some()
             || pl.system_distance.is_some();
 
-        if pl.staff_size.is_some() || has_dimensions {
-            w.write_event(Event::Start(BytesStart::new("scaling")))?;
-            text_element(w, "millimeters", &format_float(mm_per_tenth * 40.0))?;
-            text_element(w, "tenths", "40")?;
-            w.write_event(Event::End(BytesEnd::new("scaling")))?;
-        }
+        let scaling = if pl.staff_size.is_some() || has_dimensions {
+            Some(mxml::Scaling {
+                attributes: (),
+                content: mxml::ScalingContents {
+                    millimeters: mxml::Millimeters {
+                        attributes: (),
+                        content: mdt::Millimeters(mm_per_tenth * 40.0),
+                    },
+                    tenths: mxml::Tenths {
+                        attributes: (),
+                        content: mdt::Tenths(40.0),
+                    },
+                },
+            })
+        } else {
+            None
+        };
 
         let cm_to_tenths = |cm: f64| cm * 10.0 / mm_per_tenth;
 
-        // page-layout
+        // Page layout
         let has_page = pl.page_height.is_some()
             || pl.page_width.is_some()
             || pl.left_margin.is_some()
             || pl.right_margin.is_some()
             || pl.top_margin.is_some()
             || pl.bottom_margin.is_some();
-        if has_page {
-            w.write_event(Event::Start(BytesStart::new("page-layout")))?;
-            if let Some(h) = pl.page_height {
-                text_element(w, "page-height", &format_float(cm_to_tenths(h)))?;
-            }
-            if let Some(wd) = pl.page_width {
-                text_element(w, "page-width", &format_float(cm_to_tenths(wd)))?;
-            }
+
+        let page_layout = if has_page {
             let has_margins = pl.left_margin.is_some()
                 || pl.right_margin.is_some()
                 || pl.top_margin.is_some()
                 || pl.bottom_margin.is_some();
-            if has_margins {
-                let mut pm = BytesStart::new("page-margins");
-                pm.push_attribute(("type", "both"));
-                w.write_event(Event::Start(pm))?;
-                if let Some(v) = pl.left_margin {
-                    text_element(w, "left-margin", &format_float(cm_to_tenths(v)))?;
-                }
-                if let Some(v) = pl.right_margin {
-                    text_element(w, "right-margin", &format_float(cm_to_tenths(v)))?;
-                }
-                if let Some(v) = pl.top_margin {
-                    text_element(w, "top-margin", &format_float(cm_to_tenths(v)))?;
-                }
-                if let Some(v) = pl.bottom_margin {
-                    text_element(w, "bottom-margin", &format_float(cm_to_tenths(v)))?;
-                }
-                w.write_event(Event::End(BytesEnd::new("page-margins")))?;
-            }
-            w.write_event(Event::End(BytesEnd::new("page-layout")))?;
-        }
 
-        // system-layout
+            let page_margins = if has_margins {
+                vec![mxml::PageMargins {
+                    attributes: mxml::PageMarginsAttributes {
+                        r#type: Some(mdt::MarginType::Both),
+                    },
+                    content: mxml::PageMarginsContents {
+                        left_margin: mxml::LeftMargin {
+                            attributes: (),
+                            content: mdt::Tenths(pl.left_margin.map(&cm_to_tenths).unwrap_or(0.0)),
+                        },
+                        right_margin: mxml::RightMargin {
+                            attributes: (),
+                            content: mdt::Tenths(pl.right_margin.map(&cm_to_tenths).unwrap_or(0.0)),
+                        },
+                        top_margin: mxml::TopMargin {
+                            attributes: (),
+                            content: mdt::Tenths(pl.top_margin.map(&cm_to_tenths).unwrap_or(0.0)),
+                        },
+                        bottom_margin: mxml::BottomMargin {
+                            attributes: (),
+                            content: mdt::Tenths(
+                                pl.bottom_margin.map(&cm_to_tenths).unwrap_or(0.0),
+                            ),
+                        },
+                    },
+                }]
+            } else {
+                vec![]
+            };
+
+            Some(mxml::PageLayout {
+                attributes: (),
+                content: mxml::PageLayoutContents {
+                    page_height: pl.page_height.map(|h| mxml::PageHeight {
+                        attributes: (),
+                        content: mdt::Tenths(cm_to_tenths(h)),
+                    }),
+                    page_width: pl.page_width.map(|w| mxml::PageWidth {
+                        attributes: (),
+                        content: mdt::Tenths(cm_to_tenths(w)),
+                    }),
+                    page_margins,
+                },
+            })
+        } else {
+            None
+        };
+
+        // System layout
         let has_system = pl.system_distance.is_some() || pl.top_system_distance.is_some();
-        if has_system {
-            w.write_event(Event::Start(BytesStart::new("system-layout")))?;
-            w.write_event(Event::Start(BytesStart::new("system-margins")))?;
-            text_element(w, "left-margin", "0")?;
-            text_element(w, "right-margin", "0")?;
-            w.write_event(Event::End(BytesEnd::new("system-margins")))?;
-            if let Some(sd) = pl.system_distance {
-                text_element(w, "system-distance", &format_float(cm_to_tenths(sd)))?;
-            }
-            if let Some(tsd) = pl.top_system_distance {
-                text_element(w, "top-system-distance", &format_float(cm_to_tenths(tsd)))?;
-            }
-            w.write_event(Event::End(BytesEnd::new("system-layout")))?;
-        }
+        let system_layout = if has_system {
+            Some(mxml::SystemLayout {
+                attributes: (),
+                content: mxml::SystemLayoutContents {
+                    system_margins: Some(mxml::SystemMargins {
+                        attributes: (),
+                        content: mxml::SystemMarginsContents {
+                            left_margin: mxml::LeftMargin {
+                                attributes: (),
+                                content: mdt::Tenths(0.0),
+                            },
+                            right_margin: mxml::RightMargin {
+                                attributes: (),
+                                content: mdt::Tenths(0.0),
+                            },
+                        },
+                    }),
+                    system_distance: pl.system_distance.map(|sd| mxml::SystemDistance {
+                        attributes: (),
+                        content: mdt::Tenths(cm_to_tenths(sd)),
+                    }),
+                    top_system_distance: pl.top_system_distance.map(|tsd| {
+                        mxml::TopSystemDistance {
+                            attributes: (),
+                            content: mdt::Tenths(cm_to_tenths(tsd)),
+                        }
+                    }),
+                    system_dividers: None,
+                },
+            })
+        } else {
+            None
+        };
 
-        w.write_event(Event::End(BytesEnd::new("defaults")))?;
-        Ok(())
+        mxml::Defaults {
+            attributes: (),
+            content: mxml::DefaultsContents {
+                scaling,
+                concert_score: None,
+                page_layout,
+                system_layout,
+                staff_layout: vec![],
+                appearance: None,
+                music_font: None,
+                word_font: None,
+                lyric_font: vec![],
+                lyric_language: vec![],
+            },
+        }
     }
 }

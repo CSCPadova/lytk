@@ -120,6 +120,16 @@ Expanded test suite from 357 to 691 tests:
 | E4bT4 | Change default PPQN from 480 to 384 to match LilyPond | ✅ Done |
 | E4bT5 | MIDI reference regression tests (14 tests across 4 fixtures: pedal, example, example2, chopin) | ✅ Done |
 
+### Epic 4c: Replace quick-xml with musicxml crate ✅
+
+**Goal:** Switch MusicXML I/O from manual quick-xml SAX/Writer + zip to the typed `musicxml` crate (v1.1.2).
+
+| Task | Description | Status |
+|------|-------------|--------|
+| E4cT1 | Rewrite `mxml_to_ir` reading path — use `musicxml::read_score_partwise` | ✅ Done |
+| E4cT2 | Rewrite `ir_to_mxml` writing path — build `ScorePartwise` structs, serialize via `musicxml::write_partwise_score_data` | ✅ Done |
+| E4cT3 | Cleanup — delete `mxl_zip.rs`, remove `quick-xml`/`zip` deps, remove `Xml`/`XmlAttr`/`Zip` error variants | ✅ Done |
+
 ---
 
 ## In Progress / Near-term
