@@ -14,8 +14,10 @@ use super::consume::{
 use super::figured_bass::parse_figuremode_block;
 use super::lyrics::{attach_lyrics_to_part, extract_lyricsto_voice, parse_lyric_block};
 use super::merge::{
-    merge_dynamics_parts, merge_leading_attribute_measures, merge_voice_measure_streams,
-    propagate_first_tempo, renumber_voices_in_measures, synchronize_time_signatures,
+    measure_voice_duration, measures_are_spacer_only, measures_have_no_pitched_content,
+    merge_dynamics_parts, merge_leading_attribute_measures, merge_spacer_by_duration,
+    merge_spacer_measures, merge_voice_measure_streams, propagate_first_tempo,
+    renumber_voices_in_measures, synchronize_time_signatures,
 };
 use super::modifiers::{consume_relative, consume_transpose};
 use super::music::walk_music_block;
@@ -192,10 +194,30 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                             // Skip \lyricmode, \notemode, \relative, \figuremode etc. before the expression_block
                             let mut is_lyricmode = false;
                             let mut is_figuremode = false;
+                            let mut is_markup = false;
                             while j < children.len() {
                                 let candidate = children[j];
                                 if candidate.kind() == "escaped_word" {
                                     let ew = state.text(candidate);
+                                    if ew == "\\markup" || ew == "\\markuplist" {
+                                        // Markup variable — skip the entire definition.
+                                        // Consume \markup plus any trailing escaped_words
+                                        // (markup formatters) and the following expression_block.
+                                        j += 1;
+                                        while j < children.len()
+                                            && children[j].kind() == "escaped_word"
+                                        {
+                                            j += 1;
+                                        }
+                                        if j < children.len()
+                                            && (children[j].kind() == "expression_block"
+                                                || children[j].kind() == "string")
+                                        {
+                                            j += 1;
+                                        }
+                                        is_markup = true;
+                                        break;
+                                    }
                                     if ew == "\\lyricmode" || ew == "\\notemode" {
                                         is_lyricmode = ew == "\\lyricmode";
                                         j += 1;
@@ -258,6 +280,11 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                     }
                                 }
                                 break;
+                            }
+                            if is_markup {
+                                // Skip the whole markup definition; advance i past it.
+                                i = j;
+                                continue;
                             }
                             if let Some(next) = children.get(j) {
                                 if next.kind() == "expression_block" && is_figuremode {
@@ -557,6 +584,18 @@ pub(super) fn walk_parallel_music(state: &mut WalkState, node: Node) {
 /// then corresponding measures are merged so that each output measure
 /// contains multiple `Voice` objects.
 fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
+    // 0. If there's a complete pending voice (accumulated before this parallel block),
+    // flush it now so it appears in part.measures BEFORE the parallel block's measures.
+    // Only flush when the pending content fills exactly one measure (elapsed == time_sig),
+    // so that partial-measure content (mid-measure parallel blocks) is preserved.
+    if !state.current_voice.is_empty()
+        && state.current_time_sig > Frac::from_integer(0)
+        && state.elapsed_in_measure >= state.current_time_sig
+    {
+        state.flush_measure();
+        state.elapsed_in_measure = Frac::from_integer(0);
+    }
+
     // 1. Save state that each voice branch needs to start from
     let saved_measure_num = state.measure_num;
     let saved_elapsed = state.elapsed_in_measure;
@@ -769,6 +808,111 @@ fn walk_voice_branch(state: &mut WalkState, children: &[Node], branch_indices: &
     }
 }
 
+/// After walking a child of `<<...>>` without `\\`, merge newly added measures
+/// with measures from sibling children (not measures from before the `<<...>>`).
+///
+/// `block_baseline` is the part's measure count when the `<<...>>` was entered.
+/// `measures_before_child` is the count just before this child was walked.
+/// Only measures between `block_baseline` and `measures_before_child` (from
+/// sibling children) are candidates for merging with the newly added measures.
+fn merge_simultaneous_block(
+    state: &mut WalkState,
+    block_baseline: usize,
+    measures_before_child: usize,
+) {
+    if measures_before_child <= block_baseline {
+        return; // No sibling measures to merge with
+    }
+    let part = match state.parts.last_mut() {
+        Some((_, p)) => p,
+        None => return,
+    };
+    if part.measures.len() <= measures_before_child {
+        return; // No new measures were added
+    }
+    // Split: [0..block_baseline] = pre-existing, [block_baseline..measures_before_child] = sibling,
+    // [measures_before_child..] = newly added by this child
+    let new_measures: Vec<_> = part.measures.drain(measures_before_child..).collect();
+    let sibling_measures: Vec<_> = part.measures.drain(block_baseline..).collect();
+
+    // Determine which side has less musical content to act as "spacer"
+    let new_spacer = measures_are_spacer_only(&new_measures);
+    let old_spacer = measures_are_spacer_only(&sibling_measures);
+
+    // Merge the two sets, then put result back after the baseline
+    let mut merged = if new_spacer {
+        // New content is spacer — merge into sibling real content
+        let mut target = sibling_measures;
+        if new_measures.len() == target.len() {
+            merge_spacer_measures(&mut target, &new_measures);
+        } else {
+            merge_spacer_by_duration(&mut target, &new_measures);
+        }
+        target
+    } else if old_spacer {
+        // Sibling content is spacer — merge into new real content
+        let mut target = new_measures;
+        if sibling_measures.len() == target.len() {
+            merge_spacer_measures(&mut target, &sibling_measures);
+        } else {
+            merge_spacer_by_duration(&mut target, &sibling_measures);
+        }
+        target
+    } else {
+        // Neither side is pure spacer. Check if one side has no pitched content
+        // (only rests, including non-spacer rests like r4\fermata). These should
+        // still be merged rather than concatenated.
+        let new_no_pitch = measures_have_no_pitched_content(&new_measures);
+        let old_no_pitch = measures_have_no_pitched_content(&sibling_measures);
+
+        if new_no_pitch {
+            // New side is rest-only — merge into sibling real content
+            let mut target = sibling_measures;
+            if new_measures.len() == target.len() {
+                merge_spacer_measures(&mut target, &new_measures);
+            } else {
+                merge_spacer_by_duration(&mut target, &new_measures);
+            }
+            target
+        } else if old_no_pitch {
+            // Sibling is rest-only — merge into new real content
+            let mut target = new_measures;
+            if sibling_measures.len() == target.len() {
+                merge_spacer_measures(&mut target, &sibling_measures);
+            } else {
+                merge_spacer_by_duration(&mut target, &sibling_measures);
+            }
+            target
+        } else {
+            // Both have pitched content — only merge if one side is attribute-only
+            // (zero voice duration). Otherwise these are separate voices that
+            // should remain sequential (the caller handles voice separation).
+            let sibling_dur: Frac = sibling_measures
+                .iter()
+                .map(measure_voice_duration)
+                .fold(Frac::from_integer(0), |a, b| a + b);
+            let new_dur: Frac = new_measures
+                .iter()
+                .map(measure_voice_duration)
+                .fold(Frac::from_integer(0), |a, b| a + b);
+
+            if sibling_dur == Frac::from_integer(0) {
+                new_measures
+            } else if new_dur == Frac::from_integer(0) {
+                sibling_measures
+            } else {
+                // Both have real voiced content — don't merge, just concatenate
+                let mut result = sibling_measures;
+                result.extend(new_measures);
+                result
+            }
+        }
+    };
+
+    // Append merged result back after the baseline measures
+    part.measures.append(&mut merged);
+}
+
 /// Walk a `<< ... >>` block that does NOT contain `\\` separators.
 /// This handles simultaneous staves/contexts (\new Staff, \new Voice, etc.).
 fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
@@ -777,6 +921,15 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
     // \set properties to all parts created within it.
     let parts_before = state.parts.len();
     let mut deferred_props: Vec<(String, String)> = Vec::new();
+
+    // Record the part's measure count at entry so merge_simultaneous_block
+    // only merges measures added by siblings within this <<...>> block,
+    // not measures from before the block.
+    let block_baseline = state
+        .parts
+        .last()
+        .map(|(_, p)| p.measures.len())
+        .unwrap_or(0);
 
     while i < children.len() {
         let child = children[i];
@@ -787,8 +940,40 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                 i = walk_context_body(state, children, i, &context, &name);
                 continue;
             }
-            "expression_block" => {
-                walk_music_block(state, child);
+            "expression_block" | "parallel_music" => {
+                // In <<...>> without \\, children are simultaneous.
+                // If sibling children already added measures, merge instead
+                // of append — e.g.
+                //   << <<\voiceI \\ \voiceII>> { spacer with fermata } >>
+                let measures_before = state
+                    .parts
+                    .last()
+                    .map(|(_, p)| p.measures.len())
+                    .unwrap_or(0);
+                // Only apply save/restore/merge when there are sibling measures
+                // to merge with. Otherwise walk normally (avoids disrupting
+                // mid-stream <<...>> blocks that don't need merging).
+                if measures_before > block_baseline {
+                    let saved_voice = std::mem::take(&mut state.current_voice);
+                    let saved_measure = state.current_measure.take();
+                    let saved_elapsed = state.elapsed_in_measure;
+                    state.elapsed_in_measure = Frac::from_integer(0);
+                    if child.kind() == "expression_block" {
+                        walk_music_block(state, child);
+                    } else {
+                        walk_parallel_music(state, child);
+                    }
+                    state.flush_measure();
+                    merge_simultaneous_block(state, block_baseline, measures_before);
+                    // Restore pending state (pitch state flows through)
+                    state.current_voice = saved_voice;
+                    state.current_measure = saved_measure;
+                    state.elapsed_in_measure = saved_elapsed;
+                } else if child.kind() == "expression_block" {
+                    walk_music_block(state, child);
+                } else {
+                    walk_parallel_music(state, child);
+                }
             }
             "escaped_word" => {
                 let text = state.text(child).to_string();

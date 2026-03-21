@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-03-21 — Fix `<<...>>` simultaneous block merging in repeats.ly
+
+**Goal:** Fix `repeats.ly` (Scott Joplin's "Bethena") producing wrong MusicXML output — RH/LH measure count mismatch (164 vs 172), and `<<...>>` without `\\` blocks being concatenated instead of merged.
+
+### Bug 1: `<<...>>` simultaneous music (no `\\`) not merged — children appended sequentially
+- **Root cause:** `walk_parallel_music_staves` handled voice-separating `<<...\\...>>` blocks but not plain `<<...>>` simultaneous blocks. Children were walked sequentially, appending measures instead of overlaying them in time.
+- **Fix:** Added `merge_simultaneous_block` function in [walk.rs](src/adapters/ly_to_ir/walk.rs) that tracks a `block_baseline` measure count at entry. For each sibling child after the first, it saves/restores walk state, walks the child, then merges newly added measures with existing sibling measures using spacer merge functions.
+
+### Bug 2: `s1*3/4*3` double multiplier only consuming first `*`
+- **Root cause:** `consume_duration_scale` was called once for the `*3/4` fractional scale, but the second `*3` (integer repeat count) wasn't consumed. `s1*3/4*3` produced 1 spacer measure instead of 3.
+- **Fix:** In [music.rs](src/adapters/ly_to_ir/music.rs), added a second `consume_duration_scale` call after a fractional scale to handle the integer repeat multiplier. Applied to both `s` (spacer) and `R` (multi-measure rest) handlers.
+
+### Bug 3: `\bar`/`\break`/`\pageBreak` attaching to wrong measure when voice has unflushed content
+- **Root cause:** These handlers checked `state.current_measure.is_none()` to decide whether to attach to the last existing measure, but didn't check `state.current_voice.is_empty()`. When notes were in `current_voice` (not yet flushed to a measure), the barline was attached to the previous measure instead of the current one.
+- **Fix:** Added `&& state.current_voice.is_empty()` to the condition in [music.rs](src/adapters/ly_to_ir/music.rs).
+
+### Bug 4: Rest-only blocks (with `r4\fermata`) not treated as spacer-like for merge
+- **Root cause:** `measures_are_spacer_only` returns false for regular rests (non-spacer). In `segueFourLH` and `outroLH`, a block like `{ s1*3/4*3 s2 r4\fermata }` or `{ \barRest | s4 r r | ... }` contains regular rests, so both sides of the `<<...>>` were treated as "real content" and concatenated instead of merged.
+- **Fix:** Added `measures_have_no_pitched_content` function in [merge.rs](src/adapters/ly_to_ir/merge.rs) that allows regular rests but rejects notes/chords. Used as a fallback in `merge_simultaneous_block` when neither side is pure spacer.
+
+### Cleanup
+- Removed debug `eprintln!` statements from state.rs and walk.rs
+- Removed unused `flush_pending_content` and `consume_duration_multiplier` functions
+- Zero compiler warnings, zero clippy warnings
+
+### Results
+- `repeats.ly` output: RH and LH both have 164 measures (was 164 vs 172)
+- Double barline correctly at end of measure 8
+- LH first bar contains `a8 g4 b8 a4` (measure 3, after 2 intro rests — matching source)
+- All 723 tests pass (435 lib + 61 round_trip + 208 fixture_regression + 19 CLI)
+- pedal.ly regression: fixed
+
+## 2026-03-20 — Bug fixes: LilyPond→MusicXML conversion (pedal.ly, example2.ly) ✅
+
+**Goal:** Fix 5 bugs in the `ly_to_ir` adapter affecting pedal.ly and example2.ly conversions.
+
+### Bug 1: `\markup` variable definitions leaking into music parsing
+- **Root cause:** `walk_program` variable definition handler didn't recognize `\markup`/`\markuplist`, causing the following expression_block to be parsed as music (injecting a spurious F pitch).
+- **Fix:** In [walk.rs](src/adapters/ly_to_ir/walk.rs), detect `\markup`/`\markuplist` and skip the entire definition.
+- **Result:** First note of pedal.ly right hand is now correctly A.
+
+### Bug 2: Dynamics dropped on spacer rests
+- **Root cause (multi-layer):**
+  1. `"s"` spacer rest handler discarded attachments (`_attachments`)
+  2. `attach_dynamic` didn't handle `VoiceElement::Rest`
+  3. `Rest` struct lacked `dynamics`/`wedges` fields
+  4. MusicXML emitter didn't emit spacer rest dynamics
+  5. Spacer merge functions didn't propagate rest-element dynamics
+- **Fix:** Added `dynamics`/`wedges` fields to `Rest`; spacer handler uses them; `attach_dynamic` handles rests; `ir_to_mxml` emits them; merge functions propagate them.
+- **Result:** pedal.ly dynamics: 8, wedges: 154.
+
+### Bug 3: Pedal placement missing `below`
+- **Root cause:** Pedal `Direction` created without `placement: Placement::Below`.
+- **Fix:** Added `placement: Placement::Below` in [music.rs](src/adapters/ly_to_ir/music.rs).
+- **Result:** 173 pedal directions with `placement="below"`.
+
+### Bug 6: Pedal events at wrong measure positions (all at beat 1)
+- **Root cause (two-part):**
+  1. `Direction` struct had no fractional offset field — pedal events were pushed with `offset=0` regardless of when `\sustainOn`/`\sustainOff` occurred.
+  2. `merge_spacer_by_duration` in [merge.rs](src/adapters/ly_to_ir/merge.rs) distributed all directions from a spacer measure to the single target measure at `spacer_pos`, ignoring each direction's individual absolute position. When the pedal variable has no `\time` command, all its events land in one big spacer measure (`spacer_pos=0`), so they all ended up in P2 measure 1.
+- **Fix:**
+  - Added `offset_frac: Frac` to `Direction` in [direction.rs](src/ir/direction.rs); set it to `state.elapsed_in_measure` when parsing pedal events in [music.rs](src/adapters/ly_to_ir/music.rs).
+  - In `ir_to_mxml` [part.rs](src/adapters/ir_to_mxml/part.rs): directions with `offset_frac > 0` are emitted after a backup+forward sequence to the correct position.
+  - In `merge_spacer_by_duration`: each direction is now distributed individually to the target measure containing `spacer_pos + dir.offset_frac`, using a per-direction binary search over `target_boundaries`.
+- **Result:** Pedal start/stop events fan out across ~100 measures with correct within-measure positions.
+
+### Bug 4: Scrambled measure numbers / wrong bar content in lower staff
+- **Root cause:** `walk_parallel_music_voices` flushed pending voice content (accumulated before a `<< \\ >>` block) AFTER appending the merged parallel block result. This caused measure ordering to be wrong (e.g., m#5 before m#4) and made measure numbers appear scrambled (1, 3, 5, 4, 6, 5…).
+- **Fix:** In [walk.rs](src/adapters/ly_to_ir/walk.rs), flush complete pending voice content BEFORE saving state and processing branches, so it's appended to part.measures in the correct order.
+- **Result:** Measure numbers sequential; bar 51 has correct 2-voice content.
+
+### Bug 5: Bass part (P4) has 443 measures instead of 62 in example2.ly
+- **Root cause (two-part):**
+  1. `resplit_measures_to_match` flattened all voices into one, losing multi-voice structure.
+  2. When `\forma` (62 spacer measures with time sigs) was merged into `\Ibcn` (443 measures of real music), the existing 443-measure structure was preserved instead of being resplit.
+- **Fix 1:** Rewrote `resplit_measures_to_match` in [merge.rs](src/adapters/ly_to_ir/merge.rs) to use per-voice `BTreeMap` streams, preserving voice structure.
+- **Fix 2:** In [state.rs](src/adapters/ly_to_ir/state.rs), when a spacer has `has_own_time_sigs=true` and real music has more measures, resplit the real music to match the spacer's authoritative boundaries. Also removed redundant `merge_spacer_measures` call after `resplit_measures_to_match` (directions were being doubled, causing tempo count test failure).
+- **Result:** P4 has exactly 62 measures.
+
+### Test counts
+- Total: 61 integration tests, all passing (proptest failures pre-existing, unrelated)
+
 ## 2026-03-20 — Epic 4c: Replace quick-xml with musicxml crate ✅
 
 **Goal:** Switch all MusicXML I/O from manual quick-xml SAX parsing / Writer event emission + zip MXL handling to the strongly-typed `musicxml` crate (v1.1.2), which provides a full MusicXML 4.0 data model with native MXL support.

@@ -16,10 +16,9 @@ use super::apply::{
 };
 use super::consume::{
     build_chord, consume_accidental_marks, consume_attachments, consume_duration,
-    consume_duration_multiplier, consume_duration_scale, consume_mark, consume_octave_marks,
-    consume_override, consume_tempo, consume_tremolo, extract_scheme_string, extract_string_value,
-    is_dynamic_name, parse_fraction, parse_grace_block, parse_ly_make_moment, parse_paper_block,
-    punct_text,
+    consume_duration_scale, consume_mark, consume_octave_marks, consume_override, consume_tempo,
+    consume_tremolo, extract_scheme_string, extract_string_value, is_dynamic_name, parse_fraction,
+    parse_grace_block, parse_ly_make_moment, parse_paper_block, punct_text,
 };
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
@@ -112,19 +111,48 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
             state.push_voice_element(VoiceElement::Rest(rest));
         }
         "R" => {
-            // Whole-measure rest, possibly with *N multiplier (e.g. R1*3)
-            let dur = consume_duration(state, children, &mut i);
-            // Check for *N multiplier for multi-measure rests
-            let count = consume_duration_multiplier(state, children, &mut i);
+            // Whole-measure rest, possibly with *N or *N/M or *N/M*K multiplier
+            let mut dur = consume_duration(state, children, &mut i);
+            // Check for *N or *N/M multiplier
+            let scale = consume_duration_scale(state, children, &mut i);
+            // Check for second *K integer multiplier after fractional scale
+            let repeat_count = if matches!(&scale, Some(f) if *f.denom() != 1) {
+                consume_duration_scale(state, children, &mut i)
+                    .filter(|f| *f.denom() == 1)
+                    .map(|f| *f.numer() as u32)
+                    .unwrap_or(1)
+            } else {
+                1
+            };
             let attachments = consume_attachments(state, children, &mut i);
-            let mut rest = Rest::measure_rest(dur.clone());
-            apply_rest_attachments(&mut rest, &attachments);
-            state.push_voice_element(VoiceElement::Rest(rest));
-            // Expand R1*N into N separate measure rests with bar checks
-            if count > 1 {
-                for _ in 1..count {
-                    state.bar_check();
-                    let rest = Rest::measure_rest(dur.clone());
+            match scale {
+                Some(frac) if *frac.denom() != 1 => {
+                    // Fractional multiplier (e.g. R1*3/4): scale the duration
+                    dur.base *= frac;
+                    let mut rest = Rest::measure_rest(dur.clone());
+                    apply_rest_attachments(&mut rest, &attachments);
+                    state.push_voice_element(VoiceElement::Rest(rest));
+                    for _ in 1..repeat_count {
+                        state.bar_check();
+                        let rest = Rest::measure_rest(dur.clone());
+                        state.push_voice_element(VoiceElement::Rest(rest));
+                    }
+                }
+                Some(frac) => {
+                    // Integer multiplier (e.g. R1*3): expand into N measure rests
+                    let count = *frac.numer() as u32;
+                    let mut rest = Rest::measure_rest(dur.clone());
+                    apply_rest_attachments(&mut rest, &attachments);
+                    state.push_voice_element(VoiceElement::Rest(rest));
+                    for _ in 1..count {
+                        state.bar_check();
+                        let rest = Rest::measure_rest(dur.clone());
+                        state.push_voice_element(VoiceElement::Rest(rest));
+                    }
+                }
+                None => {
+                    let mut rest = Rest::measure_rest(dur);
+                    apply_rest_attachments(&mut rest, &attachments);
                     state.push_voice_element(VoiceElement::Rest(rest));
                 }
             }
@@ -134,16 +162,33 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
             // *N (integer): push N spacer rests of the base duration,
             //   letting auto-flush handle measure boundaries.
             // *N/M (fraction): scale the duration (e.g. s16*2/3 = 1/24).
+            // *N/M*K (fraction + integer): scale duration then repeat K times
+            //   (e.g. s1*3/4*3 = 3 spacer rests of 3/4 each).
             let mut dur = consume_duration(state, children, &mut i);
             let scale = consume_duration_scale(state, children, &mut i);
-            let _attachments = consume_attachments(state, children, &mut i);
+            // Check for a second *N integer multiplier after a fractional scale
+            let repeat_count = if matches!(&scale, Some(f) if *f.denom() != 1) {
+                consume_duration_scale(state, children, &mut i)
+                    .filter(|f| *f.denom() == 1)
+                    .map(|f| *f.numer() as u32)
+                    .unwrap_or(1)
+            } else {
+                1
+            };
+            let attachments = consume_attachments(state, children, &mut i);
             match scale {
                 Some(frac) if *frac.denom() != 1 => {
                     // Fractional multiplier: scale the duration
                     dur.base *= frac;
-                    let mut rest = Rest::new(dur);
-                    rest.is_spacer = true;
-                    state.push_voice_element(VoiceElement::Rest(rest));
+                    for _ in 0..repeat_count {
+                        let mut rest = Rest::new(dur.clone());
+                        rest.is_spacer = true;
+                        apply_rest_attachments(&mut rest, &attachments);
+                        state.push_voice_element(VoiceElement::Rest(rest));
+                        if repeat_count > 1 {
+                            state.bar_check();
+                        }
+                    }
                 }
                 Some(frac) => {
                     // Integer multiplier: push N spacer rests
@@ -158,6 +203,26 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                     let mut rest = Rest::new(dur);
                     rest.is_spacer = true;
                     state.push_voice_element(VoiceElement::Rest(rest));
+                }
+            }
+            // Apply dynamic attachments to the spacer rest that was just pushed.
+            // attach_dynamic / attach_articulation look at current_voice.last_mut()
+            // which is the spacer rest.
+            for att in &attachments {
+                if is_dynamic_name(att)
+                    || matches!(
+                        att.as_str(),
+                        "\\<" | "\\>" | "\\!" | "\\crescendo" | "\\decrescendo" | "\\dim"
+                    )
+                {
+                    attach_dynamic(state, att);
+                } else if att == "\\fermata" {
+                    if let Some(VoiceElement::Rest(r)) = state.current_voice.last_mut() {
+                        r.fermata = Some(crate::ir::articulation::Fermata {
+                            shape: "normal".to_string(),
+                            inverted: false,
+                        });
+                    }
                 }
             }
         }
@@ -393,11 +458,14 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             } else {
                 "stop"
             };
+            let offset_frac = state.elapsed_in_measure;
             let dir = Direction {
                 pedal: Some(PedalEvent {
                     pedal_type: pedal_type.to_string(),
                     line: false,
                 }),
+                placement: Placement::Below,
+                offset_frac,
                 ..Default::default()
             };
             let measure = state.ensure_measure();
@@ -437,16 +505,31 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                 layout_break: Some(LayoutBreakType::System),
                 ..Default::default()
             };
-            let measure = state.ensure_measure();
-            measure.directions.push(dir);
+            // If no pending content, attach to last existing measure
+            if state.current_measure.is_none() && state.current_voice.is_empty() {
+                let part = state.ensure_part();
+                if let Some(last) = part.measures.last_mut() {
+                    last.directions.push(dir);
+                }
+            } else {
+                let measure = state.ensure_measure();
+                measure.directions.push(dir);
+            }
         }
         "\\pageBreak" => {
             let dir = Direction {
                 layout_break: Some(LayoutBreakType::Page),
                 ..Default::default()
             };
-            let measure = state.ensure_measure();
-            measure.directions.push(dir);
+            if state.current_measure.is_none() && state.current_voice.is_empty() {
+                let part = state.ensure_part();
+                if let Some(last) = part.measures.last_mut() {
+                    last.directions.push(dir);
+                }
+            } else {
+                let measure = state.ensure_measure();
+                measure.directions.push(dir);
+            }
         }
         "\\stemUp" => {
             state.stem_direction = "up".to_string();
@@ -498,11 +581,24 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         style: bar_type,
                         ..Default::default()
                     };
-                    let measure = state.ensure_measure();
-                    measure.right_barline = Some(barline);
                     i += 1;
-                    // \bar always acts as a measure boundary
-                    state.bar_check();
+                    // If no pending content (measure was just flushed by a preceding |),
+                    // attach the barline to the last existing measure rather than creating
+                    // a new empty measure. This prevents extra empty measures in variables
+                    // like `playSilent` that use `\barRest | \bar "||" \break`.
+                    if state.current_measure.is_none() && state.current_voice.is_empty() {
+                        let part = state.ensure_part();
+                        if let Some(last) = part.measures.last_mut() {
+                            if last.right_barline.is_none() {
+                                last.right_barline = Some(barline);
+                            }
+                        }
+                    } else {
+                        let measure = state.ensure_measure();
+                        measure.right_barline = Some(barline);
+                        // \bar acts as a measure boundary
+                        state.bar_check();
+                    }
                 }
             }
         }

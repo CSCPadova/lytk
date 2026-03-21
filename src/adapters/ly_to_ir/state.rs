@@ -15,8 +15,9 @@ use crate::ir::Part;
 
 use super::{
     apply_tuplet_ratio, beam_level_for_duration, distribute_figured_bass, find_relative_octave,
-    measures_are_spacer_only, merge_spacer_by_duration, merge_spacer_measures,
-    resplit_measures_for_time_sig, resplit_measures_to_match, voice_element_duration, VarDef,
+    measure_voice_duration, measures_are_spacer_only, merge_spacer_by_duration,
+    merge_spacer_measures, resplit_measures_for_time_sig, resplit_measures_to_match,
+    voice_element_duration, VarDef,
 };
 
 /// State accumulated while walking tree-sitter nodes.
@@ -366,33 +367,140 @@ impl<'src> WalkState<'src> {
                     // contain only spacer rests (e.g. from a \forma variable in
                     // parallel music), merge attributes into existing measures
                     // rather than appending.
-                    // Check if any existing measure has multi-voice content
-                    let _has_multi_voice = part.measures.iter().any(|m| m.voices.len() > 1);
                     if !part.measures.is_empty() && measures_are_spacer_only(&measures) {
-                        if measures.len() != part.measures.len() {
-                            // Measure counts differ — spacer was pre-parsed at a
-                            // different time sig. Merge directions by cumulative
-                            // duration so we preserve the note measures' boundaries
-                            // and their time signature attributes.
-                            merge_spacer_by_duration(&mut part.measures, &measures);
+                        // Check if this is parallel spacer (should merge) or
+                        // sequential spacer (should append). Compare total durations:
+                        // parallel spacer spans the same time as the real music;
+                        // sequential spacer is much shorter.
+                        let existing_dur: Frac = part
+                            .measures
+                            .iter()
+                            .map(measure_voice_duration)
+                            .fold(Frac::from_integer(0), |a, b| a + b);
+                        let incoming_dur: Frac = measures
+                            .iter()
+                            .map(measure_voice_duration)
+                            .fold(Frac::from_integer(0), |a, b| a + b);
+
+                        if measures_are_spacer_only(&part.measures) {
+                            // Both existing and incoming are spacer-only: they're
+                            // sequential (e.g. \barRest | \barRest), not parallel.
+                            // Just append.
+                            part.measures.extend(measures);
+                        } else if incoming_dur > Frac::from_integer(0)
+                            && incoming_dur < existing_dur
+                            && !has_own_time_sigs
+                        {
+                            // Incoming spacer is shorter than existing music —
+                            // this is sequential content (e.g. \barRest after notes),
+                            // not parallel spacer. Just append.
+                            part.measures.extend(measures);
+                        } else if measures.len() != part.measures.len() {
+                            if has_own_time_sigs {
+                                // Spacer has authoritative time signatures (like \forma).
+                                // Resplit the existing real music to match the spacer's
+                                // measure boundaries, then copy over spacer attributes.
+                                part.measures =
+                                    resplit_measures_to_match(&part.measures.clone(), &measures);
+                            } else {
+                                // No authoritative time sig — merge directions by
+                                // cumulative duration, preserving note measure boundaries.
+                                merge_spacer_by_duration(&mut part.measures, &measures);
+                            }
                         } else {
                             // Counts match — index-based merge is safe
                             merge_spacer_measures(&mut part.measures, &measures);
                         }
                     } else if part.measures.is_empty() || !measures_are_spacer_only(&part.measures)
                     {
+                        // Before extending, check if the last existing measure is
+                        // attribute-only (e.g. from a \key between sections). If so,
+                        // merge its attributes onto the first incoming measure.
+                        let mut measures = measures;
+                        if !part.measures.is_empty() && !measures.is_empty() {
+                            let last_dur = measure_voice_duration(part.measures.last().unwrap());
+                            if last_dur == Frac::from_integer(0) {
+                                let attr_m = part.measures.pop().unwrap();
+                                if let Some(ref a) = attr_m.attributes {
+                                    let fa = measures[0].attributes.get_or_insert_with(
+                                        crate::ir::measure::MeasureAttributes::default,
+                                    );
+                                    if a.key.is_some() && fa.key.is_none() {
+                                        fa.key = a.key;
+                                    }
+                                    if a.time.is_some() && fa.time.is_none() {
+                                        fa.time = a.time.clone();
+                                    }
+                                    if !a.clefs.is_empty() && fa.clefs.is_empty() {
+                                        fa.clefs = a.clefs.clone();
+                                    }
+                                }
+                                if !attr_m.directions.is_empty() {
+                                    measures[0]
+                                        .directions
+                                        .extend(attr_m.directions.iter().cloned());
+                                }
+                            }
+                        }
                         part.measures.extend(measures);
                     } else {
-                        // Existing measures are spacer-only, incoming are real music —
-                        // re-split to match spacer boundaries if needed, then replace.
-                        let incoming_multi_voice = measures.iter().any(|m| m.voices.len() > 1);
-                        if measures.len() != part.measures.len() && !incoming_multi_voice {
-                            part.measures = resplit_measures_to_match(&measures, &part.measures);
-                        } else {
-                            // Merge spacer attributes/directions onto incoming measures
+                        // Existing measures are spacer-only, incoming are real music.
+                        // Check if existing measures are truly spacer (have voice duration)
+                        // or just attribute-only (zero voice duration from \time \key \clef).
+                        let existing_total_dur: Frac = part
+                            .measures
+                            .iter()
+                            .map(measure_voice_duration)
+                            .fold(Frac::from_integer(0), |a, b| a + b);
+                        if existing_total_dur == Frac::from_integer(0) {
+                            // Attribute-only measures (no real spacer content) —
+                            // merge their attributes onto the first incoming measure,
+                            // then replace with incoming.
                             let mut incoming = measures;
-                            merge_spacer_measures(&mut incoming, &part.measures);
+                            if !incoming.is_empty() {
+                                for attr_m in &part.measures {
+                                    if let Some(ref a) = attr_m.attributes {
+                                        let fa = incoming[0].attributes.get_or_insert_with(
+                                            crate::ir::measure::MeasureAttributes::default,
+                                        );
+                                        if a.key.is_some() && fa.key.is_none() {
+                                            fa.key = a.key;
+                                        }
+                                        if a.time.is_some() && fa.time.is_none() {
+                                            fa.time = a.time.clone();
+                                        }
+                                        if !a.clefs.is_empty() && fa.clefs.is_empty() {
+                                            fa.clefs = a.clefs.clone();
+                                        }
+                                    }
+                                    // Also transfer any directions
+                                    if !attr_m.directions.is_empty() {
+                                        incoming[0]
+                                            .directions
+                                            .extend(attr_m.directions.iter().cloned());
+                                    }
+                                }
+                            }
                             part.measures = incoming;
+                        } else {
+                            // Real spacer measures (have voice duration from \skip etc.)
+                            let incoming_multi_voice = measures.iter().any(|m| m.voices.len() > 1);
+                            if measures.len() != part.measures.len() && !incoming_multi_voice {
+                                part.measures =
+                                    resplit_measures_to_match(&measures, &part.measures);
+                            } else if measures.len() == part.measures.len() {
+                                // Counts match — index-based merge is safe
+                                let mut incoming = measures;
+                                merge_spacer_measures(&mut incoming, &part.measures);
+                                part.measures = incoming;
+                            } else {
+                                // Counts don't match (multi-voice prevents resplit) —
+                                // use duration-aware merge so barlines/directions align
+                                // by time position rather than by index.
+                                let mut incoming = measures;
+                                merge_spacer_by_duration(&mut incoming, &part.measures);
+                                part.measures = incoming;
+                            }
                         }
                     }
                 }

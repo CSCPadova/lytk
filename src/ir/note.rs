@@ -147,6 +147,10 @@ pub struct Rest {
     pub fermata: Option<Fermata>,
     /// Tuplet display bracket / numbering (start or stop).
     pub tuplet: Option<TupletDisplay>,
+    /// Dynamics attached after this rest (e.g. `s4\f`).
+    pub dynamics: Vec<DynamicMark>,
+    /// Wedge (hairpin) events attached after this rest (e.g. `s4\<`).
+    pub wedges: Vec<Wedge>,
 }
 
 impl Rest {
@@ -161,6 +165,8 @@ impl Rest {
             is_spacer: false,
             fermata: None,
             tuplet: None,
+            dynamics: Vec::new(),
+            wedges: Vec::new(),
         }
     }
 

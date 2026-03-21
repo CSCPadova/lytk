@@ -70,6 +70,24 @@ pub(super) fn measures_are_spacer_only(measures: &[Measure]) -> bool {
     true
 }
 
+/// Like `measures_are_spacer_only` but also allows regular rests (non-spacer).
+/// Returns true if measures contain only rests/spacers — no notes or chords.
+pub(super) fn measures_have_no_pitched_content(measures: &[Measure]) -> bool {
+    for m in measures {
+        for voice in &m.voices {
+            for elem in &voice.elements {
+                match elem {
+                    VoiceElement::Rest(_) => {}
+                    VoiceElement::Note(_) | VoiceElement::Chord(_) => {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
 /// Merge attributes, directions, and barlines from spacer-only measures into
 /// existing measures. This handles the LilyPond pattern `<<\music \forma>>`
 /// where `forma` carries time/key/tempo attributes with spacer rests.
@@ -93,6 +111,25 @@ pub(super) fn merge_spacer_measures(target: &mut [Measure], spacer: &[Measure]) 
             // Merge directions (tempo, dynamics, pedal, etc.)
             if !sm.directions.is_empty() {
                 tm.directions.extend(sm.directions.iter().cloned());
+            }
+            // Propagate dynamics from spacer rest elements to measure-level directions.
+            for voice in &sm.voices {
+                for elem in &voice.elements {
+                    if let VoiceElement::Rest(r) = elem {
+                        for dyn_mark in &r.dynamics {
+                            tm.directions.push(Direction {
+                                dynamic: Some(dyn_mark.clone()),
+                                ..Direction::default()
+                            });
+                        }
+                        for wedge in &r.wedges {
+                            tm.directions.push(Direction {
+                                wedge: Some(wedge.clone()),
+                                ..Direction::default()
+                            });
+                        }
+                    }
+                }
             }
             // Merge barlines
             if sm.right_barline.is_some() && tm.right_barline.is_none() {
@@ -123,7 +160,8 @@ pub(super) fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure
     }
 
     // Walk spacer measures, accumulating duration and placing directions
-    // into the correct target measure
+    // (both measure-level and those attached to spacer rest elements)
+    // into the correct target measure.
     let mut spacer_pos = Frac::from_integer(0);
     for sm in spacer.iter() {
         let sm_dur = measure_voice_duration(sm);
@@ -132,22 +170,49 @@ pub(super) fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure
         let target_idx = target_boundaries
             .windows(2)
             .position(|w| spacer_pos >= w[0] && spacer_pos < w[1])
-            .unwrap_or_else(|| {
-                // If past the end, use last measure
-                if target.is_empty() {
-                    0
-                } else {
-                    target.len() - 1
-                }
-            });
+            .unwrap_or_else(|| target.len().saturating_sub(1));
 
         if target_idx < target.len() {
-            let tm = &mut target[target_idx];
-            // Merge directions
-            if !sm.directions.is_empty() {
-                tm.directions.extend(sm.directions.iter().cloned());
+            // Merge attributes (time sig, key, clef) from spacer into target
+            if let Some(ref sa) = sm.attributes {
+                let tm = &mut target[target_idx];
+                let ta = tm
+                    .attributes
+                    .get_or_insert_with(crate::ir::measure::MeasureAttributes::default);
+                if sa.key.is_some() && ta.key.is_none() {
+                    ta.key = sa.key;
+                }
+                if sa.time.is_some() && ta.time.is_none() {
+                    ta.time = sa.time.clone();
+                }
+                if !sa.clefs.is_empty() && ta.clefs.is_empty() {
+                    ta.clefs = sa.clefs.clone();
+                }
             }
-            // Merge barlines
+            // Merge measure-level directions, adjusting offset_frac to be within the target measure.
+            // Each direction is distributed individually to the target measure that contains its
+            // absolute position — not just to target_idx (which is based on spacer_pos).
+            // This is critical when the pedal variable has no time sig: all events are in one
+            // big spacer measure (spacer_pos=0) but must fan out across many target measures.
+            for dir in sm.directions.iter() {
+                let abs_pos = spacer_pos + dir.offset_frac;
+                let t_idx = target_boundaries
+                    .windows(2)
+                    .position(|w| abs_pos >= w[0] && abs_pos < w[1])
+                    .unwrap_or_else(|| target.len().saturating_sub(1));
+                if t_idx < target.len() {
+                    let target_start = target_boundaries[t_idx];
+                    let mut d = dir.clone();
+                    d.offset_frac = if abs_pos >= target_start {
+                        abs_pos - target_start
+                    } else {
+                        Frac::from_integer(0)
+                    };
+                    target[t_idx].directions.push(d);
+                }
+            }
+            // Merge barlines into the spacer's primary target measure
+            let tm = &mut target[target_idx];
             if sm.right_barline.is_some() && tm.right_barline.is_none() {
                 tm.right_barline = sm.right_barline.clone();
             }
@@ -156,12 +221,54 @@ pub(super) fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure
             }
         }
 
+        // Also distribute dynamics attached to individual spacer rest elements.
+        // When a spacer variable has no time signature, all its rests land in a
+        // single pre-parsed measure. We need to walk them by cumulative duration
+        // so each dynamic ends up in the correct target measure.
+        for voice in &sm.voices {
+            let mut vpos = spacer_pos;
+            for elem in &voice.elements {
+                let dur = voice_element_duration(elem);
+                if let VoiceElement::Rest(r) = elem {
+                    if !r.dynamics.is_empty() || !r.wedges.is_empty() {
+                        let tidx = target_boundaries
+                            .windows(2)
+                            .position(|w| vpos >= w[0] && vpos < w[1])
+                            .unwrap_or_else(|| target.len().saturating_sub(1));
+                        if tidx < target.len() {
+                            let target_start = target_boundaries[tidx];
+                            let within_offset = if vpos >= target_start {
+                                vpos - target_start
+                            } else {
+                                Frac::from_integer(0)
+                            };
+                            for dyn_mark in &r.dynamics {
+                                target[tidx].directions.push(Direction {
+                                    dynamic: Some(dyn_mark.clone()),
+                                    offset_frac: within_offset,
+                                    ..Direction::default()
+                                });
+                            }
+                            for wedge in &r.wedges {
+                                target[tidx].directions.push(Direction {
+                                    wedge: Some(wedge.clone()),
+                                    offset_frac: within_offset,
+                                    ..Direction::default()
+                                });
+                            }
+                        }
+                    }
+                }
+                vpos += dur;
+            }
+        }
+
         spacer_pos += sm_dur;
     }
 }
 
 /// Compute the duration of a measure from its first voice's elements.
-fn measure_voice_duration(m: &Measure) -> Frac {
+pub(super) fn measure_voice_duration(m: &Measure) -> Frac {
     if let Some(voice) = m.voices.first() {
         voice
             .elements
@@ -455,11 +562,12 @@ pub(super) fn resplit_measures_to_match(
     note_measures: &[Measure],
     spacer_measures: &[Measure],
 ) -> Vec<Measure> {
-    // 1. Flatten all voice elements from note measures, tracking attributes
-    // by cumulative duration position (not element index) for correct alignment
-    let mut elements: Vec<VoiceElement> = Vec::new();
+    // 1. Collect per-voice element streams and note-measure attributes.
+    // Each voice is tracked independently so multi-voice structure is preserved.
+    let mut voice_streams: BTreeMap<u8, Vec<VoiceElement>> = BTreeMap::new();
     let mut note_measure_attrs: Vec<(Frac, MeasureAttributes)> = Vec::new();
     let mut cumul_dur = Frac::from_integer(0);
+
     for m in note_measures {
         if let Some(ref attrs) = m.attributes {
             note_measure_attrs.push((cumul_dur, attrs.clone()));
@@ -467,9 +575,10 @@ pub(super) fn resplit_measures_to_match(
         let mut measure_dur = Frac::from_integer(0);
         for v in &m.voices {
             let mut vdur = Frac::from_integer(0);
+            let stream = voice_streams.entry(v.number).or_default();
             for e in &v.elements {
                 vdur += voice_element_duration(e);
-                elements.push(e.clone());
+                stream.push(e.clone());
             }
             if vdur > measure_dur {
                 measure_dur = vdur;
@@ -492,11 +601,14 @@ pub(super) fn resplit_measures_to_match(
         })
         .collect();
 
-    // 3. Re-distribute elements into new measures
+    // 3. Re-distribute elements per voice into new measures
+    let voice_nums: Vec<u8> = voice_streams.keys().copied().collect();
+    let mut voice_indices: BTreeMap<u8, usize> =
+        voice_nums.iter().map(|&vn| (vn, 0usize)).collect();
+
     let mut result: Vec<Measure> = Vec::new();
-    let mut elem_idx = 0usize;
-    let mut note_attr_idx = 0usize; // tracks which note_measure_attrs we've consumed
-    let mut output_cumul = Frac::from_integer(0); // cumulative duration of output measures
+    let mut note_attr_idx = 0usize;
+    let mut output_cumul = Frac::from_integer(0);
 
     for (si, sm) in spacer_measures.iter().enumerate() {
         let measure_dur = spacer_durations[si];
@@ -508,29 +620,34 @@ pub(super) fn resplit_measures_to_match(
         new_measure.left_barline = sm.left_barline.clone();
         new_measure.right_barline = sm.right_barline.clone();
 
-        // Fill with voice elements up to this measure's duration
-        let mut elapsed = Frac::from_integer(0);
-        let mut voice_elements: Vec<VoiceElement> = Vec::new();
+        // Fill each voice independently up to this measure's duration
+        for &vn in &voice_nums {
+            let stream = &voice_streams[&vn];
+            let mut cur_idx = voice_indices[&vn];
+            let mut elapsed = Frac::from_integer(0);
+            let mut voice_elements: Vec<VoiceElement> = Vec::new();
 
-        while elem_idx < elements.len() && measure_dur > Frac::from_integer(0) {
-            let dur = voice_element_duration(&elements[elem_idx]);
-            // If this element would overflow and we already have content, break
-            if elapsed + dur > measure_dur && elapsed > Frac::from_integer(0) {
-                break;
+            while cur_idx < stream.len() && measure_dur > Frac::from_integer(0) {
+                let dur = voice_element_duration(&stream[cur_idx]);
+                if elapsed + dur > measure_dur && elapsed > Frac::from_integer(0) {
+                    break;
+                }
+                voice_elements.push(stream[cur_idx].clone());
+                elapsed += dur;
+                cur_idx += 1;
+                if elapsed >= measure_dur {
+                    break;
+                }
             }
-            voice_elements.push(elements[elem_idx].clone());
-            elapsed += dur;
-            elem_idx += 1;
-            if elapsed >= measure_dur {
-                break;
-            }
-        }
 
-        if !voice_elements.is_empty() {
-            new_measure.voices.push(Voice {
-                number: 1,
-                elements: voice_elements,
-            });
+            *voice_indices.get_mut(&vn).unwrap() = cur_idx;
+
+            if !voice_elements.is_empty() {
+                new_measure.voices.push(Voice {
+                    number: vn,
+                    elements: voice_elements,
+                });
+            }
         }
 
         // Merge attributes from note measures whose cumulative position falls
@@ -543,15 +660,12 @@ pub(super) fn resplit_measures_to_match(
             let ma = new_measure
                 .attributes
                 .get_or_insert_with(MeasureAttributes::default);
-            // Merge clefs from note measures (spacer measures typically don't have clefs)
             if !note_attrs.clefs.is_empty() && ma.clefs.is_empty() {
                 ma.clefs = note_attrs.clefs.clone();
             }
-            // Merge time signature from note measures if spacer didn't have one
             if note_attrs.time.is_some() && ma.time.is_none() {
                 ma.time = note_attrs.time.clone();
             }
-            // Merge key signature from note measures if spacer didn't have one
             if note_attrs.key.is_some() && ma.key.is_none() {
                 ma.key = note_attrs.key;
             }
@@ -563,36 +677,52 @@ pub(super) fn resplit_measures_to_match(
     }
 
     // 4. Handle remaining elements beyond spacer measures
-    if elem_idx < elements.len() {
-        // Use last known measure duration or default to 4/4
-        let last_dur = spacer_durations.last().copied().unwrap_or(Frac::new(4, 4));
-        while elem_idx < elements.len() {
-            let mnum = result.len() as u32 + 1;
-            let mut m = Measure::new(mnum);
+    let last_dur = spacer_durations.last().copied().unwrap_or(Frac::new(4, 4));
+    loop {
+        let any_remaining = voice_nums
+            .iter()
+            .any(|&vn| voice_indices[&vn] < voice_streams[&vn].len());
+        if !any_remaining {
+            break;
+        }
+
+        let mnum = result.len() as u32 + 1;
+        let mut m = Measure::new(mnum);
+
+        for &vn in &voice_nums {
+            let stream = &voice_streams[&vn];
+            let mut cur_idx = voice_indices[&vn];
+            if cur_idx >= stream.len() {
+                continue;
+            }
+
             let mut elapsed = Frac::from_integer(0);
             let mut voice_elements: Vec<VoiceElement> = Vec::new();
 
-            while elem_idx < elements.len() {
-                let dur = voice_element_duration(&elements[elem_idx]);
+            while cur_idx < stream.len() {
+                let dur = voice_element_duration(&stream[cur_idx]);
                 if elapsed + dur > last_dur && elapsed > Frac::from_integer(0) {
                     break;
                 }
-                voice_elements.push(elements[elem_idx].clone());
+                voice_elements.push(stream[cur_idx].clone());
                 elapsed += dur;
-                elem_idx += 1;
+                cur_idx += 1;
                 if elapsed >= last_dur {
                     break;
                 }
             }
 
+            *voice_indices.get_mut(&vn).unwrap() = cur_idx;
+
             if !voice_elements.is_empty() {
                 m.voices.push(Voice {
-                    number: 1,
+                    number: vn,
                     elements: voice_elements,
                 });
             }
-            result.push(m);
         }
+
+        result.push(m);
     }
 
     result
@@ -1079,5 +1209,12 @@ pub(super) fn apply_tuplet_display(elements: &mut [VoiceElement], _actual: u8) {
                 }
             }
         }
+    }
+}
+
+/// Renumber all measures in a part sequentially starting from 1.
+pub(super) fn renumber_measures(part: &mut Part) {
+    for (i, m) in part.measures.iter_mut().enumerate() {
+        m.number = (i + 1) as u32;
     }
 }

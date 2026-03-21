@@ -105,49 +105,6 @@ pub(super) fn consume_duration(
     state.last_duration.clone()
 }
 
-/// Consume an optional `*N` or `*N/M` duration multiplier after a duration.
-/// Returns the integer multiplier count (1 if no multiplier found).
-/// For `R1*3` this returns 3; for `R1*3/4` this returns 1 (fraction multipliers
-/// are not used for multi-measure rest expansion).
-pub(super) fn consume_duration_multiplier(
-    state: &WalkState,
-    children: &[Node],
-    i: &mut usize,
-) -> u32 {
-    if *i < children.len() && children[*i].kind() == "punctuation" {
-        let ptext = punct_text(state, children[*i]);
-        if ptext == "*" {
-            *i += 1;
-            // Case 1: fraction token (e.g. "3/4") — not a multi-measure count
-            if *i < children.len() && children[*i].kind() == "fraction" {
-                *i += 1; // consume the fraction token
-                return 1;
-            }
-            // Case 2: unsigned_integer, optionally followed by /M
-            if *i < children.len() && children[*i].kind() == "unsigned_integer" {
-                let num_text = state.text(children[*i]).to_string();
-                *i += 1;
-                // Check for fraction: *N/M (skip the /M part)
-                if *i + 1 < children.len()
-                    && children[*i].kind() == "punctuation"
-                    && punct_text(state, children[*i]) == "/"
-                {
-                    // Fraction multiplier like *3/4 — skip it, not a multi-measure count
-                    *i += 1; // skip "/"
-                    if *i < children.len() && children[*i].kind() == "unsigned_integer" {
-                        *i += 1; // skip denominator
-                    }
-                    return 1;
-                }
-                if let Ok(n) = num_text.parse::<u32>() {
-                    return n;
-                }
-            }
-        }
-    }
-    1
-}
-
 /// Consume an optional `*N` or `*N/M` duration scaling factor.
 /// Returns the fractional scale (e.g. `*8/7` → 8/7, `*3` → 3/1).
 /// Returns `None` if no multiplier is present.

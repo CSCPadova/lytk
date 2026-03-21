@@ -8,6 +8,7 @@
 //! - Spanner-with-duration model from PDMX (`PDMX/reading/classes.py`).
 
 use super::articulation::Placement;
+use super::duration::Frac;
 use serde::{Deserialize, Serialize};
 
 /// Layout break type (page / system / section).
@@ -137,6 +138,8 @@ pub struct PedalEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Direction {
     pub offset: i32,
+    /// Position within the measure as a fraction of a whole note (e.g. 1/2 = after 2 quarter beats).
+    pub offset_frac: Frac,
     pub placement: Placement,
     pub tempo: Option<TempoDirection>,
     pub text: Option<TextDirection>,
@@ -163,6 +166,7 @@ impl Default for Direction {
     fn default() -> Self {
         Self {
             offset: 0,
+            offset_frac: Frac::from_integer(0),
             placement: Placement::Unspecified,
             tempo: None,
             text: None,

@@ -58,7 +58,7 @@ use crate::ir::duration::Duration;
 // Re-export items needed by sub-modules via `super::`
 use figured_bass::distribute_figured_bass;
 use merge::{
-    apply_tuplet_ratio, beam_level_for_duration, measures_are_spacer_only,
+    apply_tuplet_ratio, beam_level_for_duration, measure_voice_duration, measures_are_spacer_only,
     merge_spacer_by_duration, merge_spacer_measures, resplit_measures_for_time_sig,
     resplit_measures_to_match, voice_element_duration,
 };
@@ -243,6 +243,7 @@ impl LyToIrAdapter {
             for score in &mut state.completed_scores {
                 for part in score.parts_mut() {
                     merge::merge_leading_attribute_measures(part);
+                    merge::renumber_measures(part);
                 }
                 merge::propagate_first_tempo(score);
                 post_process_beams_and_stems(score);
@@ -279,6 +280,7 @@ impl LyToIrAdapter {
 
         for part in score.parts_mut() {
             merge::merge_leading_attribute_measures(part);
+            merge::renumber_measures(part);
         }
         merge::synchronize_time_signatures(&mut score);
         merge::propagate_first_tempo(&mut score);

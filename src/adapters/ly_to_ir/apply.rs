@@ -2,7 +2,7 @@ use crate::ir::articulation::{
     Articulation, BeamEvent, DynamicMark, Fermata, Placement, SlurEvent, StartStop, Technical,
     TieEvent, Wedge,
 };
-use crate::ir::direction::TextDirection;
+use crate::ir::direction::{Direction, TextDirection};
 use crate::ir::note::{Chord, Note, Rest, VoiceElement};
 
 use super::consume::is_dynamic_name;
@@ -433,33 +433,102 @@ pub(super) fn apply_chord_attachments(
 /// Attach a dynamic mark to the most recent note or chord in the current voice.
 pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
     let sign = dyn_text.trim_start_matches('\\').to_string();
-    let target = match state.current_voice.last_mut() {
-        Some(VoiceElement::Note(note)) => Some(note.as_mut()),
-        Some(VoiceElement::Chord(chord)) => chord.notes.first_mut(),
-        _ => None,
-    };
-    if let Some(note) = target {
-        if sign == "<" {
-            note.wedges.push(Wedge {
-                wedge_type: "crescendo".to_string(),
-                placement: Placement::Unspecified,
-            });
-        } else if sign == ">" {
-            note.wedges.push(Wedge {
-                wedge_type: "diminuendo".to_string(),
-                placement: Placement::Unspecified,
-            });
-        } else if sign == "!" {
-            note.wedges.push(Wedge {
-                wedge_type: "stop".to_string(),
-                placement: Placement::Unspecified,
-            });
-        } else {
-            note.dynamics.push(DynamicMark {
-                sign,
-                placement: Placement::Unspecified,
-            });
+    match state.current_voice.last_mut() {
+        Some(VoiceElement::Note(note)) => {
+            attach_dynamic_sign_to_note(note.as_mut(), sign);
         }
+        Some(VoiceElement::Chord(chord)) => {
+            if let Some(note) = chord.notes.first_mut() {
+                attach_dynamic_sign_to_note(note, sign);
+            }
+        }
+        Some(VoiceElement::Rest(rest)) => {
+            // Attach directly to the rest so the dynamic survives voice-element
+            // re-splitting (e.g. when the spacer variable is later re-binned into
+            // measures with a different time signature).
+            if sign == "<" {
+                rest.wedges.push(Wedge {
+                    wedge_type: "crescendo".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            } else if sign == ">" {
+                rest.wedges.push(Wedge {
+                    wedge_type: "diminuendo".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            } else if sign == "!" {
+                rest.wedges.push(Wedge {
+                    wedge_type: "stop".to_string(),
+                    placement: Placement::Unspecified,
+                });
+            } else {
+                rest.dynamics.push(DynamicMark {
+                    sign,
+                    placement: Placement::Unspecified,
+                });
+            }
+        }
+        _ => {
+            // No voice element to attach to — emit as measure-level Direction.
+            let dir = if sign == "<" {
+                Direction {
+                    wedge: Some(Wedge {
+                        wedge_type: "crescendo".to_string(),
+                        placement: Placement::Unspecified,
+                    }),
+                    ..Default::default()
+                }
+            } else if sign == ">" {
+                Direction {
+                    wedge: Some(Wedge {
+                        wedge_type: "diminuendo".to_string(),
+                        placement: Placement::Unspecified,
+                    }),
+                    ..Default::default()
+                }
+            } else if sign == "!" {
+                Direction {
+                    wedge: Some(Wedge {
+                        wedge_type: "stop".to_string(),
+                        placement: Placement::Unspecified,
+                    }),
+                    ..Default::default()
+                }
+            } else {
+                Direction {
+                    dynamic: Some(DynamicMark {
+                        sign,
+                        placement: Placement::Unspecified,
+                    }),
+                    ..Default::default()
+                }
+            };
+            state.ensure_measure().directions.push(dir);
+        }
+    }
+}
+
+fn attach_dynamic_sign_to_note(note: &mut crate::ir::note::Note, sign: String) {
+    if sign == "<" {
+        note.wedges.push(Wedge {
+            wedge_type: "crescendo".to_string(),
+            placement: Placement::Unspecified,
+        });
+    } else if sign == ">" {
+        note.wedges.push(Wedge {
+            wedge_type: "diminuendo".to_string(),
+            placement: Placement::Unspecified,
+        });
+    } else if sign == "!" {
+        note.wedges.push(Wedge {
+            wedge_type: "stop".to_string(),
+            placement: Placement::Unspecified,
+        });
+    } else {
+        note.dynamics.push(DynamicMark {
+            sign,
+            placement: Placement::Unspecified,
+        });
     }
 }
 

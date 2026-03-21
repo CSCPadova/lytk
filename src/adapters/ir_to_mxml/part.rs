@@ -1,7 +1,9 @@
 //! Part-level and measure-level musicxml element construction.
 
 use super::IrToMxmlAdapter;
-use crate::ir::direction::BarlineType;
+use crate::ir::articulation::Placement;
+use crate::ir::direction::{BarlineType, Direction};
+use crate::ir::duration::Frac;
 use crate::ir::harmony::FiguredBass;
 use crate::ir::measure::{ClefSign, Measure, MeasureAttributes};
 use crate::ir::note::VoiceElement;
@@ -94,7 +96,10 @@ impl IrToMxmlAdapter {
             ));
         }
 
-        // Directions (skip layout-break-only directions; those are emitted as <print>)
+        // Directions: split into upfront (offset_frac == 0) and positioned (offset_frac > 0).
+        // Upfront directions are emitted before notes; positioned ones are interleaved later.
+        let zero = Frac::from_integer(0);
+        let mut positioned_dirs: Vec<&Direction> = Vec::new();
         for dir in &measure.directions {
             if dir.layout_break.is_some()
                 && dir.dynamic.is_none()
@@ -112,7 +117,11 @@ impl IrToMxmlAdapter {
             {
                 continue;
             }
-            elements.push(mxml::MeasureElement::Direction(self.build_direction(dir)));
+            if dir.offset_frac > zero {
+                positioned_dirs.push(dir);
+            } else {
+                elements.push(mxml::MeasureElement::Direction(self.build_direction(dir)));
+            }
         }
 
         // Harmony / chord symbols (before notes; offset positions within measure)
@@ -205,6 +214,27 @@ impl IrToMxmlAdapter {
                                 content: fwd_content,
                             }));
                             fwd_pos += dur_val;
+                            // Emit dynamics/wedges attached to this spacer rest
+                            for dyn_mark in &r.dynamics {
+                                let dir = Direction {
+                                    dynamic: Some(dyn_mark.clone()),
+                                    placement: Placement::Below,
+                                    ..Direction::default()
+                                };
+                                elements.push(mxml::MeasureElement::Direction(
+                                    self.build_direction(&dir),
+                                ));
+                            }
+                            for wedge in &r.wedges {
+                                let dir = Direction {
+                                    wedge: Some(wedge.clone()),
+                                    placement: Placement::Below,
+                                    ..Direction::default()
+                                };
+                                elements.push(mxml::MeasureElement::Direction(
+                                    self.build_direction(&dir),
+                                ));
+                            }
                         } else {
                             let rest_note = self.build_rest_note(r, voice.number, part_staves);
                             elements.push(mxml::MeasureElement::Note(rest_note));
@@ -248,6 +278,63 @@ impl IrToMxmlAdapter {
                         self.build_figured_bass(fb),
                     ));
                 }
+            }
+        }
+
+        // Emit positioned directions (offset_frac > 0) interleaved after all voices,
+        // using <forward> elements to advance to the correct beat position.
+        if !positioned_dirs.is_empty() {
+            // Sort by offset_frac so they come out in beat order
+            positioned_dirs.sort_by(|a, b| {
+                a.offset_frac
+                    .partial_cmp(&b.offset_frac)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Backup to measure start so we can emit forwards from position 0
+            // We need to know the total measure duration to back up from end of last voice.
+            // Use the first voice's duration as the measure duration.
+            let measure_dur_divs = if let Some(first_voice) = voices.first() {
+                self.voice_duration(first_voice)
+            } else {
+                0
+            };
+            if measure_dur_divs > 0 {
+                elements.push(mxml::MeasureElement::Backup(mxml::Backup {
+                    attributes: (),
+                    content: mxml::BackupContents {
+                        duration: mxml::Duration {
+                            attributes: (),
+                            content: mdt::PositiveDivisions(measure_dur_divs as u32),
+                        },
+                        footnote: None,
+                        level: None,
+                    },
+                }));
+            }
+
+            let divs_per_whole = Frac::from_integer(4 * self.divisions as i64);
+            let mut fwd_pos: i64 = 0;
+            for dir in &positioned_dirs {
+                let offset_divs = (dir.offset_frac * divs_per_whole).to_integer();
+                if offset_divs > fwd_pos {
+                    let fwd_dur = (offset_divs - fwd_pos) as u32;
+                    elements.push(mxml::MeasureElement::Forward(mxml::Forward {
+                        attributes: (),
+                        content: mxml::ForwardContents {
+                            duration: mxml::Duration {
+                                attributes: (),
+                                content: mdt::PositiveDivisions(fwd_dur),
+                            },
+                            footnote: None,
+                            level: None,
+                            voice: None,
+                            staff: None,
+                        },
+                    }));
+                    fwd_pos = offset_divs;
+                }
+                elements.push(mxml::MeasureElement::Direction(self.build_direction(dir)));
             }
         }
 
