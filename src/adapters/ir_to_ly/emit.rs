@@ -150,7 +150,12 @@ pub(super) fn emit_measures(
             }
             if let Some(text) = &dir.text {
                 if !text.text.is_empty() {
-                    parts.push(format!("^\\markup {{ \"{}\" }}", text.text));
+                    let dir_char = match dir.placement {
+                        crate::ir::articulation::Placement::Above => "^",
+                        crate::ir::articulation::Placement::Below => "_",
+                        crate::ir::articulation::Placement::Unspecified => "^",
+                    };
+                    parts.push(format!("{dir_char}\\markup {{ \"{}\" }}", text.text));
                 }
             }
             if let Some(pedal) = &dir.pedal {

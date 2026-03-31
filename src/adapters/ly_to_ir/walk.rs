@@ -9,7 +9,8 @@ use crate::ir::pitch::Pitch;
 use crate::ir::score::{Score, ScoreChild};
 
 use super::consume::{
-    block_contains_named_context, extract_string_value, parse_paper_block, score_block_output_types,
+    block_contains_named_context, extract_string_value, parse_paper_block, parse_with_block,
+    score_block_output_types,
 };
 use super::figured_bass::parse_figuremode_block;
 use super::lyrics::{attach_lyrics_to_part, extract_lyricsto_voice, parse_lyric_block};
@@ -1214,14 +1215,10 @@ pub(super) fn walk_context_body(
         return i;
     }
 
-    // Grouping contexts (ChoirStaff, StaffGroup, etc.) don't produce a part;
-    // they just wrap inner staves. Walk their body like a score block.
-    let is_grouping = matches!(
-        context,
-        "ChoirStaff" | "StaffGroup" | "GrandStaff" | "PianoStaff"
-    );
-
-    if is_grouping {
+    // ChordNames context: skip entirely — chordmode content is not yet
+    // parsed back into harmonies. Consuming the body (variable or block)
+    // prevents creating an empty part.
+    if context == "ChordNames" {
         // Skip optional \with { ... }
         while i < children.len() {
             let node = children[i];
@@ -1235,6 +1232,41 @@ pub(super) fn walk_context_body(
             }
             break;
         }
+        // Consume the body (variable reference, block, etc.) without creating a part
+        if i < children.len() {
+            i += 1; // skip the body node regardless of type
+        }
+        return i;
+    }
+
+    // Grouping contexts (ChoirStaff, StaffGroup, etc.) don't produce a part;
+    // they just wrap inner staves. Walk their body like a score block.
+    let is_grouping = matches!(
+        context,
+        "ChoirStaff" | "StaffGroup" | "GrandStaff" | "PianoStaff"
+    );
+
+    if is_grouping {
+        let is_piano_staff = matches!(context, "PianoStaff" | "GrandStaff");
+        let mut with_props = std::collections::HashMap::new();
+
+        // Parse optional \with { ... }
+        while i < children.len() {
+            let node = children[i];
+            if node.kind() == "escaped_word" && state.text(node) == "\\with" {
+                if let Some(next) = children.get(i + 1) {
+                    if next.kind() == "expression_block" {
+                        with_props = parse_with_block(state, *next);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+
+        let parts_before = state.parts.len();
+
         // Consume the body block (parallel music or expression_block)
         if let Some(node) = children.get(i) {
             match node.kind() {
@@ -1249,6 +1281,19 @@ pub(super) fn walk_context_body(
                 _ => {}
             }
         }
+
+        // For PianoStaff/GrandStaff: merge newly created parts into one multi-staff part
+        if is_piano_staff && state.parts.len() > parts_before + 1 {
+            merge_piano_staff_parts(state, parts_before, &with_props);
+        } else if is_piano_staff && state.parts.len() == parts_before + 1 {
+            // Single staff inside PianoStaff — just set staves=1 (already default)
+            if let Some((_, part)) = state.parts.last_mut() {
+                if let Some(v) = with_props.get("instrumentName") {
+                    part.name = v.clone();
+                }
+            }
+        }
+
         return i;
     }
 
@@ -1278,9 +1323,21 @@ pub(super) fn walk_context_body(
                         continue;
                     }
                     "\\with" => {
-                        // Skip \with { ... }
+                        // Parse \with { ... } for known properties
                         if let Some(next) = children.get(i + 1) {
                             if next.kind() == "expression_block" {
+                                let props = parse_with_block(state, *next);
+                                if let Some((_, part)) = state.parts.last_mut() {
+                                    if let Some(v) = props.get("instrumentName") {
+                                        part.name = v.clone();
+                                    }
+                                    if let Some(v) = props.get("shortInstrumentName") {
+                                        part.abbreviation = v.clone();
+                                    }
+                                    if let Some(v) = props.get("midiInstrument") {
+                                        part.midi_instrument = v.clone();
+                                    }
+                                }
                                 i += 2;
                                 continue;
                             }
@@ -1386,4 +1443,124 @@ fn walk_lyrics_context(
         }
     }
     i
+}
+
+/// Merge multiple parts created inside a PianoStaff/GrandStaff into a single
+/// multi-staff part. `parts_before` is the index of the first new part.
+fn merge_piano_staff_parts(
+    state: &mut WalkState,
+    parts_before: usize,
+    with_props: &std::collections::HashMap<String, String>,
+) {
+    use crate::ir::note::VoiceElement;
+
+    let num_staves = state.parts.len() - parts_before;
+    if num_staves < 2 {
+        return;
+    }
+
+    // Drain the extra parts (index parts_before+1 ..)
+    let extra_parts: Vec<_> = state.parts.drain(parts_before + 1..).collect();
+
+    // Set staff numbers on the first part's voices (staff=1)
+    if let Some((_, first_part)) = state.parts.get_mut(parts_before) {
+        first_part.staves = num_staves as u8;
+
+        // Apply \with properties, or derive name from first staff
+        if let Some(v) = with_props.get("instrumentName") {
+            first_part.name = v.clone();
+        } else if !first_part.name.is_empty() {
+            // Strip trailing " N" suffix (e.g. "Piano 1" → "Piano")
+            let name = first_part.name.trim_end();
+            if let Some(pos) = name.rfind(' ') {
+                let suffix = &name[pos + 1..];
+                if suffix.chars().all(|c| c.is_ascii_digit()) {
+                    first_part.name = name[..pos].to_string();
+                }
+            }
+        }
+        if let Some(v) = with_props.get("shortInstrumentName") {
+            first_part.abbreviation = v.clone();
+        }
+        if let Some(v) = with_props.get("midiInstrument") {
+            first_part.midi_instrument = v.clone();
+        }
+
+        // If the first part has no name but the staves did, use the first
+        // staff name (common for named piano staves like "Piano 1")
+        // but strip trailing number suffixes like " 1"
+        // (typically the part name is the instrument name without numbering)
+
+        // Set staff=1 on all voices in first part
+        for measure in &mut first_part.measures {
+            for voice in &mut measure.voices {
+                for elem in &mut voice.elements {
+                    match elem {
+                        VoiceElement::Note(n) => n.staff = 1,
+                        VoiceElement::Rest(r) => r.staff = 1,
+                        VoiceElement::Chord(c) => c.staff = 1,
+                    }
+                }
+            }
+        }
+
+        // Merge each extra part's measures into the first part with
+        // incrementing staff numbers
+        for (extra_idx, (_ctx, extra_part)) in extra_parts.into_iter().enumerate() {
+            let staff_num = (extra_idx + 2) as u8;
+
+            // Merge clef from extra part's first measure attributes
+            // into the first part's first measure attributes
+            if let Some(extra_m) = extra_part.measures.first() {
+                if let Some(ref extra_attrs) = extra_m.attributes {
+                    let first_part_measures = &mut first_part.measures;
+                    if let Some(first_m) = first_part_measures.first_mut() {
+                        let attrs = first_m.attributes.get_or_insert_with(Default::default);
+                        // Copy clef from extra part under this staff number
+                        for clef in extra_attrs.clefs.values() {
+                            attrs.clefs.insert(staff_num, *clef);
+                        }
+                        // Set staves attribute
+                        attrs.staves = Some(num_staves as u8);
+                    }
+                }
+            }
+
+            // Merge measures: add voices from extra part into corresponding
+            // measures of the first part
+            let first_measures = &mut first_part.measures;
+            for (m_idx, extra_measure) in extra_part.measures.into_iter().enumerate() {
+                // Extend first part's measures if the extra part has more
+                while m_idx >= first_measures.len() {
+                    let mut new_m =
+                        crate::ir::measure::Measure::new((first_measures.len() + 1) as u32);
+                    new_m.implicit = false;
+                    first_measures.push(new_m);
+                }
+
+                let target = &mut first_measures[m_idx];
+
+                // Add voices with staff number adjusted
+                for mut voice in extra_measure.voices {
+                    // Assign a new voice number to avoid collisions
+                    let max_voice = target.voices.iter().map(|v| v.number).max().unwrap_or(0);
+                    voice.number = max_voice + 1;
+
+                    for elem in &mut voice.elements {
+                        match elem {
+                            VoiceElement::Note(n) => n.staff = staff_num,
+                            VoiceElement::Rest(r) => r.staff = staff_num,
+                            VoiceElement::Chord(c) => c.staff = staff_num,
+                        }
+                    }
+                    target.voices.push(voice);
+                }
+
+                // Merge directions from extra measure
+                target.directions.extend(extra_measure.directions);
+                // Merge harmonies
+                target.harmonies.extend(extra_measure.harmonies);
+            }
+        }
+    }
 }
