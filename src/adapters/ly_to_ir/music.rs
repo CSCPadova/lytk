@@ -307,15 +307,10 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         if state.elapsed_in_measure > Frac::from_integer(0) {
                             state.bar_check();
                         }
-                        let symbol = match (num, den) {
-                            (4, 4) => Some("common".to_string()),
-                            (2, 2) => Some("cut".to_string()),
-                            _ => None,
-                        };
                         let ts = TimeSignature {
                             beats: num.to_string(),
                             beat_type: den as u8,
-                            symbol,
+                            symbol: None,
                         };
                         state.set_time_signature(num, den);
                         let measure = state.ensure_measure();

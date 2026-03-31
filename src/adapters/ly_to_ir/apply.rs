@@ -177,6 +177,30 @@ pub(super) fn apply_note_attachments(
                     value: String::new(),
                 });
             }
+            "\\upbow" => {
+                note.technicals.push(Technical {
+                    name: "up-bow".to_string(),
+                    value: String::new(),
+                });
+            }
+            "\\downbow" => {
+                note.technicals.push(Technical {
+                    name: "down-bow".to_string(),
+                    value: String::new(),
+                });
+            }
+            "\\flageolet" | "\\open" => {
+                note.technicals.push(Technical {
+                    name: "open-string".to_string(),
+                    value: String::new(),
+                });
+            }
+            "\\snappizzicato" => {
+                note.technicals.push(Technical {
+                    name: "snap-pizzicato".to_string(),
+                    value: String::new(),
+                });
+            }
             "\\breathe" => {
                 note.articulations.push(Articulation {
                     name: "breath-mark".to_string(),
@@ -199,6 +223,13 @@ pub(super) fn apply_note_attachments(
                         font_weight: None,
                     });
                 }
+            }
+            s if s.starts_with("finger:") => {
+                let value = s["finger:".len()..].to_string();
+                note.technicals.push(Technical {
+                    name: "fingering".to_string(),
+                    value,
+                });
             }
             _ => {}
         }
@@ -402,6 +433,30 @@ pub(super) fn apply_chord_attachments(
                     value: String::new(),
                 });
             }
+            "\\upbow" => {
+                first.technicals.push(Technical {
+                    name: "up-bow".to_string(),
+                    value: String::new(),
+                });
+            }
+            "\\downbow" => {
+                first.technicals.push(Technical {
+                    name: "down-bow".to_string(),
+                    value: String::new(),
+                });
+            }
+            "\\flageolet" | "\\open" => {
+                first.technicals.push(Technical {
+                    name: "open-string".to_string(),
+                    value: String::new(),
+                });
+            }
+            "\\snappizzicato" => {
+                first.technicals.push(Technical {
+                    name: "snap-pizzicato".to_string(),
+                    value: String::new(),
+                });
+            }
             "\\breathe" => {
                 first.articulations.push(Articulation {
                     name: "breath-mark".to_string(),
@@ -424,6 +479,13 @@ pub(super) fn apply_chord_attachments(
                         font_weight: None,
                     });
                 }
+            }
+            s if s.starts_with("finger:") => {
+                let value = s["finger:".len()..].to_string();
+                first.technicals.push(Technical {
+                    name: "fingering".to_string(),
+                    value,
+                });
             }
             _ => {}
         }
@@ -472,33 +534,37 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
             // No voice element to attach to — emit as measure-level Direction.
             let dir = if sign == "<" {
                 Direction {
+                    placement: Placement::Below,
                     wedge: Some(Wedge {
                         wedge_type: "crescendo".to_string(),
-                        placement: Placement::Unspecified,
+                        placement: Placement::Below,
                     }),
                     ..Default::default()
                 }
             } else if sign == ">" {
                 Direction {
+                    placement: Placement::Below,
                     wedge: Some(Wedge {
                         wedge_type: "diminuendo".to_string(),
-                        placement: Placement::Unspecified,
+                        placement: Placement::Below,
                     }),
                     ..Default::default()
                 }
             } else if sign == "!" {
                 Direction {
+                    placement: Placement::Below,
                     wedge: Some(Wedge {
                         wedge_type: "stop".to_string(),
-                        placement: Placement::Unspecified,
+                        placement: Placement::Below,
                     }),
                     ..Default::default()
                 }
             } else {
                 Direction {
+                    placement: Placement::Below,
                     dynamic: Some(DynamicMark {
                         sign,
-                        placement: Placement::Unspecified,
+                        placement: Placement::Below,
                     }),
                     ..Default::default()
                 }

@@ -210,26 +210,78 @@ impl IrToMidiAdapter {
         // Track 0: conductor (tempo, time sig, key sig)
         smf.tracks.push(self.build_conductor_track(score));
 
-        // One track per part (assign channels sequentially, skip ch 9 = percussion)
+        // One track per part (or per staff for multi-staff parts).
+        // Assign channels sequentially, skip ch 9 = percussion.
         let mut ch: u8 = 0;
         for part in score.parts() {
-            let channel = if part.midi_channel != 0 {
-                part.midi_channel
-            } else {
-                let c = ch;
-                ch += 1;
-                if ch == 9 {
-                    ch = 10; // skip GM percussion channel
+            if part.staves > 1 {
+                // Split multi-staff part into per-staff tracks
+                for staff_num in 1..=part.staves {
+                    let channel = if part.midi_channel != 0 {
+                        part.midi_channel
+                    } else {
+                        let c = ch;
+                        ch += 1;
+                        if ch == 9 {
+                            ch = 10;
+                        }
+                        c
+                    };
+                    let sub_part = self.filter_part_by_staff(part, staff_num);
+                    smf.tracks.push(self.build_part_track(&sub_part, channel));
                 }
-                c
-            };
-            smf.tracks.push(self.build_part_track(part, channel));
+            } else {
+                let channel = if part.midi_channel != 0 {
+                    part.midi_channel
+                } else {
+                    let c = ch;
+                    ch += 1;
+                    if ch == 9 {
+                        ch = 10;
+                    }
+                    c
+                };
+                smf.tracks.push(self.build_part_track(part, channel));
+            }
         }
 
         let mut buf = Vec::new();
         smf.write(&mut buf)
             .map_err(|e| AdapterError::Parse(format!("MIDI write error: {e}")))?;
         Ok(buf)
+    }
+}
+
+impl IrToMidiAdapter {
+    /// Create a sub-part containing only voices for a specific staff number.
+    fn filter_part_by_staff(
+        &self,
+        part: &crate::ir::part::Part,
+        staff_num: u8,
+    ) -> crate::ir::part::Part {
+        use crate::ir::note::VoiceElement;
+
+        let mut sub = part.clone();
+        sub.staves = 1;
+        sub.name = if part.name.is_empty() {
+            format!("Staff {staff_num}")
+        } else {
+            format!("{} {staff_num}", part.name)
+        };
+
+        for measure in &mut sub.measures {
+            measure.voices.retain(|voice| {
+                voice.elements.iter().any(|e| {
+                    let s = match e {
+                        VoiceElement::Note(n) => n.staff,
+                        VoiceElement::Rest(r) => r.staff,
+                        VoiceElement::Chord(c) => c.staff,
+                    };
+                    s == staff_num || s == 0
+                })
+            });
+        }
+        sub
     }
 }
 

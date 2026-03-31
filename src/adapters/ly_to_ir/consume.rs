@@ -254,6 +254,12 @@ pub(super) fn consume_attachments(
                                     *i += 2;
                                     continue;
                                 }
+                            } else if next.kind() == "unsigned_integer" {
+                                // Fingering: -1, -2, -3, etc.
+                                let finger = state.text(*next).to_string();
+                                attachments.push(format!("finger:{finger}"));
+                                *i += 2;
+                                continue;
                             }
                         }
                         break;
@@ -303,6 +309,11 @@ pub(super) fn is_post_note_command(text: &str) -> bool {
             | "\\espressivo"
             | "\\glissando"
             | "\\arpeggio"
+            | "\\upbow"
+            | "\\downbow"
+            | "\\flageolet"
+            | "\\open"
+            | "\\snappizzicato"
     ) || is_dynamic_name(text)
 }
 
@@ -375,6 +386,7 @@ pub(super) fn consume_tempo(state: &mut WalkState, children: &[Node], mut i: usi
             placement: Placement::Unspecified,
         };
         let dir = Direction {
+            placement: Placement::Above,
             tempo: Some(tempo_dir),
             ..Default::default()
         };
@@ -425,6 +437,59 @@ pub(super) fn extract_markup_text(state: &WalkState, block: Node) -> String {
         }
     }
     result
+}
+
+/// Parse a `\with { ... }` expression block and extract known properties.
+/// Returns a map of property name -> value (e.g. "instrumentName" -> "Violin").
+pub(super) fn parse_with_block(
+    state: &WalkState,
+    block: Node,
+) -> std::collections::HashMap<String, String> {
+    let mut props = std::collections::HashMap::new();
+    let mut cursor = block.walk();
+    let children: Vec<Node> = block.children(&mut cursor).collect();
+    let mut i = 0;
+    while i < children.len() {
+        let child = children[i];
+        if child.kind() == "assignment_lhs" || child.kind() == "symbol" {
+            let key = state.text(child).to_string();
+            // Strip context prefix like "Staff."
+            let prop_name = key
+                .rsplit_once('.')
+                .map(|(_, k)| k)
+                .unwrap_or(&key)
+                .to_string();
+            i += 1;
+            // Skip "="
+            if i < children.len()
+                && children[i].kind() == "punctuation"
+                && state.text(children[i]) == "="
+            {
+                i += 1;
+            }
+            // Read value
+            if i < children.len() {
+                let val_node = children[i];
+                let val = if val_node.kind() == "string" {
+                    extract_string_value(state, val_node)
+                } else if val_node.kind() == "embedded_scheme" {
+                    let t = state.text(val_node).to_string();
+                    t.trim_start_matches("#\"")
+                        .trim_end_matches('"')
+                        .trim_start_matches("#'")
+                        .trim_start_matches('#')
+                        .to_string()
+                } else {
+                    state.text(val_node).to_string()
+                };
+                props.insert(prop_name, val);
+                i += 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    props
 }
 
 /// Consume a `\mark` command with its argument.

@@ -52,12 +52,10 @@ pub(super) fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyll
                     } else {
                         SyllabicType::End
                     }
+                } else if next_is_hyphen {
+                    SyllabicType::Begin
                 } else {
-                    if next_is_hyphen {
-                        SyllabicType::Begin
-                    } else {
-                        SyllabicType::Single
-                    }
+                    SyllabicType::Single
                 };
                 syllables.push(LyricSyllable {
                     text,

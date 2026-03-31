@@ -2213,13 +2213,18 @@ scoreAll = {
         );
         assert_eq!(
             scores[0].parts().len(),
-            2,
-            "should have 2 parts (RH + LH), got {}",
+            1,
+            "should have 1 part (PianoStaff merged), got {}",
             scores[0].parts().len()
+        );
+        assert!(
+            scores[0].parts()[0].staves >= 2,
+            "piano part should have multiple staves, got {}",
+            scores[0].parts()[0].staves
         );
         let total_measures: usize = scores[0].parts().iter().map(|p| p.measures.len()).sum();
         assert!(
-            total_measures > 100,
+            total_measures > 50,
             "should produce many measures, got {total_measures}"
         );
     }
@@ -2238,9 +2243,14 @@ scoreAll = {
         let score = &scores[0];
         assert_eq!(
             score.parts().len(),
-            2,
-            "should have 2 parts (upper + lower), got {}",
+            1,
+            "should have 1 part (PianoStaff with 2 staves), got {}",
             score.parts().len()
+        );
+        assert_eq!(
+            score.parts()[0].staves,
+            2,
+            "piano part should have 2 staves"
         );
         let pedal_count: usize = score
             .parts()
@@ -2265,9 +2275,14 @@ scoreAll = {
         );
         assert_eq!(
             scores[0].parts().len(),
-            2,
-            "should have 2 parts (upper + lower), got {}",
+            1,
+            "should have 1 part (PianoStaff with 2 staves), got {}",
             scores[0].parts().len()
+        );
+        assert_eq!(
+            scores[0].parts()[0].staves,
+            2,
+            "piano part should have 2 staves"
         );
         let total_measures: usize = scores[0].parts().iter().map(|p| p.measures.len()).sum();
         assert!(

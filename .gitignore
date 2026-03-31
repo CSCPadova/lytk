@@ -43,3 +43,6 @@ MuseScore/
 lyp/
 music21/
 *.so
+
+# Proptest regression files
+*.proptest-regressions

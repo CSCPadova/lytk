@@ -247,6 +247,14 @@ impl LyToIrAdapter {
                 }
                 merge::propagate_first_tempo(score);
                 post_process_beams_and_stems(score);
+                // Mark first measure as implicit if partial_duration is set
+                if score.metadata.partial_duration.is_some() {
+                    for part in score.parts_mut() {
+                        if let Some(m) = part.measures.first_mut() {
+                            m.implicit = true;
+                        }
+                    }
+                }
             }
             return Ok(state.completed_scores);
         }
@@ -285,6 +293,14 @@ impl LyToIrAdapter {
         merge::synchronize_time_signatures(&mut score);
         merge::propagate_first_tempo(&mut score);
         post_process_beams_and_stems(&mut score);
+        // Mark first measure as implicit if partial_duration is set
+        if score.metadata.partial_duration.is_some() {
+            for part in score.parts_mut() {
+                if let Some(m) = part.measures.first_mut() {
+                    m.implicit = true;
+                }
+            }
+        }
         Ok(vec![score])
     }
 
