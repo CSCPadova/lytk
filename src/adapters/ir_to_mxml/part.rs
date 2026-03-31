@@ -236,6 +236,27 @@ impl IrToMxmlAdapter {
                                 ));
                             }
                         } else {
+                            // Emit dynamics/wedges attached to this rest
+                            for dyn_mark in &r.dynamics {
+                                let dir = Direction {
+                                    dynamic: Some(dyn_mark.clone()),
+                                    placement: Placement::Below,
+                                    ..Direction::default()
+                                };
+                                elements.push(mxml::MeasureElement::Direction(
+                                    self.build_direction(&dir),
+                                ));
+                            }
+                            for wedge in &r.wedges {
+                                let dir = Direction {
+                                    wedge: Some(wedge.clone()),
+                                    placement: Placement::Below,
+                                    ..Direction::default()
+                                };
+                                elements.push(mxml::MeasureElement::Direction(
+                                    self.build_direction(&dir),
+                                ));
+                            }
                             let rest_note = self.build_rest_note(r, voice.number, part_staves);
                             elements.push(mxml::MeasureElement::Note(rest_note));
                             fwd_pos += self.duration_to_divisions(&r.duration);

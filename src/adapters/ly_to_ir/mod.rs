@@ -291,6 +291,7 @@ impl LyToIrAdapter {
             merge::renumber_measures(part);
         }
         merge::synchronize_time_signatures(&mut score);
+        merge::synchronize_barlines(&mut score);
         merge::propagate_first_tempo(&mut score);
         post_process_beams_and_stems(&mut score);
         // Mark first measure as implicit if partial_duration is set

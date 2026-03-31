@@ -388,12 +388,13 @@ impl<'src> WalkState<'src> {
                             // Just append.
                             part.measures.extend(measures);
                         } else if incoming_dur > Frac::from_integer(0)
-                            && incoming_dur < existing_dur
+                            && incoming_dur * Frac::from_integer(2) < existing_dur
                             && !has_own_time_sigs
                         {
-                            // Incoming spacer is shorter than existing music —
-                            // this is sequential content (e.g. \barRest after notes),
-                            // not parallel spacer. Just append.
+                            // Incoming spacer is much shorter than existing music
+                            // (less than half the duration) — this is sequential content
+                            // (e.g. \barRest after notes), not parallel spacer.
+                            // Just append.
                             part.measures.extend(measures);
                         } else if measures.len() != part.measures.len() {
                             if has_own_time_sigs {

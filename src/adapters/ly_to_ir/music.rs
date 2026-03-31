@@ -23,6 +23,25 @@ use super::consume::{
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
 use super::state::WalkState;
+
+/// If attachments contain `\rest`, convert the note to a pitched rest
+/// (display-step + display-octave) and return it as a VoiceElement::Rest.
+/// Otherwise return the note as VoiceElement::Note.
+fn note_or_pitched_rest(note: Note, attachments: &[String]) -> VoiceElement {
+    if attachments.iter().any(|a| a == "\\rest") {
+        let mut rest = Rest::new(note.duration.clone());
+        rest.display_step = Some(format!("{:?}", note.pitch.step));
+        rest.display_octave = Some(note.pitch.octave);
+        rest.voice = note.voice;
+        rest.staff = note.staff;
+        // Copy any dynamics/wedges from note
+        rest.dynamics = note.dynamics.clone();
+        rest.wedges = note.wedges.clone();
+        VoiceElement::Rest(rest)
+    } else {
+        VoiceElement::Note(Box::new(note))
+    }
+}
 use super::walk::{extract_named_context, walk_context_body, walk_parallel_music};
 use super::{parse_clef_name, parse_key_mode, pitch_to_fifths};
 
@@ -252,7 +271,7 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                     });
                 }
                 apply_note_attachments(state, &mut note, &attachments);
-                state.push_voice_element(VoiceElement::Note(Box::new(note)));
+                state.push_voice_element(note_or_pitched_rest(note, &attachments));
             }
             // If not a pitch name, ignore (could be a context name etc.)
         }

@@ -309,6 +309,7 @@ pub(super) fn is_post_note_command(text: &str) -> bool {
             | "\\espressivo"
             | "\\glissando"
             | "\\arpeggio"
+            | "\\rest"
             | "\\upbow"
             | "\\downbow"
             | "\\flageolet"

@@ -886,8 +886,224 @@ pub(super) fn synchronize_time_signatures(score: &mut crate::ir::score::Score) {
         return;
     }
 
-    // Collect time sig and key sig events by measure index from all parts.
-    // Use the longest part's measure count as reference.
+    // 1. Build a reference timeline from the part that has the most time sig
+    //    changes.  Collect (cumulative_position, TimeSignature, beats_fraction)
+    //    for every time sig event across all parts.
+    struct PartTimeline {
+        /// (cumul_pos, time_sig, beats_frac) for each time sig change
+        events: Vec<(Frac, TimeSignature, Frac)>,
+    }
+
+    fn build_timeline(part: &crate::ir::Part) -> PartTimeline {
+        let mut events: Vec<(Frac, TimeSignature, Frac)> = Vec::new();
+        let mut pos = Frac::from_integer(0);
+        let mut current_ts = Frac::new(4, 4); // default 4/4
+
+        for m in &part.measures {
+            if let Some(ref attrs) = m.attributes {
+                if let Some(ref ts) = attrs.time {
+                    let frac = ts.beats_fraction();
+                    events.push((pos, ts.clone(), frac));
+                    current_ts = frac;
+                }
+            }
+            let dur = measure_voice_duration(m);
+            if dur > Frac::from_integer(0) {
+                pos += dur;
+            } else {
+                pos += current_ts;
+            }
+        }
+        PartTimeline { events }
+    }
+
+    // Build timelines for all parts
+    let timelines: Vec<PartTimeline> = score.parts().iter().map(|p| build_timeline(p)).collect();
+
+    // Find the part with the most time sig events — use it as reference
+    let ref_idx = timelines
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, t)| t.events.len())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let ref_timeline = &timelines[ref_idx];
+
+    if ref_timeline.events.is_empty() {
+        return; // No time sig events at all
+    }
+
+    // 2. Build the reference part's measure-duration sequence.
+    //    Each entry is (time_sig_duration, optional time_sig change).
+    let ref_part = &score.parts()[ref_idx];
+    let mut ref_measure_durs: Vec<(Frac, Option<TimeSignature>)> = Vec::new();
+    for m in &ref_part.measures {
+        let ts_change = m.attributes.as_ref().and_then(|a| a.time.clone());
+        let dur = measure_voice_duration(m);
+        ref_measure_durs.push((dur, ts_change));
+    }
+
+    // 3. For each part that has fewer time sig events, resplit to match
+    //    the reference part's measure durations.
+    let parts_data: Vec<(bool, Vec<Measure>)> = score
+        .parts()
+        .iter()
+        .enumerate()
+        .map(|(pi, part)| {
+            if pi == ref_idx {
+                return (false, Vec::new());
+            }
+            let tl = &timelines[pi];
+            if tl.events.len() >= ref_timeline.events.len() {
+                return (false, Vec::new());
+            }
+            // Flatten all voice elements from this part
+            let mut voice_elems: BTreeMap<u8, Vec<VoiceElement>> = BTreeMap::new();
+            let mut measure_metas: Vec<MeasureMeta> = Vec::new();
+            let mut cumul = Frac::from_integer(0);
+            for m in &part.measures {
+                measure_metas.push((
+                    cumul,
+                    m.attributes.clone(),
+                    m.directions.clone(),
+                    m.left_barline.clone(),
+                    m.right_barline.clone(),
+                ));
+                let mut max_dur = Frac::from_integer(0);
+                for v in &m.voices {
+                    let entry = voice_elems.entry(v.number).or_default();
+                    let mut vdur = Frac::from_integer(0);
+                    for e in &v.elements {
+                        vdur += voice_element_duration(e);
+                        entry.push(e.clone());
+                    }
+                    if vdur > max_dur {
+                        max_dur = vdur;
+                    }
+                }
+                let ts_dur = m
+                    .attributes
+                    .as_ref()
+                    .and_then(|a| a.time.as_ref())
+                    .map(|t| t.beats_fraction())
+                    .unwrap_or(Frac::from_integer(0));
+                if max_dur == Frac::from_integer(0) && ts_dur > Frac::from_integer(0) {
+                    max_dur = ts_dur;
+                }
+                cumul += max_dur;
+            }
+            if voice_elems.is_empty() {
+                return (false, Vec::new());
+            }
+
+            // Split each voice at the reference measure durations
+            let voice_nums: Vec<u8> = voice_elems.keys().copied().collect();
+            let mut voice_split: BTreeMap<u8, Vec<Vec<VoiceElement>>> = BTreeMap::new();
+
+            for &vn in &voice_nums {
+                let elements = voice_elems.remove(&vn).unwrap();
+                let mut split_measures: Vec<Vec<VoiceElement>> = Vec::new();
+                let mut elem_iter = elements.into_iter().peekable();
+                let mut target_pos = Frac::from_integer(0);
+
+                for &(ref_dur, _) in &ref_measure_durs {
+                    let boundary = target_pos + ref_dur;
+                    let mut current: Vec<VoiceElement> = Vec::new();
+                    let mut pos_in_measure = Frac::from_integer(0);
+
+                    while let Some(elem) = elem_iter.peek() {
+                        let dur = voice_element_duration(elem);
+                        if target_pos + pos_in_measure + dur > boundary + Frac::new(1, 1000) {
+                            break; // This element belongs to the next measure
+                        }
+                        let elem = elem_iter.next().unwrap();
+                        pos_in_measure += dur;
+                        current.push(elem);
+                    }
+                    split_measures.push(current);
+                    target_pos = boundary;
+                }
+                // Any remaining elements go into the last measure
+                if let Some(last) = split_measures.last_mut() {
+                    last.extend(elem_iter);
+                }
+                voice_split.insert(vn, split_measures);
+            }
+
+            // Build output measures
+            let mut result: Vec<Measure> = Vec::new();
+            let mut meta_idx = 0usize;
+            let mut meta_pos = Frac::from_integer(0);
+
+            for (mi, (ref_dur, ref_ts)) in ref_measure_durs.iter().enumerate() {
+                let mut m = Measure::new(mi as u32 + 1);
+
+                // Apply time sig from reference
+                if let Some(ts) = ref_ts {
+                    let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
+                    if ma.time.is_none() {
+                        ma.time = Some(ts.clone());
+                    }
+                }
+
+                // Apply attrs/dirs from original measures that overlap this position
+                let out_start = meta_pos;
+                let out_end = meta_pos + ref_dur;
+                while meta_idx < measure_metas.len() {
+                    let (apos, ref attrs, ref dirs, ref lbar, ref rbar) = measure_metas[meta_idx];
+                    if apos >= out_end {
+                        break;
+                    }
+                    if apos >= out_start {
+                        if let Some(ref a) = attrs {
+                            let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
+                            if ma.key.is_none() {
+                                ma.key = a.key;
+                            }
+                            if ma.clefs.is_empty() {
+                                ma.clefs = a.clefs.clone();
+                            }
+                        }
+                        m.directions.extend(dirs.iter().cloned());
+                        if m.left_barline.is_none() && lbar.is_some() {
+                            m.left_barline = lbar.clone();
+                        }
+                        if m.right_barline.is_none() && rbar.is_some() {
+                            m.right_barline = rbar.clone();
+                        }
+                    }
+                    meta_idx += 1;
+                }
+
+                // Add voices
+                for &vn in &voice_nums {
+                    if let Some(split) = voice_split.get(&vn) {
+                        if let Some(elems) = split.get(mi) {
+                            if !elems.is_empty() {
+                                m.voices.push(Voice {
+                                    number: vn,
+                                    elements: elems.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                result.push(m);
+                meta_pos = out_end;
+            }
+            (true, result)
+        })
+        .collect();
+
+    // Apply resplit results
+    for (pi, (needs_resplit, new_measures)) in parts_data.into_iter().enumerate() {
+        if needs_resplit {
+            score.parts_mut()[pi].measures = new_measures;
+        }
+    }
+
+    // 5. Now that all parts have aligned measure boundaries, do the simple
+    //    index-based sync for key signatures (time sigs are already set by resplit).
     let max_measures = score
         .parts()
         .iter()
@@ -895,42 +1111,78 @@ pub(super) fn synchronize_time_signatures(score: &mut crate::ir::score::Score) {
         .max()
         .unwrap_or(0);
 
-    // Build a unified timeline: for each measure index, the time sig and key sig
-    // that should apply (first non-None from any part wins).
-    let mut unified_time: Vec<Option<TimeSignature>> = vec![None; max_measures];
     let mut unified_key: Vec<Option<crate::ir::measure::KeySignature>> = vec![None; max_measures];
-
     for part in score.parts().iter() {
         for (mi, m) in part.measures.iter().enumerate() {
             if let Some(ref attrs) = m.attributes {
-                if attrs.time.is_some() && unified_time[mi].is_none() {
-                    unified_time[mi] = attrs.time.clone();
-                }
                 if attrs.key.is_some() && unified_key[mi].is_none() {
                     unified_key[mi] = attrs.key;
                 }
             }
         }
     }
-
-    // Apply unified attributes to all parts
     for part in score.parts_mut().iter_mut() {
         for (mi, m) in part.measures.iter_mut().enumerate() {
             if mi >= max_measures {
                 break;
             }
-            // Copy time sig if this measure doesn't have one but unified does
-            if let Some(ref ts) = unified_time[mi] {
-                let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
-                if ma.time.is_none() {
-                    ma.time = Some(ts.clone());
-                }
-            }
-            // Copy key sig if this measure doesn't have one but unified does
             if let Some(ref ks) = unified_key[mi] {
                 let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
                 if ma.key.is_none() {
                     ma.key = Some(*ks);
+                }
+            }
+        }
+    }
+}
+
+/// Synchronize barlines across all parts in a score.
+///
+/// When a custom barline (e.g. `\bar "||"`) appears in one part, it should
+/// appear at the same measure in all parts.  This mirrors the approach used
+/// by `synchronize_time_signatures`.
+pub(super) fn synchronize_barlines(score: &mut crate::ir::score::Score) {
+    let num_parts = score.parts().len();
+    if num_parts < 2 {
+        return;
+    }
+
+    let max_measures = score
+        .parts()
+        .iter()
+        .map(|p| p.measures.len())
+        .max()
+        .unwrap_or(0);
+
+    // Collect unified barlines: first non-None from any part wins.
+    let mut unified_left: Vec<Option<crate::ir::direction::Barline>> = vec![None; max_measures];
+    let mut unified_right: Vec<Option<crate::ir::direction::Barline>> = vec![None; max_measures];
+
+    for part in score.parts().iter() {
+        for (mi, m) in part.measures.iter().enumerate() {
+            if m.left_barline.is_some() && unified_left[mi].is_none() {
+                unified_left[mi] = m.left_barline.clone();
+            }
+            if m.right_barline.is_some() && unified_right[mi].is_none() {
+                unified_right[mi] = m.right_barline.clone();
+            }
+        }
+    }
+
+    // Apply to all parts
+    for part in score.parts_mut().iter_mut() {
+        for (mi, m) in part.measures.iter_mut().enumerate() {
+            if mi >= max_measures {
+                break;
+            }
+            if m.left_barline.is_none() {
+                if let Some(ref bl) = unified_left[mi] {
+                    m.left_barline = Some(bl.clone());
+                }
+            }
+            if m.right_barline.is_none() {
+                if let Some(ref bl) = unified_right[mi] {
+                    m.right_barline = Some(bl.clone());
                 }
             }
         }

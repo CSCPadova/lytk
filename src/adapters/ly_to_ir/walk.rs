@@ -18,7 +18,7 @@ use super::merge::{
     measure_voice_duration, measures_are_spacer_only, measures_have_no_pitched_content,
     merge_dynamics_parts, merge_leading_attribute_measures, merge_spacer_by_duration,
     merge_spacer_measures, merge_voice_measure_streams, propagate_first_tempo,
-    renumber_voices_in_measures, synchronize_time_signatures,
+    renumber_voices_in_measures, synchronize_barlines, synchronize_time_signatures,
 };
 use super::modifiers::{consume_relative, consume_transpose};
 use super::music::walk_music_block;
@@ -129,6 +129,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                         merge_leading_attribute_measures(part);
                                     }
                                     synchronize_time_signatures(&mut score);
+                                    synchronize_barlines(&mut score);
                                     propagate_first_tempo(&mut score);
                                     state.completed_scores.push(score);
                                 }
@@ -902,10 +903,23 @@ fn merge_simultaneous_block(
             } else if new_dur == Frac::from_integer(0) {
                 sibling_measures
             } else {
-                // Both have real voiced content — don't merge, just concatenate
-                let mut result = sibling_measures;
-                result.extend(new_measures);
-                result
+                // Both have real voiced content. If they span similar durations
+                // they are simultaneous voices and should be merged measure-by-measure.
+                // If one is much shorter, they are sequential and should be concatenated.
+                let ratio = if sibling_dur >= new_dur {
+                    new_dur / sibling_dur
+                } else {
+                    sibling_dur / new_dur
+                };
+                if ratio >= Frac::new(1, 2) {
+                    // Similar durations — merge as simultaneous voices
+                    merge_voice_measure_streams(&[sibling_measures, new_measures])
+                } else {
+                    // Very different durations — sequential, concatenate
+                    let mut result = sibling_measures;
+                    result.extend(new_measures);
+                    result
+                }
             }
         }
     };
@@ -926,6 +940,15 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
     // Record the part's measure count at entry so merge_simultaneous_block
     // only merges measures added by siblings within this <<...>> block,
     // not measures from before the block.
+    // If there is a full pending measure (elapsed >= time_sig), flush it before
+    // recording the baseline so that it isn't counted as part of the <<...>> block.
+    while !state.current_voice.is_empty()
+        && state.current_time_sig > Frac::from_integer(0)
+        && state.elapsed_in_measure >= state.current_time_sig
+    {
+        state.flush_measure();
+        state.elapsed_in_measure -= state.current_time_sig;
+    }
     let block_baseline = state
         .parts
         .last()
@@ -937,6 +960,64 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
         match child.kind() {
             "named_context" => {
                 let (context, name) = extract_named_context(state, child);
+                // Voice contexts inside <<...>> are simultaneous with sibling
+                // expression blocks.  Treat them like expression_block so they
+                // merge into the existing part rather than creating a new part.
+                if context == "Voice" {
+                    let measures_before = state
+                        .parts
+                        .last()
+                        .map(|(_, p)| p.measures.len())
+                        .unwrap_or(0);
+                    if measures_before > block_baseline {
+                        let saved_voice = std::mem::take(&mut state.current_voice);
+                        let saved_measure = state.current_measure.take();
+                        let saved_elapsed = state.elapsed_in_measure;
+                        state.elapsed_in_measure = Frac::from_integer(0);
+                        // Walk the Voice body without creating a new part:
+                        // skip past any \with blocks, then walk the expression body.
+                        i += 1;
+                        while i < children.len() {
+                            let n = children[i];
+                            if n.kind() == "escaped_word" && state.text(n) == "\\with" {
+                                if let Some(next) = children.get(i + 1) {
+                                    if next.kind() == "expression_block" {
+                                        i += 2;
+                                        continue;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        // Store the voice name for lyrics attachment
+                        if !name.is_empty() {
+                            let _part = state.ensure_part();
+                            let part_idx = state.parts.len().saturating_sub(1);
+                            state.voice_part_map.insert(name.to_string(), part_idx);
+                        }
+                        if let Some(n) = children.get(i) {
+                            if n.kind() == "expression_block" {
+                                walk_music_block(state, *n);
+                                i += 1;
+                            } else if n.kind() == "parallel_music" {
+                                walk_parallel_music(state, *n);
+                                i += 1;
+                            } else if n.kind() == "escaped_word" {
+                                let text = state.text(*n).to_string();
+                                let var_name = text.trim_start_matches('\\');
+                                if state.resolve_variable(var_name) {
+                                    i += 1;
+                                }
+                            }
+                        }
+                        state.flush_measure();
+                        merge_simultaneous_block(state, block_baseline, measures_before);
+                        state.current_voice = saved_voice;
+                        state.current_measure = saved_measure;
+                        state.elapsed_in_measure = saved_elapsed;
+                        continue;
+                    }
+                }
                 i += 1;
                 i = walk_context_body(state, children, i, &context, &name);
                 continue;
