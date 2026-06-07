@@ -156,11 +156,11 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 
 | Task | Description | Status |
 |------|-------------|--------|
-| EBT1 | Emit **lyrics** in IR→LY (currently dropped, `import-export.md` L221) | ⬜ |
-| EBT2 | **Repeat/volta** LY→IR→LY round-trip (`\repeat volta` + `\alternative`) | ⬜ |
+| EBT1 | Emit **lyrics** in IR→LY (Music path `\addlyrics` + parse `\addlyrics` on import) | ✅ |
+| EBT2 | **Repeat/volta** LY→IR→LY round-trip (`\repeat volta` + `\alternative`) | 🟡 diagnosed: parser stores repeats as Score barlines + voltas, never builds `Music::Repeat`; `lift.rs` doesn't reconstruct → LY→LY flattens. Needs lift→`Music::Repeat`. Tests in `semantic_roundtrip.rs` (#[ignore]) |
 | EBT3 | `\chordmode` import → `Harmony` IR (emitter side already exists) | ⬜ |
 | EBT4 | `\figuremode` robustness | ⬜ |
-| EBT5 | MIDI **velocity ↔ dynamics** mapping both directions (replace fixed velocity 80) | ⬜ |
+| EBT5 | MIDI **velocity ↔ dynamics** mapping both directions (shared `dynamics_velocity` map) | ✅ |
 | EBT6 | `\partial` in multi-movement contexts | ⬜ |
 
 ### Epic C: Semantic Round-Trip Test Bar (quality gate)

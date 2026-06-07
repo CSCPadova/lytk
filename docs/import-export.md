@@ -166,7 +166,7 @@ what the adapter can parse (import) and emit (export).
 | `\set Staff.instrumentName` | ✅ | Part name from `\set` property |
 | `\set Staff.midiInstrument` | ✅ | MIDI instrument from `\set` property |
 | `\context Voice = "name"` | ✅ | Named voices for lyrics attachment |
-| Lyrics | ✅ | `\lyricsto`, `\lyricmode`, `\context Lyrics` |
+| Lyrics | ✅ | `\lyricsto`, `\lyricmode`, `\context Lyrics`, `\addlyrics` |
 | Staff variables | ✅ | `staffX = \new Staff { ... }` with full part metadata |
 | `\cadenzaOn/Off` | ✅ | Gracefully skipped |
 | `\melisma/End` | ✅ | Gracefully skipped |
@@ -218,7 +218,7 @@ what the adapter can parse (import) and emit (export).
 | Fermata | ✅ | `\fermata` |
 | Octave shifts | ✅ | `\ottava` |
 | Pedal | ✅ | `\sustainOn \sustainOff` |
-| Lyrics | 🔲 | Not yet emitted |
+| Lyrics | ✅ | Score path: `\new Lyrics \lyricsto`; Music path: `\addlyrics` |
 
 ---
 
@@ -243,7 +243,7 @@ MIDI support is always compiled (the `midi` feature gate was removed in Epic 4).
 | Multi-track (Format 1) | ✅ | One part per track |
 | Channel splitting (Format 0) | ✅ | Channels → parts |
 | Program changes | ✅ | → `Part.midi_program` |
-| Dynamics / velocity | 🔲 | Velocity data retained but not mapped |
+| Dynamics / velocity | ✅ | Velocity quantized to nearest dynamic; mark emitted on band change |
 | Articulations | 🔲 | Not preserved (MIDI lossy) |
 | Slurs / ties | 🔲 | Not preserved |
 | Grace notes | 🔲 | Not preserved |
@@ -269,7 +269,7 @@ MIDI support is always compiled (the `midi` feature gate was removed in Epic 4).
 | Program changes | ✅ | From `Part.midi_program` |
 | Channel assignment | ✅ | From `Part.midi_channel` |
 | Configurable TPQ | ✅ | Default 480 ticks/quarter |
-| Dynamics | 🔲 | Fixed velocity (80), not mapped from IR |
+| Dynamics | ✅ | Dynamic marks → MIDI velocity ladder; running velocity persists |
 | Articulations | 🔲 | Not emitted |
 | Slurs / ties | 🔲 | Not emitted |
 | Repeats | 🔲 | Must be expanded before export |

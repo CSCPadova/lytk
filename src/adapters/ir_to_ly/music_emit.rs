@@ -6,7 +6,7 @@
 //! in a Score→lift round-trip.
 
 use crate::ir::annotation::Annotation;
-use crate::ir::articulation::StartStop;
+use crate::ir::articulation::{LyricSyllable, StartStop, SyllabicType};
 use crate::ir::language::{PitchLanguage, PitchMode};
 use crate::ir::music::{ContextType, Music, MusicDocument, RepeatType};
 use crate::ir::pitch::Pitch;
@@ -343,6 +343,91 @@ fn emit_context(
             emit_music(content, ctx, lines);
             ctx.indent -= 1;
         }
+    }
+
+    // Emit lyrics that were attached to notes in this voice/staff. LilyPond's
+    // `\addlyrics` block attaches to the immediately preceding context, so we
+    // emit it right after the block at the same indentation. The lift pass wraps
+    // single voices directly in a Staff (no Voice context), so we handle both.
+    if matches!(ctx_type, ContextType::Voice | ContextType::Staff) {
+        emit_addlyrics(content, ctx, lines);
+    }
+}
+
+/// Recursively collect lyric syllables attached to notes/chords, grouped by
+/// verse number, preserving order of appearance.
+fn collect_lyrics(music: &Music, out: &mut std::collections::BTreeMap<u8, Vec<LyricSyllable>>) {
+    let push_anns =
+        |anns: &[Annotation], out: &mut std::collections::BTreeMap<u8, Vec<LyricSyllable>>| {
+            for ann in anns {
+                if let Annotation::Lyric(syl) = ann {
+                    out.entry(syl.number).or_default().push(syl.clone());
+                }
+            }
+        };
+    match music {
+        Music::Note { annotations, .. } => push_anns(annotations, out),
+        Music::Chord { annotations, .. } => push_anns(annotations, out),
+        Music::Sequential(children) | Music::Simultaneous(children) => {
+            for c in children {
+                collect_lyrics(c, out);
+            }
+        }
+        // Nested contexts are a boundary: a deeper Staff/Voice emits its own
+        // `\addlyrics`, so we must not collect through it (avoids double-counting
+        // a PianoStaff's child staves).
+        Music::Context { .. } => {}
+        Music::Grace { content, .. } => collect_lyrics(content, out),
+        Music::Tuplet { content, .. } => collect_lyrics(content, out),
+        Music::Repeat {
+            body, alternatives, ..
+        } => {
+            collect_lyrics(body, out);
+            for alt in alternatives {
+                collect_lyrics(alt, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Emit `\addlyrics { ... }` blocks for lyrics carried on a voice's notes.
+fn emit_addlyrics(content: &Music, ctx: &EmitCtx, lines: &mut Vec<String>) {
+    let mut by_verse = std::collections::BTreeMap::new();
+    collect_lyrics(content, &mut by_verse);
+    if by_verse.is_empty() {
+        return;
+    }
+
+    for syllables in by_verse.values() {
+        let mut tokens: Vec<String> = Vec::new();
+        for syl in syllables {
+            let text = escape_lyric(&syl.text);
+            match syl.syllabic {
+                SyllabicType::Begin | SyllabicType::Middle => {
+                    tokens.push(text);
+                    tokens.push("--".to_string());
+                }
+                SyllabicType::End | SyllabicType::Single => tokens.push(text),
+            }
+            if syl.extend {
+                tokens.push("__".to_string());
+            }
+        }
+        lines.push(format!(
+            "{}\\addlyrics {{ {} }}",
+            ctx.pad(),
+            tokens.join(" ")
+        ));
+    }
+}
+
+/// Quote lyric text if it contains spaces or special characters.
+fn escape_lyric(text: &str) -> String {
+    if text.contains(' ') || text.contains('"') || text.contains('\\') {
+        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        text.to_string()
     }
 }
 

@@ -1,0 +1,7 @@
+# pyo3 is built with the "extension-module" feature, which intentionally does
+# not link libpython. On macOS the linker then rejects the undefined Python
+# symbols when building the `cargo test` harness. These flags let macOS resolve
+# them lazily at runtime (dynamic lookup). Our Rust tests never call into Python,
+# so the symbols are never actually invoked. Linux/Windows link fine without this.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
