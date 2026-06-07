@@ -67,6 +67,8 @@ jobs:
           python -m venv .venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+      # Upgrade pip so maturin can install PEP 735 dependency-groups (pip install --group).
+      - run: python -m pip install --upgrade pip
       - run: pip install maturin pytest pytest-benchmark
       - run: maturin develop
       - run: pytest tests/ -v
