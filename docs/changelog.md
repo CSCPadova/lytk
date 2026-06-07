@@ -29,8 +29,17 @@ Branch `epic-b2-repeats`. Makes `\repeat volta` + `\alternative` survive LY→LY
 ### Tests (`tests/semantic_roundtrip.rs`)
 - volta round-trip (body + both alternatives), simple no-alternative repeat, and
   a double round-trip stability check (re-parse the emitted LY). 9 passing, 1
-  ignored (Score-path volta). Full suite green except the 2 pre-existing
-  double-flat transpose proptest failures.
+  ignored (Score-path volta).
+
+### Also: fixed the long-standing double-flat transpose bug (`ir/pitch.rs`)
+- `Pitch::transposed` computed the target octave with truncating division
+  (`target_midi / 12`), which disagrees with the floored chroma (`rem_euclid`)
+  for negative MIDI numbers. A low pitch (e.g. a double-flat transposed far down)
+  therefore round-tripped to the wrong octave. Switched to `div_euclid`.
+- This clears the 2 previously-failing proptests (`pitch_transpose_roundtrip`,
+  `pitch_transpose_adds_semitones`) that were flaking CI nondeterministically
+  (random proptest seeds). **Full suite is now green** (20/20 proptests, verified
+  at 2000 cases × 3 runs).
 
 ## 2026-06-07 — Epic B/C: conversion fidelity (lyrics, MIDI dynamics) + semantic test harness 🟡
 
