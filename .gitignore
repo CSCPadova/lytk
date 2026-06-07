@@ -36,8 +36,10 @@ hum2ly/
 lilypond-rs/
 quickly/
 python-ly/
-musicxml/
-musicxml-std/
+# Anchor to repo root: these are vendored reference crates. Without the leading
+# slash, `musicxml/` also ignored `tests/fixtures/musicxml/` (a real fixture dir).
+/musicxml/
+/musicxml-std/
 symusic/
 MuseScore/
 lyp/

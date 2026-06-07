@@ -297,10 +297,8 @@ fn parse_metadata(score: &mxml::ScorePartwise) -> ScoreMetadata {
                     meta.arranger = Some(words);
                 }
             }
-            "lyricist" | "poet" => {
-                if meta.lyricist.is_none() {
-                    meta.lyricist = Some(words);
-                }
+            "lyricist" | "poet" if meta.lyricist.is_none() => {
+                meta.lyricist = Some(words);
             }
             _ => {}
         }
