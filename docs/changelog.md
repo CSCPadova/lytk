@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-06-07 — Epic B2: repeat/volta round-trip (Music path) ✅
+
+Branch `epic-b2-repeats`. Makes `\repeat volta` + `\alternative` survive LY→LY
+(the CLI path), which previously flattened repeats to linear notes.
+
+### Parser fix (`ly_to_ir/modifiers.rs`)
+- `consume_repeat` now flushes the repeat body (`state.flush_measure()`) before
+  parsing `\alternative`. Without this, the body's final measure shared an index
+  with the first alternative, so `consume_alternatives` mismarked the body as
+  alternative 1 and the `RepeatForward` marker was overwritten/lost. This also
+  improves the Score (and thus MusicXML/MIDI) representation of voltas.
+
+### Lift reconstruction (`ir/lift.rs`)
+- `lift_measures` now detects repeat groups (forward-repeat barline → body →
+  volta endings → optional backward-repeat close) and rebuilds `Music::Repeat`
+  with a `Sequential` body and `Sequential` alternatives. The Music-path emitter
+  already renders `Music::Repeat` as `\repeat volta N { … } \alternative { … }`.
+- Structural repeat/volta barlines are suppressed inside the group (represented
+  by the wrapper); the redundant empty backward-repeat close measure is dropped.
+- Per-measure emission refactored into `lift_one_measure`; helpers added
+  (`is_repeat_forward/backward`, `is_alternative_start/stop`, `is_empty_repeat_close`).
+
+### Scope
+- Single-staff parts (`lift_measures`). Multi-staff (PianoStaff) repeats and the
+  Score-path `ir_to_ly` emitter are still TODO.
+
+### Tests (`tests/semantic_roundtrip.rs`)
+- volta round-trip (body + both alternatives), simple no-alternative repeat, and
+  a double round-trip stability check (re-parse the emitted LY). 9 passing, 1
+  ignored (Score-path volta). Full suite green except the 2 pre-existing
+  double-flat transpose proptest failures.
+
 ## 2026-06-07 — Epic B/C: conversion fidelity (lyrics, MIDI dynamics) + semantic test harness 🟡
 
 Branch `epic-b-c-fidelity`. Test-first: new `tests/semantic_roundtrip.rs` asserts
