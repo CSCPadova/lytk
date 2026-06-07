@@ -177,7 +177,10 @@ impl Pitch {
         let target_midi = current_midi + semitones;
 
         // Find the closest diatonic pitch (natural) to the target MIDI number.
-        let target_octave = (target_midi / 12) - 1;
+        // Use floor division (div_euclid) so the octave stays consistent with the
+        // floored chroma (rem_euclid) for negative MIDI numbers — otherwise low
+        // pitches (e.g. a double-flat transposed far down) round-trip incorrectly.
+        let target_octave = target_midi.div_euclid(12) - 1;
         let target_chroma = target_midi.rem_euclid(12);
 
         // Find the nearest step

@@ -126,6 +126,12 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
             if i < children.len() && children[i].kind() == "expression_block" {
                 let alt_block = children[i];
                 i += 1;
+                // Flush the repeat body so its (full or partial) final measure is
+                // committed before alternatives are parsed. Without this, the body
+                // shares a measure index with the first alternative, conflating
+                // them and dropping the RepeatForward marker (see consume_alternatives,
+                // which keys off measures.len()).
+                state.flush_measure();
                 consume_alternatives(state, alt_block, repeat_count);
             }
             return i;

@@ -157,7 +157,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 | Task | Description | Status |
 |------|-------------|--------|
 | EBT1 | Emit **lyrics** in IR→LY (Music path `\addlyrics` + parse `\addlyrics` on import) | ✅ |
-| EBT2 | **Repeat/volta** LY→IR→LY round-trip (`\repeat volta` + `\alternative`) | 🟡 diagnosed: parser stores repeats as Score barlines + voltas, never builds `Music::Repeat`; `lift.rs` doesn't reconstruct → LY→LY flattens. Needs lift→`Music::Repeat`. Tests in `semantic_roundtrip.rs` (#[ignore]) |
+| EBT2 | **Repeat/volta** LY→IR→LY round-trip (`\repeat volta` + `\alternative`) | ✅ Music path: parser now flushes the repeat body before `\alternative` (was conflating body with alt 1); `lift.rs` reconstructs `Music::Repeat` from repeat barlines + volta endings. Single-staff; Score-path (ir_to_ly) emitter + multi-staff still TODO |
 | EBT3 | `\chordmode` import → `Harmony` IR (emitter side already exists) | ⬜ |
 | EBT4 | `\figuremode` robustness | ⬜ |
 | EBT5 | MIDI **velocity ↔ dynamics** mapping both directions (shared `dynamics_velocity` map) | ✅ |

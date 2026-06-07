@@ -128,23 +128,30 @@ const VOLTA_SRC: &str = r#"\version "2.24.0"
 }
 "#;
 
-// KNOWN GAP (roadmap EBT2): the LY parser records `\repeat volta` as Score
-// repeat-barlines + volta endings and never builds `Music::Repeat`; `lift.rs`
-// does not reconstruct it. So LY→LY flattens repeats to linear notes (no data
-// loss, but the `\repeat volta`/`\alternative` structure is lost). Faithful
-// round-trip needs lift→Music::Repeat reconstruction across parser/lift/emit.
+// EBT2: the Music path (LY→LY, the CLI path) reconstructs `Music::Repeat` in
+// the lift pass from the Score's repeat barlines + volta endings, so
+// `\repeat volta` / `\alternative` survive the round-trip.
 #[test]
-#[ignore = "EBT2: repeat/volta structure not yet reconstructed (Music path flattens)"]
 fn ly_to_ly_music_preserves_volta() {
     let ly = ly_to_ly_music(VOLTA_SRC);
     assert!(
-        ly.contains("\\repeat"),
-        "Music path dropped \\repeat:\n{ly}"
+        ly.contains("\\repeat volta"),
+        "Music path dropped \\repeat volta:\n{ly}"
     );
+    assert!(
+        ly.contains("\\alternative"),
+        "Music path dropped \\alternative:\n{ly}"
+    );
+    // Body notes and both alternative notes must all survive.
+    for tok in ["c'", "d'", "e'", "f'", "g'", "a'"] {
+        assert!(ly.contains(tok), "Music path lost note {tok}:\n{ly}");
+    }
 }
 
+// The Score path (XML→LY) reconstructs repeats directly from barlines in
+// ir_to_ly; structural repeat round-trip on that path is tracked separately.
 #[test]
-#[ignore = "EBT2: repeat/volta structure not yet reconstructed (Score path emits malformed alternative)"]
+#[ignore = "EBT2: Score-path (ir_to_ly) repeat emission not yet fixed; Music path is the LY→LY route"]
 fn ly_to_ly_score_preserves_volta() {
     let ly = ly_to_ly_score(VOLTA_SRC);
     assert!(
@@ -213,5 +220,36 @@ fn midi_roundtrip_maps_dynamics_to_velocity_and_back() {
     assert!(
         dyns.iter().any(|d| d == "fff"),
         "loud note should map to fff band: {dyns:?}"
+    );
+}
+
+const SIMPLE_REPEAT_SRC: &str = r#"\version "2.24.0"
+\score {
+  \new Staff { \repeat volta 2 { c'4 d'4 e'4 f'4 } g'1 }
+  \layout { }
+}
+"#;
+
+#[test]
+fn ly_to_ly_music_preserves_simple_repeat() {
+    let ly = ly_to_ly_music(SIMPLE_REPEAT_SRC);
+    assert!(
+        ly.contains("\\repeat volta"),
+        "Music path dropped simple \\repeat volta:\n{ly}"
+    );
+    // The trailing note after the repeat must remain outside the repeat block.
+    for tok in ["c'", "d'", "e'", "f'", "g'"] {
+        assert!(ly.contains(tok), "lost note {tok}:\n{ly}");
+    }
+}
+
+/// Re-parse the emitted LilyPond and confirm the repeat survives a second pass.
+#[test]
+fn volta_survives_double_roundtrip() {
+    let once = ly_to_ly_music(VOLTA_SRC);
+    let twice = ly_to_ly_music(&once);
+    assert!(
+        twice.contains("\\repeat volta") && twice.contains("\\alternative"),
+        "repeat structure lost on second round-trip:\n{twice}"
     );
 }
