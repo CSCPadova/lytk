@@ -112,6 +112,7 @@ Five layers:
 | `abjad/` | Score-building API, visitor patterns |
 | `tree-sitter-lilypond/` | Upstream grammar reference — copy into `src/tree-sitter/` to update |
 | `symusic/` | Fast MIDI IR reference |
+| `muspy/` | Symbolic-music-for-ML reference: IR (`Music`/`Track`/`Note`), ML representations (note-array, event sequence, piano-roll), dataset loaders, objective metrics |
 | `PDMX/` | Dataset IR for MusicXML + MSCZ; internal representation reference |
 | `lilypond/` | The original lilypond compiler, reference to tokenize and handle ly files |
 

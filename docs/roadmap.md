@@ -132,66 +132,81 @@ Expanded test suite from 357 to 691 tests:
 
 ---
 
-## In Progress / Near-term
+# v1.0.0 Milestone — "LilyPond as a first-class symbolic-music-for-ML format"
 
-### Epic 5: Complete LilyPond Parser
+**Theme:** ship lytk as a credible alternative to music21 + muspy for symbolic-music ML:
+faithful LilyPond ↔ MusicXML ↔ MIDI conversion, a new ABC adapter, muspy-style ML
+representations (note-array / event / piano-roll) with numpy interop, dataset loaders,
+objective metrics, and a semantic round-trip test bar that proves fidelity rather than
+just "it parses". Reference: `muspy/` (representations, datasets, metrics).
 
-| Task | Description | Status |
-|------|-------------|--------|
-| E5T1 | Add `\chordmode` support | Planned |
-| E5T2 | Improve `\figuremode` robustness | Planned |
-| E5T3 | Handle `\partial` in multi-movement contexts | Planned |
+Status legend: ⬜ not started · 🟡 in progress · ✅ done
 
-### Epic 6: Complete MusicXML Parser
-
-| Task | Description | Status |
-|------|-------------|--------|
-| E6T1 | `<measure-style>` support (multi-rest, slash notation) | Planned |
-| E6T2 | `<dashes>` / `<bracket>` spanner support | Planned |
-| E6T3 | Non-traditional key signature support | Planned |
-
-### Epic 7: LilyPond Export Completeness
+### Epic A: Stabilization & Baseline
 
 | Task | Description | Status |
 |------|-------------|--------|
-| E7T1 | Emit lyrics in LilyPond output | Planned |
-| E7T2 | Emit repeat structures | Planned |
-| E7T3 | Emit `\chordmode` and `\figuremode` | Planned |
+| EAT1 | Resolve merge conflicts in `ly_to_ir/consume.rs` (keep bow/harmonic articulations) + `merge.rs` | ✅ |
+| EAT2 | Build + capture test baseline (435 lib / 19 CLI / 208 fixture / 18-of-20 proptest; 2 known double-flat transpose failures) | ✅ |
+| EAT3 | Add `muspy` to `CLAUDE.md` reference table | ✅ |
+| EAT4 | Fix stale "feature-gated behind `midi`" wording in `docs/import-export.md` | ✅ |
+| EAT5 | Fixture error-tracking harness (`tests/fixture_audit.rs`) — full convert matrix over all 195 fixtures, report errors/panics per stage; baseline: 0 errors, 0 panics (semantic loss not yet caught — see Epic C) | ✅ |
 
----
-
-## Planned (lower priority)
-
-### Epic 8: New Format Adapters
-
-Priority order: ABC first (simplest, many folk datasets), then MEI, then Humdrum.
+### Epic B: Conversion Fidelity (TDD — failing semantic test first)
 
 | Task | Description | Status |
 |------|-------------|--------|
-| E8T1 | ABC notation parser (`abc_to_ir.rs`) | Planned |
-| E8T2 | ABC notation emitter (`ir_to_abc.rs`) | Planned |
-| E8T3 | MEI parser (`mei_to_ir.rs`) | Planned |
-| E8T4 | MEI emitter (`ir_to_mei.rs`) | Planned |
-| E8T5 | Humdrum parser (`hum_to_ir.rs`) — import only | Planned |
+| EBT1 | Emit **lyrics** in IR→LY (currently dropped, `import-export.md` L221) | ⬜ |
+| EBT2 | **Repeat/volta** LY→IR→LY round-trip (`\repeat volta` + `\alternative`) | ⬜ |
+| EBT3 | `\chordmode` import → `Harmony` IR (emitter side already exists) | ⬜ |
+| EBT4 | `\figuremode` robustness | ⬜ |
+| EBT5 | MIDI **velocity ↔ dynamics** mapping both directions (replace fixed velocity 80) | ⬜ |
+| EBT6 | `\partial` in multi-movement contexts | ⬜ |
 
-### Epic 9: Python Bindings & Distribution
+### Epic C: Semantic Round-Trip Test Bar (quality gate)
 
 | Task | Description | Status |
 |------|-------------|--------|
-| E9T1 | Python type stubs (`.pyi`) | Planned |
-| E9T2 | Python wrappers for new adapters | Planned |
-| E9T3 | maturin GitHub Actions for wheel building | Planned |
-| E9T4 | Update pyproject.toml for distribution | Planned |
+| ECT1 | Comparators for durations, dynamics, articulations, ties/slurs, lyrics, repeat/volta, time/key sig (extend `tests/round_trip.rs` helpers) | ⬜ |
+| ECT2 | Per-fixture semantic round-trip tests (LY↔IR↔LY, XML↔IR↔XML, XML→LY) | ⬜ |
+| ECT3 | Wire fixture-audit report into CI as a tracked, non-increasing metric | ⬜ |
 
-### music21 Feature Parity (v2)
+### Epic D: ML Representations (`src/representations/`, modeled on muspy)
 
-[music21](https://web.mit.edu/music21/) is the standard Python toolkit for Music
-Information Retrieval (MIR) but is slow, poorly designed, and frequently buggy. lytk
-aims to provide equivalent or superior analytical capabilities with a clean API and
-Rust performance. Planned for v2 or a separate package.
+| Task | Description | Status |
+|------|-------------|--------|
+| EDT1 | Note-array `(onset, duration, pitch, velocity)` ↔ IR | ⬜ |
+| EDT2 | Event sequence (note-on/off, time-shift, velocity-set) + documented vocabulary | ⬜ |
+| EDT3 | Piano-roll dense `T×128` (configurable resolution) ↔ IR | ⬜ |
+| EDT4 | numpy interop via PyO3 (`numpy` crate) + `.pyi` stubs | ⬜ |
+| EDT5 | Round-trip tests (note-array exact; event exact; piano-roll quantization-aware) | ⬜ |
 
-Areas: Pitch & Interval Analysis, Score Analysis (key-finding, ambitus, histograms),
-Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Transforms.
+### Epic E: ABC Adapter (new format)
+
+| Task | Description | Status |
+|------|-------------|--------|
+| EET1 | `abc_to_ir.rs` parser (`ToMusicAdapter`) | ⬜ |
+| EET2 | `ir_to_abc.rs` emitter (`FromMusicAdapter`) | ⬜ |
+| EET3 | CLI wiring + ABC fixtures + semantic round-trip test | ⬜ |
+
+### Epic F: Datasets & Metrics (ML pipeline)
+
+| Task | Description | Status |
+|------|-------------|--------|
+| EFT1 | Dataset classes (`src/lytk/datasets/`): base `Dataset`, generic `FolderDataset`, one remote dataset (e.g. JSB Chorales); torch/tf adapters (lazy import) | ⬜ |
+| EFT2 | train/val/test split + on-disk caching of converted representations | ⬜ |
+| EFT3 | Objective metrics (`src/representations/metrics.rs` + Python): pitch-class histogram/entropy, n-PC rate, polyphony, empty-beat rate, scale & groove consistency | ⬜ |
+| EFT4 | Tests: folder → dataset → batch tensor shapes; metrics on hand-built fixtures | ⬜ |
+
+### Epic G: Python Distribution & Docs (release readiness)
+
+| Task | Description | Status |
+|------|-------------|--------|
+| EGT1 | Complete `.pyi` stubs for `_core` incl. representations | ⬜ |
+| EGT2 | Python wrappers for ABC + representations | ⬜ |
+| EGT3 | maturin GitHub Actions wheel matrix (Linux/macOS/Windows, abi3) | ⬜ |
+| EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ⬜ |
+| EGT5 | Tag **v1.0.0**; update roadmap (Completed) + changelog | ⬜ |
 
 ---
 
@@ -202,17 +217,40 @@ Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Tra
 | 1 | E0 ✅ | Stabilization: warnings, test fix, CI |
 | 2 | E2 ✅ | Modularity: split all large files |
 | 3 | E1 ✅ | Architecture: Forward/Backup removal, parser/emitter rewrite |
-| 4 | E3 ✅ + E4 ✅ + E4b ✅ | Test coverage + MIDI as first-class + MIDI reference fidelity |
-| 5 | E5 + E6 + E7 | Feature completeness: remaining parser/emitter gaps |
-| 6 | E8 (ABC first) | New formats: ABC, then MEI, then Humdrum |
-| 7 | E9 + E1T5 | Distribution: Python stubs, wheels, PyPI |
+| 4 | E3 ✅ + E4 ✅ + E4b ✅ + E4c ✅ | Test coverage + MIDI first-class + MIDI fidelity + musicxml crate |
+| **5** | **A** | **Unblock build, baseline, audit harness, doc hygiene** |
+| **6** | **B + C** | **Conversion fidelity + semantic round-trip bar (interleaved, test-first)** |
+| **7** | **D** | **ML representations (note-array, event, piano-roll, numpy)** |
+| **8** | **E + F** | **ABC adapter + datasets & metrics (parallel, both build on D)** |
+| **9** | **G** | **Distribution: stubs, wheels, docs → tag v1.0.0** |
 
 ## Key Decisions
 
 - **Split before rewrite:** Split ly_to_ir.rs (E2T1) first as a pure refactor, then rewrite each sub-module to emit Music tree (E1T2). Lower risk, easier to review.
 - **Full Forward/Backup removal:** Remove from VoiceElement entirely (E1T1). Convert to spacer rests in mxml_to_ir, generate during serialization in ir_to_mxml. Clean break.
-- **Execution order:** E0 → E2 → E1 (stabilize → split → architecture). Safest progression.
-- **New formats priority:** ABC first (simplest, many folk datasets), then MEI, then Humdrum. All deferred until core is solid.
+- **Fidelity before features:** v1.0.0 prioritizes making the existing three formats round-trip *semantically* (Epics B/C) before adding ML surface area. A real test bar prevents "parses-but-wrong" regressions.
+- **ML representations are in-scope for v1.0.0:** the stated goal is symbolic-music generation/understanding, so note-array/event/piano-roll + datasets + metrics ship in v1.0.0 (modeled on muspy), not deferred.
+- **Representations go through the Music tree**, not Score — format-agnostic, reuses `Frac` durations and `moment.rs` offsets.
+- **New formats priority:** ABC first (simplest, many folk datasets). MEI and Humdrum stay deferred past v1.0.0.
+
+## Deferred past v1.0.0
+
+### Epic 8 (remainder): MEI & Humdrum adapters
+MEI parser/emitter (`mei_to_ir.rs` / `ir_to_mei.rs`), Humdrum import (`hum_to_ir.rs`).
+Reference material in `MEILER/`, `hum2ly/`.
+
+### Audio rendering / synthesis (v1.1)
+Listen-back via a synthesizer (reference muspy/symusic synth).
+
+### music21 Feature Parity (v2)
+
+[music21](https://web.mit.edu/music21/) is the standard Python toolkit for Music
+Information Retrieval (MIR) but is slow, poorly designed, and frequently buggy. lytk
+aims to provide equivalent or superior analytical capabilities with a clean API and
+Rust performance. Planned for v2 or a separate package.
+
+Areas: Pitch & Interval Analysis, Score Analysis (key-finding, ambitus, histograms),
+Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Transforms.
 
 ## Out of Scope (v1)
 

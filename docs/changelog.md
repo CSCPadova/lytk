@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-06-07 — v1.0.0 roadmap review + Epic A (Stabilization & Baseline) ✅
+
+**Goal:** Review references (added `muspy` as a key symbolic-music-for-ML reference) and the
+roadmap, assess current conversion status, and define a reviewed roadmap to a v1.0.0 release.
+
+### Reviewed roadmap
+- Rewrote the forward-looking sections of [`docs/roadmap.md`](roadmap.md) into a **v1.0.0
+  milestone** themed "LilyPond as a first-class symbolic-music-for-ML format", with 7 epics:
+  A Stabilization, B Conversion Fidelity, C Semantic Round-Trip Test Bar, D ML
+  Representations (note-array/event/piano-roll + numpy), E ABC adapter, F Datasets & Metrics,
+  G Distribution. MEI/Humdrum, audio synthesis, and music21-parity MIR deferred past v1.0.0.
+
+### Epic A: Stabilization & Baseline
+- **EAT1:** Resolved unresolved git merge conflicts blocking the build —
+  `ly_to_ir/consume.rs` (kept the bow/harmonic articulation superset: `\upbow \downbow
+  \flageolet \open \snappizzicato`) and `ly_to_ir/merge.rs` (whitespace only).
+- **EAT2:** Captured baseline — 435 lib + 19 CLI + 208 fixture_regression pass; 18/20 proptest
+  (2 known double-flat transpose failures, pre-existing).
+- **EAT3:** Added `muspy/` to the `CLAUDE.md` reference table.
+- **EAT4:** Fixed stale "feature-gated behind `midi`" wording in `docs/import-export.md`
+  (the gate was removed in Epic 4).
+- **EAT5:** New `tests/fixture_audit.rs` — runs the full convert matrix (read ly/xml/mxl/midi
+  → IR, then IR → ly/xml/midi) over all 195 fixtures, catching panics and tallying errors per
+  stage. Baseline: **0 errors, 0 panics**. This is the running scoreboard; semantic fidelity
+  loss (lyrics, dynamics, repeats) is *not* yet caught here and is the focus of Epic C.
+
+### Next up
+- **Epic B + C:** conversion fidelity (lyrics IR→LY, repeat/volta round-trip, `\chordmode`
+  import, MIDI velocity↔dynamics) developed test-first against a new semantic round-trip bar.
+
 ## 2026-03-21 — Fix `<<...>>` simultaneous block merging in repeats.ly
 
 **Goal:** Fix `repeats.ly` (Scott Joplin's "Bethena") producing wrong MusicXML output — RH/LH measure count mismatch (164 vs 172), and `<<...>>` without `\\` blocks being concatenated instead of merged.

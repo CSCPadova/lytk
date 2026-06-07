@@ -226,7 +226,7 @@ what the adapter can parse (import) and emit (export).
 
 ### Import (MIDI → IR) — `src/adapters/midi_to_ir.rs`
 
-Feature-gated behind the `midi` Cargo feature.
+MIDI support is always compiled (the `midi` feature gate was removed in Epic 4).
 
 | Feature | Status | Notes |
 |---|---|---|
@@ -252,7 +252,7 @@ Feature-gated behind the `midi` Cargo feature.
 
 ### Export (IR → MIDI) — `src/adapters/ir_to_midi.rs`
 
-Feature-gated behind the `midi` Cargo feature.
+MIDI support is always compiled (the `midi` feature gate was removed in Epic 4).
 
 | Feature | Status | Notes |
 |---|---|---|
