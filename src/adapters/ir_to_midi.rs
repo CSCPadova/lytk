@@ -13,6 +13,7 @@ use midly::num::{u15, u24, u28, u4, u7};
 use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
 use num::rational::Ratio;
 
+use super::dynamics_velocity::dynamic_to_velocity;
 use super::{AdapterError, FromIrAdapter, Result};
 use crate::ir::duration::Frac;
 use crate::ir::measure::KeyMode;
@@ -462,7 +463,9 @@ impl IrToMidiAdapter {
         });
 
         let channel = u4::new(midi_channel.min(15));
-        let vel = u7::new(self.velocity.min(127));
+        // Running velocity, updated whenever a note/chord carries a dynamic mark.
+        // Dynamics persist until the next dynamic, matching MIDI playback.
+        let mut cur_vel = self.velocity.min(127);
 
         // Collect all note events with absolute ticks, then sort.
         // This is necessary because multiple voices in a measure overlap
@@ -481,6 +484,10 @@ impl IrToMidiAdapter {
                             let dur_ticks = self.duration_to_ticks(&note.duration);
                             let midi_key = note.pitch.midi_number().clamp(0, 127) as u8;
 
+                            if let Some(d) = note.dynamics.last() {
+                                cur_vel = dynamic_to_velocity(&d.sign);
+                            }
+                            let vel = u7::new(cur_vel);
                             timed.push((
                                 voice_tick,
                                 TrackEventKind::Midi {
@@ -510,6 +517,10 @@ impl IrToMidiAdapter {
                         }
                         VoiceElement::Chord(chord) => {
                             let dur_ticks = self.duration_to_ticks(&chord.duration);
+                            if let Some(d) = chord.notes.iter().find_map(|n| n.dynamics.last()) {
+                                cur_vel = dynamic_to_velocity(&d.sign);
+                            }
+                            let vel = u7::new(cur_vel);
                             for cn in &chord.notes {
                                 let midi_key = cn.pitch.midi_number().clamp(0, 127) as u8;
                                 timed.push((

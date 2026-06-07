@@ -498,6 +498,22 @@ pub(super) fn walk_score_block(state: &mut WalkState, block: Node) {
                             }
                         }
                     }
+                    "\\addlyrics" => {
+                        // `MUSIC \addlyrics { ... }` — lyrics attach to the music
+                        // expression that immediately precedes. Flush the pending
+                        // measure so the preceding notes land in the part, then
+                        // attach the syllables to that (most recent) part.
+                        if let Some(next) = children.get(i + 1) {
+                            if next.kind() == "expression_block" {
+                                let syllables = parse_lyric_block(state, *next);
+                                state.flush_measure();
+                                if let Some((_, part)) = state.parts.last_mut() {
+                                    attach_lyrics_to_part(part, &syllables);
+                                }
+                                i += 1;
+                            }
+                        }
+                    }
                     "\\unfoldRepeats" => {
                         // Transparent wrapper — just skip the keyword
                     }

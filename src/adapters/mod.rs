@@ -10,6 +10,7 @@ use thiserror::Error;
 use crate::ir::music::MusicDocument;
 use crate::ir::Score;
 
+pub mod dynamics_velocity;
 pub mod ir_to_ly;
 pub mod ir_to_mxml;
 pub mod ly_flatten;

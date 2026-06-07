@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-06-07 — Epic B/C: conversion fidelity (lyrics, MIDI dynamics) + semantic test harness 🟡
+
+Branch `epic-b-c-fidelity`. Test-first: new `tests/semantic_roundtrip.rs` asserts
+*meaningful content* survives conversion (not just "parses").
+
+### EBT1: Lyrics in IR→LY ✅
+- **Music path** (`ir_to_ly/music_emit.rs`): previously `Annotation::Lyric` was a no-op, so
+  LY→LY (the CLI path) silently dropped all lyrics. Now collects lyric syllables per verse
+  from a Staff/Voice context's notes and emits `\addlyrics { ... }` after the block.
+- **Parser** (`ly_to_ir/walk.rs`): added `\addlyrics` support in `walk_score_block` —
+  parses the following lyric block and attaches syllables to the preceding music's part.
+- Score path already emitted lyrics (`\new Lyrics \lyricsto`); verified for XML→LY.
+
+### EBT5: MIDI velocity ↔ dynamics ✅
+- New shared `adapters/dynamics_velocity.rs`: `dynamic_to_velocity` / `velocity_to_dynamic`.
+- **Export** (`ir_to_midi.rs`): running velocity updated by note/chord dynamic marks
+  (was a fixed 80 for everything).
+- **Import** (`midi_to_ir.rs`): note velocity quantized to the nearest dynamic; a mark is
+  attached only when the band changes (avoids spamming every note).
+
+### EBT2: Repeat/volta round-trip — diagnosed, deferred 🟡
+- Root cause: the LY parser stores `\repeat volta` as Score repeat-barlines + volta endings
+  and never builds `Music::Repeat`; `lift.rs` doesn't reconstruct it, so LY→LY flattens
+  repeats to linear notes (no data loss, structure lost). Needs a lift→`Music::Repeat`
+  pass. Characterizing tests left `#[ignore]` in `semantic_roundtrip.rs`.
+
+### Tests
+- `tests/semantic_roundtrip.rs`: 6 passing (lyrics ×5, MIDI dynamics ×1), 2 ignored (volta).
+- Full suite green except the 2 pre-existing double-flat transpose proptest failures.
+
 ## 2026-06-07 — v1.0.0 roadmap review + Epic A (Stabilization & Baseline) ✅
 
 **Goal:** Review references (added `muspy` as a key symbolic-music-for-ML reference) and the

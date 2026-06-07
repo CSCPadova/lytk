@@ -47,3 +47,8 @@ muspy/
 
 # Proptest regression files
 *.proptest-regressions
+
+# Generated/scratch conversion outputs
+/example_*.xml
+tests/fixtures/**/*.pdf
+tests/fixtures/ly/*.midi

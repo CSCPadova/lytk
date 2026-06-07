@@ -10,8 +10,9 @@ use std::path::Path;
 
 use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
+use super::dynamics_velocity::velocity_to_dynamic;
 use super::{AdapterError, Result, ToIrAdapter};
-use crate::ir::articulation::Placement;
+use crate::ir::articulation::{DynamicMark, Placement};
 use crate::ir::direction::{Direction, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{Clef, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
@@ -376,6 +377,9 @@ fn build_part(
     let use_sharps = initial_key_fifths >= 0;
 
     // Assign notes to measures and build IR.
+    // Running dynamic: attach a mark only when the velocity band changes, so a
+    // crescendo of equal-velocity notes does not spam a dynamic on every note.
+    let mut prev_dyn: Option<&'static str> = None;
     let mut note_idx = 0;
     for (m_idx, (m_start, m_end)) in measure_boundaries.iter().enumerate() {
         let mut measure = Measure::new((m_idx + 1) as u32);
@@ -480,7 +484,16 @@ fn build_part(
 
             if let Some(dur) = quantize_ticks(note_ticks, divisions) {
                 let pitch = midi_key_to_pitch(n.midi_key, use_sharps);
-                voice_elements.push(VoiceElement::Note(Box::new(Note::new(pitch, dur))));
+                let mut note = Note::new(pitch, dur);
+                let band = velocity_to_dynamic(n.velocity);
+                if prev_dyn != Some(band) {
+                    note.dynamics.push(DynamicMark {
+                        sign: band.to_string(),
+                        placement: Placement::default(),
+                    });
+                    prev_dyn = Some(band);
+                }
+                voice_elements.push(VoiceElement::Note(Box::new(note)));
             }
 
             cursor = note_end;
