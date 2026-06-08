@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-06-08 — Fix bar-splitting drift from grace notes (example.ly / example2.ly) ✅
+
+Branch `fix-example-bars` (stacks on Epic C). Fixes wrong durations / bar
+splitting when converting example.ly (and example2.ly) to MusicXML.
+
+### Root cause
+`voice_element_duration` (`ly_to_ir/merge.rs`) returned a grace note's *notated*
+duration. In example.ly only the Corno staff carries `\time 4/4`; the other 5
+staves have none, so `synchronize_time_signatures` resplits them to match the
+Corno's measure durations. The resplit's position accounting counted each
+appoggiatura/grace eighth toward the bar boundary, so every barline after a
+grace note drifted — measures that should be 4/4 came out as 7/8, the next as
+1/4, etc., and parts disagreed on bar lengths.
+
+### Fix
+`voice_element_duration` now returns 0 for grace notes (they never consume
+measure time). This is the single source of truth for all measure-position math
+(`measure_voice_duration`, the synchronize/resplit split loop, timeline
+building), so all bar splitting is now grace-aware.
+
+### Result
+- example.ly → MusicXML: all 6 parts, **0 irregular bars** (full 4/4 bars + the
+  legitimate cadenza half-bar). Was: 2–11 broken bars per part.
+- example2.ly movement 1: all parts consistent. Movement 2 (multi-meter:
+  4/4, 3/2, 6/8) consistent on all interior bars.
+
+### Tests (`tests/semantic_roundtrip.rs`, `tests/common/mod.rs`)
+- `example_bars_consistent_across_parts`, `example2_bars_consistent_across_parts`:
+  assert every part agrees on per-measure durations (the bug made them disagree).
+- Known remaining edge (separate, lower priority): a movement's *final* bar can
+  carry ragged trailing content the resplit dumps into the last measure
+  (excluded from the example2 interior-bar check).
+
 ## 2026-06-08 — Epic C: semantic round-trip quality gate ✅
 
 Branch `epic-c-semantic`. Upgrades the test bar from "parses / non-empty" to

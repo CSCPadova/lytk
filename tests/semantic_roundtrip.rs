@@ -435,3 +435,69 @@ fn rt_xml_dynamics_preserved() {
     let a = common::sorted_dynamics(&after);
     assert_eq!(b, a, "dynamics changed on XML round-trip");
 }
+
+// ---------------------------------------------------------------------------
+// Bar-splitting consistency across parts (grace-note duration regression)
+//
+// In a multi-part score where some parts lack an explicit \time, the
+// time-signature synchronization resplits them to match a reference part.
+// A grace note (appoggiatura) was wrongly counted toward the bar boundary,
+// drifting every subsequent barline so parts disagreed on measure durations.
+// ---------------------------------------------------------------------------
+
+fn assert_bars_consistent_across_parts(src: &str, fixture: &str) {
+    let score = LyToIrAdapter::new().convert_str(src).expect("LY → Score");
+    let nparts = score.parts().len();
+    assert!(nparts >= 2, "{fixture}: expected multiple parts");
+    let p0 = common::part_measure_durations(&score, 0);
+    for pi in 1..nparts {
+        let pn = common::part_measure_durations(&score, pi);
+        assert_eq!(
+            p0.len(),
+            pn.len(),
+            "{fixture}: part {pi} has a different measure count than part 0"
+        );
+        for (i, (a, b)) in p0.iter().zip(pn.iter()).enumerate() {
+            assert_eq!(
+                a,
+                b,
+                "{fixture}: measure {} duration differs: part0={a:?} part{pi}={b:?}",
+                i + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn example_bars_consistent_across_parts() {
+    assert_bars_consistent_across_parts(&read_ly("example.ly"), "example.ly");
+}
+
+#[test]
+fn example2_bars_consistent_across_parts() {
+    // example2.ly is multi-movement; check each movement's parts agree on bar
+    // durations. The very last measure of a movement is excluded: a movement's
+    // final bar can carry ragged trailing content that the resplit dumps into
+    // the last measure (a separate, lower-priority multi-meter edge — the
+    // systematic grace-note drift this guards against affects interior bars).
+    let scores = LyToIrAdapter::new()
+        .convert_str_multi(&read_ly("example2.ly"))
+        .expect("LY → Scores");
+    for (mi, score) in scores.iter().enumerate() {
+        let nparts = score.parts().len();
+        if nparts < 2 {
+            continue;
+        }
+        let p0 = common::part_measure_durations(score, 0);
+        let interior = p0.len().saturating_sub(1);
+        for pi in 1..nparts {
+            let pn = common::part_measure_durations(score, pi);
+            assert_eq!(
+                p0[..interior.min(p0.len())],
+                pn[..interior.min(pn.len())],
+                "example2.ly movement {} part {pi} interior measure durations differ from part 0",
+                mi + 1
+            );
+        }
+    }
+}

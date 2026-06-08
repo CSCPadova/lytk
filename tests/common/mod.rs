@@ -158,3 +158,28 @@ pub fn sorted_dynamics(score: &Score) -> Vec<String> {
     v.sort();
     v
 }
+
+/// Per-measure summed voice duration (grace notes excluded) for a part, as
+/// `(numer, denom)` of a whole note. Used to check that bar splitting is
+/// consistent across parts.
+pub fn part_measure_durations(score: &Score, part_idx: usize) -> Vec<(i64, i64)> {
+    use _core::ir::duration::Frac;
+    let part = &score.parts()[part_idx];
+    part.measures
+        .iter()
+        .map(|m| {
+            let total: Frac = m
+                .voices
+                .iter()
+                .flat_map(|v| &v.elements)
+                .filter(|e| !matches!(e, VoiceElement::Note(n) if n.is_grace))
+                .map(|e| match e {
+                    VoiceElement::Note(n) => n.duration.actual_duration(),
+                    VoiceElement::Rest(r) => r.duration.actual_duration(),
+                    VoiceElement::Chord(c) => c.duration.actual_duration(),
+                })
+                .fold(Frac::from_integer(0), |a, d| a + d);
+            (*total.numer(), *total.denom())
+        })
+        .collect()
+}
