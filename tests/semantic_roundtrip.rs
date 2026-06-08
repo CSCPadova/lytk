@@ -253,3 +253,85 @@ fn volta_survives_double_roundtrip() {
         "repeat structure lost on second round-trip:\n{twice}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Chord names / \chordmode (EBT3)
+// ---------------------------------------------------------------------------
+
+const CHORDMODE_SRC: &str = r#"\version "2.24.0"
+\score {
+  <<
+    \new ChordNames \chordmode { c1 a:m d:7 g:maj7 }
+    \new Staff { c'1 a'1 d'1 g'1 }
+  >>
+  \layout { }
+}
+"#;
+
+fn first_part_harmonies(score: &_core::ir::score::Score) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in score.parts() {
+        for m in &part.measures {
+            for h in &m.harmonies {
+                out.push((h.root.step.clone(), h.kind.clone()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn chordmode_parses_into_harmonies() {
+    let score = LyToIrAdapter::new()
+        .convert_str(CHORDMODE_SRC)
+        .expect("LY → Score");
+    let harms = first_part_harmonies(&score);
+    assert_eq!(
+        harms,
+        vec![
+            ("C".to_string(), "major".to_string()),
+            ("A".to_string(), "minor".to_string()),
+            ("D".to_string(), "dominant".to_string()),
+            ("G".to_string(), "major-seventh".to_string()),
+        ],
+        "chordmode did not parse into the expected harmonies"
+    );
+}
+
+#[test]
+fn ly_to_ly_preserves_chordmode() {
+    let ly = ly_to_ly_score(CHORDMODE_SRC);
+    assert!(
+        ly.contains("\\chordmode"),
+        "LY→LY dropped \\chordmode:\n{ly}"
+    );
+    assert!(
+        ly.contains(":m") && ly.contains(":7") && ly.contains(":maj7"),
+        "lost chord qualities:\n{ly}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// \partial in multi-movement contexts (EBT6)
+// ---------------------------------------------------------------------------
+
+const MULTI_PARTIAL_SRC: &str = r#"\version "2.24.0"
+\score { \new Staff { \partial 4 g'4 | c'4 d'4 e'4 f'4 } \layout { } }
+\score { \new Staff { c'4 d'4 e'4 f'4 } \layout { } }
+"#;
+
+#[test]
+fn partial_does_not_leak_across_movements() {
+    let scores = LyToIrAdapter::new()
+        .convert_str_multi(MULTI_PARTIAL_SRC)
+        .expect("LY → Scores");
+    assert_eq!(scores.len(), 2, "expected two movements");
+    assert!(
+        scores[0].parts()[0].measures.first().unwrap().implicit,
+        "movement 1 first measure should be an implicit pickup (\\partial 4)"
+    );
+    assert!(
+        !scores[1].parts()[0].measures.first().unwrap().implicit,
+        "movement 2 has no \\partial; its first measure must not be implicit"
+    );
+}

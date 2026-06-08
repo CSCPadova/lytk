@@ -94,30 +94,30 @@ fn parse_figure_chord(state: &WalkState, chord_node: Node) -> Vec<Figure> {
         match child.kind() {
             "unsigned_integer" => {
                 let num: u8 = state.text(child).parse().unwrap_or(0);
-                // Check if next child is an accidental modifier
-                let suffix = peek_accidental(state, &children, i + 1);
-                if suffix.is_some() {
-                    i += 1; // skip the accidental
-                }
+                // Consume any run of accidental modifiers immediately following.
+                let mut j = i + 1;
+                let suffix = consume_accidental_run(state, &children, &mut j);
                 figures.push(Figure {
                     number: Some(num),
                     prefix: None,
-                    suffix: suffix.map(|s| s.to_string()),
+                    suffix,
                 });
+                i = j;
+                continue;
             }
             "punctuation" => {
                 let text = state.text(child);
                 if text == "_" {
-                    // Placeholder figure — check for following accidental
-                    let suffix = peek_accidental(state, &children, i + 1);
-                    if suffix.is_some() {
-                        i += 1;
-                    }
+                    // Placeholder figure — consume any following accidental run.
+                    let mut j = i + 1;
+                    let suffix = consume_accidental_run(state, &children, &mut j);
                     figures.push(Figure {
                         number: None,
                         prefix: None,
-                        suffix: suffix.map(|s| s.to_string()),
+                        suffix,
                     });
+                    i = j;
+                    continue;
                 }
                 // Skip `<`, `>`, and other punctuation
             }
@@ -129,23 +129,34 @@ fn parse_figure_chord(state: &WalkState, chord_node: Node) -> Vec<Figure> {
     figures
 }
 
-/// Peek at the next child to see if it's an accidental modifier (`+` or `-`).
-fn peek_accidental<'a>(
-    state: &WalkState<'a>,
-    children: &[Node<'a>],
-    idx: usize,
-) -> Option<&'static str> {
-    if let Some(next) = children.get(idx) {
-        if next.kind() == "punctuation" {
-            let text = state.text(*next);
-            match text {
-                "+" => return Some("sharp"),
-                "-" => return Some("flat"),
-                _ => {}
-            }
+/// Consume a run of accidental-modifier punctuation following a figure number
+/// or placeholder, advancing `idx`. Maps to MusicXML figured-bass suffix values:
+/// `+`→sharp, `++`→double-sharp, `-`→flat, `--`→double-flat, `!`→natural.
+fn consume_accidental_run(state: &WalkState, children: &[Node], idx: &mut usize) -> Option<String> {
+    let mut plus = 0u32;
+    let mut minus = 0u32;
+    let mut natural = false;
+    while let Some(next) = children.get(*idx) {
+        if next.kind() != "punctuation" {
+            break;
         }
+        match state.text(*next) {
+            "+" => plus += 1,
+            "-" => minus += 1,
+            "!" => natural = true,
+            _ => break,
+        }
+        *idx += 1;
     }
-    None
+    let s = match (plus, minus, natural) {
+        (0, 0, true) => "natural",
+        (1, 0, _) => "sharp",
+        (n, 0, _) if n >= 2 => "double-sharp",
+        (0, 1, _) => "flat",
+        (0, n, _) if n >= 2 => "double-flat",
+        _ => return None,
+    };
+    Some(s.to_string())
 }
 
 /// Consume duration tokens without mutating WalkState (for figuremode parsing).

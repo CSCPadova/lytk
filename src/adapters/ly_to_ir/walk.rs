@@ -8,6 +8,7 @@ use crate::ir::measure::MeasureAttributes;
 use crate::ir::pitch::Pitch;
 use crate::ir::score::{Score, ScoreChild};
 
+use super::chord_mode::{distribute_harmonies, parse_chordmode_block};
 use super::consume::{
     block_contains_named_context, extract_string_value, parse_paper_block, parse_with_block,
     score_block_output_types,
@@ -94,10 +95,15 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 let saved_counter = state.part_counter;
                                 let saved_pending_lyrics =
                                     std::mem::take(&mut state.pending_lyrics);
+                                let saved_pending_harmonies =
+                                    std::mem::take(&mut state.pending_harmonies);
                                 let saved_voice_map = std::mem::take(&mut state.voice_part_map);
                                 state.part_counter = 0;
                                 state.measure_num = 0;
                                 state.elapsed_in_measure = Frac::from_integer(0);
+                                // `\partial` is per-movement: reset so a pickup in
+                                // one \score block doesn't leak into the next.
+                                state.metadata.partial_duration = None;
 
                                 walk_score_block(state, *next);
                                 state.flush_measure();
@@ -108,6 +114,21 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                         if let Some((_, part)) = state.parts.get_mut(part_idx) {
                                             attach_lyrics_to_part(part, syllables);
                                         }
+                                    }
+                                }
+
+                                // Attach pending harmonies (from ChordNames contexts)
+                                // to the first part that has musical content.
+                                if !state.pending_harmonies.is_empty() {
+                                    let entries = std::mem::take(&mut state.pending_harmonies);
+                                    if let Some((_, part)) =
+                                        state.parts.iter_mut().find(|(_, p)| {
+                                            p.measures.iter().any(|m| {
+                                                m.voices.iter().any(|v| !v.elements.is_empty())
+                                            })
+                                        })
+                                    {
+                                        distribute_harmonies(&mut part.measures, &entries);
                                     }
                                 }
 
@@ -138,6 +159,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 state.parts = saved_parts;
                                 state.part_counter = saved_counter;
                                 state.pending_lyrics = saved_pending_lyrics;
+                                state.pending_harmonies = saved_pending_harmonies;
                                 state.voice_part_map = saved_voice_map;
                                 state.measure_num = 0;
 
@@ -196,6 +218,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                             // Skip \lyricmode, \notemode, \relative, \figuremode etc. before the expression_block
                             let mut is_lyricmode = false;
                             let mut is_figuremode = false;
+                            let mut is_chordmode = false;
                             let mut is_markup = false;
                             while j < children.len() {
                                 let candidate = children[j];
@@ -280,8 +303,24 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                         j += 1;
                                         continue;
                                     }
+                                    if ew == "\\chordmode" || ew == "\\chords" {
+                                        is_chordmode = true;
+                                        j += 1;
+                                        continue;
+                                    }
                                 }
                                 break;
+                            }
+                            // For chordmode variables, also capture the harmonies
+                            // (the block is still parsed as music below so that
+                            // referencing it in a Voice context still yields notes).
+                            if is_chordmode {
+                                if let Some(blk) = children.get(j) {
+                                    if blk.kind() == "expression_block" {
+                                        let entries = parse_chordmode_block(state, *blk);
+                                        state.harmony_definitions.insert(var_name.clone(), entries);
+                                    }
+                                }
                             }
                             if is_markup {
                                 // Skip the whole markup definition; advance i past it.
@@ -1312,9 +1351,9 @@ pub(super) fn walk_context_body(
         return i;
     }
 
-    // ChordNames context: skip entirely — chordmode content is not yet
-    // parsed back into harmonies. Consuming the body (variable or block)
-    // prevents creating an empty part.
+    // ChordNames context: parse chordmode harmonies (inline or via variable) and
+    // queue them to be attached to the melody part once the score is assembled.
+    // Does not create a part of its own.
     if context == "ChordNames" {
         // Skip optional \with { ... }
         while i < children.len() {
@@ -1329,9 +1368,39 @@ pub(super) fn walk_context_body(
             }
             break;
         }
-        // Consume the body (variable reference, block, etc.) without creating a part
-        if i < children.len() {
-            i += 1; // skip the body node regardless of type
+        // Body: `\chordmode { ... }` | `\chords { ... }` | `{ ... }` | `\var`
+        if let Some(node) = children.get(i) {
+            match node.kind() {
+                "escaped_word" => {
+                    let text = state.text(*node).to_string();
+                    if text == "\\chordmode" || text == "\\chords" {
+                        i += 1;
+                        if let Some(blk) = children.get(i) {
+                            if blk.kind() == "expression_block" {
+                                let entries = parse_chordmode_block(state, *blk);
+                                state.pending_harmonies.extend(entries);
+                                i += 1;
+                            }
+                        }
+                    } else {
+                        // Variable reference: pull harmonies if the variable was a chordmode.
+                        let var_name = text.trim_start_matches('\\');
+                        if let Some(entries) = state.harmony_definitions.get(var_name) {
+                            let entries = entries.clone();
+                            state.pending_harmonies.extend(entries);
+                        }
+                        i += 1;
+                    }
+                }
+                "expression_block" => {
+                    let entries = parse_chordmode_block(state, *node);
+                    state.pending_harmonies.extend(entries);
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
         }
         return i;
     }

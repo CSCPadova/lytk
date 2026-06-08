@@ -13,6 +13,7 @@ use crate::ir::score::{PageLayout, Score, ScoreMetadata};
 use crate::ir::voice::Voice;
 use crate::ir::Part;
 
+use super::chord_mode::HarmonyEntry;
 use super::{
     apply_tuplet_ratio, beam_level_for_duration, distribute_figured_bass, find_relative_octave,
     measure_voice_duration, measures_are_spacer_only, merge_spacer_by_duration,
@@ -37,6 +38,10 @@ pub(super) struct WalkState<'src> {
     pub(super) lyric_definitions: HashMap<String, Vec<LyricSyllable>>,
     // Pending lyrics: voice_name → syllables (from \lyricsto)
     pub(super) pending_lyrics: HashMap<String, Vec<LyricSyllable>>,
+    // Chordmode variable definitions: name → harmony entries (from `\chordmode`)
+    pub(super) harmony_definitions: HashMap<String, Vec<HarmonyEntry>>,
+    // Pending harmonies (from ChordNames contexts) to attach to the melody part
+    pub(super) pending_harmonies: Vec<HarmonyEntry>,
     // Voice name → part index mapping (for attaching lyrics)
     pub(super) voice_part_map: HashMap<String, usize>,
     // Per-variable voice maps: var_name → { voice_name → local_part_index }
@@ -103,6 +108,8 @@ impl<'src> WalkState<'src> {
             definitions: HashMap::new(),
             lyric_definitions: HashMap::new(),
             pending_lyrics: HashMap::new(),
+            harmony_definitions: HashMap::new(),
+            pending_harmonies: Vec::new(),
             voice_part_map: HashMap::new(),
             var_voice_maps: HashMap::new(),
             measure_num: 0,

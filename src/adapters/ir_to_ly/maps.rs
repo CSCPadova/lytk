@@ -310,7 +310,9 @@ pub(super) fn figure_to_ly(fig: &Figure) -> String {
     let alter = match (&fig.prefix, &fig.suffix) {
         (_, Some(s)) | (Some(s), _) => match s.as_str() {
             "sharp" | "cross" => "+",
+            "double-sharp" | "sharp-sharp" => "++",
             "flat" => "-",
+            "double-flat" | "flat-flat" => "--",
             "natural" => "!",
             _ => "",
         },
