@@ -63,7 +63,7 @@ use merge::{
     merge_spacer_by_duration, merge_spacer_measures, resplit_measures_for_time_sig,
     resplit_measures_to_match, voice_element_duration,
 };
-use postprocess::post_process_beams_and_stems;
+use postprocess::{ensure_staff_clefs, post_process_beams_and_stems};
 
 /// Tuple of (cumulative position, attributes, directions, left barline, right barline)
 /// used when collecting per-measure metadata for re-splitting.
@@ -248,6 +248,7 @@ impl LyToIrAdapter {
                 }
                 merge::propagate_first_tempo(score);
                 post_process_beams_and_stems(score);
+                ensure_staff_clefs(score);
                 // Mark first measure as implicit if partial_duration is set
                 if score.metadata.partial_duration.is_some() {
                     for part in score.parts_mut() {
@@ -295,6 +296,7 @@ impl LyToIrAdapter {
         merge::synchronize_barlines(&mut score);
         merge::propagate_first_tempo(&mut score);
         post_process_beams_and_stems(&mut score);
+        ensure_staff_clefs(&mut score);
         // Mark first measure as implicit if partial_duration is set
         if score.metadata.partial_duration.is_some() {
             for part in score.parts_mut() {

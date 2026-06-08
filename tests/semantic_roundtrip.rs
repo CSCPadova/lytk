@@ -501,3 +501,45 @@ fn example2_bars_consistent_across_parts() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Multi-staff (piano) clefs: every staff must get an initial clef
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pedal_piano_clefs_per_staff() {
+    // pedal.ly is a piano score: the upper staff has no explicit \clef (LilyPond
+    // default = treble), the lower staff is \clef bass. The MusicXML must carry a
+    // numbered clef for *each* staff (was: a single unnumbered bass clef, so the
+    // upper staff rendered with the wrong clef).
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("pedal.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    assert_eq!(part.staves, 2, "pedal.ly is a 2-staff piano part");
+    let attrs = part.measures[0]
+        .attributes
+        .as_ref()
+        .expect("first measure attributes");
+    use _core::ir::measure::ClefSign;
+    let c1 = attrs.clefs.get(&1).expect("staff 1 must have a clef");
+    let c2 = attrs.clefs.get(&2).expect("staff 2 must have a clef");
+    assert!(
+        matches!(c1.sign, ClefSign::G) && c1.line == 2,
+        "staff 1 should default to treble (G2), got {:?}{}",
+        c1.sign,
+        c1.line
+    );
+    assert!(
+        matches!(c2.sign, ClefSign::F) && c2.line == 4,
+        "staff 2 should be bass (F4), got {:?}{}",
+        c2.sign,
+        c2.line
+    );
+
+    let xml = IrToMxmlAdapter::new().convert(&score).expect("Score → XML");
+    assert!(
+        xml.contains("number=\"1\"") && xml.contains("number=\"2\""),
+        "MusicXML should emit per-staff numbered clefs"
+    );
+}
