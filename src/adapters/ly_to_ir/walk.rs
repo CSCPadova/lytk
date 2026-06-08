@@ -198,6 +198,18 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                 // Bare { ... } at top level: treat as a single anonymous part
                 walk_music_block(state, node);
             }
+            "parallel_music" => {
+                // Top-level `<< ... >>` (e.g. emitted multi-staff music with no
+                // explicit \score wrapper) is an implicit score. Walk it directly.
+                walk_parallel_music(state, node);
+            }
+            "named_context" => {
+                // Top-level `\new Staff { ... }` etc. — an implicit score.
+                let (context, name) = extract_named_context(state, node);
+                i += 1;
+                i = walk_context_body(state, &children, i, &context, &name);
+                continue;
+            }
             "assignment_lhs" => {
                 // Variable definition: name = { ... }
                 // Extract the variable name from the assignment_lhs node

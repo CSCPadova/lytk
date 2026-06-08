@@ -8,9 +8,13 @@
 //! Helpers here are shared building blocks for the per-fixture round-trip suite.
 
 use _core::adapters::ir_to_ly::IrToLyAdapter;
+use _core::adapters::ir_to_mxml::IrToMxmlAdapter;
 use _core::adapters::ly_to_ir::LyToIrAdapter;
 use _core::adapters::mxml_to_ir::MxmlToIrAdapter;
 use _core::adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
+
+mod common;
+use common::{pitch_multiset, signature};
 
 // ---------------------------------------------------------------------------
 // Conversion shortcuts
@@ -333,5 +337,209 @@ fn partial_does_not_leak_across_movements() {
     assert!(
         !scores[1].parts()[0].measures.first().unwrap().implicit,
         "movement 2 has no \\partial; its first measure must not be implicit"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ECT2: per-fixture semantic round-trip suite
+//
+// Named tests asserting strong invariants (pitch multiset + note count) survive
+// a round-trip — better diagnostics than the aggregate `fidelity` scoreboard.
+// ---------------------------------------------------------------------------
+
+/// LY → IR → LY (Music path) → IR preserves the pitch multiset and note count.
+macro_rules! ly_roundtrip_fixture {
+    ($name:ident, $file:expr) => {
+        #[test]
+        fn $name() {
+            let src = read_ly($file);
+            let before = LyToIrAdapter::new().convert_str(&src).expect("LY → Score");
+            let out = ly_to_ly_music(&src);
+            let after = LyToIrAdapter::new()
+                .convert_str(&out)
+                .expect("re-parse emitted LY");
+            assert_eq!(
+                pitch_multiset(&before),
+                pitch_multiset(&after),
+                "pitch multiset changed on LY round-trip of {}",
+                $file
+            );
+            assert_eq!(
+                signature(&before).notes,
+                signature(&after).notes,
+                "note count changed on LY round-trip of {}",
+                $file
+            );
+        }
+    };
+}
+
+ly_roundtrip_fixture!(rt_ly_pedal, "pedal.ly");
+ly_roundtrip_fixture!(rt_ly_chopin, "chopin_n.ly");
+ly_roundtrip_fixture!(rt_ly_repeats, "repeats.ly");
+ly_roundtrip_fixture!(rt_ly_relative_repeat, "relative-repeat.ly");
+ly_roundtrip_fixture!(rt_ly_make_relative_copies, "make-relative-copies.ly");
+ly_roundtrip_fixture!(rt_ly_slur_nice, "slur-nice.ly");
+
+/// XML → IR → XML → IR preserves the pitch multiset and note count.
+macro_rules! xml_roundtrip_fixture {
+    ($name:ident, $file:expr) => {
+        #[test]
+        fn $name() {
+            let src = read_xml($file);
+            let before = MxmlToIrAdapter::new()
+                .convert_str(&src)
+                .expect("XML → Score");
+            let out = IrToMxmlAdapter::new()
+                .convert(&before)
+                .expect("Score → XML");
+            let after = MxmlToIrAdapter::new()
+                .convert_str(&out)
+                .expect("re-parse emitted XML");
+            assert_eq!(
+                pitch_multiset(&before),
+                pitch_multiset(&after),
+                "pitch multiset changed on XML round-trip of {}",
+                $file
+            );
+            assert_eq!(
+                signature(&before).notes,
+                signature(&after).notes,
+                "note count changed on XML round-trip of {}",
+                $file
+            );
+        }
+    };
+}
+
+xml_roundtrip_fixture!(rt_xml_pitches, "01a-Pitches-Pitches.xml");
+xml_roundtrip_fixture!(rt_xml_chords, "01b-Pitches-Intervals.xml");
+xml_roundtrip_fixture!(rt_xml_lyrics, "61a-Lyrics.xml");
+xml_roundtrip_fixture!(rt_xml_repeats, "45a-SimpleRepeat.xml");
+xml_roundtrip_fixture!(rt_xml_grace, "24a-GraceNotes.xml");
+
+/// Dynamics survive XML round-trip (a content type the count/pitch checks miss).
+#[test]
+fn rt_xml_dynamics_preserved() {
+    let src = read_xml("31a-Directions.xml");
+    let before = MxmlToIrAdapter::new()
+        .convert_str(&src)
+        .expect("XML → Score");
+    let out = IrToMxmlAdapter::new()
+        .convert(&before)
+        .expect("Score → XML");
+    let after = MxmlToIrAdapter::new()
+        .convert_str(&out)
+        .expect("re-parse XML");
+    let b = common::sorted_dynamics(&before);
+    let a = common::sorted_dynamics(&after);
+    assert_eq!(b, a, "dynamics changed on XML round-trip");
+}
+
+// ---------------------------------------------------------------------------
+// Bar-splitting consistency across parts (grace-note duration regression)
+//
+// In a multi-part score where some parts lack an explicit \time, the
+// time-signature synchronization resplits them to match a reference part.
+// A grace note (appoggiatura) was wrongly counted toward the bar boundary,
+// drifting every subsequent barline so parts disagreed on measure durations.
+// ---------------------------------------------------------------------------
+
+fn assert_bars_consistent_across_parts(src: &str, fixture: &str) {
+    let score = LyToIrAdapter::new().convert_str(src).expect("LY → Score");
+    let nparts = score.parts().len();
+    assert!(nparts >= 2, "{fixture}: expected multiple parts");
+    let p0 = common::part_measure_durations(&score, 0);
+    for pi in 1..nparts {
+        let pn = common::part_measure_durations(&score, pi);
+        assert_eq!(
+            p0.len(),
+            pn.len(),
+            "{fixture}: part {pi} has a different measure count than part 0"
+        );
+        for (i, (a, b)) in p0.iter().zip(pn.iter()).enumerate() {
+            assert_eq!(
+                a,
+                b,
+                "{fixture}: measure {} duration differs: part0={a:?} part{pi}={b:?}",
+                i + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn example_bars_consistent_across_parts() {
+    assert_bars_consistent_across_parts(&read_ly("example.ly"), "example.ly");
+}
+
+#[test]
+fn example2_bars_consistent_across_parts() {
+    // example2.ly is multi-movement; check each movement's parts agree on bar
+    // durations. The very last measure of a movement is excluded: a movement's
+    // final bar can carry ragged trailing content that the resplit dumps into
+    // the last measure (a separate, lower-priority multi-meter edge — the
+    // systematic grace-note drift this guards against affects interior bars).
+    let scores = LyToIrAdapter::new()
+        .convert_str_multi(&read_ly("example2.ly"))
+        .expect("LY → Scores");
+    for (mi, score) in scores.iter().enumerate() {
+        let nparts = score.parts().len();
+        if nparts < 2 {
+            continue;
+        }
+        let p0 = common::part_measure_durations(score, 0);
+        let interior = p0.len().saturating_sub(1);
+        for pi in 1..nparts {
+            let pn = common::part_measure_durations(score, pi);
+            assert_eq!(
+                p0[..interior.min(p0.len())],
+                pn[..interior.min(pn.len())],
+                "example2.ly movement {} part {pi} interior measure durations differ from part 0",
+                mi + 1
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-staff (piano) clefs: every staff must get an initial clef
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pedal_piano_clefs_per_staff() {
+    // pedal.ly is a piano score: the upper staff has no explicit \clef (LilyPond
+    // default = treble), the lower staff is \clef bass. The MusicXML must carry a
+    // numbered clef for *each* staff (was: a single unnumbered bass clef, so the
+    // upper staff rendered with the wrong clef).
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("pedal.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    assert_eq!(part.staves, 2, "pedal.ly is a 2-staff piano part");
+    let attrs = part.measures[0]
+        .attributes
+        .as_ref()
+        .expect("first measure attributes");
+    use _core::ir::measure::ClefSign;
+    let c1 = attrs.clefs.get(&1).expect("staff 1 must have a clef");
+    let c2 = attrs.clefs.get(&2).expect("staff 2 must have a clef");
+    assert!(
+        matches!(c1.sign, ClefSign::G) && c1.line == 2,
+        "staff 1 should default to treble (G2), got {:?}{}",
+        c1.sign,
+        c1.line
+    );
+    assert!(
+        matches!(c2.sign, ClefSign::F) && c2.line == 4,
+        "staff 2 should be bass (F4), got {:?}{}",
+        c2.sign,
+        c2.line
+    );
+
+    let xml = IrToMxmlAdapter::new().convert(&score).expect("Score → XML");
+    assert!(
+        xml.contains("number=\"1\"") && xml.contains("number=\"2\""),
+        "MusicXML should emit per-staff numbered clefs"
     );
 }

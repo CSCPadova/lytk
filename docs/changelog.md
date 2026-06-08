@@ -1,5 +1,106 @@
 # Changelog
 
+## 2026-06-08 — Fix missing per-staff clefs in piano scores (pedal.ly) ✅
+
+Branch `fix-pedal-clefs` (stacks on the example-bars fix).
+
+### Clef fix
+LilyPond leaves the default clef (treble) implicit, so a piano part whose upper
+staff has no explicit `\clef` recorded no clef for it. MusicXML then emitted a
+single clef with no `number=`, and the upper staff rendered with the wrong clef
+(pedal.ly showed only a bass clef). New `ensure_staff_clefs` post-process fills
+the first measure with a treble clef for any staff of a multi-staff part that
+has none — so each staff gets a numbered `<clef>` (pedal.ly now emits
+`<clef number="1">` G2 treble + `<clef number="2">` F4 bass). Defaulting a
+missing staff to treble is also correct when that staff changes clef later.
+
+Test: `pedal_piano_clefs_per_staff` (`tests/semantic_roundtrip.rs`).
+
+### Known issue — bar-58 left-hand shift (diagnosed, not yet fixed)
+pedal.ly's two hands are separate variables (`voicea` RH / `voiceb` LH). The RH
+declares `\time 4/4` sections; the LH never does. In a PianoStaff the time
+signature is *shared*, but each staff is pre-parsed independently, so the LH
+content is barred without the 4/4 changes and under-fills those bars — by the
+4/4 section the LH drifts relative to the RH (e.g. IR m70 is a 4/4 bar with the
+RH full but the LH only half-full). `merge_piano_staff_parts` merges staves by
+measure index, which assumes aligned boundaries. A proper fix needs a
+time-signature-unification + re-bar pass across PianoStaff staves; the existing
+`resplit_measures_to_match` (built for spacer/note alignment) does not handle
+the multi-voice piano case cleanly (an attempt made other bars worse), so it is
+deferred to a dedicated change.
+
+## 2026-06-08 — Fix bar-splitting drift from grace notes (example.ly / example2.ly) ✅
+
+Branch `fix-example-bars` (stacks on Epic C). Fixes wrong durations / bar
+splitting when converting example.ly (and example2.ly) to MusicXML.
+
+### Root cause
+`voice_element_duration` (`ly_to_ir/merge.rs`) returned a grace note's *notated*
+duration. In example.ly only the Corno staff carries `\time 4/4`; the other 5
+staves have none, so `synchronize_time_signatures` resplits them to match the
+Corno's measure durations. The resplit's position accounting counted each
+appoggiatura/grace eighth toward the bar boundary, so every barline after a
+grace note drifted — measures that should be 4/4 came out as 7/8, the next as
+1/4, etc., and parts disagreed on bar lengths.
+
+### Fix
+`voice_element_duration` now returns 0 for grace notes (they never consume
+measure time). This is the single source of truth for all measure-position math
+(`measure_voice_duration`, the synchronize/resplit split loop, timeline
+building), so all bar splitting is now grace-aware.
+
+### Result
+- example.ly → MusicXML: all 6 parts, **0 irregular bars** (full 4/4 bars + the
+  legitimate cadenza half-bar). Was: 2–11 broken bars per part.
+- example2.ly movement 1: all parts consistent. Movement 2 (multi-meter:
+  4/4, 3/2, 6/8) consistent on all interior bars.
+
+### Tests (`tests/semantic_roundtrip.rs`, `tests/common/mod.rs`)
+- `example_bars_consistent_across_parts`, `example2_bars_consistent_across_parts`:
+  assert every part agrees on per-measure durations (the bug made them disagree).
+- Known remaining edge (separate, lower priority): a movement's *final* bar can
+  carry ragged trailing content the resplit dumps into the last measure
+  (excluded from the example2 interior-bar check).
+
+## 2026-06-08 — Epic C: semantic round-trip quality gate ✅
+
+Branch `epic-c-semantic`. Upgrades the test bar from "parses / non-empty" to
+*semantic fidelity*, and the scoreboard immediately exposed (and let us fix) two
+real CLI LY→LY bugs.
+
+### ECT1 — signature/comparator library (`tests/common/mod.rs`)
+- `signature(&Score) -> Sig` summarizes musical content: pitches (MIDI),
+  note/rest counts, dynamics, articulations, lyrics, harmonies, figured bass,
+  ties/slurs, time signatures. `pitch_multiset`/`sorted_dynamics` give
+  order-independent comparisons. Shared across test binaries via `mod common`.
+
+### ECT2 — per-fixture semantic round-trip suite (`tests/semantic_roundtrip.rs`)
+- Macro-generated named tests assert pitch-multiset + note-count survive
+  LY↔IR↔LY (Music path) and XML↔IR↔XML for representative fixtures (pedal,
+  chopin, repeats, relative-repeat, …; XML pitches/chords/lyrics/repeats/grace),
+  plus a dynamics-preservation check.
+
+### ECT3 — fidelity scoreboard gate (`tests/fidelity.rs`)
+- Round-trips every fixture and tallies note-count + pitch-multiset preservation
+  per direction, gating on a committed baseline (non-decreasing fidelity). Runs
+  in CI via `cargo test`. Current: **XML 152/152**, **LY 33/35**.
+
+### Bugs surfaced & fixed by the scoreboard
+- **Top-level music not parsed:** the Music emitter emits `<< \new Staff … >>`
+  with no `\score` wrapper, but `walk_program` only handled
+  `escaped_word`/`expression_block`/`assignment_lhs` — so re-parsing emitted LY
+  yielded **0 notes** for complex fixtures (chopin, example, pedal…). Added
+  top-level `parallel_music` and `named_context` handlers (LY note-count
+  fidelity 22 → 33/35).
+- **Relative octaves without `\relative`:** the Music-path emitter emitted
+  relative octave marks (when the source used `\relative`) but no `\relative {`
+  wrapper, so octaves shifted on re-parse. Now always emits absolute pitches —
+  unambiguous and round-tripping (LY pitch fidelity 13 → 33/35).
+
+### Tests
+- `tests/common/mod.rs`, `tests/fidelity.rs` (new); `tests/semantic_roundtrip.rs`
+  extended. Full suite green, clippy clean, audit 0 errors / 0 panics.
+
 ## 2026-06-08 — Epic B complete: chordmode, figuremode robustness, partial ✅
 
 Branch `epic-b-finish`. Finishes the remaining Epic B conversion-fidelity tasks

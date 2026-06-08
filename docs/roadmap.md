@@ -167,9 +167,11 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 
 | Task | Description | Status |
 |------|-------------|--------|
-| ECT1 | Comparators for durations, dynamics, articulations, ties/slurs, lyrics, repeat/volta, time/key sig (extend `tests/round_trip.rs` helpers) | ⬜ |
-| ECT2 | Per-fixture semantic round-trip tests (LY↔IR↔LY, XML↔IR↔XML, XML→LY) | ⬜ |
-| ECT3 | Wire fixture-audit report into CI as a tracked, non-increasing metric | ⬜ |
+| ECT1 | Signature/comparator library (`tests/common/mod.rs`): pitches, durations, dynamics, articulations, ties/slurs, lyrics, harmonies, time sigs | ✅ |
+| ECT2 | Per-fixture semantic round-trip suite (`tests/semantic_roundtrip.rs`): LY↔IR↔LY + XML↔IR↔XML, pitch-multiset & note-count invariants + dynamics | ✅ |
+| ECT3 | Fidelity scoreboard (`tests/fidelity.rs`) gated on a committed baseline (non-decreasing); runs in CI via `cargo test`. Audit also gates on 0 panics | ✅ |
+
+Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multiset); **LY→IR→LY 33/35** (only example.ly/example2.ly drift, +9 notes — complex multi-voice). Building the scoreboard surfaced and fixed two real CLI LY→LY bugs: top-level `parallel_music`/`named_context` weren't parsed (re-parse yielded 0 notes), and the Music-path emitter emitted relative octave marks without a `\relative` wrapper (now emits absolute).
 
 ### Epic D: ML Representations (`src/representations/`, modeled on muspy)
 

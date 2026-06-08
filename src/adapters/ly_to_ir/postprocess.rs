@@ -6,6 +6,32 @@ use crate::ir::score::{Score, ScoreChild};
 
 use super::merge::beam_level_for_duration;
 
+/// Ensure every staff of a multi-staff part has an initial clef.
+///
+/// LilyPond leaves the default clef (treble) implicit, so a piano part whose
+/// upper staff has no explicit `\clef` records no clef for it. MusicXML then
+/// emits a single clef with no `number=` and the upper staff shows the wrong
+/// (or default) clef. This fills the first measure with a treble clef for any
+/// staff that has none, so each staff gets a numbered `<clef>`. Defaulting a
+/// missing staff to treble is also correct when that staff changes clef later
+/// (it was treble until the change).
+pub(super) fn ensure_staff_clefs(score: &mut Score) {
+    use crate::ir::measure::MeasureAttributes;
+    for child in &mut score.children {
+        if let ScoreChild::Part(part) = child {
+            if part.staves <= 1 {
+                continue;
+            }
+            if let Some(m) = part.measures.first_mut() {
+                let attrs = m.attributes.get_or_insert_with(MeasureAttributes::default);
+                for staff in 1..=part.staves {
+                    attrs.clefs.entry(staff).or_insert_with(Clef::default);
+                }
+            }
+        }
+    }
+}
+
 /// Apply automatic beaming and stem directions to all parts in a score.
 /// Only applies to notes that don't already have explicit beams/stems.
 pub(super) fn post_process_beams_and_stems(score: &mut Score) {
