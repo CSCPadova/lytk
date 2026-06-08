@@ -1209,6 +1209,45 @@ figs = \figuremode { <6+ 4->1 }
     }
 
     #[test]
+    fn test_figuremode_natural_accidental() {
+        // `!` natural is emitted by ir_to_ly (figure_to_ly) but was dropped on import.
+        let adapter = LyToIrAdapter::new();
+        let source = r#"
+bc = { c'1 }
+figs = \figuremode { <6! 4>1 }
+\score { \new Staff <<\bc\figs>> }
+"#;
+        let score = adapter.convert_str(source).unwrap();
+        let m1_figs = &score.parts()[0].measures[0].figured_bass;
+        assert_eq!(m1_figs.len(), 1);
+        assert_eq!(m1_figs[0].figures[0].number, Some(6));
+        assert_eq!(
+            m1_figs[0].figures[0].suffix.as_deref(),
+            Some("natural"),
+            "natural accidental should be parsed"
+        );
+        assert_eq!(m1_figs[0].figures[1].number, Some(4));
+        assert_eq!(m1_figs[0].figures[1].suffix, None);
+    }
+
+    #[test]
+    fn test_figuremode_double_accidentals() {
+        let adapter = LyToIrAdapter::new();
+        let source = r#"
+bc = { c'1 }
+figs = \figuremode { <6++ 4-->1 }
+\score { \new Staff <<\bc\figs>> }
+"#;
+        let score = adapter.convert_str(source).unwrap();
+        let m1_figs = &score.parts()[0].measures[0].figured_bass;
+        assert_eq!(
+            m1_figs[0].figures[0].suffix.as_deref(),
+            Some("double-sharp")
+        );
+        assert_eq!(m1_figs[0].figures[1].suffix.as_deref(), Some("double-flat"));
+    }
+
+    #[test]
     fn test_figuremode_distribution_across_measures() {
         let adapter = LyToIrAdapter::new();
         let source = r#"

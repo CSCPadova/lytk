@@ -158,10 +158,10 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 |------|-------------|--------|
 | EBT1 | Emit **lyrics** in IR→LY (Music path `\addlyrics` + parse `\addlyrics` on import) | ✅ |
 | EBT2 | **Repeat/volta** LY→IR→LY round-trip (`\repeat volta` + `\alternative`) | ✅ Music path: parser now flushes the repeat body before `\alternative` (was conflating body with alt 1); `lift.rs` reconstructs `Music::Repeat` from repeat barlines + volta endings. Single-staff; Score-path (ir_to_ly) emitter + multi-staff still TODO |
-| EBT3 | `\chordmode` import → `Harmony` IR (emitter side already exists) | ⬜ |
-| EBT4 | `\figuremode` robustness | ⬜ |
+| EBT3 | `\chordmode` import → `Harmony` IR (text-based parser, language-aware; distributed to melody part; round-trips) | ✅ |
+| EBT4 | `\figuremode` robustness (natural `!` + double accidentals `++`/`--`, round-trip via `figure_to_ly`) | ✅ |
 | EBT5 | MIDI **velocity ↔ dynamics** mapping both directions (shared `dynamics_velocity` map) | ✅ |
-| EBT6 | `\partial` in multi-movement contexts | ⬜ |
+| EBT6 | `\partial` in multi-movement contexts (reset per `\score` block — was leaking) | ✅ |
 
 ### Epic C: Semantic Round-Trip Test Bar (quality gate)
 

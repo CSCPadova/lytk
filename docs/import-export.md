@@ -172,8 +172,8 @@ what the adapter can parse (import) and emit (export).
 | `\melisma/End` | ✅ | Gracefully skipped |
 | `\autoBeamOff/On` | ✅ | Gracefully skipped |
 | `\dynamicUp/Down` | ✅ | Gracefully skipped |
-| Harmony/chord names | 🔲 | `\chordmode` |
-| Figured bass | 🔲 | `\figuremode` |
+| Harmony/chord names | ✅ | `\chordmode` (root, quality, bass; language-aware) |
+| Figured bass | ✅ | `\figuremode` (figures, accidentals incl. natural & double) |
 
 ### Export (IR → LilyPond) — `src/adapters/ir_to_ly.rs`
 

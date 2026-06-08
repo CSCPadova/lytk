@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-06-08 — Epic B complete: chordmode, figuremode robustness, partial ✅
+
+Branch `epic-b-finish`. Finishes the remaining Epic B conversion-fidelity tasks
+(EBT3/EBT4/EBT6), all TDD. Epic B (EBT1–EBT6) is now done.
+
+### EBT3: `\chordmode` import → Harmony IR
+- New `src/adapters/ly_to_ir/chord_mode.rs`: text-based chordmode tokenizer
+  (robust against `maj7`/`m7.5-` qualities, `/e` and `/+e` bass, and `_"..."`
+  markup). Uses `parse_pitch_name` so roots are language-aware (e.g. German `h`).
+  `ly_quality_to_kind` mirrors `harmony_kind_to_ly` so chords round-trip.
+- Harmonies are collected from `\new ChordNames \chordmode { … }` (inline or via
+  a chordmode variable) into `state.pending_harmonies` and distributed onto the
+  first content-bearing part's measures at score-block assembly (mirrors the
+  lyrics pending mechanism, so ChordNames-before-Staff ordering works).
+- Chordmode variables are still also parsed as music, so `\context Voice \var`
+  keeps rendering notes (no regression to `chord-names-bass.ly`).
+
+### EBT4: `\figuremode` robustness
+- `parse_figure_chord` now consumes a *run* of accidental punctuation:
+  `!`→natural, `++`→double-sharp, `--`→double-flat (was: single `+`/`-` only,
+  dropping naturals and doubles). `figure_to_ly` emits `!`/`++`/`--` so they
+  round-trip; MusicXML passes the suffix string through.
+
+### EBT6: `\partial` in multi-movement contexts
+- `state.metadata.partial_duration` was shared across `\score` blocks, so a
+  pickup in movement 1 leaked into later movements (wrongly marking their first
+  measure implicit). Reset it at the start of each score block.
+
+### Tests
+- `tests/semantic_roundtrip.rs`: chordmode parse + round-trip, `\partial`
+  no-leak across movements. `ly_to_ir/tests.rs`: figuremode natural + double
+  accidentals. Full suite green (437 lib + others), clippy clean, audit still
+  0 errors / 0 panics over 195 fixtures.
+
 ## 2026-06-07 — Epic B2: repeat/volta round-trip (Music path) ✅
 
 Branch `epic-b2-repeats`. Makes `\repeat volta` + `\alternative` survive LY→LY

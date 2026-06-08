@@ -22,6 +22,7 @@
 //! not tree-sitter, so the tree walk strategy differs).
 
 mod apply;
+mod chord_mode;
 mod consume;
 mod figured_bass;
 mod lyrics;
