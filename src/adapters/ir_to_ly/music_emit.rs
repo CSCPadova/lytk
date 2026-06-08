@@ -57,8 +57,13 @@ pub(super) fn emit_music_document(
     // Header
     emit_header(&doc.metadata, &mut lines);
 
-    // Music content
-    let mut ctx = EmitCtx::new(lang, mode);
+    // Music content. Always emit absolute pitches: this emitter does not wrap
+    // output in `\relative { }`, so emitting relative octave marks would be
+    // misread on re-parse (octaves shift). Absolute is unambiguous and
+    // round-trips. (`mode` is accepted for API symmetry but intentionally
+    // overridden here.)
+    let _ = mode;
+    let mut ctx = EmitCtx::new(lang, PitchMode::Absolute);
     emit_music(&doc.music, &mut ctx, &mut lines);
 
     lines.push(String::new());

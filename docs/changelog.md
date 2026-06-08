@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-06-08 — Epic C: semantic round-trip quality gate ✅
+
+Branch `epic-c-semantic`. Upgrades the test bar from "parses / non-empty" to
+*semantic fidelity*, and the scoreboard immediately exposed (and let us fix) two
+real CLI LY→LY bugs.
+
+### ECT1 — signature/comparator library (`tests/common/mod.rs`)
+- `signature(&Score) -> Sig` summarizes musical content: pitches (MIDI),
+  note/rest counts, dynamics, articulations, lyrics, harmonies, figured bass,
+  ties/slurs, time signatures. `pitch_multiset`/`sorted_dynamics` give
+  order-independent comparisons. Shared across test binaries via `mod common`.
+
+### ECT2 — per-fixture semantic round-trip suite (`tests/semantic_roundtrip.rs`)
+- Macro-generated named tests assert pitch-multiset + note-count survive
+  LY↔IR↔LY (Music path) and XML↔IR↔XML for representative fixtures (pedal,
+  chopin, repeats, relative-repeat, …; XML pitches/chords/lyrics/repeats/grace),
+  plus a dynamics-preservation check.
+
+### ECT3 — fidelity scoreboard gate (`tests/fidelity.rs`)
+- Round-trips every fixture and tallies note-count + pitch-multiset preservation
+  per direction, gating on a committed baseline (non-decreasing fidelity). Runs
+  in CI via `cargo test`. Current: **XML 152/152**, **LY 33/35**.
+
+### Bugs surfaced & fixed by the scoreboard
+- **Top-level music not parsed:** the Music emitter emits `<< \new Staff … >>`
+  with no `\score` wrapper, but `walk_program` only handled
+  `escaped_word`/`expression_block`/`assignment_lhs` — so re-parsing emitted LY
+  yielded **0 notes** for complex fixtures (chopin, example, pedal…). Added
+  top-level `parallel_music` and `named_context` handlers (LY note-count
+  fidelity 22 → 33/35).
+- **Relative octaves without `\relative`:** the Music-path emitter emitted
+  relative octave marks (when the source used `\relative`) but no `\relative {`
+  wrapper, so octaves shifted on re-parse. Now always emits absolute pitches —
+  unambiguous and round-tripping (LY pitch fidelity 13 → 33/35).
+
+### Tests
+- `tests/common/mod.rs`, `tests/fidelity.rs` (new); `tests/semantic_roundtrip.rs`
+  extended. Full suite green, clippy clean, audit 0 errors / 0 panics.
+
 ## 2026-06-08 — Epic B complete: chordmode, figuremode robustness, partial ✅
 
 Branch `epic-b-finish`. Finishes the remaining Epic B conversion-fidelity tasks
