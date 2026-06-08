@@ -31,6 +31,12 @@ pub(super) fn beam_level_for_duration(dur: &Duration) -> u8 {
 
 pub(super) fn voice_element_duration(elem: &VoiceElement) -> Frac {
     match elem {
+        // Grace notes (acciaccatura/appoggiatura) do not consume measure time —
+        // they must contribute 0 to all measure-position / bar-splitting math
+        // (e.g. `synchronize_time_signatures` resplitting a part with no explicit
+        // `\time` to match a reference part's measure durations). Counting their
+        // notated duration drifts every subsequent barline.
+        VoiceElement::Note(n) if n.is_grace => Frac::from_integer(0),
         VoiceElement::Note(n) => n.duration.actual_duration(),
         VoiceElement::Rest(r) => r.duration.actual_duration(),
         VoiceElement::Chord(c) => c.duration.actual_duration(),
