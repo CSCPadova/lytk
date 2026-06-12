@@ -70,58 +70,66 @@ pub(super) fn clef_to_ly(clef: &Clef) -> String {
     format!("\\clef \"{base}{suffix}\"")
 }
 
-/// Key signature -> LilyPond `\key` command (in Nederlands).
-pub(super) fn key_to_ly(key: &KeySignature) -> String {
-    let (tonic, mode_str) = match key.mode {
-        KeyMode::Minor => match key.fifths {
-            -7 => ("aes", "\\minor"),
-            -6 => ("ees", "\\minor"),
-            -5 => ("bes", "\\minor"),
-            -4 => ("f", "\\minor"),
-            -3 => ("c", "\\minor"),
-            -2 => ("g", "\\minor"),
-            -1 => ("d", "\\minor"),
-            0 => ("a", "\\minor"),
-            1 => ("e", "\\minor"),
-            2 => ("b", "\\minor"),
-            3 => ("fis", "\\minor"),
-            4 => ("cis", "\\minor"),
-            5 => ("gis", "\\minor"),
-            6 => ("dis", "\\minor"),
-            7 => ("ais", "\\minor"),
-            _ => ("a", "\\minor"),
-        },
+/// Key signature -> LilyPond `\key` command, with the tonic spelled in the
+/// emitted `\language` (a Nederlands "fis" under `\language "english"` would
+/// not compile and was silently dropped on re-parse).
+pub(super) fn key_to_ly(key: &KeySignature, lang: PitchLanguage) -> String {
+    use crate::ir::pitch::PitchStep;
+    // Tonic as (step, alter in semitones) on the circle of fifths.
+    let (step, alter, mode_str): (PitchStep, i32, &str) = match key.mode {
+        KeyMode::Minor | KeyMode::Aeolian => {
+            let (step, alter) = match key.fifths {
+                -7 => (PitchStep::A, -1),
+                -6 => (PitchStep::E, -1),
+                -5 => (PitchStep::B, -1),
+                -4 => (PitchStep::F, 0),
+                -3 => (PitchStep::C, 0),
+                -2 => (PitchStep::G, 0),
+                -1 => (PitchStep::D, 0),
+                1 => (PitchStep::E, 0),
+                2 => (PitchStep::B, 0),
+                3 => (PitchStep::F, 1),
+                4 => (PitchStep::C, 1),
+                5 => (PitchStep::G, 1),
+                6 => (PitchStep::D, 1),
+                7 => (PitchStep::A, 1),
+                _ => (PitchStep::A, 0),
+            };
+            (step, alter, "\\minor")
+        }
         _ => {
             let mode_cmd = match key.mode {
-                KeyMode::Major | KeyMode::Ionian => "\\major",
                 KeyMode::Dorian => "\\dorian",
                 KeyMode::Phrygian => "\\phrygian",
                 KeyMode::Lydian => "\\lydian",
                 KeyMode::Mixolydian => "\\mixolydian",
-                KeyMode::Aeolian | KeyMode::Minor => "\\minor",
                 KeyMode::Locrian => "\\locrian",
+                _ => "\\major",
             };
-            let tonic = match key.fifths {
-                -7 => "ces",
-                -6 => "ges",
-                -5 => "des",
-                -4 => "aes",
-                -3 => "ees",
-                -2 => "bes",
-                -1 => "f",
-                0 => "c",
-                1 => "g",
-                2 => "d",
-                3 => "a",
-                4 => "e",
-                5 => "b",
-                6 => "fis",
-                7 => "cis",
-                _ => "c",
+            let (step, alter) = match key.fifths {
+                -7 => (PitchStep::C, -1),
+                -6 => (PitchStep::G, -1),
+                -5 => (PitchStep::D, -1),
+                -4 => (PitchStep::A, -1),
+                -3 => (PitchStep::E, -1),
+                -2 => (PitchStep::B, -1),
+                -1 => (PitchStep::F, 0),
+                1 => (PitchStep::G, 0),
+                2 => (PitchStep::D, 0),
+                3 => (PitchStep::A, 0),
+                4 => (PitchStep::E, 0),
+                5 => (PitchStep::B, 0),
+                6 => (PitchStep::F, 1),
+                7 => (PitchStep::C, 1),
+                _ => (PitchStep::C, 0),
             };
-            (tonic, mode_cmd)
+            (step, alter, mode_cmd)
         }
     };
+    let alter = Ratio::from_integer(alter);
+    let tonic = pitch_name(step, alter, lang)
+        .or_else(|| pitch_name(step, alter, PitchLanguage::Nederlands))
+        .unwrap_or_else(|| step.name().to_lowercase());
     format!("\\key {tonic} {mode_str}")
 }
 

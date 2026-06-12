@@ -14,9 +14,9 @@ Latest changes: look at the file docs/changelog.md to know about latest activity
 
 ```bash
 cargo build                          # build library + CLI
-cargo test                           # all unit tests (324) + CLI integration tests (15)
+cargo test                           # all tests (~450 unit + ~340 integration)
 cargo test <test_name>               # run a single test by name
-cargo test --test cli_tests          # CLI integration tests only
+cargo test --test cli                # CLI integration tests only
 cargo test -- --nocapture             # see stdout/eprintln during tests
 cargo fmt && cargo clippy -- -D warnings  # lint
 

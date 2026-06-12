@@ -146,24 +146,25 @@ fn emit_preamble(score: &Score, version: &str, lang: PitchLanguage, lines: &mut 
         || meta.lyricist.is_some();
 
     if has_header {
+        let esc = helpers::escape_ly_string;
         lines.push("\\header {".to_string());
         if let Some(t) = &meta.title {
-            lines.push(format!("  title = \"{t}\""));
+            lines.push(format!("  title = \"{}\"", esc(t)));
         }
         if let Some(s) = &meta.subtitle {
-            lines.push(format!("  subtitle = \"{s}\""));
+            lines.push(format!("  subtitle = \"{}\"", esc(s)));
         }
         if let Some(c) = &meta.composer {
-            lines.push(format!("  composer = \"{c}\""));
+            lines.push(format!("  composer = \"{}\"", esc(c)));
         }
         if let Some(a) = &meta.arranger {
-            lines.push(format!("  arranger = \"{a}\""));
+            lines.push(format!("  arranger = \"{}\"", esc(a)));
         }
         if let Some(l) = &meta.lyricist {
-            lines.push(format!("  poet = \"{l}\""));
+            lines.push(format!("  poet = \"{}\"", esc(l)));
         }
         for (key, val) in &meta.extra {
-            lines.push(format!("  {key} = \"{val}\""));
+            lines.push(format!("  {key} = \"{}\"", esc(val)));
         }
         lines.push("}".to_string());
         lines.push(String::new());
@@ -310,7 +311,7 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
         if !part.name.is_empty() {
             lines.push(format!(
                 "{pad}\\new Staff \\with {{ instrumentName = \"{}\" }} <<",
-                part.name
+                helpers::escape_ly_string(&part.name)
             ));
         } else {
             lines.push(format!("{pad}\\new Staff <<"));
@@ -321,7 +322,7 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
     } else if !part.name.is_empty() {
         lines.push(format!(
             "{pad}\\new Staff \\with {{ instrumentName = \"{}\" }} \\{var}",
-            part.name
+            helpers::escape_ly_string(&part.name)
         ));
     } else {
         lines.push(format!("{pad}\\new Staff \\{var}"));

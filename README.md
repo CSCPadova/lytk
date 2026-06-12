@@ -74,28 +74,44 @@ MIDI (.mid)           ──→  IR (Score tree)  ──→  LilyPond / MusicXML
   including harmonies, figured bass, page layout, coda/segno, da capo/dal segno
 - **LilyPond → IR** — full parser via tree-sitter: notes, rests, chords, tuplets, grace notes,
   ties, slurs, beams, articulations, dynamics, wedges, ornaments, lyrics (`\lyricsto`,
-  `\lyricmode`), clef/key/time, repeats with voltas, variables, multi-staff, `\autoBeamOff`,
-  glissando, arpeggio, tremolo, after-grace, `\markup` text, shorthand symbols, figured bass
+  `\lyricmode`, `\addlyrics`), clef/key/time (incl. compound meters like `3+2/8`),
+  `\breve`/`\longa`, repeats with voltas, variables, multi-staff piano scores with shared
+  time-signature re-barring, `\autoBeamOff`, glissando, arpeggio, tremolo, after-grace,
+  `\markup` text, shorthand symbols, figured bass (`\figuremode`), chord names (`\chordmode`)
 - **IR → MusicXML** — full MusicXML 4.0 emitter with all notation elements
 - **IR → LilyPond** — emitter with relative pitch, all notation, multi-staff, lyrics, voltas
 - **LilyPond flatten** — recursive `\include` expander with circular dependency detection,
   extension fallback, extra search paths (`-I`), and `\version`/`\language`/`\header` normalization
 - **Transforms** — `Transpose`, `ChangeLanguage`, `Invert`, `Retrograde`; composable via
   `apply_all`; dual OOP + functional API
-- **MIDI adapter** — `midly`-based MIDI → IR and IR → MIDI (optional feature, to be made default)
+- **MIDI adapter** — `midly`-based MIDI → IR and IR → MIDI (always included); simultaneous
+  note-ons import as chords, notes crossing a barline are split and tied
 - **CLI** — `convert`, `transpose`, `info`, `flatten` subcommands; batch mode with rayon
 - **Python bindings** — full PyO3 API: `from_musicxml`, `from_lilypond`, `to_musicxml`,
-  `to_lilypond`, `transpose`, `change_language`, `invert`, `retrograde`, `Score.to_json/dict`
-- **255 unit tests** + 15 CLI integration tests + 26 Python tests, all passing
+  `to_lilypond`, `from_midi`, `to_midi`, `transpose`, `change_language`, `invert`,
+  `retrograde`, `Score.to_json/dict`
+- **790 Rust tests** (450 unit + 340 integration: CLI, fixture regression, property-based,
+  round-trip, semantic round-trip, fidelity scoreboard) + 44 Python tests, all passing
+- **Semantic fidelity gate** — committed non-decreasing baselines: LilyPond 35/35 and
+  MusicXML 152/152 fixtures preserve note counts and pitch multisets on round-trip
 - **Criterion benchmarks** — ~52× faster than python-ly for transpose; ~40× for language change
 
 ### Not yet implemented
 
+- ML representations (note-array, event sequence, piano-roll) — Epic D
+- ABC notation adapter — Epic E
+- Dataset loaders and objective metrics — Epic F
 - music21-parity MIR features (see roadmap)
-- ABC notation adapter
-- MEI adapter
-- Humdrum adapter
-- Chord name parser (`\chordmode`)
+- MEI adapter (deferred past v1.0)
+- Humdrum adapter (deferred past v1.0)
+
+### Known limitations
+
+- `\repeat volta N` re-emits as `volta 2` on the Score path (the Music path preserves N)
+- Two-note tremolos import from MusicXML but are not emitted in Score → LilyPond
+- Lyrics attached to multi-staff (PianoStaff) parts are not yet re-emitted
+- A voice crossing staves is emitted into every staff it touches
+- MIDI export reads tempo/time/key only from the first part's conductor data
 
 ## Build & Test
 

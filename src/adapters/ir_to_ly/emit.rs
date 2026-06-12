@@ -73,7 +73,7 @@ pub(super) fn emit_measures(
         // Attributes
         if let Some(attrs) = &measure.attributes {
             if let Some(key) = &attrs.key {
-                lines.push(format!("{pad}{}", key_to_ly(key)));
+                lines.push(format!("{pad}{}", key_to_ly(key, lang)));
             }
             if let Some(ts) = &attrs.time {
                 lines.push(format!("{pad}{}", time_to_ly(ts)));

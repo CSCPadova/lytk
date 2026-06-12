@@ -1,5 +1,81 @@
 # Changelog
 
+## 2026-06-12 — Fix pedal.ly bar-58 drift + 13 conversion bugs (multi-agent bug hunt) ✅
+
+Branch `fix-pedal-bar58-and-bugs` (stacks on the clef fix). Fixes the deferred
+PianoStaff time-signature bug plus 13 further bugs found by an adversarially
+verified multi-agent audit. All 790 Rust tests green; the LY→LY fidelity
+scoreboard moved from 33/35 to **35/35** (baselines bumped in
+`tests/fidelity.rs`).
+
+### The pedal.ly bar-58 fix (4 coordinated changes)
+1. **PianoStaff time-signature unification** — `\time` goes to the score-shared
+   Timing context, so a staff omitting changes its sibling declares (pedal.ly's
+   LH omits the RH's `\time 4/4` sections) must be re-barred. New
+   `unify_staff_time_signatures` (`ly_to_ir/merge.rs`) merges the per-staff
+   timelines by absolute position and re-bars divergent staves; called from
+   `merge_piano_staff_parts` (`walk.rs`).
+2. **Position-aware resplit** — `resplit_measures_with_time_changes` now tracks
+   each element's absolute time, so sparse voices (a 2nd voice present only in
+   some measures) land in the right bars instead of being packed from zero
+   (the flaw that sank the earlier `resplit_measures_to_match` attempt).
+3. **Duration `*N/M` carry-forward** — LilyPond remembers the scale factor as
+   part of the duration (`a32*8/7( e a …` ⇒ all seven notes are 1/28), the
+   parser didn't, shifting the RH 1/56 per septuplet run.
+4. **`\override` swallowed a bar** — a 3+-component property path
+   (`Staff.NoteCollision.merge-differently-dotted`) parses as one
+   `assignment_lhs` node that `consume_override` didn't recognise; its
+   skip-unknown fallback then consumed the following `<< {} \\ {} >>` bar
+   (3×3/8 lost in pedal.ly's LH). Also: phantom extra measure from
+   `<< { v1 } \context Voice = "1" { v2 } >>` (first branch's trailing bar was
+   left pending during the sibling merge).
+
+Tests: `pedal_piano_staff_bars_aligned_across_staves`,
+`piano_staff_time_unification_minimal` (`tests/semantic_roundtrip.rs`),
+`test_duration_scale_carries_forward`, `test_override_with_property_path_…`,
+`test_parallel_context_voice_no_phantom_measure` (`ly_to_ir/tests.rs`).
+
+### Other bugs fixed (finder → verifier confirmed, then TDD'd)
+- **`\addlyrics` inside `<< … >>` injected phantom notes** — the lyric block
+  fell through to the music walker, so syllables that are valid pitch names
+  became notes (example.ly +9, example2.ly +9 — the whole fidelity-gate gap).
+  `walk_parallel_music_staves` now mirrors the score-level handler.
+- **`\breve`/`\longa`/`\maxima` silently mis-read** as the previous duration
+  (`consume_duration` only looked for integers).
+- **Compound `\time 3+2/8` mis-parsed as 2/8** — the grammar splits it into
+  `3` `+` `2/8`; the handler now collects the leading addends.
+- **`\key` tonic hardcoded in Nederlands** — `\key fis \major` under
+  `\language "english"` doesn't compile; `key_to_ly` now spells the tonic via
+  the emitted language's `pitch_name`.
+- **Header strings unescaped** — embedded `"` produced uncompilable LilyPond;
+  new `escape_ly_string` applied to header fields and instrument names.
+- **Duplicate part variables for ids `P0`/`P1`** — `index_to_alpha(0) ==
+  index_to_alpha(1)`, so one part shadowed the other; `part_var_name` now uses
+  a bijective suffix (`n + 1`).
+- **MusicXML mid-measure directions snapped to beat 1 on round-trip** — import
+  stored the position only in `offset` (divisions) but export reads
+  `offset_frac`; import now sets both.
+- **Grace notes lost their flag in Music→Score lowering** (`lower/walk.rs`
+  TODO) — they came out as regular zero-advance notes; `TimedEvent::Note/Chord`
+  now carry `grace: Option<bool>` through to `is_grace`/`grace_slash`.
+- **MIDI import serialized chords** — simultaneous note-ons with equal
+  start/end now import as `Chord`s instead of sequential notes.
+- **MIDI notes crossing a barline lost their remainder** — now split at the
+  boundary and tied (`tie start` / `tie stop`), re-queued into the next bar.
+
+### Known issues (confirmed, not yet fixed)
+- Score-path `ir_to_ly` hardcodes `\repeat volta 2` (Music path preserves N);
+  `ly_to_ly_score_preserves_volta` still `#[ignore]`d.
+- Two-note tremolo from MusicXML is dropped in Score→LY emission.
+- PianoStaff lyrics: variable emitted but never referenced in `\score`.
+- A cross-staff voice is duplicated into every staff it touches (ir_to_ly).
+- MIDI export conductor track reads tempo/time/key from part[0] only.
+
+### Docs
+README refreshed (chordmode/figuremode are implemented; MIDI is always
+compiled, not optional; real test counts 450 unit + 340 integration + 44
+Python; added Known-limitations section); CLAUDE.md test counts fixed.
+
 ## 2026-06-08 — Fix missing per-staff clefs in piano scores (pedal.ly) ✅
 
 Branch `fix-pedal-clefs` (stacks on the example-bars fix).

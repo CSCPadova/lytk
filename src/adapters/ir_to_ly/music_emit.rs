@@ -72,19 +72,20 @@ pub(super) fn emit_music_document(
 
 /// Emit metadata as a `\header` block.
 fn emit_header(meta: &ScoreMetadata, lines: &mut Vec<String>) {
+    let esc = super::helpers::escape_ly_string;
     let mut header_lines: Vec<String> = Vec::new();
 
     if let Some(ref title) = meta.title {
-        header_lines.push(format!("  title = \"{}\"", title));
+        header_lines.push(format!("  title = \"{}\"", esc(title)));
     }
     if let Some(ref composer) = meta.composer {
-        header_lines.push(format!("  composer = \"{}\"", composer));
+        header_lines.push(format!("  composer = \"{}\"", esc(composer)));
     }
     if let Some(ref subtitle) = meta.subtitle {
-        header_lines.push(format!("  subtitle = \"{}\"", subtitle));
+        header_lines.push(format!("  subtitle = \"{}\"", esc(subtitle)));
     }
     if let Some(ref arranger) = meta.arranger {
-        header_lines.push(format!("  arranger = \"{}\"", arranger));
+        header_lines.push(format!("  arranger = \"{}\"", esc(arranger)));
     }
 
     if !header_lines.is_empty() {
@@ -153,7 +154,7 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
             lines.push(format!("{}{}", ctx.pad(), time_to_ly(ts)));
         }
         Music::KeySignature(ks) => {
-            lines.push(format!("{}{}", ctx.pad(), key_to_ly(ks)));
+            lines.push(format!("{}{}", ctx.pad(), key_to_ly(ks, ctx.lang)));
         }
         Music::Clef(clef) => {
             lines.push(format!("{}{}", ctx.pad(), clef_to_ly(clef)));

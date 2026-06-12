@@ -1198,8 +1198,10 @@ pub(super) fn synchronize_barlines(score: &mut crate::ir::score::Score) {
 /// Re-split a part's measures using a sequence of time signature changes.
 ///
 /// Similar to `resplit_measures_for_time_sig` but handles multiple time
-/// signature changes instead of a single target.
-#[allow(dead_code)]
+/// signature changes instead of a single target. Each element is tracked by
+/// its absolute musical position so sparse voices (a second voice that only
+/// exists in some measures) land in the correct re-split measure instead of
+/// being packed from position zero.
 pub(super) fn resplit_measures_with_time_changes(
     measures: &[Measure],
     time_events: &[(Frac, TimeSignature, Frac)],
@@ -1209,8 +1211,9 @@ pub(super) fn resplit_measures_with_time_changes(
         return Vec::new();
     }
 
-    // 1. Flatten: collect all voice elements and measure metadata
-    let mut voice_elements: BTreeMap<u8, Vec<VoiceElement>> = BTreeMap::new();
+    // 1. Flatten: collect all voice elements with their absolute positions,
+    //    plus measure metadata keyed by the measure's start position.
+    let mut voice_elements: BTreeMap<u8, Vec<(Frac, VoiceElement)>> = BTreeMap::new();
     let mut measure_attrs: Vec<MeasureMeta> = Vec::new();
     let mut cumul = Frac::from_integer(0);
     let mut current_ts = initial_time_sig;
@@ -1231,11 +1234,12 @@ pub(super) fn resplit_measures_with_time_changes(
         let mut max_dur = Frac::from_integer(0);
         for v in &m.voices {
             let entry = voice_elements.entry(v.number).or_default();
-            let mut vdur = Frac::from_integer(0);
+            let mut vpos = cumul;
             for e in &v.elements {
-                vdur += voice_element_duration(e);
-                entry.push(e.clone());
+                entry.push((vpos, e.clone()));
+                vpos += voice_element_duration(e);
             }
+            let vdur = vpos - cumul;
             if vdur > max_dur {
                 max_dur = vdur;
             }
@@ -1251,64 +1255,52 @@ pub(super) fn resplit_measures_with_time_changes(
         return measures.to_vec();
     }
 
-    // 2. Build measure boundaries from time_events
+    // 2. Build measure boundaries from time_events. Events are applied with
+    //    catch-up semantics (`epos <= pos`): an event that does not land
+    //    exactly on a boundary (e.g. after an under-full bar) still takes
+    //    effect at the next boundary instead of being skipped forever.
+    let mut events: Vec<&(Frac, TimeSignature, Frac)> = time_events.iter().collect();
+    events.sort_by_key(|e| e.0);
+
     let mut boundaries: Vec<(Frac, Option<TimeSignature>)> = Vec::new(); // (start_pos, time_sig_change)
     let mut pos = Frac::from_integer(0);
     let mut current_ts = initial_time_sig;
-
-    // Find the initial time sig from events at position 0
-    for (epos, _ets, efrac) in time_events {
-        if *epos == Frac::from_integer(0) {
-            current_ts = *efrac;
-            break;
-        }
-    }
+    let mut ei = 0;
 
     while pos < total_duration {
-        // Check if there's a time sig change at this position
         let mut ts_change: Option<TimeSignature> = None;
-        for (epos, ets, efrac) in time_events {
-            if *epos == pos {
-                ts_change = Some(ets.clone());
-                current_ts = *efrac;
-                break;
-            }
+        while ei < events.len() && events[ei].0 <= pos {
+            ts_change = Some(events[ei].1.clone());
+            current_ts = events[ei].2;
+            ei += 1;
+        }
+        if current_ts <= Frac::from_integer(0) {
+            current_ts = Frac::from_integer(1);
         }
         boundaries.push((pos, ts_change));
         pos += current_ts;
     }
 
-    // 3. Split each voice's elements at the computed boundaries
+    // 3. Assign each element to the measure containing its position.
     let voice_nums: Vec<u8> = voice_elements.keys().copied().collect();
     let mut voice_split: BTreeMap<u8, Vec<Vec<VoiceElement>>> = BTreeMap::new();
 
     for &vn in &voice_nums {
         let elements = voice_elements.remove(&vn).unwrap();
-        let mut split_measures: Vec<Vec<VoiceElement>> = Vec::new();
-        let mut current: Vec<VoiceElement> = Vec::new();
-        let mut elem_pos = Frac::from_integer(0);
-        let mut boundary_idx = 1; // Start checking from 2nd boundary
-
-        for elem in elements {
-            let dur = voice_element_duration(&elem);
-            // Check if this element starts at or past the next boundary
-            while boundary_idx < boundaries.len() && elem_pos >= boundaries[boundary_idx].0 {
-                split_measures.push(std::mem::take(&mut current));
-                boundary_idx += 1;
-            }
-            current.push(elem);
-            elem_pos += dur;
-        }
-        if !current.is_empty() {
-            split_measures.push(current);
+        let mut split_measures: Vec<Vec<VoiceElement>> = vec![Vec::new(); boundaries.len()];
+        for (epos, elem) in elements {
+            let mi = match boundaries.binary_search_by(|b| b.0.cmp(&epos)) {
+                Ok(i) => i,
+                Err(0) => 0,
+                Err(i) => i - 1,
+            };
+            split_measures[mi].push(elem);
         }
         voice_split.insert(vn, split_measures);
     }
 
     // 4. Build output measures
-    let num_measures = boundaries
-        .len()
-        .max(voice_split.values().map(|v| v.len()).max().unwrap_or(0));
+    let num_measures = boundaries.len();
     let mut result: Vec<Measure> = Vec::new();
     let mut attr_idx = 0usize;
 
@@ -1474,5 +1466,93 @@ pub(super) fn apply_tuplet_display(elements: &mut [VoiceElement], _actual: u8) {
 pub(super) fn renumber_measures(part: &mut Part) {
     for (i, m) in part.measures.iter_mut().enumerate() {
         m.number = (i + 1) as u32;
+    }
+}
+
+/// Collect a part's time-signature change timeline as (absolute position,
+/// time signature), deduplicating consecutive identical signatures. Positions
+/// advance by actual measure content (max voice duration), falling back to
+/// the nominal measure length for attribute-only/empty measures.
+fn part_time_events(part: &Part) -> Vec<(Frac, TimeSignature)> {
+    let mut events: Vec<(Frac, TimeSignature)> = Vec::new();
+    let mut cumul = Frac::from_integer(0);
+    let mut current_len = Frac::from_integer(1); // default 4/4
+
+    for m in &part.measures {
+        if let Some(ref attrs) = m.attributes {
+            if let Some(ref ts) = attrs.time {
+                if events.last().map(|(_, prev)| prev != ts).unwrap_or(true) {
+                    events.push((cumul, ts.clone()));
+                }
+                current_len = ts.beats_fraction();
+            }
+        }
+        let mut max_dur = Frac::from_integer(0);
+        for v in &m.voices {
+            let vdur = v
+                .elements
+                .iter()
+                .map(voice_element_duration)
+                .fold(Frac::from_integer(0), |a, d| a + d);
+            if vdur > max_dur {
+                max_dur = vdur;
+            }
+        }
+        if max_dur == Frac::from_integer(0) {
+            max_dur = current_len;
+        }
+        cumul += max_dur;
+    }
+    events
+}
+
+/// Unify time signatures across the staves of a PianoStaff/GrandStaff.
+///
+/// In LilyPond a `\time` change goes to the score-shared Timing context, so
+/// it re-bars *all* staves even when only one staff declares it. Each staff
+/// is pre-parsed independently, so a staff missing `\time` declarations ends
+/// up barred under its stale meter and drifts relative to its siblings (the
+/// pedal.ly bar-58 left-hand shift). Merge the per-staff timelines into one
+/// (the first staff to declare a change at a position wins) and re-bar every
+/// staff whose own timeline differs.
+pub(super) fn unify_staff_time_signatures(staves: &mut [(String, Part)]) {
+    if staves.len() < 2 {
+        return;
+    }
+
+    let timelines: Vec<Vec<(Frac, TimeSignature)>> =
+        staves.iter().map(|(_, p)| part_time_events(p)).collect();
+
+    let mut unified: BTreeMap<Frac, TimeSignature> = BTreeMap::new();
+    for tl in &timelines {
+        for (pos, ts) in tl {
+            unified.entry(*pos).or_insert_with(|| ts.clone());
+        }
+    }
+    if unified.is_empty() {
+        return;
+    }
+
+    let initial = unified
+        .get(&Frac::from_integer(0))
+        .map(|ts| ts.beats_fraction())
+        .unwrap_or_else(|| Frac::from_integer(1)); // default 4/4
+
+    let events: Vec<(Frac, TimeSignature, Frac)> = unified
+        .iter()
+        .map(|(pos, ts)| (*pos, ts.clone(), ts.beats_fraction()))
+        .collect();
+
+    for (i, (_, part)) in staves.iter_mut().enumerate() {
+        let matches_unified = timelines[i].len() == unified.len()
+            && timelines[i]
+                .iter()
+                .zip(unified.iter())
+                .all(|((apos, ats), (bpos, bts))| apos == bpos && ats == bts);
+        if matches_unified {
+            continue;
+        }
+        part.measures = resplit_measures_with_time_changes(&part.measures, &events, initial);
+        renumber_measures(part);
     }
 }

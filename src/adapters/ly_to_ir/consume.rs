@@ -75,22 +75,7 @@ pub(super) fn consume_duration(
         let num_text = state.text(children[*i]).to_string();
         *i += 1;
         if let Ok(num) = num_text.parse::<u32>() {
-            // Count dots
-            let mut dots = 0u8;
-            while *i < children.len() {
-                let node = children[*i];
-                if node.kind() == "punctuation" {
-                    let ptext = punct_text(state, node);
-                    if ptext == "." {
-                        dots += 1;
-                        *i += 1;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
+            let dots = consume_dots(state, children, i);
             // Convert LilyPond number to fraction: 4 → 1/4, 2 → 1/2, 1 → 1/1
             let base = if num > 0 {
                 Ratio::new(1i64, num as i64)
@@ -102,7 +87,38 @@ pub(super) fn consume_duration(
             return dur;
         }
     }
+    // Long durations are escaped words: \breve, \longa, \maxima
+    if *i < children.len() && children[*i].kind() == "escaped_word" {
+        let base = match state.text(children[*i]) {
+            "\\breve" => Some(Ratio::new(2i64, 1)),
+            "\\longa" => Some(Ratio::new(4i64, 1)),
+            "\\maxima" => Some(Ratio::new(8i64, 1)),
+            _ => None,
+        };
+        if let Some(base) = base {
+            *i += 1;
+            let dots = consume_dots(state, children, i);
+            let dur = Duration::dotted(base, dots);
+            state.last_duration = dur.clone();
+            return dur;
+        }
+    }
     state.last_duration.clone()
+}
+
+/// Consume trailing duration dots (`.` punctuation nodes).
+fn consume_dots(state: &WalkState, children: &[Node], i: &mut usize) -> u8 {
+    let mut dots = 0u8;
+    while *i < children.len() {
+        let node = children[*i];
+        if node.kind() == "punctuation" && punct_text(state, node) == "." {
+            dots += 1;
+            *i += 1;
+        } else {
+            break;
+        }
+    }
+    dots
 }
 
 /// Consume an optional `*N` or `*N/M` duration scaling factor.
@@ -574,6 +590,15 @@ pub(super) fn consume_override(state: &mut WalkState, children: &[Node], mut i: 
                 symbols.push(state.text(node).to_string());
                 i += 1;
             }
+            // Property paths with 3+ components (e.g.
+            // `Staff.NoteCollision.merge-differently-dotted`) parse as a
+            // single assignment_lhs/property_expression node.
+            "assignment_lhs" | "property_expression" if !saw_eq => {
+                for component in state.text(node).split('.') {
+                    symbols.push(component.trim().to_string());
+                }
+                i += 1;
+            }
             "punctuation" => {
                 let pt = punct_text(state, node);
                 if pt == "." && !saw_eq {
@@ -619,13 +644,16 @@ pub(super) fn consume_override(state: &mut WalkState, children: &[Node], mut i: 
 
     // If we didn't consume anything useful, at least advance past start
     if i == start_i {
-        // Skip unknown override — try to jump past expression_block or next statement
+        // Skip unknown override — jump past its remnants, but never past
+        // nodes that carry music (a parallel_music or expression_block here
+        // is the next bar, not part of the override).
         while i < children.len() {
             let node = children[i];
-            if node.kind() == "escaped_word" || node.kind() == "symbol" {
-                break;
+            match node.kind() {
+                "escaped_word" | "symbol" | "expression_block" | "parallel_music" | "chord"
+                | "named_context" | "dynamic" => break,
+                _ => i += 1,
             }
-            i += 1;
         }
     }
     i

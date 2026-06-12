@@ -173,6 +173,8 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 
 Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multiset); **LY→IR→LY 33/35** (only example.ly/example2.ly drift, +9 notes — complex multi-voice). Building the scoreboard surfaced and fixed two real CLI LY→LY bugs: top-level `parallel_music`/`named_context` weren't parsed (re-parse yielded 0 notes), and the Music-path emitter emitted relative octave marks without a `\relative` wrapper (now emits absolute).
 
+**Update 2026-06-12:** scoreboard now **LY→IR→LY 35/35** — the example.ly/example2.ly drift was `\addlyrics` inside `<< … >>` being parsed as music (lyric syllables became phantom notes); fixed along with the pedal.ly bar-58 PianoStaff time-signature unification and 12 further conversion bugs (see changelog). Remaining confirmed-but-open: Score-path volta count, two-note tremolo emission, PianoStaff lyrics, cross-staff voice duplication, MIDI conductor track from part[0] only.
+
 ### Epic D: ML Representations (`src/representations/`, modeled on muspy)
 
 | Task | Description | Status |

@@ -1021,6 +1021,12 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
         .last()
         .map(|(_, p)| p.measures.len())
         .unwrap_or(0);
+    // True when the block begins at a clean bar boundary (no partial note
+    // content pending from before the <<). In that case any content pending
+    // when a later sibling branch starts belongs to the previous branch and
+    // must be flushed so it participates in the simultaneous merge —
+    // otherwise it drifts past the block as a phantom measure.
+    let block_started_clean = state.current_voice.is_empty();
 
     while i < children.len() {
         let child = children[i];
@@ -1031,6 +1037,10 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                 // expression blocks.  Treat them like expression_block so they
                 // merge into the existing part rather than creating a new part.
                 if context == "Voice" {
+                    if block_started_clean && !state.current_voice.is_empty() {
+                        state.flush_measure();
+                        state.elapsed_in_measure = Frac::from_integer(0);
+                    }
                     let measures_before = state
                         .parts
                         .last()
@@ -1094,6 +1104,10 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                 // If sibling children already added measures, merge instead
                 // of append — e.g.
                 //   << <<\voiceI \\ \voiceII>> { spacer with fermata } >>
+                if block_started_clean && !state.current_voice.is_empty() {
+                    state.flush_measure();
+                    state.elapsed_in_measure = Frac::from_integer(0);
+                }
                 let measures_before = state
                     .parts
                     .last()
@@ -1211,6 +1225,21 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                         i += 1;
                     }
                     continue;
+                } else if text == "\\addlyrics" {
+                    // `STAFF \addlyrics { ... }` inside <<...>>: lyrics attach
+                    // to the preceding staff. Without this case the lyric
+                    // block fell through to the music walker and syllables
+                    // that are valid pitch names became phantom notes.
+                    if let Some(next) = children.get(i + 1) {
+                        if next.kind() == "expression_block" {
+                            let syllables = parse_lyric_block(state, *next);
+                            state.flush_measure();
+                            if let Some((_, part)) = state.parts.last_mut() {
+                                attach_lyrics_to_part(part, &syllables);
+                            }
+                            i += 1;
+                        }
+                    }
                 } else {
                     let var_name = text.trim_start_matches('\\');
                     state.resolve_variable(var_name);
@@ -1636,6 +1665,11 @@ fn merge_piano_staff_parts(
     if num_staves < 2 {
         return;
     }
+
+    // \time is score-shared in LilyPond: re-bar any staff that is missing
+    // time-signature changes its siblings declare, so measures align by
+    // index before merging.
+    super::merge::unify_staff_time_signatures(&mut state.parts[parts_before..]);
 
     // Drain the extra parts (index parts_before+1 ..)
     let extra_parts: Vec<_> = state.parts.drain(parts_before + 1..).collect();

@@ -12,12 +12,12 @@ use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
 use super::dynamics_velocity::velocity_to_dynamic;
 use super::{AdapterError, Result, ToIrAdapter};
-use crate::ir::articulation::{DynamicMark, Placement};
+use crate::ir::articulation::{DynamicMark, Placement, StartStop, TieEvent};
 use crate::ir::direction::{Direction, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{Clef, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
 use crate::ir::music::MusicDocument;
-use crate::ir::note::{Note, Rest, VoiceElement};
+use crate::ir::note::{Chord, Note, Rest, VoiceElement};
 use crate::ir::part::Part;
 use crate::ir::pitch::{Alter, Pitch, PitchStep};
 use crate::ir::score::{Score, ScoreChild, ScoreMetadata};
@@ -97,9 +97,20 @@ struct RawNote {
     start_tick: u64,
     end_tick: u64,
     midi_key: u8,
-    #[allow(dead_code)] // retained for future velocity → dynamics mapping
     velocity: u8,
     channel: u8,
+}
+
+/// Working copy of a note during measure assembly. Notes that cross a
+/// barline are split here: the in-measure part is emitted with a tie start
+/// and the remainder is re-queued with `tied_from_prev` set.
+#[derive(Clone, Copy)]
+struct WorkNote {
+    start_tick: u64,
+    end_tick: u64,
+    midi_key: u8,
+    velocity: u8,
+    tied_from_prev: bool,
 }
 
 /// Meta events extracted from a track.
@@ -369,7 +380,16 @@ fn build_part(
     let measure_boundaries = compute_measure_boundaries(&time_sigs, divisions, last_tick);
 
     // Build a sorted list of notes by start tick.
-    let mut sorted_notes: Vec<&RawNote> = notes.to_vec();
+    let mut sorted_notes: Vec<WorkNote> = notes
+        .iter()
+        .map(|n| WorkNote {
+            start_tick: n.start_tick,
+            end_tick: n.end_tick,
+            midi_key: n.midi_key,
+            velocity: n.velocity,
+            tied_from_prev: false,
+        })
+        .collect();
     sorted_notes.sort_by_key(|n| (n.start_tick, n.midi_key));
 
     // Determine key context (for sharp/flat note naming)
@@ -478,26 +498,81 @@ fn build_part(
                 }
             }
 
-            // Note duration: clamp to measure boundary.
+            // Group simultaneous note-ons with the same duration into a chord.
+            let mut group_end = note_idx + 1;
+            while group_end < sorted_notes.len()
+                && sorted_notes[group_end].start_tick == n.start_tick
+                && sorted_notes[group_end].end_tick == n.end_tick
+            {
+                group_end += 1;
+            }
+
+            // Note duration: clamp to the measure boundary; a crossing note's
+            // remainder continues into the next measure as a tied note.
+            let crosses = n.end_tick > *m_end;
             let note_end = n.end_tick.min(*m_end);
             let note_ticks = note_end.saturating_sub(n.start_tick);
 
             if let Some(dur) = quantize_ticks(note_ticks, divisions) {
-                let pitch = midi_key_to_pitch(n.midi_key, use_sharps);
-                let mut note = Note::new(pitch, dur);
                 let band = velocity_to_dynamic(n.velocity);
-                if prev_dyn != Some(band) {
-                    note.dynamics.push(DynamicMark {
+                let mark = if prev_dyn != Some(band) {
+                    prev_dyn = Some(band);
+                    Some(DynamicMark {
                         sign: band.to_string(),
                         placement: Placement::default(),
-                    });
-                    prev_dyn = Some(band);
+                    })
+                } else {
+                    None
+                };
+                let mut group_notes: Vec<Note> = sorted_notes[note_idx..group_end]
+                    .iter()
+                    .map(|wn| {
+                        let pitch = midi_key_to_pitch(wn.midi_key, use_sharps);
+                        let mut note = Note::new(pitch, dur.clone());
+                        if wn.tied_from_prev {
+                            note.ties.push(TieEvent {
+                                tie_type: StartStop::Stop,
+                            });
+                        }
+                        if crosses {
+                            note.ties.push(TieEvent {
+                                tie_type: StartStop::Start,
+                            });
+                        }
+                        note
+                    })
+                    .collect();
+                if let Some(mark) = mark {
+                    if let Some(first) = group_notes.first_mut() {
+                        first.dynamics.push(mark);
+                    }
                 }
-                voice_elements.push(VoiceElement::Note(Box::new(note)));
+                if group_notes.len() == 1 {
+                    voice_elements.push(VoiceElement::Note(Box::new(
+                        group_notes.pop().expect("one note"),
+                    )));
+                } else {
+                    voice_elements.push(VoiceElement::Chord(Chord::new(dur, group_notes)));
+                }
             }
 
             cursor = note_end;
-            note_idx += 1;
+            if crosses {
+                // Re-queue the remainder at its sorted position so the next
+                // measure emits it with the closing tie.
+                let moved: Vec<WorkNote> = sorted_notes.drain(note_idx..group_end).collect();
+                for mut wn in moved {
+                    wn.start_tick = *m_end;
+                    wn.tied_from_prev = true;
+                    let pos = sorted_notes.partition_point(|x| {
+                        (x.start_tick, x.midi_key) <= (wn.start_tick, wn.midi_key)
+                    });
+                    sorted_notes.insert(pos, wn);
+                }
+                // note_idx unchanged: draining shifted the remaining notes left.
+            } else {
+                note_idx = group_end;
+            }
         }
 
         // Fill remaining measure time with rest.
@@ -698,6 +773,7 @@ fn midi_key_to_pitch(midi_key: u8, use_sharps: bool) -> Pitch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::articulation::StartStop;
 
     #[test]
     fn test_midi_key_to_pitch_middle_c() {
@@ -738,6 +814,87 @@ mod tests {
             assert_eq!(p.midi_number(), key as i32, "sharp key={key}");
             let p = midi_key_to_pitch(key, false);
             assert_eq!(p.midi_number(), key as i32, "flat key={key}");
+        }
+    }
+
+    fn raw(start: u64, end: u64, key: u8) -> RawNote {
+        RawNote {
+            start_tick: start,
+            end_tick: end,
+            midi_key: key,
+            velocity: 80,
+            channel: 0,
+        }
+    }
+
+    fn build_test_part(notes: &[RawNote], divisions: u32) -> Part {
+        let refs: Vec<&RawNote> = notes.iter().collect();
+        build_part(&refs, &TrackMeta::default(), divisions, "P1", "test", 0, 0)
+    }
+
+    #[test]
+    fn test_simultaneous_notes_become_chord() {
+        // Three simultaneous note-ons with the same duration are a chord, not
+        // three sequential quarter notes (which would inflate the rhythm).
+        let notes = [
+            raw(0, 480, 60),
+            raw(0, 480, 64),
+            raw(0, 480, 67),
+            raw(480, 960, 62),
+        ];
+        let part = build_test_part(&notes, 480);
+        let elements = &part.measures[0].voices[0].elements;
+        match &elements[0] {
+            VoiceElement::Chord(c) => {
+                let keys: Vec<u8> = c
+                    .notes
+                    .iter()
+                    .map(|n| n.pitch.midi_number() as u8)
+                    .collect();
+                assert_eq!(keys, vec![60, 64, 67]);
+                assert_eq!(c.duration.base, Frac::new(1, 4));
+            }
+            other => panic!("expected a chord, got {other:?}"),
+        }
+        match &elements[1] {
+            VoiceElement::Note(n) => assert_eq!(n.pitch.midi_number(), 62),
+            other => panic!("expected a note after the chord, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_note_crossing_barline_is_tied() {
+        // A half note starting on beat 4 of a 4/4 bar (divisions=480) crosses
+        // the barline: it must split into two tied quarters, not lose its
+        // second half.
+        let notes = [raw(0, 1440, 60), raw(1440, 2400, 64)];
+        let part = build_test_part(&notes, 480);
+        assert!(part.measures.len() >= 2, "need 2 measures");
+
+        let m1 = &part.measures[0].voices[0].elements;
+        let last = m1.last().expect("first measure has elements");
+        match last {
+            VoiceElement::Note(n) => {
+                assert_eq!(n.pitch.midi_number(), 64);
+                assert_eq!(n.duration.base, Frac::new(1, 4), "clamped to barline");
+                assert!(
+                    n.ties.iter().any(|t| t.tie_type == StartStop::Start),
+                    "crossing note must start a tie"
+                );
+            }
+            other => panic!("expected the crossing note, got {other:?}"),
+        }
+        let m2 = &part.measures[1].voices[0].elements;
+        match &m2[0] {
+            VoiceElement::Note(n) => {
+                assert_eq!(n.pitch.midi_number(), 64, "remainder must not be dropped");
+                assert_eq!(n.duration.base, Frac::new(1, 4));
+                assert!(
+                    n.ties.iter().any(|t| t.tie_type == StartStop::Stop),
+                    "continuation must close the tie"
+                );
+            }
+            other => panic!("expected the tied continuation, got {other:?}"),
         }
     }
 

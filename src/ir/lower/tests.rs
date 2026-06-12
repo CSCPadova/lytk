@@ -316,4 +316,36 @@ mod tests {
         let parts = score.parts();
         assert_eq!(parts[0].measures[0].voices[0].elements.len(), 2);
     }
+
+    #[test]
+    fn test_lower_grace_note_keeps_grace_flag() {
+        // Grace content was walked with time restored but the produced notes
+        // were NOT flagged is_grace — they came out as regular notes
+        // overlapping the main note.
+        let grace = Music::Grace {
+            content: Box::new(Music::Note {
+                pitch: Pitch::new(PitchStep::D, 4),
+                duration: Duration::eighth(),
+                annotations: vec![],
+            }),
+            slash: true,
+        };
+        let music = Music::Sequential(vec![grace, c4_quarter(), d4_quarter()])
+            .in_context(ContextType::Staff, None);
+
+        let score = lower_music_to_score(&music);
+        let elements = &score.parts()[0].measures[0].voices[0].elements;
+        assert_eq!(elements.len(), 3);
+        match &elements[0] {
+            VoiceElement::Note(n) => {
+                assert!(n.is_grace, "grace note must keep its is_grace flag");
+                assert!(n.grace_slash, "acciaccatura slash must survive");
+            }
+            other => panic!("expected the grace note first, got {other:?}"),
+        }
+        match &elements[1] {
+            VoiceElement::Note(n) => assert!(!n.is_grace),
+            other => panic!("expected a regular note, got {other:?}"),
+        }
+    }
 }

@@ -178,6 +178,13 @@ fn convert_measure(
             mxml::MeasureElement::Direction(dir) => {
                 if let Some(mut ir_dir) = convert_direction(dir) {
                     ir_dir.offset = forward_position as i32;
+                    // The exporters position directions via offset_frac
+                    // (whole notes); without it a mid-measure direction is
+                    // re-emitted at the start of the measure.
+                    if forward_position > 0 && divisions > 0 {
+                        ir_dir.offset_frac =
+                            crate::ir::duration::Frac::new(forward_position, 4 * divisions);
+                    }
                     measure.directions.push(ir_dir);
                 }
             }

@@ -2780,4 +2780,191 @@ middle = { \inner e' f' }
         let part = &score.parts()[0];
         assert_eq!(part.midi_instrument, "flute");
     }
+
+    #[test]
+    fn test_breve_longa_durations() {
+        // `c\breve` / `d\longa` were silently ignored (escaped_word, not
+        // unsigned_integer), so the notes inherited the previous duration.
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ c\breve d\longa e\breve. }"#)
+            .unwrap();
+        let notes: Vec<Frac> = score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .map(voice_element_duration)
+            .collect();
+        assert_eq!(
+            notes,
+            vec![
+                Frac::from_integer(2),
+                Frac::from_integer(4),
+                Frac::from_integer(3)
+            ],
+            "breve = 2 wholes, longa = 4, dotted breve = 3"
+        );
+    }
+
+    #[test]
+    fn test_compound_time_signature_parse() {
+        // `\time 3+2/8` parses as CST nodes `3` `+` `2/8`; only the trailing
+        // fraction was read, so the meter was silently mis-set to 2/8.
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \time 3+2/8 c'8 c' c' c' c' d'8 d' d' d' d' }"#)
+            .unwrap();
+        let part = &score.parts()[0];
+        let ts = part.measures[0]
+            .attributes
+            .as_ref()
+            .and_then(|a| a.time.as_ref())
+            .expect("time signature");
+        assert_eq!(ts.beats, "3+2");
+        assert_eq!(ts.beat_type, 8);
+        assert_eq!(
+            part.measures.len(),
+            2,
+            "ten eighths under 5/8 must split into exactly 2 measures"
+        );
+    }
+
+    #[test]
+    fn test_addlyrics_inside_parallel_block() {
+        // `\addlyrics` inside `<< ... >>` fell through to the music walker, so
+        // lyric syllables that are valid pitch names became phantom notes.
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"\score { <<
+  \new Staff = "S" { c'4 d'4 e'4 f'4 }
+  \addlyrics { a e la la }
+  \new Staff = "B" { c4 c4 c4 c4 }
+>> }"#,
+            )
+            .unwrap();
+        let parts = score.parts();
+        assert_eq!(parts.len(), 2);
+        let s_notes: Vec<_> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter(|e| matches!(e, VoiceElement::Note(_)))
+            .collect();
+        assert_eq!(
+            s_notes.len(),
+            4,
+            "lyric syllables must not become phantom notes"
+        );
+        let has_lyrics = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .any(|e| matches!(e, VoiceElement::Note(n) if !n.lyrics.is_empty()));
+        assert!(has_lyrics, "lyrics must attach to the preceding staff");
+    }
+
+    #[test]
+    fn test_parallel_context_voice_no_phantom_measure() {
+        // `<< { v1 } \context Voice = "1" { v2 } >>` (no \\ separator): the
+        // first branch's trailing bar was left pending while the second
+        // branch was merged, so it drifted past the block as a phantom extra
+        // measure (pedal.ly RH bars 75–94, +3/8 of drift).
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"{ \time 3/8 a4 g8 \voiceOne << {f4.~ f4. c'4.} \context Voice="1" { \voiceTwo f,8 f f f8 f f f8 f f } >> \oneVoice a4 g8 }"#,
+            )
+            .unwrap();
+        let part = &score.parts()[0];
+        assert_eq!(
+            part.measures.len(),
+            5,
+            "expected 1 + 3 parallel + 1 measures, got {:?}",
+            part.measures.len()
+        );
+        for mi in 1..4 {
+            assert_eq!(
+                part.measures[mi].voices.len(),
+                2,
+                "parallel measure {} should hold both voices",
+                mi + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_override_with_property_path_does_not_swallow_music() {
+        // A 3-component property path (`Staff.NoteCollision.merge-differently-dotted`)
+        // parses as a single `assignment_lhs` CST node, which consume_override
+        // did not recognize; its skip-unknown fallback then advanced until the
+        // next symbol/escaped_word, swallowing the entire following
+        // `<< { } \\ { } >>` bar (pedal.ly left hand, bars 51/146/…).
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(
+                r#"{ \time 3/8
+\override Staff.NoteCollision.merge-differently-dotted = ##t
+<< {a8 e'8 b'8} \\ {a,4.} >>
+<< {r8 e4} \\ {a,4.} >> }"#,
+            )
+            .unwrap();
+        let part = &score.parts()[0];
+        let total: Frac = part
+            .measures
+            .iter()
+            .map(|m| {
+                m.voices
+                    .iter()
+                    .map(|v| {
+                        v.elements
+                            .iter()
+                            .map(voice_element_duration)
+                            .fold(Frac::from_integer(0), |a, d| a + d)
+                    })
+                    .max()
+                    .unwrap_or_else(|| Frac::from_integer(0))
+            })
+            .fold(Frac::from_integer(0), |a, d| a + d);
+        assert_eq!(
+            total,
+            Frac::new(6, 8),
+            "both 3/8 bars must survive an unknown \\override with a property path"
+        );
+    }
+
+    #[test]
+    fn test_duration_scale_carries_forward() {
+        // LilyPond remembers the *N/M factor as part of the duration: in
+        // `a32*8/7( e a ...)` every following durationless note inherits
+        // 1/32 × 8/7 = 1/28, so seven of them plus a half note fill exactly
+        // a 3/4 bar (pedal.ly measure 1).
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \time 3/4 a32*8/7 e' a' b' e' a' b' a'2 }"#)
+            .unwrap();
+        let part = &score.parts()[0];
+        let total: Frac = part.measures[0]
+            .voices
+            .iter()
+            .flat_map(|v| &v.elements)
+            .map(voice_element_duration)
+            .fold(Frac::from_integer(0), |a, d| a + d);
+        assert_eq!(
+            total,
+            Frac::new(3, 4),
+            "seven septuplet 32nds + half note must fill the 3/4 bar"
+        );
+        let first = part.measures[0].voices[0].elements.first().unwrap();
+        let second = part.measures[0].voices[0].elements.get(1).unwrap();
+        assert_eq!(voice_element_duration(first), Frac::new(1, 28));
+        assert_eq!(
+            voice_element_duration(second),
+            Frac::new(1, 28),
+            "the *8/7 factor must carry forward to durationless notes"
+        );
+    }
 }

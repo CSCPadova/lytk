@@ -29,8 +29,8 @@ use std::path::PathBuf;
 // Committed baselines (the non-decreasing-fidelity gate).
 // Bump these UP when fidelity improves; never down.
 // ---------------------------------------------------------------------------
-const LY_NOTES_BASELINE: usize = 33;
-const LY_PITCHES_BASELINE: usize = 33;
+const LY_NOTES_BASELINE: usize = 35;
+const LY_PITCHES_BASELINE: usize = 35;
 const XML_NOTES_BASELINE: usize = 152;
 const XML_PITCHES_BASELINE: usize = 152;
 

@@ -2,6 +2,12 @@
 
 use crate::ir::Part;
 
+/// Escape a string for embedding in a LilyPond double-quoted string
+/// (header fields, instrument names, …).
+pub(super) fn escape_ly_string(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Sanitise a part id/name into a valid LilyPond variable name.
 pub(super) fn part_var_name(part: &Part) -> String {
     let raw = if !part.part_id.is_empty() {
@@ -27,7 +33,9 @@ pub(super) fn part_var_name(part: &Part) -> String {
 
     if !digits.is_empty() {
         if let Ok(n) = digits.parse::<usize>() {
-            name.push_str(&index_to_alpha(n));
+            // n + 1 keeps the suffix bijective for 0-based ids: P0 and P1
+            // previously both mapped to "pA" and one part shadowed the other.
+            name.push_str(&index_to_alpha(n + 1));
         }
     }
 

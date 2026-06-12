@@ -17,12 +17,16 @@ pub(super) enum TimedEvent {
         duration: Duration,
         annotations: Vec<Annotation>,
         voice: u8,
+        /// `Some(slash)` when inside a `Music::Grace` wrapper.
+        grace: Option<bool>,
     },
     Chord {
         pitches: Vec<(Pitch, Vec<Annotation>)>,
         duration: Duration,
         annotations: Vec<Annotation>,
         voice: u8,
+        /// `Some(slash)` when inside a `Music::Grace` wrapper.
+        grace: Option<bool>,
     },
     Rest {
         duration: Duration,
@@ -79,6 +83,8 @@ pub(super) struct LowerState {
     pub(super) current_time_sig: Frac,
     /// Current staff index we're adding events to.
     pub(super) current_staff: Option<usize>,
+    /// `Some(slash)` while walking the content of a `Music::Grace` wrapper.
+    pub(super) in_grace: Option<bool>,
     /// Metadata collected from the document.
     pub(super) metadata: ScoreMetadata,
 }
@@ -92,6 +98,7 @@ impl LowerState {
             voice: 1,
             current_time_sig: Frac::new(1, 1), // default 4/4
             current_staff: None,
+            in_grace: None,
             metadata,
         }
     }

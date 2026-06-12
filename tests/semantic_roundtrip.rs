@@ -543,3 +543,119 @@ fn pedal_piano_clefs_per_staff() {
         "MusicXML should emit per-staff numbered clefs"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PianoStaff time-signature unification (pedal.ly bar-58 regression)
+//
+// In LilyPond a \time change goes to the score-shared Timing context, so it
+// re-bars *all* staves even when only one staff declares it. Each staff is
+// pre-parsed independently, so a staff missing \time declarations was barred
+// under its stale meter and drifted relative to its siblings.
+// ---------------------------------------------------------------------------
+
+/// Per-measure bar fill of each staff of a multi-staff part: the maximum
+/// voice duration among the voices belonging to that staff (grace notes
+/// excluded — they consume no measure time).
+fn staff_measure_fills(
+    part: &_core::ir::part::Part,
+) -> Vec<std::collections::BTreeMap<u8, _core::ir::duration::Frac>> {
+    use _core::ir::duration::Frac;
+    use _core::ir::note::VoiceElement;
+    part.measures
+        .iter()
+        .map(|m| {
+            let mut fills = std::collections::BTreeMap::new();
+            for v in &m.voices {
+                let staff = v
+                    .elements
+                    .iter()
+                    .map(|e| match e {
+                        VoiceElement::Note(n) => n.staff,
+                        VoiceElement::Rest(r) => r.staff,
+                        VoiceElement::Chord(c) => c.staff,
+                    })
+                    .next()
+                    .unwrap_or(1);
+                let dur = v
+                    .elements
+                    .iter()
+                    .filter(|e| !matches!(e, VoiceElement::Note(n) if n.is_grace))
+                    .map(|e| match e {
+                        VoiceElement::Note(n) => n.duration.actual_duration(),
+                        VoiceElement::Rest(r) => r.duration.actual_duration(),
+                        VoiceElement::Chord(c) => c.duration.actual_duration(),
+                    })
+                    .fold(Frac::from_integer(0), |a, d| a + d);
+                let entry = fills.entry(staff).or_insert_with(|| Frac::from_integer(0));
+                if dur > *entry {
+                    *entry = dur;
+                }
+            }
+            fills
+        })
+        .collect()
+}
+
+#[test]
+fn piano_staff_time_unification_minimal() {
+    // The upper staff declares a \time change the lower staff omits. The lower
+    // staff must be re-barred to the shared timeline: 2/4, 3/4, 3/4.
+    let src = r#"
+upper = { \time 2/4 c'4 d' \time 3/4 e'4 f' g' a'4 b' c'' }
+lower = { \time 2/4 c4 d e4 f g a4 b c' }
+\score { \new PianoStaff << \new Staff \upper \new Staff \lower >> }
+"#;
+    let score = LyToIrAdapter::new().convert_str(src).expect("LY → Score");
+    let part = &score.parts()[0];
+    assert_eq!(part.staves, 2, "expected a 2-staff piano part");
+    assert_eq!(
+        part.measures.len(),
+        3,
+        "expected 3 measures (2/4 + 3/4 + 3/4), got {}",
+        part.measures.len()
+    );
+    use _core::ir::duration::Frac;
+    let expected = [Frac::new(1, 2), Frac::new(3, 4), Frac::new(3, 4)];
+    for (i, fills) in staff_measure_fills(part).iter().enumerate() {
+        for (staff, fill) in fills {
+            assert_eq!(
+                *fill,
+                expected[i],
+                "measure {} staff {staff}: fill {fill} != expected {}",
+                i + 1,
+                expected[i]
+            );
+        }
+    }
+}
+
+#[test]
+fn pedal_piano_staff_bars_aligned_across_staves() {
+    // pedal.ly: the RH (voicea) declares \time 4/4 sections the LH (voiceb)
+    // omits. Without time-signature unification the LH stays barred in 3/8
+    // and shifts relative to the RH (visible from bar 58 on).
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("pedal.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    assert_eq!(part.staves, 2, "pedal.ly is a 2-staff piano part");
+
+    let fills = staff_measure_fills(part);
+    let mut misaligned = Vec::new();
+    // The final measure may legitimately be ragged (trailing content).
+    for (i, f) in fills.iter().enumerate().take(fills.len().saturating_sub(1)) {
+        if f.len() >= 2 {
+            let mut vals = f.values();
+            let first = vals.next().unwrap();
+            if !vals.all(|v| v == first) {
+                misaligned.push((i + 1, f.clone()));
+            }
+        }
+    }
+    assert!(
+        misaligned.is_empty(),
+        "staves disagree on bar fill in {} measures: {:?}",
+        misaligned.len(),
+        &misaligned[..misaligned.len().min(10)]
+    );
+}

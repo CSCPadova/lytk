@@ -2217,3 +2217,52 @@ fn test_parse_time_symbol() {
         .unwrap();
     assert_eq!(time.symbol.as_deref(), Some("common"));
 }
+
+#[test]
+fn test_mid_measure_direction_position_roundtrip() {
+    // A dynamic placed after beat 2 must keep its position on XML → IR → XML
+    // (offset_frac is what the exporter uses; it was never set on import, so
+    // the dynamic snapped back to the start of the measure).
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list>
+<score-part id="P1"><part-name>X</part-name></score-part>
+  </part-list>
+  <part id="P1">
+<measure number="1">
+  <attributes>
+    <divisions>1</divisions>
+    <time><beats>4</beats><beat-type>4</beat-type></time>
+  </attributes>
+  <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+  <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+  <direction placement="below">
+    <direction-type><dynamics><f/></dynamics></direction-type>
+  </direction>
+  <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+  <note><pitch><step>F</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
+</measure>
+  </part>
+</score-partwise>"#;
+
+    let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+    let dir = &score.parts()[0].measures[0].directions[0];
+    assert_eq!(
+        dir.offset_frac,
+        crate::ir::duration::Frac::new(1, 2),
+        "direction after two quarters sits at 1/2 whole note"
+    );
+
+    // Round-trip: the re-imported direction must keep its position.
+    use crate::adapters::FromIrAdapter;
+    let out = crate::adapters::ir_to_mxml::IrToMxmlAdapter::new()
+        .convert(&score)
+        .unwrap();
+    let score2 = MxmlToIrAdapter::new().convert_str(&out).unwrap();
+    let dir2 = &score2.parts()[0].measures[0].directions[0];
+    assert_eq!(
+        dir2.offset_frac,
+        crate::ir::duration::Frac::new(1, 2),
+        "mid-measure direction must not snap to measure start on round-trip"
+    );
+}

@@ -145,25 +145,98 @@ fn test_emit_rest_types() {
 #[test]
 fn test_emit_key_signatures() {
     assert_eq!(
-        key_to_ly(&KeySignature {
-            fifths: 0,
-            mode: KeyMode::Major
-        }),
+        key_to_ly(
+            &KeySignature {
+                fifths: 0,
+                mode: KeyMode::Major
+            },
+            PitchLanguage::Nederlands
+        ),
         "\\key c \\major"
     );
     assert_eq!(
-        key_to_ly(&KeySignature {
-            fifths: 2,
-            mode: KeyMode::Major
-        }),
+        key_to_ly(
+            &KeySignature {
+                fifths: 2,
+                mode: KeyMode::Major
+            },
+            PitchLanguage::Nederlands
+        ),
         "\\key d \\major"
     );
     assert_eq!(
-        key_to_ly(&KeySignature {
-            fifths: -3,
-            mode: KeyMode::Minor
-        }),
+        key_to_ly(
+            &KeySignature {
+                fifths: -3,
+                mode: KeyMode::Minor
+            },
+            PitchLanguage::Nederlands
+        ),
         "\\key c \\minor"
+    );
+}
+
+#[test]
+fn test_part_var_names_unique_for_zero_based_ids() {
+    // P0 and P1 both mapped to "pA" (index_to_alpha(0) == index_to_alpha(1)),
+    // so one part's variable shadowed the other on compile.
+    let p0 = crate::ir::Part::new("P0");
+    let p1 = crate::ir::Part::new("P1");
+    assert_ne!(
+        helpers::part_var_name(&p0),
+        helpers::part_var_name(&p1),
+        "0-based part ids must map to distinct LilyPond variables"
+    );
+}
+
+#[test]
+fn test_header_strings_escaped() {
+    let mut score = Score::default();
+    score.metadata.title = Some(r#"The "Great" Fugue"#.to_string());
+    let adapter = IrToLyAdapter::new();
+    let ly = adapter.convert(&score).unwrap();
+    assert!(
+        ly.contains(r#"title = "The \"Great\" Fugue""#),
+        "embedded quotes must be escaped, got:\n{ly}"
+    );
+}
+
+#[test]
+fn test_emit_key_signature_matches_language() {
+    // The tonic must be spelled in the emitted \language: a Nederlands "fis"
+    // under \language "english" does not compile and was silently dropped on
+    // re-parse.
+    assert_eq!(
+        key_to_ly(
+            &KeySignature {
+                fifths: 6,
+                mode: KeyMode::Major
+            },
+            PitchLanguage::Nederlands
+        ),
+        "\\key fis \\major"
+    );
+    assert_eq!(
+        key_to_ly(
+            &KeySignature {
+                fifths: 6,
+                mode: KeyMode::Major
+            },
+            PitchLanguage::English
+        ),
+        "\\key fs \\major"
+    );
+    // Canonical Deutsch spelling ("ees", same as note emission; LilyPond's
+    // deutsch.ly accepts it as an alias of "es").
+    assert_eq!(
+        key_to_ly(
+            &KeySignature {
+                fifths: -3,
+                mode: KeyMode::Major
+            },
+            PitchLanguage::Deutsch
+        ),
+        "\\key ees \\major"
     );
 }
 

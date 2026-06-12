@@ -52,8 +52,12 @@ pub(super) fn walk_music(music: &Music, state: &mut LowerState) {
                 duration: duration.clone(),
                 annotations: annotations.clone(),
                 voice: state.voice,
+                grace: state.in_grace,
             });
-            state.time += dur_frac;
+            // Grace notes do not consume time.
+            if state.in_grace.is_none() {
+                state.time += dur_frac;
+            }
         }
 
         Music::Chord {
@@ -67,8 +71,11 @@ pub(super) fn walk_music(music: &Music, state: &mut LowerState) {
                 duration: duration.clone(),
                 annotations: annotations.clone(),
                 voice: state.voice,
+                grace: state.in_grace,
             });
-            state.time += dur_frac;
+            if state.in_grace.is_none() {
+                state.time += dur_frac;
+            }
         }
 
         Music::Rest {
@@ -122,12 +129,13 @@ pub(super) fn walk_music(music: &Music, state: &mut LowerState) {
             state.push_event(TimedEvent::Barline(barline.clone()));
         }
 
-        Music::Grace { content, slash: _ } => {
-            // Grace notes don't advance time. Walk content but restore time after.
-            let saved_time = state.time;
-            // TODO: Mark resulting notes as grace in the timed events
+        Music::Grace { content, slash } => {
+            // Grace notes don't advance time; the notes inside are flagged so
+            // they come out of the lowering with is_grace/grace_slash set.
+            let saved_grace = state.in_grace;
+            state.in_grace = Some(*slash);
             walk_music(content, state);
-            state.time = saved_time;
+            state.in_grace = saved_grace;
         }
 
         Music::Tuplet {

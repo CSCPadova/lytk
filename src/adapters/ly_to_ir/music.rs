@@ -75,9 +75,11 @@ pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
                 i += 1;
                 // Consume duration after chord
                 let mut dur = consume_duration(state, &children, &mut i);
-                // Apply *N/M duration scaling
+                // Apply *N/M duration scaling (factor carries forward, as
+                // for notes)
                 if let Some(scale) = consume_duration_scale(state, &children, &mut i) {
                     dur.base *= scale;
+                    state.last_duration = dur.clone();
                 }
                 let attachments = consume_attachments(state, &children, &mut i);
                 let chord = build_chord(state, chord_node, dur);
@@ -253,9 +255,12 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 // Consume accidental forcing marks (! = forced, ? = cautionary)
                 let acc_display = consume_accidental_marks(state, children, &mut i);
                 let mut dur = consume_duration(state, children, &mut i);
-                // Apply *N/M duration scaling (e.g. a32*8/7)
+                // Apply *N/M duration scaling (e.g. a32*8/7). LilyPond
+                // remembers the factor as part of the duration, so it must
+                // carry forward to following durationless notes.
                 if let Some(scale) = consume_duration_scale(state, children, &mut i) {
                     dur.base *= scale;
+                    state.last_duration = dur.clone();
                 }
                 let tremolo = consume_tremolo(state, children, &mut i, &dur);
                 let attachments = consume_attachments(state, children, &mut i);
@@ -316,7 +321,19 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             }
         }
         "\\time" => {
-            // \time <fraction>
+            // \time <fraction>, or compound \time 3+2/8 which the grammar
+            // splits into leading `<uint> +` pairs before the final fraction.
+            let mut extra_beats: Vec<u32> = Vec::new();
+            while i + 1 < children.len()
+                && children[i].kind() == "unsigned_integer"
+                && children[i + 1].kind() == "punctuation"
+                && punct_text(state, children[i + 1]) == "+"
+            {
+                if let Ok(n) = state.text(children[i]).parse::<u32>() {
+                    extra_beats.push(n);
+                }
+                i += 2;
+            }
             if let Some(frac_node) = children.get(i) {
                 if frac_node.kind() == "fraction" {
                     let frac_text = state.text(*frac_node);
@@ -326,12 +343,23 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         if state.elapsed_in_measure > Frac::from_integer(0) {
                             state.bar_check();
                         }
+                        let beats = if extra_beats.is_empty() {
+                            num.to_string()
+                        } else {
+                            extra_beats
+                                .iter()
+                                .chain(std::iter::once(&num))
+                                .map(|b| b.to_string())
+                                .collect::<Vec<_>>()
+                                .join("+")
+                        };
+                        let total: u32 = extra_beats.iter().sum::<u32>() + num;
                         let ts = TimeSignature {
-                            beats: num.to_string(),
+                            beats,
                             beat_type: den as u8,
                             symbol: None,
                         };
-                        state.set_time_signature(num, den);
+                        state.set_time_signature(total, den);
                         let measure = state.ensure_measure();
                         if measure.attributes.is_none() {
                             measure.attributes = Some(MeasureAttributes::default());

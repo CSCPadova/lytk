@@ -161,15 +161,7 @@ fn split_events_into_measures(events: &[(Frac, TimedEvent)]) -> Vec<Measure> {
     // Compute measure boundaries
     let max_time = events
         .iter()
-        .map(|(t, e)| {
-            *t + match e {
-                TimedEvent::Note { duration, .. }
-                | TimedEvent::Chord { duration, .. }
-                | TimedEvent::Rest { duration, .. }
-                | TimedEvent::Skip { duration, .. } => duration.actual_duration(),
-                _ => Frac::from_integer(0),
-            }
-        })
+        .map(|(t, e)| *t + event_duration(e))
         .max()
         .unwrap_or(Frac::from_integer(0));
 
@@ -328,8 +320,9 @@ fn collect_voice_events(
         let ev_time = ev.0;
         let ev_end = ev_time + event_duration(&ev.1);
 
-        // Include event if it overlaps with [start, end)
-        if ev_time < end && ev_end > start {
+        // Include event if it overlaps with [start, end). Zero-duration
+        // events (grace notes) belong to the measure they start in.
+        if ev_time < end && (ev_end > start || (ev_end == start && ev_time == start)) {
             voice_map.entry(voice_num).or_default().push(ev);
         }
     }
@@ -339,9 +332,12 @@ fn collect_voice_events(
     result
 }
 
-/// Get the duration of a timed event.
+/// Get the duration of a timed event. Grace notes consume no measure time.
 fn event_duration(event: &TimedEvent) -> Frac {
     match event {
+        TimedEvent::Note { grace, .. } | TimedEvent::Chord { grace, .. } if grace.is_some() => {
+            Frac::from_integer(0)
+        }
         TimedEvent::Note { duration, .. }
         | TimedEvent::Chord { duration, .. }
         | TimedEvent::Rest { duration, .. }
@@ -393,11 +389,16 @@ fn timed_event_to_voice_element(
             pitch,
             duration,
             annotations,
+            grace,
             ..
         } => {
             let mut n = Note::new(*pitch, duration.clone());
             n.voice = voice_num;
             n.staff = staff_num;
+            if let Some(slash) = grace {
+                n.is_grace = true;
+                n.grace_slash = *slash;
+            }
             apply_annotations_to_note(&mut n, annotations);
             Some(VoiceElement::Note(Box::new(n)))
         }
@@ -406,6 +407,7 @@ fn timed_event_to_voice_element(
             pitches,
             duration,
             annotations,
+            grace,
             ..
         } => {
             let notes: Vec<Note> = pitches
@@ -414,6 +416,10 @@ fn timed_event_to_voice_element(
                     let mut n = Note::new(*p, duration.clone());
                     n.voice = voice_num;
                     n.staff = staff_num;
+                    if let Some(slash) = grace {
+                        n.is_grace = true;
+                        n.grace_slash = *slash;
+                    }
                     apply_annotations_to_note(&mut n, anns);
                     n
                 })
