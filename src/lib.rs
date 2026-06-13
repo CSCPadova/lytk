@@ -413,6 +413,171 @@ fn retrograde(score: &PyScore) -> PyScore {
 }
 
 // ---------------------------------------------------------------------------
+// ML representations (Epic D) — numpy interop
+// ---------------------------------------------------------------------------
+
+use numpy::ndarray::{Array1, Array2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use representations::event_sequence::{EventOptions, EventSequence};
+use representations::note_array::{NoteArray, NoteRow};
+use representations::piano_roll::{PianoRoll, PITCH_COUNT};
+
+/// Encode a :class:`MusicDocument` as a note-based array of shape ``(N, 4)``
+/// with integer columns ``(onset, duration, pitch, velocity)`` in time steps
+/// (``resolution`` = steps per quarter note).
+#[pyfunction]
+#[pyo3(signature = (doc, resolution=representations::note_array::DEFAULT_RESOLUTION))]
+fn to_note_array<'py>(
+    py: Python<'py>,
+    doc: &PyMusicDocument,
+    resolution: u16,
+) -> Bound<'py, PyArray2<i32>> {
+    let arr = representations::to_note_array(&doc.inner, resolution);
+    let n = arr.notes.len();
+    let mut data = Array2::<i32>::zeros((n, 4));
+    for (i, row) in arr.notes.iter().enumerate() {
+        data[[i, 0]] = row.onset as i32;
+        data[[i, 1]] = row.duration as i32;
+        data[[i, 2]] = row.pitch as i32;
+        data[[i, 3]] = row.velocity as i32;
+    }
+    data.into_pyarray_bound(py)
+}
+
+/// Decode a note-based array of shape ``(N, 4)`` back into a
+/// :class:`MusicDocument`.
+#[pyfunction]
+#[pyo3(signature = (array, resolution=representations::note_array::DEFAULT_RESOLUTION))]
+fn from_note_array(array: PyReadonlyArray2<i32>, resolution: u16) -> PyResult<PyMusicDocument> {
+    let view = array.as_array();
+    if view.ncols() != 4 {
+        return Err(PyValueError::new_err(
+            "note array must have shape (N, 4): (onset, duration, pitch, velocity)",
+        ));
+    }
+    let notes = view
+        .rows()
+        .into_iter()
+        .map(|r| NoteRow {
+            onset: r[0].max(0) as u32,
+            duration: r[1].max(0) as u32,
+            pitch: r[2].clamp(0, 127) as u8,
+            velocity: r[3].clamp(0, 127) as u8,
+        })
+        .collect();
+    let na = NoteArray { resolution, notes };
+    Ok(PyMusicDocument {
+        inner: representations::from_note_array(&na),
+    })
+}
+
+/// Encode a :class:`MusicDocument` as an event sequence (1-D array of event
+/// codes). See :mod:`lytk` docs for the vocabulary layout.
+#[pyfunction]
+#[pyo3(signature = (
+    doc,
+    resolution=representations::note_array::DEFAULT_RESOLUTION,
+    max_time_shift=representations::DEFAULT_MAX_TIME_SHIFT,
+    velocity_bins=representations::DEFAULT_VELOCITY_BINS,
+    encode_velocity=true,
+))]
+fn to_event_sequence<'py>(
+    py: Python<'py>,
+    doc: &PyMusicDocument,
+    resolution: u16,
+    max_time_shift: u32,
+    velocity_bins: u8,
+    encode_velocity: bool,
+) -> Bound<'py, PyArray1<i64>> {
+    let arr = representations::to_note_array(&doc.inner, resolution);
+    let opts = EventOptions {
+        max_time_shift,
+        velocity_bins,
+        encode_velocity,
+    };
+    let seq = representations::to_event_sequence(&arr, &opts);
+    let codes: Vec<i64> = seq.codes.iter().map(|&c| c as i64).collect();
+    Array1::from(codes).into_pyarray_bound(py)
+}
+
+/// Decode an event-sequence array back into a :class:`MusicDocument`.
+#[pyfunction]
+#[pyo3(signature = (
+    array,
+    resolution=representations::note_array::DEFAULT_RESOLUTION,
+    max_time_shift=representations::DEFAULT_MAX_TIME_SHIFT,
+    velocity_bins=representations::DEFAULT_VELOCITY_BINS,
+    encode_velocity=true,
+))]
+fn from_event_sequence(
+    array: PyReadonlyArray1<i64>,
+    resolution: u16,
+    max_time_shift: u32,
+    velocity_bins: u8,
+    encode_velocity: bool,
+) -> PyMusicDocument {
+    let codes: Vec<u32> = array.as_array().iter().map(|&c| c.max(0) as u32).collect();
+    let seq = EventSequence {
+        codes,
+        resolution,
+        max_time_shift,
+        velocity_bins,
+        encode_velocity,
+    };
+    let na = representations::from_event_sequence(&seq);
+    PyMusicDocument {
+        inner: representations::from_note_array(&na),
+    }
+}
+
+/// Encode a :class:`MusicDocument` as a piano-roll matrix of shape
+/// ``(T, 128)`` (uint8; velocity-valued, or 0/1 when *encode_velocity* is
+/// false).
+#[pyfunction]
+#[pyo3(signature = (doc, resolution=representations::note_array::DEFAULT_RESOLUTION, encode_velocity=true))]
+fn to_piano_roll<'py>(
+    py: Python<'py>,
+    doc: &PyMusicDocument,
+    resolution: u16,
+    encode_velocity: bool,
+) -> Bound<'py, PyArray2<u8>> {
+    let arr = representations::to_note_array(&doc.inner, resolution);
+    let pr = representations::to_piano_roll(&arr, encode_velocity);
+    let t = pr.num_steps as usize;
+    // pr.data is already row-major (t, 128).
+    let data = Array2::from_shape_vec((t, PITCH_COUNT), pr.data)
+        .expect("piano-roll data length matches T*128");
+    data.into_pyarray_bound(py)
+}
+
+/// Decode a piano-roll matrix of shape ``(T, 128)`` back into a
+/// :class:`MusicDocument`.
+#[pyfunction]
+#[pyo3(signature = (array, resolution=representations::note_array::DEFAULT_RESOLUTION, encode_velocity=true))]
+fn from_piano_roll(
+    array: PyReadonlyArray2<u8>,
+    resolution: u16,
+    encode_velocity: bool,
+) -> PyResult<PyMusicDocument> {
+    let view = array.as_array();
+    if view.ncols() != PITCH_COUNT {
+        return Err(PyValueError::new_err("piano roll must have shape (T, 128)"));
+    }
+    let num_steps = view.nrows() as u32;
+    let data: Vec<u8> = view.iter().copied().collect();
+    let pr = PianoRoll {
+        resolution,
+        num_steps,
+        encode_velocity,
+        data,
+    };
+    let na = representations::from_piano_roll(&pr);
+    Ok(PyMusicDocument {
+        inner: representations::from_note_array(&na),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Module registration
 // ---------------------------------------------------------------------------
 
@@ -442,6 +607,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(change_language, m)?)?;
     m.add_function(wrap_pyfunction!(invert, m)?)?;
     m.add_function(wrap_pyfunction!(retrograde, m)?)?;
+
+    // ML representations (Epic D)
+    m.add_function(wrap_pyfunction!(to_note_array, m)?)?;
+    m.add_function(wrap_pyfunction!(from_note_array, m)?)?;
+    m.add_function(wrap_pyfunction!(to_event_sequence, m)?)?;
+    m.add_function(wrap_pyfunction!(from_event_sequence, m)?)?;
+    m.add_function(wrap_pyfunction!(to_piano_roll, m)?)?;
+    m.add_function(wrap_pyfunction!(from_piano_roll, m)?)?;
 
     Ok(())
 }

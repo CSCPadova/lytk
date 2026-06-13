@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-06-13 — Epic D complete: numpy/PyO3 interop (EDT4) ✅
+
+Branch `epic-d-ml-representations` (continued). Exposes the three
+representations to Python as numpy arrays, completing Epic D.
+
+### EDT4 — numpy interop
+- Added the `numpy` crate (0.22.1) — verified it compiles and runs under the
+  project's `pyo3` `abi3-py39` + `extension-module` setup (a `maturin develop`
+  abi3 wheel builds and imports cleanly).
+- New PyO3 functions in `lib.rs` (operating on `MusicDocument`):
+  `to_note_array`/`from_note_array` (`(N, 4)` int32 — onset, duration, pitch,
+  velocity), `to_event_sequence`/`from_event_sequence` (1-D int64 codes),
+  `to_piano_roll`/`from_piano_roll` (`(T, 128)` uint8). Decoders rebuild a
+  `MusicDocument`; bad shapes raise `ValueError`.
+- `.pyi` stubs (with `numpy.typing` annotations), `lytk.__init__` re-exports,
+  and `numpy>=1.21` added as a Python runtime dependency.
+- Verified end-to-end: `maturin develop --release` + `tests/test_representations.py`
+  (12 pytest cases — shapes, dtypes, values, round-trips, error cases). Full
+  Python suite now 56 tests; Rust 823; fmt + clippy clean.
+
+**Epic D is complete** (EDT1–EDT5). All three muspy-style representations
+(note-array, event-sequence, piano-roll) round-trip through the Music tree and
+are available in both Rust and Python. Remaining v1.0.0 work: Epic E (ABC),
+Epic F (datasets/metrics), Epic G (distribution).
+
 ## 2026-06-13 — Epic D: piano-roll representation (EDT3) 🟡
 
 Branch `epic-d-ml-representations` (continued). Completes the three core

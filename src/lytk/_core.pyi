@@ -84,3 +84,54 @@ def invert(
     octave: int = 4,
 ) -> Score: ...
 def retrograde(score: Score) -> Score: ...
+
+# -- ML representations (Epic D) ---------------------------------------------
+
+import numpy as np
+import numpy.typing as npt
+
+def to_note_array(
+    doc: MusicDocument, resolution: int = 480
+) -> npt.NDArray[np.int32]:
+    """Encode a document as a ``(N, 4)`` array: (onset, duration, pitch, velocity)."""
+    ...
+
+def from_note_array(
+    array: npt.NDArray[np.int32], resolution: int = 480
+) -> MusicDocument:
+    """Decode a ``(N, 4)`` note array back into a document."""
+    ...
+
+def to_event_sequence(
+    doc: MusicDocument,
+    resolution: int = 480,
+    max_time_shift: int = 100,
+    velocity_bins: int = 32,
+    encode_velocity: bool = True,
+) -> npt.NDArray[np.int64]:
+    """Encode a document as a 1-D event-code sequence (Performance-RNN style)."""
+    ...
+
+def from_event_sequence(
+    array: npt.NDArray[np.int64],
+    resolution: int = 480,
+    max_time_shift: int = 100,
+    velocity_bins: int = 32,
+    encode_velocity: bool = True,
+) -> MusicDocument:
+    """Decode an event-code sequence back into a document."""
+    ...
+
+def to_piano_roll(
+    doc: MusicDocument, resolution: int = 480, encode_velocity: bool = True
+) -> npt.NDArray[np.uint8]:
+    """Encode a document as a ``(T, 128)`` piano-roll matrix."""
+    ...
+
+def from_piano_roll(
+    array: npt.NDArray[np.uint8],
+    resolution: int = 480,
+    encode_velocity: bool = True,
+) -> MusicDocument:
+    """Decode a ``(T, 128)`` piano-roll matrix back into a document."""
+    ...

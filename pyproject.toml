@@ -7,7 +7,7 @@ authors = [
     { name = "Matteo Spanio", email = "spanio@dei.unipd.it" }
 ]
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["numpy>=1.21"]
 
 [project.scripts]
 lytk = "lytk.cli:main"
