@@ -620,7 +620,11 @@ impl IrToMxmlAdapter {
                 attributes: mxml::RepeatAttributes {
                     direction: dir,
                     after_jump: None,
-                    times: None,
+                    // Only the forward barline of a repeat carries the count.
+                    times: barline
+                        .repeat_times
+                        .filter(|_| matches!(rd, crate::ir::direction::RepeatDirection::Forward))
+                        .map(|t| mdt::NonNegativeInteger(t as u32)),
                     winged: None,
                 },
                 content: (),

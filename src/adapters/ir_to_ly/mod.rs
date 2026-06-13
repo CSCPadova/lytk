@@ -106,7 +106,7 @@ impl FromIrAdapter for IrToLyAdapter {
             );
             emit_harmony_variable(part, &mut lines);
             emit_figured_bass_variable(part, &mut lines);
-            emit_lyrics_variable(part, &mut lines);
+            emit_lyrics_variable(part, lyrics::lyric_staff(part), &mut lines);
         }
 
         // Score block
@@ -297,13 +297,29 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
     let voice_name = var.clone();
 
     if part.staves > 1 {
+        let lyric_staff = if has_lyrics {
+            lyrics::lyric_staff(part)
+        } else {
+            None
+        };
         lines.push(format!("{pad}\\new PianoStaff <<"));
         for staff_num in 1..=part.staves {
             let staff_var = format!("{}Staff{}", var, roman(staff_num));
-            lines.push(format!(
-                "{pad}  \\new Staff = \"{} {}\" \\{staff_var}",
-                part.name, staff_num
-            ));
+            if Some(staff_num) == lyric_staff {
+                // Name this staff's voice so \lyricsto can target it, then
+                // attach the lyrics below the staff.
+                lines.push(format!(
+                    "{pad}  \\new Staff = \"{} {}\" << \\new Voice = \"{voice_name}\" \\{staff_var}",
+                    part.name, staff_num
+                ));
+                emit_lyrics_refs(part, &voice_name, lyric_staff, indent + 4, lines);
+                lines.push(format!("{pad}  >>"));
+            } else {
+                lines.push(format!(
+                    "{pad}  \\new Staff = \"{} {}\" \\{staff_var}",
+                    part.name, staff_num
+                ));
+            }
         }
         lines.push(format!("{pad}>>"));
     } else if has_lyrics {
@@ -317,7 +333,7 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
             lines.push(format!("{pad}\\new Staff <<"));
         }
         lines.push(format!("{pad}  \\new Voice = \"{voice_name}\" \\{var}"));
-        emit_lyrics_refs(part, &voice_name, indent + 2, lines);
+        emit_lyrics_refs(part, &voice_name, None, indent + 2, lines);
         lines.push(format!("{pad}>>"));
     } else if !part.name.is_empty() {
         lines.push(format!(
@@ -340,36 +356,22 @@ fn voice_has_content(voice: &Voice) -> bool {
     })
 }
 
-fn voice_matches_staff(voice: &Voice, staff_num: u8) -> bool {
-    let mut has_staff_info = false;
-    for elem in &voice.elements {
-        match elem {
-            VoiceElement::Note(n) => {
-                if n.staff == staff_num {
-                    return true;
-                }
-                if n.staff != 0 {
-                    has_staff_info = true;
-                }
-            }
-            VoiceElement::Rest(r) => {
-                if r.staff == staff_num {
-                    return true;
-                }
-                if r.staff != 0 {
-                    has_staff_info = true;
-                }
-            }
-            VoiceElement::Chord(c) => {
-                if c.staff == staff_num {
-                    return true;
-                }
-                if c.staff != 0 {
-                    has_staff_info = true;
-                }
-            }
-        }
+fn element_staff(elem: &VoiceElement) -> u8 {
+    match elem {
+        VoiceElement::Note(n) => n.staff,
+        VoiceElement::Rest(r) => r.staff,
+        VoiceElement::Chord(c) => c.staff,
     }
-    // If we found staff info but nothing matched, this voice belongs to a different staff
-    !has_staff_info
+}
+
+/// A voice is assigned to exactly one staff — its *primary* staff, the staff
+/// of its first element carrying staff info. A voice whose notes span multiple
+/// staves (cross-staff) thus belongs to one staff only, instead of being
+/// duplicated into every staff it touches. A voice with no staff info (e.g. a
+/// single-staff part) matches every staff.
+fn voice_matches_staff(voice: &Voice, staff_num: u8) -> bool {
+    match voice.elements.iter().map(element_staff).find(|&s| s != 0) {
+        Some(primary) => primary == staff_num,
+        None => true,
+    }
 }

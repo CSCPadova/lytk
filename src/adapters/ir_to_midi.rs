@@ -333,69 +333,90 @@ impl IrToMidiAdapter {
         // if no explicit tempo is found in measure 1.
         let mut has_initial_tempo = false;
 
-        if let Some(part) = score.parts().into_iter().next() {
-            for measure in &part.measures {
-                // We only need one part's structure for conductor events.
-                // Check directions for tempo.
-                for dir in &measure.directions {
-                    if let Some(tempo) = &dir.tempo {
-                        if let Some(bpm) = tempo.per_minute {
-                            if bpm > 0.0 {
-                                // Convert beat-unit BPM to quarter-note BPM.
-                                // MIDI tempo is always µs per quarter note.
-                                let beat_quarters =
-                                    beat_unit_to_quarters(tempo.beat_unit.as_deref(), tempo.dots);
-                                let quarter_bpm = bpm * beat_quarters;
-                                let uspq = (60_000_000.0 / quarter_bpm).round() as u32;
-                                let delta = abs_tick - last_emit_tick;
-                                events.push(TrackEvent {
-                                    delta: u28::new(delta as u32),
-                                    kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(uspq))),
-                                });
-                                last_emit_tick = abs_tick;
-                                if abs_tick == 0 {
-                                    has_initial_tempo = true;
-                                }
-                            }
-                        }
-                    }
-                }
+        // Tempo, time and key signatures can live on any part, not just the
+        // first (e.g. a score where only an inner staff declares `\time`).
+        // Aggregate them per measure index across every part, taking the first
+        // part that declares each at a given index.
+        let parts = score.parts();
+        let measure_count = parts.iter().map(|p| p.measures.len()).max().unwrap_or(0);
+        // The running meter drives the per-measure tick advance even for parts
+        // that never declare a time signature themselves.
+        let mut current_ts: Option<crate::ir::measure::TimeSignature> = None;
 
-                // Check attributes for time sig and key sig changes.
-                if let Some(attrs) = &measure.attributes {
-                    if let Some(ts) = &attrs.time {
-                        let num: u8 = ts
-                            .beats
-                            .split('+')
-                            .filter_map(|b| b.trim().parse::<u8>().ok())
-                            .sum();
-                        let den_pow = (ts.beat_type as f64).log2() as u8;
-                        let delta = abs_tick - last_emit_tick;
-                        events.push(TrackEvent {
-                            delta: u28::new(delta as u32),
-                            kind: TrackEventKind::Meta(MetaMessage::TimeSignature(
-                                num, den_pow, 24, // MIDI clocks per metronome click
-                                8,  // 32nd notes per quarter note
-                            )),
-                        });
-                        last_emit_tick = abs_tick;
-                    }
-                    if let Some(ks) = &attrs.key {
-                        let delta = abs_tick - last_emit_tick;
-                        events.push(TrackEvent {
-                            delta: u28::new(delta as u32),
-                            kind: TrackEventKind::Meta(MetaMessage::KeySignature(
-                                ks.fifths,
-                                ks.mode == KeyMode::Minor,
-                            )),
-                        });
-                        last_emit_tick = abs_tick;
-                    }
-                }
+        for mi in 0..measure_count {
+            let measures_at: Vec<&crate::ir::measure::Measure> =
+                parts.iter().filter_map(|p| p.measures.get(mi)).collect();
 
-                // Advance abs_tick by this measure's duration.
-                abs_tick += self.measure_ticks(measure);
+            // Tempo: first part with a tempo direction at this measure.
+            if let Some(tempo) = measures_at
+                .iter()
+                .flat_map(|m| &m.directions)
+                .find_map(|d| {
+                    d.tempo
+                        .as_ref()
+                        .filter(|t| t.per_minute.unwrap_or(0.0) > 0.0)
+                })
+            {
+                let bpm = tempo.per_minute.unwrap();
+                let beat_quarters = beat_unit_to_quarters(tempo.beat_unit.as_deref(), tempo.dots);
+                let quarter_bpm = bpm * beat_quarters;
+                let uspq = (60_000_000.0 / quarter_bpm).round() as u32;
+                let delta = abs_tick - last_emit_tick;
+                events.push(TrackEvent {
+                    delta: u28::new(delta as u32),
+                    kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(uspq))),
+                });
+                last_emit_tick = abs_tick;
+                if abs_tick == 0 {
+                    has_initial_tempo = true;
+                }
             }
+
+            // Time signature: first part declaring one at this measure.
+            if let Some(ts) = measures_at
+                .iter()
+                .find_map(|m| m.attributes.as_ref().and_then(|a| a.time.as_ref()))
+            {
+                let num: u8 = ts
+                    .beats
+                    .split('+')
+                    .filter_map(|b| b.trim().parse::<u8>().ok())
+                    .sum();
+                let den_pow = (ts.beat_type as f64).log2() as u8;
+                let delta = abs_tick - last_emit_tick;
+                events.push(TrackEvent {
+                    delta: u28::new(delta as u32),
+                    kind: TrackEventKind::Meta(MetaMessage::TimeSignature(num, den_pow, 24, 8)),
+                });
+                last_emit_tick = abs_tick;
+                current_ts = Some(ts.clone());
+            }
+
+            // Key signature: first part declaring one at this measure.
+            if let Some(ks) = measures_at
+                .iter()
+                .find_map(|m| m.attributes.as_ref().and_then(|a| a.key.as_ref()))
+            {
+                let delta = abs_tick - last_emit_tick;
+                events.push(TrackEvent {
+                    delta: u28::new(delta as u32),
+                    kind: TrackEventKind::Meta(MetaMessage::KeySignature(
+                        ks.fifths,
+                        ks.mode == KeyMode::Minor,
+                    )),
+                });
+                last_emit_tick = abs_tick;
+            }
+
+            // Advance by the unified meter (or 4/4 until one is seen).
+            abs_tick += match &current_ts {
+                Some(ts) => {
+                    let ticks_frac =
+                        ts.beats_fraction() * Ratio::from_integer(4 * self.divisions as i64);
+                    (*ticks_frac.numer() / *ticks_frac.denom()).max(0) as u64
+                }
+                None => 4 * self.divisions as u64,
+            };
         }
 
         // Insert default tempo at tick 0 if none was found.
@@ -657,6 +678,85 @@ mod tests {
             page_layout: None,
             children: vec![ScoreChild::Part(part)],
         }
+    }
+
+    #[test]
+    fn test_conductor_aggregates_time_sig_from_any_part() {
+        // The time/tempo can live on a part other than the first (e.g.
+        // example.ly, where only the Corno staff declares \time 4/4). The
+        // conductor track must still pick it up.
+        // Part 0: a half + half (no time/key/tempo declared).
+        let mut v0 = Voice::new(1);
+        v0.elements.push(VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::C, 4),
+            Duration::half(),
+        ))));
+        v0.elements.push(VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::D, 4),
+            Duration::half(),
+        ))));
+        let mut m0 = Measure::new(1);
+        m0.voices.push(v0);
+        let mut p0 = Part::new("P1");
+        p0.measures.push(m0);
+
+        // Part 1: declares 3/4 + a tempo, three quarters.
+        let mut v1 = Voice::new(1);
+        for step in [PitchStep::E, PitchStep::F, PitchStep::G] {
+            v1.elements.push(VoiceElement::Note(Box::new(Note::new(
+                Pitch::new(step, 4),
+                Duration::quarter(),
+            ))));
+        }
+        let mut m1 = Measure::new(1);
+        m1.attributes = Some(MeasureAttributes {
+            divisions: 384,
+            time: Some(TimeSignature {
+                beats: "3".to_string(),
+                beat_type: 4,
+                symbol: None,
+            }),
+            ..MeasureAttributes::default()
+        });
+        m1.directions.push(crate::ir::direction::Direction {
+            tempo: Some(crate::ir::direction::TempoDirection {
+                text: None,
+                beat_unit: Some("quarter".to_string()),
+                per_minute: Some(90.0),
+                dots: 0,
+                placement: crate::ir::articulation::Placement::Above,
+            }),
+            ..crate::ir::direction::Direction::default()
+        });
+        m1.voices.push(v1);
+        let mut p1 = Part::new("P2");
+        p1.measures.push(m1);
+
+        let score = Score {
+            metadata: ScoreMetadata::default(),
+            page_layout: None,
+            children: vec![ScoreChild::Part(p0), ScoreChild::Part(p1)],
+        };
+
+        let bytes = IrToMidiAdapter::new().convert_bytes(&score).unwrap();
+        let smf = Smf::parse(&bytes).unwrap();
+        let mut saw_time = false;
+        let mut saw_tempo = false;
+        for ev in &smf.tracks[0] {
+            if let TrackEventKind::Meta(MetaMessage::TimeSignature(num, den_pow, ..)) = ev.kind {
+                if num == 3 && den_pow == 2 {
+                    saw_time = true;
+                }
+            }
+            if let TrackEventKind::Meta(MetaMessage::Tempo(uspq)) = ev.kind {
+                // 90 BPM quarter = 666_667 µs/quarter (not the 120 default).
+                if (uspq.as_int() as i64 - 666_667).abs() < 50 {
+                    saw_tempo = true;
+                }
+            }
+        }
+        assert!(saw_time, "conductor track missing 3/4 time sig from part 2");
+        assert!(saw_tempo, "conductor track missing tempo from part 2");
     }
 
     #[test]

@@ -1320,6 +1320,126 @@ fn test_lyrics_emission() {
 }
 
 #[test]
+fn test_cross_staff_voice_not_duplicated() {
+    // A single voice whose notes span both staves of a piano part was emitted
+    // into *every* staff it touched, doubling every note. Each pitch must
+    // appear exactly once.
+    let mut hi = make_note(PitchStep::C, 5, Duration::half());
+    hi.staff = 1;
+    let mut lo = make_note(PitchStep::C, 3, Duration::half());
+    lo.staff = 2;
+
+    let mut voice = Voice::new(1);
+    voice.elements = vec![
+        VoiceElement::Note(Box::new(hi)),
+        VoiceElement::Note(Box::new(lo)),
+    ];
+
+    let mut measure = Measure::new(1);
+    measure.attributes = Some(MeasureAttributes {
+        time: Some(TimeSignature::default()),
+        clefs: {
+            let mut m = HashMap::new();
+            m.insert(1, Clef::default());
+            m
+        },
+        staves: Some(2),
+        ..Default::default()
+    });
+    measure.voices.push(voice);
+
+    let mut part = Part::new("P1");
+    part.name = "Piano".to_string();
+    part.staves = 2;
+    part.measures.push(measure);
+
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    let body = ly.split("\\score").next().unwrap_or(&ly);
+    // c''2 (C5) and c2 (C3) must each appear exactly once in the part variables.
+    assert_eq!(
+        body.matches("c''2").count(),
+        1,
+        "C5 duplicated across staves:\n{ly}"
+    );
+    assert_eq!(
+        body.matches("c2").count(),
+        1,
+        "C3 duplicated across staves:\n{ly}"
+    );
+}
+
+#[test]
+fn test_multi_staff_lyrics_are_referenced() {
+    // A 2-staff (piano) part with lyrics on staff 1. The lyrics variable was
+    // emitted but never referenced in the \score, producing a dead variable
+    // and dropped lyrics on compile.
+    let mut n1 = make_note(PitchStep::C, 5, Duration::quarter());
+    n1.staff = 1;
+    n1.lyrics.push(LyricSyllable {
+        text: "sing".to_string(),
+        syllabic: SyllabicType::Single,
+        number: 1,
+        extend: false,
+        elision: false,
+    });
+    let mut n2 = make_note(PitchStep::D, 5, Duration::quarter());
+    n2.staff = 1;
+    n2.lyrics.push(LyricSyllable {
+        text: "song".to_string(),
+        syllabic: SyllabicType::Single,
+        number: 1,
+        extend: false,
+        elision: false,
+    });
+    let mut bass = make_note(PitchStep::C, 3, Duration::half());
+    bass.staff = 2;
+
+    let mut v1 = Voice::new(1);
+    v1.elements = vec![
+        VoiceElement::Note(Box::new(n1)),
+        VoiceElement::Note(Box::new(n2)),
+    ];
+    let mut v2 = Voice::new(2);
+    v2.elements = vec![VoiceElement::Note(Box::new(bass))];
+
+    let mut measure = Measure::new(1);
+    measure.attributes = Some(MeasureAttributes {
+        time: Some(TimeSignature::default()),
+        clefs: {
+            let mut m = HashMap::new();
+            m.insert(1, Clef::default());
+            m
+        },
+        staves: Some(2),
+        ..Default::default()
+    });
+    measure.voices.push(v1);
+    measure.voices.push(v2);
+
+    let mut part = Part::new("P1");
+    part.name = "Piano".to_string();
+    part.staves = 2;
+    part.measures.push(measure);
+
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    assert!(ly.contains("\\lyricmode"), "lyrics variable missing:\n{ly}");
+    assert!(
+        ly.contains("\\lyricsto"),
+        "multi-staff lyrics never referenced in \\score:\n{ly}"
+    );
+    assert!(
+        ly.contains("\\new Voice ="),
+        "lyric staff voice not named for \\lyricsto:\n{ly}"
+    );
+}
+
+#[test]
 fn test_melisma_emission() {
     // Build a score with melisma notes
     let mut n1 = make_note(PitchStep::C, 4, Duration::quarter());

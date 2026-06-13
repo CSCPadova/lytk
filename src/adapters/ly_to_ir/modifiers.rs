@@ -110,6 +110,7 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
         measure.left_barline = Some(Barline {
             style: BarlineType::RepeatForward,
             repeat_direction: Some(RepeatDirection::Forward),
+            repeat_times: Some(repeat_count),
             ..Default::default()
         });
     }

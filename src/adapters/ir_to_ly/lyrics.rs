@@ -19,7 +19,10 @@ pub(super) enum LyricEvent {
 /// (when `no_auto_beam` is set) are automatically skipped by the voice -- no `_`
 /// skip is needed in lyricmode for these. Only notes that *should* consume a
 /// syllable but have no lyric attached get a `_` skip.
-fn extract_lyrics(part: &Part) -> std::collections::BTreeMap<u8, Vec<LyricEvent>> {
+fn extract_lyrics(
+    part: &Part,
+    staff_filter: Option<u8>,
+) -> std::collections::BTreeMap<u8, Vec<LyricEvent>> {
     let mut lyrics_by_number: std::collections::BTreeMap<u8, Vec<LyricEvent>> =
         std::collections::BTreeMap::new();
 
@@ -28,6 +31,18 @@ fn extract_lyrics(part: &Part) -> std::collections::BTreeMap<u8, Vec<LyricEvent>
     for measure in &part.measures {
         for voice in &measure.voices {
             for elem in &voice.elements {
+                // In a multi-staff part, only the lyric-bearing staff's notes
+                // form the syllable stream.
+                if let Some(sf) = staff_filter {
+                    let staff = match elem {
+                        VoiceElement::Note(n) => n.staff,
+                        VoiceElement::Chord(c) => c.staff,
+                        VoiceElement::Rest(r) => r.staff,
+                    };
+                    if staff != sf {
+                        continue;
+                    }
+                }
                 match elem {
                     VoiceElement::Note(note) => {
                         let starts = note
@@ -123,9 +138,37 @@ pub(super) fn part_has_lyrics(part: &Part) -> bool {
     })
 }
 
+/// For a multi-staff part with lyrics, the staff number whose notes carry the
+/// lyrics (`\lyricsto` must target a voice on that staff). Returns `None` for
+/// single-staff parts (the whole part is the lyric stream) or when there are
+/// no lyrics.
+pub(super) fn lyric_staff(part: &Part) -> Option<u8> {
+    if part.staves <= 1 {
+        return None;
+    }
+    for m in &part.measures {
+        for v in &m.voices {
+            for e in &v.elements {
+                let (has, staff) = match e {
+                    VoiceElement::Note(n) => (!n.lyrics.is_empty(), n.staff),
+                    VoiceElement::Chord(c) => (
+                        c.notes.first().is_some_and(|n| !n.lyrics.is_empty()),
+                        c.staff,
+                    ),
+                    _ => (false, 0),
+                };
+                if has {
+                    return Some(staff);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Emit a lyrics variable for a part.
-pub(super) fn emit_lyrics_variable(part: &Part, lines: &mut Vec<String>) {
-    let lyrics_map = extract_lyrics(part);
+pub(super) fn emit_lyrics_variable(part: &Part, staff_filter: Option<u8>, lines: &mut Vec<String>) {
+    let lyrics_map = extract_lyrics(part, staff_filter);
     if lyrics_map.is_empty() {
         return;
     }
@@ -202,10 +245,11 @@ fn escape_lyric_text(text: &str) -> String {
 pub(super) fn emit_lyrics_refs(
     part: &Part,
     voice_name: &str,
+    staff_filter: Option<u8>,
     indent: usize,
     lines: &mut Vec<String>,
 ) {
-    let lyrics_map = extract_lyrics(part);
+    let lyrics_map = extract_lyrics(part, staff_filter);
     if lyrics_map.is_empty() {
         return;
     }

@@ -338,6 +338,14 @@ fn lift_repeat_group(
     let mut i = start;
     let mut body_events: Vec<Music> = Vec::new();
 
+    // Repeat count from the forward barline (`\repeat volta N` / `times="N"`),
+    // falling back to 2 when unspecified.
+    let times = measures[start]
+        .left_barline
+        .as_ref()
+        .and_then(|bl| bl.repeat_times)
+        .map(|t| t as u16);
+
     // Body: from the forward-repeat measure up to (but not including) the first
     // alternative, or up to and including a measure that closes with a backward
     // repeat (the no-alternative case).
@@ -353,7 +361,7 @@ fn lift_repeat_group(
             // Plain repeat, no alternatives.
             let repeat = Music::Repeat {
                 repeat_type: RepeatType::Volta,
-                count: 2,
+                count: times.unwrap_or(2),
                 body: Box::new(Music::Sequential(body_events)),
                 alternatives: Vec::new(),
             };
@@ -385,7 +393,9 @@ fn lift_repeat_group(
         i += 1;
     }
 
-    let count = alternatives.len().max(2) as u16;
+    // Prefer the explicit count; otherwise fall back to the alternative count
+    // (a 2-ending repeat plays at least twice).
+    let count = times.unwrap_or_else(|| alternatives.len().max(2) as u16);
     let repeat = Music::Repeat {
         repeat_type: RepeatType::Volta,
         count,

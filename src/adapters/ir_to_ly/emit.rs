@@ -190,7 +190,8 @@ pub(super) fn emit_measures(
         // Left barline
         if let Some(bl) = &measure.left_barline {
             if bl.repeat_direction.is_some() && bl.ending_number.is_none() {
-                lines.push(format!("{pad}\\repeat volta 2 {{"));
+                let times = bl.repeat_times.unwrap_or(2);
+                lines.push(format!("{pad}\\repeat volta {times} {{"));
             }
             if let Some(ending_num) = bl.ending_number {
                 if bl.ending_type.as_deref() == Some("start") {
@@ -321,7 +322,36 @@ fn emit_voice_elements(
         }
     };
 
-    for elem in &voice.elements {
+    let mut idx = 0;
+    while idx < voice.elements.len() {
+        let elem = &voice.elements[idx];
+
+        // Two-note tremolo: a start note paired with the following stop note
+        // emits `\repeat tremolo N { a b }` (both consumed together).
+        if let VoiceElement::Note(n1) = elem {
+            if n1.two_note_tremolo && n1.tremolo_start {
+                if let Some(VoiceElement::Note(n2)) = voice.elements.get(idx + 1) {
+                    if n2.two_note_tremolo && !n2.tremolo_start {
+                        if let Some((token, last_pitch)) =
+                            two_note_tremolo_to_ly(n1, n2, lang, mode, state.prev_pitch.as_ref())
+                        {
+                            let suffix = dirs_at(fwd_pos);
+                            tokens.push(if suffix.is_empty() {
+                                token
+                            } else {
+                                format!("{token}{suffix}")
+                            });
+                            state.prev_pitch = Some(last_pitch);
+                            fwd_pos += duration_to_divisions(&n1.duration, divisions);
+                            fwd_pos += duration_to_divisions(&n2.duration, divisions);
+                            idx += 2;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
         // Check for tuplet start
         if let Some(td) = element_tuplet(elem) {
             if td.tuplet_type == StartStop::Start && !in_tuplet {
@@ -449,6 +479,8 @@ fn emit_voice_elements(
                 in_tuplet = false;
             }
         }
+
+        idx += 1;
     }
 
     // Attach any remaining directions that didn't match a note position
@@ -484,6 +516,35 @@ fn emit_voice_elements(
             lines.push(format!("{pad}{}", current_line.join(" ")));
         }
     }
+}
+
+/// Emit a two-note tremolo as `\repeat tremolo N { a b }` from a start/stop
+/// note pair. The written unit duration is `1/2^(marks+2)` (marks = beam
+/// count) and `N = total_span / (2·unit)`. Returns the token and the pitch to
+/// carry forward, or `None` if the pair doesn't form an integer repeat count.
+fn two_note_tremolo_to_ly(
+    n1: &Note,
+    n2: &Note,
+    lang: PitchLanguage,
+    mode: PitchMode,
+    prev: Option<&Pitch>,
+) -> Option<(String, Pitch)> {
+    let marks = n1.tremolo_marks.max(n2.tremolo_marks);
+    if marks == 0 {
+        return None;
+    }
+    let unit = Duration::new(Frac::new(1, 1i64 << (marks as u32 + 2)));
+    let total = n1.duration.actual_duration() + n2.duration.actual_duration();
+    let reps = total * Frac::from_integer(1i64 << (marks as u32 + 1));
+    if *reps.denom() != 1 || *reps.numer() <= 0 {
+        return None;
+    }
+    let n = *reps.numer();
+    let d = duration_to_ly(&unit);
+    let p1 = pitch_to_ly(&n1.pitch, lang, prev, mode);
+    let p2 = pitch_to_ly(&n2.pitch, lang, Some(&n1.pitch), mode);
+    let token = format!("\\repeat tremolo {n} {{ {p1}{d} {p2}{d} }}");
+    Some((token, n2.pitch))
 }
 
 fn note_to_ly(note: &Note, lang: PitchLanguage, mode: PitchMode, prev: Option<&Pitch>) -> String {

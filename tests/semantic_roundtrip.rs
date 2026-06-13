@@ -153,14 +153,95 @@ fn ly_to_ly_music_preserves_volta() {
 }
 
 // The Score path (XML→LY) reconstructs repeats directly from barlines in
-// ir_to_ly; structural repeat round-trip on that path is tracked separately.
+// ir_to_ly.
 #[test]
-#[ignore = "EBT2: Score-path (ir_to_ly) repeat emission not yet fixed; Music path is the LY→LY route"]
 fn ly_to_ly_score_preserves_volta() {
     let ly = ly_to_ly_score(VOLTA_SRC);
     assert!(
-        ly.contains("\\repeat"),
+        ly.contains("\\repeat volta 2"),
         "Score path dropped \\repeat:\n{ly}"
+    );
+    assert!(
+        ly.contains("\\alternative"),
+        "Score path dropped \\alternative:\n{ly}"
+    );
+}
+
+/// The repeat count must survive both LY→LY paths (was hardcoded to 2).
+#[test]
+fn ly_to_ly_preserves_repeat_count() {
+    let src = r#"\version "2.24.0"
+\score {
+  \new Staff {
+    \repeat volta 4 { c'4 d'4 e'4 f'4 }
+  }
+  \layout { }
+}
+"#;
+    let score_path = ly_to_ly_score(src);
+    assert!(
+        score_path.contains("\\repeat volta 4"),
+        "Score path lost the repeat count:\n{score_path}"
+    );
+    let music_path = ly_to_ly_music(src);
+    assert!(
+        music_path.contains("\\repeat volta 4"),
+        "Music path lost the repeat count:\n{music_path}"
+    );
+}
+
+/// `\repeat volta N` count survives a MusicXML round-trip (`<repeat times>`).
+#[test]
+fn xml_roundtrip_preserves_repeat_count() {
+    let src = r#"\version "2.24.0"
+\score {
+  \new Staff { \repeat volta 3 { c'4 d'4 e'4 f'4 } }
+  \layout { }
+}
+"#;
+    let score = LyToIrAdapter::new().convert_str(src).expect("LY → Score");
+    let xml = IrToMxmlAdapter::new().convert(&score).expect("Score → XML");
+    assert!(
+        xml.contains("times=\"3\""),
+        "MusicXML export dropped repeat times:\n{xml}"
+    );
+    let score2 = MxmlToIrAdapter::new()
+        .convert_str(&xml)
+        .expect("XML → Score");
+    let ly = IrToLyAdapter::new().convert(&score2).expect("Score → LY");
+    assert!(
+        ly.contains("\\repeat volta 3"),
+        "repeat count lost through XML round-trip:\n{ly}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Two-note tremolo (XML → LY)
+// ---------------------------------------------------------------------------
+
+/// A `<tremolo type="start/stop">` pair must emit `\repeat tremolo N { a b }`,
+/// not be silently dropped. Two quarter notes with 2 beams → unit 1/16,
+/// total 1/2, N = 4.
+#[test]
+fn xml_to_ly_emits_two_note_tremolo() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>X</part-name></score-part></part-list>
+  <part id="P1">
+<measure number="1">
+  <attributes><divisions>2</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>
+  <note><pitch><step>B</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type>
+    <notations><ornaments><tremolo type="start">2</tremolo></ornaments></notations></note>
+  <note><pitch><step>D</step><alter>1</alter><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type>
+    <notations><ornaments><tremolo type="stop">2</tremolo></ornaments></notations></note>
+</measure>
+  </part>
+</score-partwise>"#;
+    let ly = xml_to_ly(xml);
+    // B4 = b', D#5 = dis'' in absolute mode; both at the 1/16 unit duration.
+    assert!(
+        ly.contains("\\repeat tremolo 4 { b'16 dis''16 }"),
+        "two-note tremolo not emitted correctly:\n{ly}"
     );
 }
 

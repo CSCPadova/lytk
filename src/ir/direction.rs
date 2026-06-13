@@ -64,6 +64,11 @@ pub struct Barline {
     pub repeat_direction: Option<RepeatDirection>,
     pub ending_number: Option<u8>,
     pub ending_type: Option<String>,
+    /// Number of times a repeat plays (MusicXML `<repeat times="N">`,
+    /// LilyPond `\repeat volta N`). Carried on the forward barline; `None`
+    /// defaults to 2 at emit time.
+    #[serde(default)]
+    pub repeat_times: Option<u8>,
 }
 
 impl Default for Barline {
@@ -74,6 +79,7 @@ impl Default for Barline {
             repeat_direction: None,
             ending_number: None,
             ending_type: None,
+            repeat_times: None,
         }
     }
 }

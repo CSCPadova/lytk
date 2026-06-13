@@ -90,7 +90,7 @@ MIDI (.mid)           ──→  IR (Score tree)  ──→  LilyPond / MusicXML
 - **Python bindings** — full PyO3 API: `from_musicxml`, `from_lilypond`, `to_musicxml`,
   `to_lilypond`, `from_midi`, `to_midi`, `transpose`, `change_language`, `invert`,
   `retrograde`, `Score.to_json/dict`
-- **790 Rust tests** (450 unit + 340 integration: CLI, fixture regression, property-based,
+- **797 Rust tests** (457 unit + 340 integration: CLI, fixture regression, property-based,
   round-trip, semantic round-trip, fidelity scoreboard) + 44 Python tests, all passing
 - **Semantic fidelity gate** — committed non-decreasing baselines: LilyPond 35/35 and
   MusicXML 152/152 fixtures preserve note counts and pitch multisets on round-trip
@@ -107,11 +107,8 @@ MIDI (.mid)           ──→  IR (Score tree)  ──→  LilyPond / MusicXML
 
 ### Known limitations
 
-- `\repeat volta N` re-emits as `volta 2` on the Score path (the Music path preserves N)
-- Two-note tremolos import from MusicXML but are not emitted in Score → LilyPond
-- Lyrics attached to multi-staff (PianoStaff) parts are not yet re-emitted
-- A voice crossing staves is emitted into every staff it touches
-- MIDI export reads tempo/time/key only from the first part's conductor data
+- A cross-staff voice is emitted entirely in its primary staff (no `\change Staff`
+  cross-staff beaming yet) — notes are preserved, not duplicated
 
 ## Build & Test
 

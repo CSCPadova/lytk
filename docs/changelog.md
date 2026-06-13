@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-06-13 — Close the 5 remaining open conversion bugs ✅
+
+Branch `fix-pedal-bar58-and-bugs` (continued). Cleared every confirmed-but-open
+bug left from the multi-agent hunt; 797 Rust tests green (up from 790).
+
+- **Score-path `\repeat volta N` count** — was hardcoded to 2. Added
+  `Barline.repeat_times`, threaded it through the LilyPond parser
+  (`modifiers.rs`), MusicXML import/export (`<repeat times>`), the Score-path
+  emitter (`emit.rs`), and the lift pass so the count survives all three
+  round-trips. Un-ignored `ly_to_ly_score_preserves_volta`.
+- **Two-note tremolo emission** — a `<tremolo type="start/stop">` pair was
+  dropped in Score→LY. `emit_voice_elements` now does a 2-element lookahead and
+  emits `\repeat tremolo N { a b }` (unit `1/2^(marks+2)`, `N = span/(2·unit)`).
+- **Multi-staff (PianoStaff) lyrics** — the lyric variable was emitted but never
+  referenced. The lyric-bearing staff's voice is now named and `\lyricsto`-ed;
+  lyric extraction is staff-scoped (`lyric_staff` + a staff filter on
+  `extract_lyrics`) so the syllable stream aligns with that staff only.
+- **Cross-staff voice duplication** — `voice_matches_staff` matched every staff a
+  voice touched, so a voice spanning two staves was emitted (and played) twice.
+  A voice is now assigned to a single *primary* staff (its first staff-bearing
+  element); notes are preserved, not duplicated.
+- **MIDI conductor track** — tempo/time/key were read from `parts()[0]` only, so
+  a meter declared solely on an inner staff (e.g. example.ly's Corno) was lost,
+  including the per-measure tick advance. `build_conductor_track` now aggregates
+  per measure index across all parts and advances by the unified meter.
+
+Docs: README known-limitations trimmed to the one genuine remaining gap
+(cross-staff `\change Staff` beaming); test counts refreshed.
+
 ## 2026-06-12 — Fix pedal.ly bar-58 drift + 13 conversion bugs (multi-agent bug hunt) ✅
 
 Branch `fix-pedal-bar58-and-bugs` (stacks on the clef fix). Fixes the deferred

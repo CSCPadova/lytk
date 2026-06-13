@@ -479,6 +479,12 @@ fn convert_barline(bl: &mxml::Barline) -> Barline {
             mdt::BackwardForward::Forward => RepeatDirection::Forward,
             mdt::BackwardForward::Backward => RepeatDirection::Backward,
         });
+    let repeat_times = bl
+        .content
+        .repeat
+        .as_ref()
+        .and_then(|r| r.attributes.times.as_ref())
+        .map(|t| t.0 as u8);
 
     let ending_number = bl
         .content
@@ -515,6 +521,7 @@ fn convert_barline(bl: &mxml::Barline) -> Barline {
         repeat_direction,
         ending_number,
         ending_type,
+        repeat_times,
     }
 }
 
