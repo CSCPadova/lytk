@@ -191,9 +191,9 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 
 | Task | Description | Status |
 |------|-------------|--------|
-| EET1 | `abc_to_ir.rs` parser (`ToMusicAdapter`) | ⬜ |
-| EET2 | `ir_to_abc.rs` emitter (`FromMusicAdapter`) | ⬜ |
-| EET3 | CLI wiring + ABC fixtures + semantic round-trip test | ⬜ |
+| EET1 | `abc_to_ir.rs` parser (`ToMusicAdapter`) | ✅ Hand-written parser: `X/T/C/M/L/K/Q` headers, notes (explicit accidentals, octave marks, fractional durations), default-unit-length rule, key tonic+mode→fifths (incl. church modes), rests, bar lines + repeats, chords `[..]`, ties; graceful skip of chord symbols/decorations/grace/inline fields. Also `ToIrAdapter` via lower. 12 tests |
+| EET2 | `ir_to_abc.rs` emitter (`FromMusicAdapter`) | ✅ Emits header + body at `L:1/8`; pitch/duration/key/meter/barline/chord/tie rendering. v1 limitation: pitches carry only explicit accidentals (no key-aware re-spelling) — self-consistent on round-trip. 5 tests |
+| EET3 | CLI wiring + ABC fixtures + semantic round-trip test | ✅ `.abc` wired into `convert` (in + out, `-f abc`); 3 fixtures; `tests/abc_roundtrip.rs` (6 cases: parse→emit→parse pitch/duration identity, repeats, chords, pitch multiset, ABC→LY, ABC→XML) + 2 CLI tests |
 
 ### Epic F: Datasets & Metrics (ML pipeline)
 
@@ -227,7 +227,7 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 | **5** | **A** | **Unblock build, baseline, audit harness, doc hygiene** |
 | **6** | **B + C** | **Conversion fidelity + semantic round-trip bar (interleaved, test-first)** |
 | 7 | D ✅ | ML representations (note-array, event, piano-roll, numpy) |
-| 8 | **E** + F ✅ | ABC adapter + datasets & metrics (F done bar the optional remote dataset) |
+| 8 | E ✅ + F ✅ | ABC adapter + datasets & metrics (E done; F done bar the optional remote dataset) |
 | **9** | **G** | **Distribution: stubs, wheels, docs → tag v1.0.0** |
 
 ## Key Decisions

@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-06-13 — Epic E: ABC notation adapter ✅
+
+Branch `epic-e-abc-adapter`. Adds ABC as a fourth interchange format (the first
+new format of v1.0.0).
+
+### EET1 — ABC → IR (`src/adapters/abc_to_ir.rs`)
+Hand-written parser (`ToMusicAdapter` + `ToIrAdapter` via lower):
+- Headers `X/T/C/M/L/K` (+ others → metadata.extra); `M:C`/`C|` symbols;
+  `L:` unit length with the meter-derived default (1/16 if meter < 0.75 else
+  1/8).
+- Notes: explicit accidentals (`^ _ = ^^ __`), the standard octave convention
+  (uppercase = MIDI 60–71, lowercase an octave up, `,`/`'` shift), fractional
+  durations (`N`, `/`, `//`, `/N`, `N/M`).
+- Key `K:` tonic + mode → fifths, including the church modes
+  (dorian/mixolydian/…); rests, bar lines + repeats (`|: :| :: || |]`),
+  chords `[...]`, ties `-`. Chord symbols `"..."`, decorations `!..!`, grace
+  `{..}` and inline `[K:..]` fields are skipped gracefully.
+
+### EET2 — IR → ABC (`src/adapters/ir_to_abc.rs`)
+Emits header + body at `L:1/8`; renders pitch/duration/key/meter/barline/
+chord/tie. v1 limitation: pitches keep only their explicit accidentals (the
+key signature isn't used to re-spell), which is self-consistent on round-trip.
+
+### EET3 — CLI + tests
+- `.abc` wired into `convert` (input and `-f abc` output; lift on the way out).
+- 3 `.abc` fixtures; `tests/abc_roundtrip.rs` (6 cases incl. parse→emit→parse
+  pitch/duration identity, repeat preservation, ABC→LilyPond, ABC→MusicXML) +
+  2 CLI tests. 17 unit + 8 integration tests total.
+
+Verified by an adversarial 5-area workflow (pitch/octave, durations,
+keys/meters, barlines, robustness over real folk-tune corpora). 855 Rust tests
+green; fmt + clippy clean.
+
 ## 2026-06-13 — Epic F: dataset utilities (EFT1/EFT2/EFT4) ✅
 
 Branch `epic-f-datasets-metrics` (continued). Adds the dataset/ML-pipeline

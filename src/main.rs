@@ -14,6 +14,8 @@ use rayon::prelude::*;
 use _core::adapters::ir_to_midi::IrToMidiAdapter;
 use _core::adapters::midi_to_ir::MidiToIrAdapter;
 use _core::adapters::{
+    abc_to_ir::AbcToIrAdapter,
+    ir_to_abc::IrToAbcAdapter,
     ir_to_ly::IrToLyAdapter,
     ir_to_mxml::IrToMxmlAdapter,
     ly_flatten::{flatten, FlattenOpts},
@@ -105,6 +107,7 @@ enum OutputFormat {
     Ly,
     Xml,
     Midi,
+    Abc,
 }
 
 fn main() {
@@ -316,6 +319,7 @@ where
         Some(OutputFormat::Ly) => "ly",
         Some(OutputFormat::Xml) => "xml",
         Some(OutputFormat::Midi) => "mid",
+        Some(OutputFormat::Abc) => "abc",
         None => invert_ext(file),
     };
     let out_path = output_dir.join(relative).with_extension(out_ext);
@@ -357,7 +361,7 @@ fn is_supported_ext(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str());
     matches!(
         ext,
-        Some("ly" | "ily" | "xml" | "musicxml" | "mxl" | "mid" | "midi")
+        Some("ly" | "ily" | "xml" | "musicxml" | "mxl" | "mid" | "midi" | "abc")
     )
 }
 
@@ -367,6 +371,7 @@ fn invert_ext(path: &Path) -> &'static str {
         Some("ly" | "ily") => "xml",
         Some("xml" | "musicxml" | "mxl") => "ly",
         Some("mid" | "midi") => "ly",
+        Some("abc") => "ly",
         _ => "ly",
     }
 }
@@ -381,6 +386,7 @@ fn detect_input_format(path: &Path) -> anyhow::Result<InputFormat> {
         "ly" | "ily" => Ok(InputFormat::LilyPond),
         "xml" | "musicxml" | "mxl" => Ok(InputFormat::MusicXml),
         "mid" | "midi" => Ok(InputFormat::Midi),
+        "abc" => Ok(InputFormat::Abc),
         _ => Err(anyhow::anyhow!("unsupported input format: .{ext}")),
     }
 }
@@ -389,6 +395,7 @@ enum InputFormat {
     LilyPond,
     MusicXml,
     Midi,
+    Abc,
 }
 
 fn parse_input(path: &Path) -> anyhow::Result<Score> {
@@ -400,6 +407,7 @@ fn parse_input(path: &Path) -> anyhow::Result<Score> {
             let bytes = std::fs::read(path)?;
             MidiToIrAdapter::new().convert_bytes(&bytes)?
         }
+        InputFormat::Abc => AbcToIrAdapter::new().convert_file(path)?,
     };
     Ok(score)
 }
@@ -414,6 +422,7 @@ fn parse_input_multi(path: &Path) -> anyhow::Result<Vec<Score>> {
             let bytes = std::fs::read(path)?;
             Ok(vec![MidiToIrAdapter::new().convert_bytes(&bytes)?])
         }
+        InputFormat::Abc => Ok(vec![AbcToIrAdapter::new().convert_file(path)?]),
     }
 }
 
@@ -426,6 +435,7 @@ fn detect_output_format(path: &Path, forced: Option<OutputFormat>) -> anyhow::Re
         "ly" | "ily" => Ok(OutputFormat::Ly),
         "xml" | "musicxml" => Ok(OutputFormat::Xml),
         "mid" | "midi" => Ok(OutputFormat::Midi),
+        "abc" => Ok(OutputFormat::Abc),
         _ => Err(anyhow::anyhow!(
             "cannot infer output format from .{ext}; use --format"
         )),
@@ -444,6 +454,10 @@ fn write_output(score: &Score, path: &Path, format: Option<OutputFormat>) -> any
         }
         OutputFormat::Midi => {
             IrToMidiAdapter::new().write(score, path)?;
+        }
+        OutputFormat::Abc => {
+            let doc = _core::ir::lift::lift_to_music(score);
+            IrToAbcAdapter::new().write_music(&doc, path)?;
         }
     }
     Ok(())

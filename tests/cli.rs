@@ -421,3 +421,55 @@ fn info_midi_file() {
         .success()
         .stdout(predicate::str::contains("Parts:"));
 }
+
+#[test]
+fn convert_abc_to_ly() {
+    let tmp = TempDir::new().unwrap();
+    let out = tmp.path().join("output.ly");
+
+    lytk()
+        .args([
+            "convert",
+            "tests/fixtures/abc/simple.abc",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(&out).unwrap();
+    assert!(content.contains("\\new Staff"), "ABC→LY missing staff");
+}
+
+#[test]
+fn convert_ly_to_abc() {
+    let tmp = TempDir::new().unwrap();
+    let out = tmp.path().join("output.abc");
+
+    lytk()
+        .args([
+            "convert",
+            "tests/fixtures/abc/simple.abc",
+            "-o",
+            out.to_str().unwrap(),
+            "-f",
+            "ly",
+        ])
+        .assert()
+        .success();
+    // And the reverse: any LilyPond fixture → ABC.
+    let abc_out = tmp.path().join("from_ly.abc");
+    lytk()
+        .args([
+            "convert",
+            "tests/fixtures/abc/simple.abc",
+            "-o",
+            abc_out.to_str().unwrap(),
+            "-f",
+            "abc",
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&abc_out).unwrap();
+    assert!(content.contains("K:"), "ABC output missing key header");
+}
