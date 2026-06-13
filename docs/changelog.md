@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-06-13 — Epic D: piano-roll representation (EDT3) 🟡
+
+Branch `epic-d-ml-representations` (continued). Completes the three core
+representations (EDT5 round-trip coverage now done); only EDT4 (numpy/PyO3
+interop) remains in Epic D.
+
+### EDT3 — piano-roll representation
+`src/representations/piano_roll.rs`:
+- `PianoRoll { resolution, num_steps, encode_velocity, data }` — a dense,
+  row-major `T × 128` matrix (`data[t*128 + pitch]`), velocity-valued or
+  binary. `cell(t, pitch)` and `shape()` accessors.
+- `to_piano_roll(&NoteArray, encode_velocity)` fills `[onset, onset+duration)`
+  of each pitch column; `from_piano_roll` reconstructs notes from contiguous
+  nonzero runs per column (velocity read at the run start).
+- Distinct-pitch and gap-separated material round-trips exactly; adjacent
+  same-pitch notes merge into one held note (the classic piano-roll
+  limitation — documented and tested).
+- 8 tests: single note, chord columns, distinct-pitch round-trip, gap
+  round-trip, repeated-pitch merge, binary mode, end-of-roll note, empty.
+
+All three representations compose through the note-array (shared resolution).
+823 Rust tests green; fmt + clippy clean. Next: EDT4 (numpy/PyO3 + `.pyi`).
+
 ## 2026-06-13 — Epic D: event-sequence representation (EDT2) 🟡
 
 Branch `epic-d-ml-representations` (continued). Adds the event-based

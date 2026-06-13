@@ -183,9 +183,9 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 |------|-------------|--------|
 | EDT1 | Note-array `(onset, duration, pitch, velocity)` ↔ IR | ✅ `src/representations/note_array.rs`: `NoteArray`/`NoteRow`, `to_note_array` (Music-tree walk: unfolds repeats, resolves simultaneity/grace/tuplets, dynamics→velocity), `from_note_array` (Simultaneous of `Skip·Note` branches). 11 tests incl. round-trip |
 | EDT2 | Event sequence (note-on/off, time-shift, velocity-set) + documented vocabulary | ✅ `src/representations/event_sequence.rs`: `EventSequence` + `EventOptions` (Performance-RNN vocabulary — note-on 0–127, note-off 128–255, time-shift 256.., velocity-set; documented in the module + `event_name`/`vocab_size`). `to_event_sequence`/`from_event_sequence` go through `NoteArray`; FIFO note-off matching; decomposed time-shifts. 7 tests |
-| EDT3 | Piano-roll dense `T×128` (configurable resolution) ↔ IR | ⬜ |
+| EDT3 | Piano-roll dense `T×128` (configurable resolution) ↔ IR | ✅ `src/representations/piano_roll.rs`: `PianoRoll` (row-major `T×128`, velocity or binary), `to_piano_roll`/`from_piano_roll` (run-detection decode) through `NoteArray`. Adjacent same-pitch notes merge (documented). 8 tests |
 | EDT4 | numpy interop via PyO3 (`numpy` crate) + `.pyi` stubs | ⬜ |
-| EDT5 | Round-trip tests (note-array exact; event exact; piano-roll quantization-aware) | 🟡 note-array + event-sequence round-trips done (onset/duration/pitch exact; velocity banded); piano-roll pending |
+| EDT5 | Round-trip tests (note-array exact; event exact; piano-roll quantization-aware) | ✅ note-array + event-sequence exact (onset/duration/pitch; velocity banded); piano-roll exact for distinct-pitch / gap-separated material, lossy merge for adjacent same-pitch (tested + documented) |
 
 ### Epic E: ABC Adapter (new format)
 

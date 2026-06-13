@@ -7,8 +7,7 @@
 //!   `(onset, duration, pitch, velocity)` rows in fixed time-step units.
 //! - [`event_sequence`] — the event-based representation: a flat sequence of
 //!   note-on/note-off/time-shift/velocity event codes (Performance-RNN style).
-//!
-//! (The piano-roll representation follows in EDT3.)
+//! - [`piano_roll`] — the piano-roll representation: a dense `T × 128` matrix.
 //!
 //! Representations go through the **Music tree**, not the measure-based Score:
 //! it is format-agnostic and reuses the exact [`Frac`](crate::ir::duration::Frac)
@@ -17,9 +16,11 @@
 
 pub mod event_sequence;
 pub mod note_array;
+pub mod piano_roll;
 
 pub use event_sequence::{
     from_event_sequence, to_event_sequence, EventOptions, EventSequence, DEFAULT_MAX_TIME_SHIFT,
     DEFAULT_VELOCITY_BINS,
 };
 pub use note_array::{from_note_array, to_note_array, NoteArray, NoteRow, DEFAULT_RESOLUTION};
+pub use piano_roll::{from_piano_roll, to_piano_roll, PianoRoll, PITCH_COUNT};
