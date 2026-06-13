@@ -201,8 +201,8 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 |------|-------------|--------|
 | EFT1 | Dataset classes (`src/lytk/datasets/`): base `Dataset`, generic `FolderDataset`, one remote dataset (e.g. JSB Chorales); torch/tf adapters (lazy import) | ⬜ |
 | EFT2 | train/val/test split + on-disk caching of converted representations | ⬜ |
-| EFT3 | Objective metrics (`src/representations/metrics.rs` + Python): pitch-class histogram/entropy, n-PC rate, polyphony, empty-beat rate, scale & groove consistency | ⬜ |
-| EFT4 | Tests: folder → dataset → batch tensor shapes; metrics on hand-built fixtures | ⬜ |
+| EFT3 | Objective metrics (`src/representations/metrics.rs` + Python): pitch-class histogram/entropy, n-PC rate, polyphony, empty-beat rate, scale & groove consistency | ✅ `src/representations/metrics.rs` (11 metrics + helpers): n_pitches/n_pitch_classes_used, pitch_range, pitch_class_histogram, pitch/pitch_class_entropy, polyphony, polyphony_rate, empty_beat_rate, pitch_in_scale_rate, scale_consistency, groove_consistency. PyO3 `compute_metrics` → dict + stub. 7 Rust + 3 pytest. Adversarially verified against muspy (6-group workflow, 0 discrepancies) |
+| EFT4 | Tests: folder → dataset → batch tensor shapes; metrics on hand-built fixtures | 🟡 metrics tests done (hand-computed + muspy-verified); dataset/batch tests pending with EFT1/EFT2 |
 
 ### Epic G: Python Distribution & Docs (release readiness)
 

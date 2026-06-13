@@ -104,3 +104,29 @@ class TestPianoRoll:
 
         with pytest.raises(ValueError):
             lytk.from_piano_roll(np.zeros((4, 64), dtype=np.uint8), 4)
+
+
+# ---------------------------------------------------------------------------
+# Objective metrics (EFT3)
+# ---------------------------------------------------------------------------
+
+
+class TestMetrics:
+    def test_keys_and_basic_values(self):
+        m = lytk.compute_metrics(_doc(), 480)
+        assert m["n_pitches_used"] == 3  # C4, D4, E4
+        assert m["n_pitch_classes_used"] == 3
+        assert m["pitch_range"] == 4  # E4(64) - C4(60)
+        # Sequential single notes → polyphony 1.
+        assert m["polyphony"] == 1.0
+        assert len(m["pitch_class_histogram"]) == 12
+
+    def test_scale_consistency_c_major(self):
+        # c'4 d'4 e'2 are all in C major.
+        m = lytk.compute_metrics(_doc(), 480)
+        assert m["scale_consistency"] == 1.0
+
+    def test_pitch_class_histogram_normalized(self):
+        m = lytk.compute_metrics(_doc(), 480)
+        hist = m["pitch_class_histogram"]
+        assert abs(sum(hist) - 1.0) < 1e-9

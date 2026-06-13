@@ -15,6 +15,7 @@
 //! piano-roll representations build on the note-array as their timed form.
 
 pub mod event_sequence;
+pub mod metrics;
 pub mod note_array;
 pub mod piano_roll;
 

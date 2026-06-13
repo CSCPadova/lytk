@@ -6,6 +6,7 @@ from lytk._core import (
     MusicDocument,
     Score,
     change_language,
+    compute_metrics,
     from_event_sequence,
     from_lilypond,
     from_lilypond_music,
@@ -51,6 +52,7 @@ __all__ = [
     "from_event_sequence",
     "to_piano_roll",
     "from_piano_roll",
+    "compute_metrics",
 ]
 
 # MIDI functions are only available when built with the "midi" feature.

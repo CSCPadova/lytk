@@ -577,6 +577,46 @@ fn from_piano_roll(
     })
 }
 
+/// Compute objective evaluation metrics for a :class:`MusicDocument`, returning
+/// a dict of metric name → value (NaN where undefined, e.g. no notes).
+///
+/// ``resolution`` is the time steps per quarter note used for the internal
+/// note-array; ``measure_resolution`` (steps per measure) governs the
+/// measure-based metrics (defaults to ``4 * resolution``, i.e. a 4/4 bar).
+#[pyfunction]
+#[pyo3(signature = (
+    doc,
+    resolution=representations::note_array::DEFAULT_RESOLUTION,
+    measure_resolution=None,
+))]
+fn compute_metrics<'py>(
+    py: Python<'py>,
+    doc: &PyMusicDocument,
+    resolution: u16,
+    measure_resolution: Option<u32>,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    use representations::metrics as mx;
+    let arr = representations::to_note_array(&doc.inner, resolution);
+    let mr = measure_resolution.unwrap_or(4 * resolution as u32).max(1);
+
+    let dict = pyo3::types::PyDict::new_bound(py);
+    dict.set_item("n_pitches_used", mx::n_pitches_used(&arr))?;
+    dict.set_item("n_pitch_classes_used", mx::n_pitch_classes_used(&arr))?;
+    dict.set_item("pitch_range", mx::pitch_range(&arr))?;
+    dict.set_item(
+        "pitch_class_histogram",
+        mx::pitch_class_histogram(&arr).to_vec(),
+    )?;
+    dict.set_item("pitch_entropy", mx::pitch_entropy(&arr))?;
+    dict.set_item("pitch_class_entropy", mx::pitch_class_entropy(&arr))?;
+    dict.set_item("polyphony", mx::polyphony(&arr))?;
+    dict.set_item("polyphony_rate", mx::polyphony_rate(&arr, 2))?;
+    dict.set_item("empty_beat_rate", mx::empty_beat_rate(&arr))?;
+    dict.set_item("scale_consistency", mx::scale_consistency(&arr))?;
+    dict.set_item("groove_consistency", mx::groove_consistency(&arr, mr))?;
+    Ok(dict)
+}
+
 // ---------------------------------------------------------------------------
 // Module registration
 // ---------------------------------------------------------------------------
@@ -615,6 +655,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_event_sequence, m)?)?;
     m.add_function(wrap_pyfunction!(to_piano_roll, m)?)?;
     m.add_function(wrap_pyfunction!(from_piano_roll, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_metrics, m)?)?;
 
     Ok(())
 }

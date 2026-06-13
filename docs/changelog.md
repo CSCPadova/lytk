@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-06-13 — Epic F: objective metrics (EFT3) 🟡
+
+Branch `epic-f-datasets-metrics`. Begins Epic F (datasets & metrics) with the
+objective-metric core.
+
+### EFT3 — objective metrics
+`src/representations/metrics.rs` (modeled on `muspy.metrics`, operating on a
+`NoteArray`):
+- `n_pitches_used`, `n_pitch_classes_used`, `pitch_range`,
+  `pitch_class_histogram` (normalised 12-bin), `pitch_entropy`,
+  `pitch_class_entropy`, `polyphony`, `polyphony_rate`, `empty_beat_rate`,
+  `pitch_in_scale_rate`, `scale_consistency`, `groove_consistency`. "No notes"
+  cases return `NaN`, matching muspy.
+- PyO3 `compute_metrics(doc, resolution, measure_resolution) -> dict` + `.pyi`
+  stub + `__init__` re-export.
+- 7 Rust unit tests (hand-computed values + empty/NaN edges) + 3 pytest cases.
+- **Adversarially verified against muspy** via a 6-group workflow (counts,
+  histogram/entropy, polyphony, empty-beat, scale, groove): **0 discrepancies**
+  — including the critical `np.roll` scale-mask direction (`rem_euclid` matches
+  NumPy) and the inclusive beat-marking / `+1` measure-count edges.
+
+830 Rust + 59 Python tests green; fmt + clippy clean. Next: EFT1/EFT2
+(dataset classes, splits, caching, torch/tf adapters).
+
 ## 2026-06-13 — Epic D complete: numpy/PyO3 interop (EDT4) ✅
 
 Branch `epic-d-ml-representations` (continued). Exposes the three

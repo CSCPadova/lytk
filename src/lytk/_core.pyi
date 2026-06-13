@@ -135,3 +135,16 @@ def from_piano_roll(
 ) -> MusicDocument:
     """Decode a ``(T, 128)`` piano-roll matrix back into a document."""
     ...
+
+def compute_metrics(
+    doc: MusicDocument,
+    resolution: int = 480,
+    measure_resolution: int | None = None,
+) -> dict[str, Any]:
+    """Compute objective evaluation metrics (NaN where undefined).
+
+    Keys: n_pitches_used, n_pitch_classes_used, pitch_range,
+    pitch_class_histogram, pitch_entropy, pitch_class_entropy, polyphony,
+    polyphony_rate, empty_beat_rate, scale_consistency, groove_consistency.
+    """
+    ...
