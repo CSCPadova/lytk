@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-06-13 — Epic D start: note-array representation (EDT1) 🟡
+
+Branch `epic-d-ml-representations`. Begins the ML half of v1.0.0 — the
+muspy-style symbolic representations. New `src/representations/` module.
+
+### EDT1 — note-based representation
+`src/representations/note_array.rs`:
+- `NoteRow { onset, duration, pitch, velocity }` and `NoteArray { resolution,
+  notes }` (serde-serialisable). Time is in integer steps; `resolution` =
+  steps per quarter note (default 480).
+- `to_note_array(doc, resolution)` walks the Layer-1 Music tree to absolute
+  time: unfolds repeats (with `\alternative` voltas), resolves simultaneity,
+  grace notes (zero-time, share the next onset) and tuplets (via
+  `actual_duration`), and maps a running dynamic to velocity through the shared
+  `dynamics_velocity` map. Rows sorted by `(onset, pitch, duration, velocity)`.
+- `from_note_array(arr)` reconstructs a Music tree (each note a parallel
+  `Skip(onset)·Note(duration)` branch) that re-flattens to the same rows —
+  onset/duration/pitch exact; velocity exact at the default, banded otherwise.
+- 11 unit tests: melody, rests/skips, chords, overlapping voices, tuplets,
+  grace, dynamics→velocity, repeat + alternative unfolding, round-trip.
+
+Per the roadmap decision, representations go through the Music tree (not the
+measure-based Score), reusing exact `Frac` durations. 808 Rust tests green.
+
+Next: EDT2 (event sequence) and EDT3 (piano-roll) share this flattening;
+EDT4 adds numpy/PyO3 interop.
+
 ## 2026-06-13 — Close the 5 remaining open conversion bugs ✅
 
 Branch `fix-pedal-bar58-and-bugs` (continued). Cleared every confirmed-but-open

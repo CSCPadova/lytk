@@ -11,6 +11,7 @@ use pyo3::types::PyModule;
 pub mod adapters;
 pub mod ir;
 pub mod parser;
+pub mod representations;
 pub mod transforms;
 
 use adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
