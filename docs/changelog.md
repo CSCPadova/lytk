@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-06-13 — Epic D: event-sequence representation (EDT2) 🟡
+
+Branch `epic-d-ml-representations` (continued). Adds the event-based
+representation on top of EDT1's note-array.
+
+### EDT2 — event-based representation
+`src/representations/event_sequence.rs`:
+- `EventSequence { codes, resolution, max_time_shift, velocity_bins,
+  encode_velocity }` and `EventOptions`. Performance-RNN-style vocabulary
+  (muspy-compatible), documented in the module header and via `event_name` /
+  `vocab_size`: note-on `0..128`, note-off `128..256`, time-shift
+  `256..256+S` (advance `code−256+1` steps, large shifts decomposed),
+  velocity-set `256+S..256+S+V` (quantised into `V` bins).
+- `to_event_sequence(&NoteArray, &EventOptions)` builds timed `(time, code)`
+  events, stable-sorts, and inserts decomposed time-shifts; velocity-set is
+  emitted only on change.
+- `from_event_sequence(&EventSequence) -> NoteArray` decodes with FIFO
+  note-off matching and a running velocity. Onset/duration/pitch round-trip
+  exactly; velocity is banded (exact at bin centres).
+- 7 tests: exact event codes, time-shift decomposition, melody/chord
+  round-trips, velocity banding, `encode_velocity=false`, vocab size.
+
+Encoding/decoding compose through the note-array, so the resolution is shared.
+815 Rust tests green; fmt + clippy clean. Next: EDT3 (piano-roll).
+
 ## 2026-06-13 — Epic D start: note-array representation (EDT1) 🟡
 
 Branch `epic-d-ml-representations`. Begins the ML half of v1.0.0 — the

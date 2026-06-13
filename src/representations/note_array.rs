@@ -25,7 +25,7 @@ use crate::ir::pitch::{Pitch, PitchStep};
 pub const DEFAULT_RESOLUTION: u16 = 480;
 
 /// Default note velocity (MIDI), used when no dynamic is in effect.
-const DEFAULT_VELOCITY: u8 = 64;
+pub(crate) const DEFAULT_VELOCITY: u8 = 64;
 
 /// A single note in the note-based representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
