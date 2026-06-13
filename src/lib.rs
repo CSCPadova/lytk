@@ -124,6 +124,14 @@ impl PyScore {
         Ok(PyScore { inner: score })
     }
 
+    /// Lift this measure-based :class:`Score` to a Layer-1 :class:`MusicDocument`
+    /// (the form the ML representations consume).
+    fn to_music_document(&self) -> PyMusicDocument {
+        PyMusicDocument {
+            inner: ir::lift::lift_to_music(&self.inner),
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!("{}", self.inner)
     }

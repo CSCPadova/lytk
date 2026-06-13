@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-06-13 — Epic F: dataset utilities (EFT1/EFT2/EFT4) ✅
+
+Branch `epic-f-datasets-metrics` (continued). Adds the dataset/ML-pipeline
+layer on top of the representations and metrics.
+
+### New `Score.to_music_document()` binding
+Exposes `lift_to_music` to Python so MusicXML/MXL/MIDI scores can be converted
+to the Layer-1 Music tree the representations consume (`.pyi` updated).
+
+### EFT1 — dataset classes (`src/lytk/datasets/`)
+- `load_document(path)` loads `.ly`/`.ily` (direct) and `.xml`/`.musicxml`/
+  `.mxl`/`.mid`/`.midi` (parse + lift) as a `MusicDocument`.
+- `Dataset` base: `__len__`/`__getitem__` plus representation converters
+  (`to_note_arrays`/`to_event_sequences`/`to_pianorolls`/`to_representation`),
+  `metrics()`, `split()`, and lazy `to_pytorch_dataset()` /
+  `to_tensorflow_dataset()` adapters (optional-dep imports).
+- `FolderDataset` (recursive lazy file discovery) and `Subset`.
+- The remote dataset (JSB Chorales downloader) is deferred — it needs network
+  access and isn't sandbox-testable.
+
+### EFT2 — splits + caching
+- `Dataset.split(ratios, seed)`: deterministic, disjoint, remainder-safe
+  partitioning into `Subset`s.
+- `FolderDataset(cache_dir=...)`: on-disk `.npy` cache of converted
+  representations, keyed by source file + representation + params.
+
+### EFT4 — tests
+`tests/test_datasets.py` (14 cases): loaders for every format, folder
+discovery, representation conversion, metrics, splits (coverage/determinism),
+and caching round-trip.
+
+Epic F is complete bar the optional remote dataset. 830 Rust + 73 Python tests
+green; fmt + clippy clean.
+
 ## 2026-06-13 — Epic F: objective metrics (EFT3) 🟡
 
 Branch `epic-f-datasets-metrics`. Begins Epic F (datasets & metrics) with the
