@@ -855,3 +855,24 @@ fn repeats_pedal_below_lower_staff() {
     assert!(saw_pedal, "expected pedal directions in repeats.ly");
     assert!(saw_dyn, "expected dynamics directions in repeats.ly");
 }
+
+/// Pedal directions must be emitted *inline within the lower staff's stream*
+/// (after the `<backup>` that switches to staff 2), so renderers anchor the
+/// pedal to that staff and place it below it — not in a trailing block.
+#[test]
+fn repeats_pedal_emitted_in_lower_staff_stream() {
+    let xml = repeats_xml();
+    let mut checked = 0;
+    for measure in xml.split("<measure ").skip(1) {
+        let body = measure.split("</measure>").next().unwrap_or("");
+        let Some(pi) = body.find("<pedal") else {
+            continue;
+        };
+        checked += 1;
+        assert!(
+            body[..pi].contains("<backup>"),
+            "pedal not in the lower-staff stream (no preceding <backup>)"
+        );
+    }
+    assert!(checked > 0, "expected pedal directions in repeats.ly");
+}

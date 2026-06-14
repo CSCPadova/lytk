@@ -7,6 +7,7 @@ use crate::ir::duration::Frac;
 use crate::ir::harmony::FiguredBass;
 use crate::ir::measure::{ClefSign, Measure, MeasureAttributes};
 use crate::ir::note::VoiceElement;
+use crate::ir::voice::Voice;
 
 use musicxml::datatypes as mdt;
 use musicxml::elements as mxml;
@@ -96,10 +97,15 @@ impl IrToMxmlAdapter {
             ));
         }
 
-        // Directions: split into upfront (offset_frac == 0) and positioned (offset_frac > 0).
-        // Upfront directions are emitted before notes; positioned ones are interleaved later.
-        let zero = Frac::from_integer(0);
-        let mut positioned_dirs: Vec<&Direction> = Vec::new();
+        // Group measure-level directions by their target staff (0/unset → 1) and
+        // position, so they can be emitted *inline* within that staff's first
+        // voice stream — the way notation software exports them, so e.g. a piano
+        // pedal sits in the lower staff's stream and renders below it. (The old
+        // upfront/trailing split anchored multi-staff directions ambiguously.)
+        // Layout-break-only directions are emitted via <print> above and skipped.
+        let divs_per_whole = Frac::from_integer(4 * self.divisions as i64);
+        let mut dirs_by_staff: std::collections::BTreeMap<u8, Vec<(i64, &Direction)>> =
+            std::collections::BTreeMap::new();
         for dir in &measure.directions {
             if dir.layout_break.is_some()
                 && dir.dynamic.is_none()
@@ -117,12 +123,15 @@ impl IrToMxmlAdapter {
             {
                 continue;
             }
-            if dir.offset_frac > zero {
-                positioned_dirs.push(dir);
-            } else {
-                elements.push(mxml::MeasureElement::Direction(self.build_direction(dir)));
-            }
+            let staff = if dir.staff > 0 { dir.staff } else { 1 };
+            let off = (dir.offset_frac * divs_per_whole).to_integer();
+            dirs_by_staff.entry(staff).or_default().push((off, dir));
         }
+        for v in dirs_by_staff.values_mut() {
+            v.sort_by_key(|(o, _)| *o);
+        }
+        // Per-staff cursor into the sorted directions as we interleave them.
+        let mut dir_idx: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
 
         // Harmony / chord symbols (before notes; offset positions within measure)
         for harmony in &measure.harmonies {
@@ -139,7 +148,34 @@ impl IrToMxmlAdapter {
 
         // Voices with backup between them
         let voices = &measure.voices;
+
+        // The first voice of each staff is where that staff's directions are
+        // interleaved.
+        let voice_staff = |voice: &Voice| -> u8 {
+            voice
+                .elements
+                .iter()
+                .find_map(|e| {
+                    let s = match e {
+                        VoiceElement::Note(n) => n.staff,
+                        VoiceElement::Rest(r) => r.staff,
+                        VoiceElement::Chord(c) => c.staff,
+                    };
+                    (s != 0).then_some(s)
+                })
+                .unwrap_or(1)
+        };
+        let mut first_voice_for_staff: std::collections::BTreeMap<u8, usize> =
+            std::collections::BTreeMap::new();
         for (vi, voice) in voices.iter().enumerate() {
+            first_voice_for_staff
+                .entry(voice_staff(voice))
+                .or_insert(vi);
+        }
+
+        for (vi, voice) in voices.iter().enumerate() {
+            let vstaff = voice_staff(voice);
+            let interleave_dirs = first_voice_for_staff.get(&vstaff) == Some(&vi);
             if vi > 0 {
                 // Backup to start of measure for subsequent voices
                 let prev = &voices[vi - 1];
@@ -171,6 +207,21 @@ impl IrToMxmlAdapter {
                             ));
                         }
                         fb_emitted_up_to = off;
+                    }
+                }
+
+                // Interleave this staff's measure directions right before the
+                // note at their beat, so they anchor to this staff (and a pedal
+                // with placement=below renders under it).
+                if interleave_dirs {
+                    if let Some(dirs) = dirs_by_staff.get(&vstaff) {
+                        let idx = dir_idx.entry(vstaff).or_insert(0);
+                        while *idx < dirs.len() && dirs[*idx].0 <= fwd_pos {
+                            elements.push(mxml::MeasureElement::Direction(
+                                self.build_direction(dirs[*idx].1),
+                            ));
+                            *idx += 1;
+                        }
                     }
                 }
 
@@ -289,6 +340,19 @@ impl IrToMxmlAdapter {
                     fb_emitted_up_to = off;
                 }
             }
+
+            // Emit this staff's directions that fall after its last note.
+            if interleave_dirs {
+                if let Some(dirs) = dirs_by_staff.get(&vstaff) {
+                    let idx = dir_idx.entry(vstaff).or_insert(0);
+                    while *idx < dirs.len() {
+                        elements.push(mxml::MeasureElement::Direction(
+                            self.build_direction(dirs[*idx].1),
+                        ));
+                        *idx += 1;
+                    }
+                }
+            }
         }
 
         // Fallback: if there are no voices at all, emit figured bass with offsets
@@ -302,59 +366,11 @@ impl IrToMxmlAdapter {
             }
         }
 
-        // Emit positioned directions (offset_frac > 0) interleaved after all voices,
-        // using <forward> elements to advance to the correct beat position.
-        if !positioned_dirs.is_empty() {
-            // Sort by offset_frac so they come out in beat order
-            positioned_dirs.sort_by(|a, b| {
-                a.offset_frac
-                    .partial_cmp(&b.offset_frac)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            // Backup to measure start so we can emit forwards from position 0
-            // We need to know the total measure duration to back up from end of last voice.
-            // Use the first voice's duration as the measure duration.
-            let measure_dur_divs = if let Some(first_voice) = voices.first() {
-                self.voice_duration(first_voice)
-            } else {
-                0
-            };
-            if measure_dur_divs > 0 {
-                elements.push(mxml::MeasureElement::Backup(mxml::Backup {
-                    attributes: (),
-                    content: mxml::BackupContents {
-                        duration: mxml::Duration {
-                            attributes: (),
-                            content: mdt::PositiveDivisions(measure_dur_divs as u32),
-                        },
-                        footnote: None,
-                        level: None,
-                    },
-                }));
-            }
-
-            let divs_per_whole = Frac::from_integer(4 * self.divisions as i64);
-            let mut fwd_pos: i64 = 0;
-            for dir in &positioned_dirs {
-                let offset_divs = (dir.offset_frac * divs_per_whole).to_integer();
-                if offset_divs > fwd_pos {
-                    let fwd_dur = (offset_divs - fwd_pos) as u32;
-                    elements.push(mxml::MeasureElement::Forward(mxml::Forward {
-                        attributes: (),
-                        content: mxml::ForwardContents {
-                            duration: mxml::Duration {
-                                attributes: (),
-                                content: mdt::PositiveDivisions(fwd_dur),
-                            },
-                            footnote: None,
-                            level: None,
-                            voice: None,
-                            staff: None,
-                        },
-                    }));
-                    fwd_pos = offset_divs;
-                }
+        // Emit directions for any staff that had no voice this measure (so they
+        // were never interleaved). They still carry their own `<staff>`.
+        for (staff, dirs) in &dirs_by_staff {
+            let start = dir_idx.get(staff).copied().unwrap_or(0);
+            for (_, dir) in &dirs[start..] {
                 elements.push(mxml::MeasureElement::Direction(self.build_direction(dir)));
             }
         }

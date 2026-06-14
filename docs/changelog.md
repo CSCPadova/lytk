@@ -36,6 +36,16 @@ directions distributed and pedal below the lower staff. 859 Rust tests
 `repeats_pedal_below_lower_staff`, `direction_emits_staff_and_placement`);
 fmt + clippy clean. chopin-specific grace/tuplet issues remain a follow-up.
 
+- **Directions emitted inline per staff.** Measure-level directions were
+  emitted in an upfront/trailing block (after a generic `<backup>`), so a pedal
+  with `<staff>2</staff>` was anchored ambiguously and rendered above the lower
+  staff's voice instead of below the staff. `ir_to_mxml/part.rs` now interleaves
+  each direction **inline within its target staff's first voice** at the right
+  beat (matching how notation software exports them, e.g. 33a-Spanners). All
+  pedal directions now land in the lower-staff stream (after the staff-2
+  `<backup>`) with `<staff>2</staff>` placement="below" → rendered below both
+  staves. 860 tests (+ `repeats_pedal_emitted_in_lower_staff_stream`).
+
 ## 2026-06-13 — Epic E: ABC notation adapter ✅
 
 Branch `epic-e-abc-adapter`. Adds ABC as a fourth interchange format (the first
