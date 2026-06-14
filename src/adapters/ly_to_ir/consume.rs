@@ -879,6 +879,16 @@ pub(super) fn parse_grace_block(state: &mut WalkState, block: Node) -> Vec<Note>
                 notes.push(note);
                 continue;
             }
+        } else if child.kind() == "chord" {
+            // A `<...>` inside a grace block — in this corpus these are
+            // single-note fingered pitches (e.g. `<gisis-1>`). Flatten the
+            // chord's notes into the grace stream so they aren't dropped.
+            i += 1;
+            let dur = consume_duration(state, &children, &mut i);
+            let _ = consume_attachments(state, &children, &mut i);
+            let chord = build_chord(state, child, dur);
+            notes.extend(chord.notes);
+            continue;
         }
         i += 1;
     }
