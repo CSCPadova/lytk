@@ -45,6 +45,19 @@ fn note_or_pitched_rest(note: Note, attachments: &[String]) -> VoiceElement {
 use super::walk::{extract_named_context, walk_context_body, walk_parallel_music};
 use super::{parse_clef_name, parse_key_mode, pitch_to_fifths};
 
+/// Parse `#(skip-of-length VAR)` and return `VAR`. Tolerant of whitespace.
+fn parse_skip_of_length(scheme_text: &str) -> Option<&str> {
+    let inner = scheme_text
+        .trim()
+        .strip_prefix('#')?
+        .trim_start()
+        .strip_prefix('(')?
+        .strip_suffix(')')?
+        .trim();
+    let var = inner.strip_prefix("skip-of-length")?.trim();
+    (!var.is_empty()).then_some(var)
+}
+
 /// Walk an `expression_block` `{ ... }` containing music.
 pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
     let mut cursor = block.walk();
@@ -106,6 +119,21 @@ pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
                 i += 1;
                 i = walk_context_body(state, &children, i, &context, &name);
                 continue;
+            }
+            "embedded_scheme" => {
+                // `#(skip-of-length VAR)` emits a spacer the same length as
+                // music variable VAR (used to align a parallel cadenza voice).
+                // Any other embedded scheme at the music level is ignored.
+                let text = state.text(node).to_string();
+                if let Some(var) = parse_skip_of_length(&text) {
+                    if let Some(dur) = state.variable_total_duration(var) {
+                        if dur > Frac::from_integer(0) {
+                            let mut rest = Rest::new(crate::ir::duration::Duration::new(dur));
+                            rest.is_spacer = true;
+                            state.push_voice_element(VoiceElement::Rest(rest));
+                        }
+                    }
+                }
             }
             "fraction" => {
                 // Standalone fraction (shouldn't appear without \time, but handle gracefully)

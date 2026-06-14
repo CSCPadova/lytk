@@ -322,6 +322,21 @@ impl<'src> WalkState<'src> {
         self.prev_pitch = self.relative_ref;
     }
 
+    /// Total musical duration of a (music) variable, summed across its
+    /// pre-parsed measures. Used for the Scheme `#(skip-of-length VAR)` idiom,
+    /// which emits a spacer the same length as `VAR` to align a parallel voice.
+    pub(super) fn variable_total_duration(&self, name: &str) -> Option<Frac> {
+        match self.definitions.get(name)? {
+            VarDef::Measures(measures, _) => Some(
+                measures
+                    .iter()
+                    .map(measure_voice_duration)
+                    .fold(Frac::from_integer(0), |a, b| a + b),
+            ),
+            _ => None,
+        }
+    }
+
     /// Resolve a variable reference: look up stored measures and add them
     /// to the current part.
     pub(super) fn resolve_variable(&mut self, name: &str) -> bool {
