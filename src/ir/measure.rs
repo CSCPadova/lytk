@@ -227,6 +227,10 @@ pub struct Measure {
     pub number: u32,
     /// Whether this is an implicit measure (e.g. anacrusis / pickup).
     pub implicit: bool,
+    /// Senza misura (free time, e.g. inside `\cadenzaOn … \cadenzaOff`). Such a
+    /// measure has no fixed length and must not be re-barred to a time signature.
+    #[serde(default)]
+    pub senza_misura: bool,
     /// Optional width hint.
     pub width: Option<f32>,
     /// Attributes that take effect at this measure.
@@ -254,6 +258,7 @@ impl Measure {
         Self {
             number,
             implicit: false,
+            senza_misura: false,
             width: None,
             attributes: None,
             left_barline: None,

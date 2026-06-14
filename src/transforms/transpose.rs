@@ -199,6 +199,7 @@ mod tests {
         let measure = Measure {
             number: 1,
             implicit: false,
+            senza_misura: false,
             width: None,
             attributes: Some(attrs),
             left_barline: None,
