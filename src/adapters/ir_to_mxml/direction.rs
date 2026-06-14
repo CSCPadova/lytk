@@ -346,6 +346,15 @@ impl IrToMxmlAdapter {
             None
         };
 
+        let staff = if direction.staff > 0 {
+            Some(mxml::Staff {
+                attributes: (),
+                content: mdt::PositiveInteger(direction.staff as u32),
+            })
+        } else {
+            None
+        };
+
         mxml::Direction {
             attributes: mxml::DirectionAttributes {
                 placement,
@@ -357,7 +366,7 @@ impl IrToMxmlAdapter {
                 footnote: None,
                 level: None,
                 voice: None,
-                staff: None,
+                staff,
                 sound,
                 listening: None,
             },

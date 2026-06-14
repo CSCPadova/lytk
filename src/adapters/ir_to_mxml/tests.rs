@@ -346,6 +346,51 @@ fn direction_with_dynamics() {
 }
 
 #[test]
+fn direction_emits_staff_and_placement() {
+    use crate::ir::direction::PedalEvent;
+
+    // A pedal direction tied to staff 2, below — the MusicXML must carry both
+    // placement="below" and <staff>2</staff>.
+    let dir = Direction {
+        pedal: Some(PedalEvent {
+            pedal_type: "start".to_string(),
+            line: false,
+        }),
+        placement: Placement::Below,
+        staff: 2,
+        ..Default::default()
+    };
+    let measure = crate::ir::measure::Measure {
+        number: 1,
+        implicit: false,
+        width: None,
+        attributes: None,
+        left_barline: None,
+        right_barline: None,
+        directions: vec![dir],
+        harmonies: vec![],
+        figured_bass: vec![],
+        print_object: true,
+        multi_measure_rest: None,
+        voices: vec![],
+    };
+    let mut part = Part::new("P1");
+    part.measures.push(measure);
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("placement=\"below\""),
+        "missing placement:\n{xml}"
+    );
+    assert!(
+        xml.contains("<staff>2</staff>"),
+        "missing <staff>2</staff>:\n{xml}"
+    );
+}
+
+#[test]
 fn direction_with_tempo() {
     let dir = Direction {
         tempo: Some(TempoDirection {

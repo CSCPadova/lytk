@@ -740,3 +740,118 @@ fn pedal_piano_staff_bars_aligned_across_staves() {
         &misaligned[..misaligned.len().min(10)]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-staff piano with interleaved Dynamics contexts (repeats.ly)
+//
+// repeats.ly is `\new PianoStaff << \Dynamics \Staff \Dynamics \Staff \Dynamics >>`.
+// The Dynamics lanes must NOT become staves (so RH/LH split into two staves),
+// dynamics/pedal must land in their real measures (not dumped at the end), and
+// pedal must sit below the lower staff.
+// ---------------------------------------------------------------------------
+
+fn repeats_xml() -> String {
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("repeats.ly"))
+        .expect("LY → Score");
+    IrToMxmlAdapter::new().convert(&score).expect("Score → XML")
+}
+
+/// Extract each top-level `<direction>…</direction>` block (skipping the
+/// `<direction-type>` child whose tag shares the `<direction` prefix).
+fn direction_blocks(xml: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while let Some(rel) = xml[pos..].find("<direction") {
+        let start = pos + rel;
+        if xml[start..].starts_with("<direction-type") {
+            pos = start + "<direction-type".len();
+            continue;
+        }
+        if let Some(erel) = xml[start..].find("</direction>") {
+            out.push(&xml[start..start + erel]);
+            pos = start + erel + "</direction>".len();
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+#[test]
+fn repeats_has_two_staves() {
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("repeats.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    assert_eq!(
+        part.staves, 2,
+        "PianoStaff must collapse to exactly 2 staves"
+    );
+    use _core::ir::note::VoiceElement;
+    let max_staff = part
+        .measures
+        .iter()
+        .flat_map(|m| &m.voices)
+        .flat_map(|v| &v.elements)
+        .map(|e| match e {
+            VoiceElement::Note(n) => n.staff,
+            VoiceElement::Rest(r) => r.staff,
+            VoiceElement::Chord(c) => c.staff,
+        })
+        .max()
+        .unwrap_or(0);
+    assert!(max_staff <= 2, "found content on staff {max_staff} (> 2)");
+    assert!(
+        repeats_xml().contains("<staves>2</staves>"),
+        "MusicXML should declare 2 staves"
+    );
+}
+
+#[test]
+fn repeats_dynamics_are_distributed_not_dumped() {
+    let xml = repeats_xml();
+    // Count direction blocks per measure (via the unambiguous closing tag).
+    let counts: Vec<usize> = xml
+        .split("<measure ")
+        .skip(1)
+        .map(|m| m.matches("</direction>").count())
+        .collect();
+    let total: usize = counts.iter().sum();
+    let with_dirs = counts.iter().filter(|&&c| c > 0).count();
+    let last = *counts.last().unwrap_or(&0);
+    assert!(total > 50, "expected many directions, got {total}");
+    assert!(
+        with_dirs > 20,
+        "directions should fan out across measures, only {with_dirs} have any"
+    );
+    assert!(
+        last * 5 < total,
+        "last measure holds {last} of {total} directions (dumped at end)"
+    );
+}
+
+#[test]
+fn repeats_pedal_below_lower_staff() {
+    let xml = repeats_xml();
+    let mut saw_pedal = false;
+    let mut saw_dyn = false;
+    for block in direction_blocks(&xml) {
+        if block.contains("<pedal") {
+            saw_pedal = true;
+            assert!(
+                block.contains("placement=\"below\"") && block.contains("<staff>2</staff>"),
+                "pedal not below staff 2:\n{block}"
+            );
+        }
+        if block.contains("<dynamics>") {
+            saw_dyn = true;
+            assert!(
+                block.contains("placement=\"below\"") && block.contains("<staff>1</staff>"),
+                "dynamics not below staff 1:\n{block}"
+            );
+        }
+    }
+    assert!(saw_pedal, "expected pedal directions in repeats.ly");
+    assert!(saw_dyn, "expected dynamics directions in repeats.ly");
+}

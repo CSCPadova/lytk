@@ -147,6 +147,10 @@ pub struct Direction {
     /// Position within the measure as a fraction of a whole note (e.g. 1/2 = after 2 quarter beats).
     pub offset_frac: Frac,
     pub placement: Placement,
+    /// MusicXML `<staff>` this direction attaches to in a multi-staff part.
+    /// `0` = unset (no `<staff>` emitted); `1..=N` = a specific staff.
+    #[serde(default)]
+    pub staff: u8,
     pub tempo: Option<TempoDirection>,
     pub text: Option<TextDirection>,
     pub rehearsal: Option<RehearsalMark>,
@@ -174,6 +178,7 @@ impl Default for Direction {
             offset: 0,
             offset_frac: Frac::from_integer(0),
             placement: Placement::Unspecified,
+            staff: 0,
             tempo: None,
             text: None,
             rehearsal: None,

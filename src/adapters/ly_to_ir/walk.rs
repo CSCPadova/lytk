@@ -18,8 +18,9 @@ use super::lyrics::{attach_lyrics_to_part, extract_lyricsto_voice, parse_lyric_b
 use super::merge::{
     measure_voice_duration, measures_are_spacer_only, measures_have_no_pitched_content,
     merge_dynamics_parts, merge_leading_attribute_measures, merge_spacer_by_duration,
-    merge_spacer_measures, merge_voice_measure_streams, propagate_first_tempo,
-    renumber_voices_in_measures, synchronize_barlines, synchronize_time_signatures,
+    merge_spacer_measures, merge_voice_measure_streams, part_is_dynamics_only,
+    propagate_first_tempo, renumber_voices_in_measures, synchronize_barlines,
+    synchronize_time_signatures,
 };
 use super::modifiers::{consume_relative, consume_transpose};
 use super::music::walk_music_block;
@@ -1241,8 +1242,38 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                         }
                     }
                 } else {
-                    let var_name = text.trim_start_matches('\\');
-                    state.resolve_variable(var_name);
+                    // A plain music variable inside `<<...>>` is a simultaneous
+                    // branch and must overlay sibling branches. `resolve_variable`
+                    // concatenates two spacer-only streams (it assumes sequential
+                    // `\barRest | \barRest`); the merge below re-overlays them so
+                    // e.g. `<< \silent \dynamics >>` lands the dynamics in the
+                    // right bars instead of after the music. When the variable
+                    // already overlaid (real content onto a spacer sibling), the
+                    // merge is a no-op (measure count unchanged).
+                    let var_name = text.trim_start_matches('\\').to_string();
+                    if block_started_clean && !state.current_voice.is_empty() {
+                        state.flush_measure();
+                        state.elapsed_in_measure = Frac::from_integer(0);
+                    }
+                    let measures_before = state
+                        .parts
+                        .last()
+                        .map(|(_, p)| p.measures.len())
+                        .unwrap_or(0);
+                    if measures_before > block_baseline {
+                        let saved_voice = std::mem::take(&mut state.current_voice);
+                        let saved_measure = state.current_measure.take();
+                        let saved_elapsed = state.elapsed_in_measure;
+                        state.elapsed_in_measure = Frac::from_integer(0);
+                        state.resolve_variable(&var_name);
+                        state.flush_measure();
+                        merge_simultaneous_block(state, block_baseline, measures_before);
+                        state.current_voice = saved_voice;
+                        state.current_measure = saved_measure;
+                        state.elapsed_in_measure = saved_elapsed;
+                    } else {
+                        state.resolve_variable(&var_name);
+                    }
                 }
             }
             _ => {}
@@ -1489,16 +1520,11 @@ pub(super) fn walk_context_body(
             }
         }
 
-        // For PianoStaff/GrandStaff: merge newly created parts into one multi-staff part
-        if is_piano_staff && state.parts.len() > parts_before + 1 {
+        // For PianoStaff/GrandStaff: combine the newly created parts into one
+        // multi-staff part. The function counts only real Staff parts as staves
+        // and folds any interleaved Dynamics contexts in as directions.
+        if is_piano_staff && state.parts.len() > parts_before {
             merge_piano_staff_parts(state, parts_before, &with_props);
-        } else if is_piano_staff && state.parts.len() == parts_before + 1 {
-            // Single staff inside PianoStaff — just set staves=1 (already default)
-            if let Some((_, part)) = state.parts.last_mut() {
-                if let Some(v) = with_props.get("instrumentName") {
-                    part.name = v.clone();
-                }
-            }
         }
 
         return i;
@@ -1652,8 +1678,14 @@ fn walk_lyrics_context(
     i
 }
 
-/// Merge multiple parts created inside a PianoStaff/GrandStaff into a single
+/// Merge the parts created inside a PianoStaff/GrandStaff into a single
 /// multi-staff part. `parts_before` is the index of the first new part.
+///
+/// Only real **Staff** parts become staves; interleaved **Dynamics** contexts
+/// (spacer-only parts carrying dynamics/pedal/markup) are folded into the
+/// combined part as measure directions, regardless of their position. This is
+/// essential for scores like repeats.ly where a `\new Dynamics` lane appears
+/// before/between the staves.
 fn merge_piano_staff_parts(
     state: &mut WalkState,
     parts_before: usize,
@@ -1661,118 +1693,164 @@ fn merge_piano_staff_parts(
 ) {
     use crate::ir::note::VoiceElement;
 
-    let num_staves = state.parts.len() - parts_before;
-    if num_staves < 2 {
+    // Take the whole window of new parts and split real staves from
+    // Dynamics-only parts, preserving document order within each group.
+    let window: Vec<(String, crate::ir::Part)> = state.parts.drain(parts_before..).collect();
+    let mut staff_parts: Vec<(String, crate::ir::Part)> = Vec::new();
+    let mut dynamics_parts: Vec<crate::ir::Part> = Vec::new();
+    for (ctx, part) in window {
+        if part_is_dynamics_only(&part) {
+            dynamics_parts.push(part);
+        } else {
+            staff_parts.push((ctx, part));
+        }
+    }
+
+    if staff_parts.is_empty() {
+        // Degenerate PianoStaff with no real staves — restore the parts.
+        for p in dynamics_parts {
+            state.parts.push((String::new(), p));
+        }
         return;
     }
 
-    // \time is score-shared in LilyPond: re-bar any staff that is missing
-    // time-signature changes its siblings declare, so measures align by
-    // index before merging.
-    super::merge::unify_staff_time_signatures(&mut state.parts[parts_before..]);
+    let num_staves = staff_parts.len();
 
-    // Drain the extra parts (index parts_before+1 ..)
-    let extra_parts: Vec<_> = state.parts.drain(parts_before + 1..).collect();
+    // \time is score-shared in LilyPond: re-bar any staff missing time-sig
+    // changes its siblings declare, so measures align by index. Computed from
+    // the real staves only (Dynamics lanes would pollute the timeline).
+    super::merge::unify_staff_time_signatures(&mut staff_parts);
 
-    // Set staff numbers on the first part's voices (staff=1)
-    if let Some((_, first_part)) = state.parts.get_mut(parts_before) {
-        first_part.staves = num_staves as u8;
+    // The first real staff is the merge base.
+    let (base_ctx, mut base) = staff_parts.remove(0);
+    base.staves = num_staves as u8;
 
-        // Apply \with properties, or derive name from first staff
-        if let Some(v) = with_props.get("instrumentName") {
-            first_part.name = v.clone();
-        } else if !first_part.name.is_empty() {
-            // Strip trailing " N" suffix (e.g. "Piano 1" → "Piano")
-            let name = first_part.name.trim_end();
-            if let Some(pos) = name.rfind(' ') {
-                let suffix = &name[pos + 1..];
-                if suffix.chars().all(|c| c.is_ascii_digit()) {
-                    first_part.name = name[..pos].to_string();
-                }
-            }
-        }
-        if let Some(v) = with_props.get("shortInstrumentName") {
-            first_part.abbreviation = v.clone();
-        }
-        if let Some(v) = with_props.get("midiInstrument") {
-            first_part.midi_instrument = v.clone();
-        }
-
-        // If the first part has no name but the staves did, use the first
-        // staff name (common for named piano staves like "Piano 1")
-        // but strip trailing number suffixes like " 1"
-        // (typically the part name is the instrument name without numbering)
-
-        // Set staff=1 on all voices in first part
-        for measure in &mut first_part.measures {
-            for voice in &mut measure.voices {
-                for elem in &mut voice.elements {
-                    match elem {
-                        VoiceElement::Note(n) => n.staff = 1,
-                        VoiceElement::Rest(r) => r.staff = 1,
-                        VoiceElement::Chord(c) => c.staff = 1,
-                    }
-                }
-            }
-        }
-
-        // Merge each extra part's measures into the first part with
-        // incrementing staff numbers
-        for (extra_idx, (_ctx, extra_part)) in extra_parts.into_iter().enumerate() {
-            let staff_num = (extra_idx + 2) as u8;
-
-            // Merge clef from extra part's first measure attributes
-            // into the first part's first measure attributes
-            if let Some(extra_m) = extra_part.measures.first() {
-                if let Some(ref extra_attrs) = extra_m.attributes {
-                    let first_part_measures = &mut first_part.measures;
-                    if let Some(first_m) = first_part_measures.first_mut() {
-                        let attrs = first_m.attributes.get_or_insert_with(Default::default);
-                        // Copy clef from extra part under this staff number
-                        for clef in extra_attrs.clefs.values() {
-                            attrs.clefs.insert(staff_num, *clef);
-                        }
-                        // Set staves attribute
-                        attrs.staves = Some(num_staves as u8);
-                    }
-                }
-            }
-
-            // Merge measures: add voices from extra part into corresponding
-            // measures of the first part
-            let first_measures = &mut first_part.measures;
-            for (m_idx, extra_measure) in extra_part.measures.into_iter().enumerate() {
-                // Extend first part's measures if the extra part has more
-                while m_idx >= first_measures.len() {
-                    let mut new_m =
-                        crate::ir::measure::Measure::new((first_measures.len() + 1) as u32);
-                    new_m.implicit = false;
-                    first_measures.push(new_m);
-                }
-
-                let target = &mut first_measures[m_idx];
-
-                // Add voices with staff number adjusted
-                for mut voice in extra_measure.voices {
-                    // Assign a new voice number to avoid collisions
-                    let max_voice = target.voices.iter().map(|v| v.number).max().unwrap_or(0);
-                    voice.number = max_voice + 1;
-
-                    for elem in &mut voice.elements {
-                        match elem {
-                            VoiceElement::Note(n) => n.staff = staff_num,
-                            VoiceElement::Rest(r) => r.staff = staff_num,
-                            VoiceElement::Chord(c) => c.staff = staff_num,
-                        }
-                    }
-                    target.voices.push(voice);
-                }
-
-                // Merge directions from extra measure
-                target.directions.extend(extra_measure.directions);
-                // Merge harmonies
-                target.harmonies.extend(extra_measure.harmonies);
+    // Apply \with properties, or derive name from the staff.
+    if let Some(v) = with_props.get("instrumentName") {
+        base.name = v.clone();
+    } else if !base.name.is_empty() {
+        // Strip trailing " N" suffix (e.g. "Piano 1" → "Piano")
+        let name = base.name.trim_end();
+        if let Some(pos) = name.rfind(' ') {
+            let suffix = &name[pos + 1..];
+            if suffix.chars().all(|c| c.is_ascii_digit()) {
+                base.name = name[..pos].to_string();
             }
         }
     }
+    if let Some(v) = with_props.get("shortInstrumentName") {
+        base.abbreviation = v.clone();
+    }
+    if let Some(v) = with_props.get("midiInstrument") {
+        base.midi_instrument = v.clone();
+    }
+
+    // Set staff=1 on all voices in the base part.
+    for measure in &mut base.measures {
+        for voice in &mut measure.voices {
+            for elem in &mut voice.elements {
+                match elem {
+                    VoiceElement::Note(n) => n.staff = 1,
+                    VoiceElement::Rest(r) => r.staff = 1,
+                    VoiceElement::Chord(c) => c.staff = 1,
+                }
+            }
+        }
+    }
+
+    // Merge each remaining staff into the base part as staff 2..N.
+    for (extra_idx, (_ctx, extra_part)) in staff_parts.into_iter().enumerate() {
+        let staff_num = (extra_idx + 2) as u8;
+
+        // A single global voice-number offset for this staff: keeps the staff's
+        // voices disjoint from the base's and *consistent across all measures*.
+        // (A per-measure `max + 1` made the same physical voice drift between
+        // numbers and collide across staves.)
+        let voice_offset = base
+            .measures
+            .iter()
+            .flat_map(|m| m.voices.iter().map(|v| v.number))
+            .max()
+            .unwrap_or(0);
+
+        // Merge clef from the extra staff's first measure under this staff number.
+        if let Some(extra_m) = extra_part.measures.first() {
+            if let Some(ref extra_attrs) = extra_m.attributes {
+                if let Some(first_m) = base.measures.first_mut() {
+                    let attrs = first_m.attributes.get_or_insert_with(Default::default);
+                    for clef in extra_attrs.clefs.values() {
+                        attrs.clefs.insert(staff_num, *clef);
+                    }
+                    attrs.staves = Some(num_staves as u8);
+                }
+            }
+        }
+
+        // Merge measures: add voices from the extra staff into the base.
+        for (m_idx, extra_measure) in extra_part.measures.into_iter().enumerate() {
+            while m_idx >= base.measures.len() {
+                let mut new_m = crate::ir::measure::Measure::new((base.measures.len() + 1) as u32);
+                new_m.implicit = false;
+                base.measures.push(new_m);
+            }
+
+            let target = &mut base.measures[m_idx];
+
+            for mut voice in extra_measure.voices {
+                // Offset the staff's own voice number (preserving its internal
+                // multi-voice distinctions), and apply staff/voice to elements.
+                let new_num = voice_offset.saturating_add(voice.number);
+                voice.number = new_num;
+
+                for elem in &mut voice.elements {
+                    match elem {
+                        VoiceElement::Note(n) => {
+                            n.staff = staff_num;
+                            n.voice = new_num;
+                        }
+                        VoiceElement::Rest(r) => {
+                            r.staff = staff_num;
+                            r.voice = new_num;
+                        }
+                        VoiceElement::Chord(c) => {
+                            c.staff = staff_num;
+                            c.voice = new_num;
+                            for n in &mut c.notes {
+                                n.staff = staff_num;
+                                n.voice = new_num;
+                            }
+                        }
+                    }
+                }
+                target.voices.push(voice);
+            }
+
+            target.directions.extend(extra_measure.directions);
+            target.harmonies.extend(extra_measure.harmonies);
+        }
+    }
+
+    // Fold the Dynamics contexts into the combined part as directions. When the
+    // spacer track aligns measure-for-measure, merge by index; otherwise by
+    // cumulative duration.
+    for dyn_part in &dynamics_parts {
+        if dyn_part.measures.len() == base.measures.len() {
+            merge_spacer_measures(&mut base.measures, &dyn_part.measures);
+        } else {
+            merge_spacer_by_duration(&mut base.measures, &dyn_part.measures);
+        }
+    }
+
+    // Assign each measure direction to a staff with the right placement for a
+    // piano grand staff (pedal below the bottom staff; dynamics/hairpins below
+    // the top staff). Measure-level pedal/dynamic/wedge directions come from the
+    // Dynamics lanes; note-attached dynamics are emitted separately.
+    for measure in &mut base.measures {
+        for dir in &mut measure.directions {
+            super::merge::assign_piano_direction_staff(dir, num_staves as u8);
+        }
+    }
+
+    // Put the combined part back where the window started.
+    state.parts.insert(parts_before, (base_ctx, base));
 }

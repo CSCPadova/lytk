@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-06-14 — Fix multi-staff piano LY→XML: staves, dynamics, direction placement ✅
+
+Branch `fix-piano-multistaff-directions`. Piano scores with `\new Dynamics`
+lanes interleaved among the staves (repeats.ly, chopin_n.ly) converted to
+MusicXML badly; pedal/dynamics also rendered in the wrong vertical lane. Five
+coordinated fixes:
+
+- **Direction staff/placement (IR + emit).** Added `Direction.staff` (`0` =
+  unset, `#[serde(default)]`) and emit `<staff>` in `ir_to_mxml`'s
+  `build_direction`. Content-based assignment for piano grand staves
+  (`merge::assign_piano_direction_staff`): **pedal → bottom staff, below;
+  dynamics/hairpins → staff 1, below (between staves)**; text/tempo stay above.
+- **Dynamics treated as staves (the big one).** `merge_piano_staff_parts`
+  counted every part in a `PianoStaff` as a staff, so the 3 `\new Dynamics`
+  lanes in repeats.ly became staves (→ 3 `<staves>`, 342 measures, scrambled
+  RH/LH). It now partitions real Staff parts from Dynamics-only parts
+  (`part_is_dynamics_only`), uses the first **staff** as the base, scopes the
+  bar-58 `unify_staff_time_signatures` to real staves, and folds the Dynamics
+  lanes in as directions. repeats.ly → **2 staves, 164 measures**.
+- **Dynamics dumped at the end.** `<< \silent \dynamics >>` (two spacer-only
+  variable branches) concatenated instead of overlaying, so dynamics landed
+  *after* the music and clamped to the last measure. `walk_parallel_music_staves`
+  now wraps variable-ref children in the simultaneous-merge so spacer-only
+  siblings overlay; `merge_spacer_by_duration` clamps overflow to the nearest
+  in-range measure. repeats.ly dynamics now span **134 measures**, not 1.
+- **Voice-number collisions.** `merge_piano_staff_parts` renumbered voices
+  per-measure (`max+1`), so a voice drifted between numbers and collided across
+  staves (chopin: 9 same-measure collisions, 127 cross-measure). Now each extra
+  staff gets one global voice-number offset, applied consistently → 0 collisions.
+
+repeats.ly / pedal.ly / chopin_n.ly all now emit 2 correctly-split staves with
+directions distributed and pedal below the lower staff. 859 Rust tests
+(+ `repeats_has_two_staves`, `repeats_dynamics_are_distributed_not_dumped`,
+`repeats_pedal_below_lower_staff`, `direction_emits_staff_and_placement`);
+fmt + clippy clean. chopin-specific grace/tuplet issues remain a follow-up.
+
 ## 2026-06-13 — Epic E: ABC notation adapter ✅
 
 Branch `epic-e-abc-adapter`. Adds ABC as a fourth interchange format (the first

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::ir::articulation::{StartStop, TupletDisplay};
+use crate::ir::articulation::{Placement, StartStop, TupletDisplay};
 use crate::ir::direction::Direction;
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::harmony::FiguredBass;
@@ -46,6 +46,23 @@ pub(super) fn voice_element_duration(elem: &VoiceElement) -> Frac {
 /// Check if a part contains only rests/spacers and directions (no actual notes or chords).
 /// This identifies parts created from Dynamics contexts, which may have non-spacer rests
 /// (e.g. from unhandled \skip commands) but never have pitched content.
+/// Assign a multi-staff `<staff>` and placement to a direction by content,
+/// for piano grand staves: the sustain pedal goes below the bottom staff;
+/// dynamics and hairpins go below the top staff (between the staves); text,
+/// tempo and rehearsal marks stay unattached (above). `staff_count` is the
+/// number of staves in the combined part.
+pub(super) fn assign_piano_direction_staff(dir: &mut Direction, staff_count: u8) {
+    if dir.pedal.is_some() {
+        dir.staff = staff_count;
+        dir.placement = Placement::Below;
+    } else if dir.dynamic.is_some() || dir.wedge.is_some() {
+        dir.staff = 1;
+        dir.placement = Placement::Below;
+    }
+    // Text / tempo / rehearsal / coda / segno: leave placement and staff unset
+    // so they render above, unattached to a specific staff.
+}
+
 pub(super) fn part_is_dynamics_only(part: &Part) -> bool {
     for m in &part.measures {
         for voice in &m.voices {
@@ -154,6 +171,16 @@ pub(super) fn merge_spacer_measures(target: &mut [Measure], spacer: &[Measure]) 
 /// using cumulative duration alignment. This is needed when spacer measures have
 /// different boundaries than target measures (e.g. dynamics pre-parsed at a
 /// different time signature).
+/// Map an absolute position to the index of the target measure containing it:
+/// the last measure whose start boundary is `<= pos`, clamped to a valid index.
+/// `boundaries` has `target.len() + 1` entries (cumulative starts plus the end).
+fn measure_for_position(boundaries: &[Frac], pos: Frac, n: usize) -> usize {
+    boundaries
+        .partition_point(|&b| b <= pos)
+        .saturating_sub(1)
+        .min(n.saturating_sub(1))
+}
+
 pub(super) fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure]) {
     // Compute cumulative duration boundaries for target measures
     let mut target_boundaries: Vec<Frac> = Vec::with_capacity(target.len() + 1);
@@ -173,10 +200,7 @@ pub(super) fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure
         let sm_dur = measure_voice_duration(sm);
 
         // Find the target measure that contains spacer_pos
-        let target_idx = target_boundaries
-            .windows(2)
-            .position(|w| spacer_pos >= w[0] && spacer_pos < w[1])
-            .unwrap_or_else(|| target.len().saturating_sub(1));
+        let target_idx = measure_for_position(&target_boundaries, spacer_pos, target.len());
 
         if target_idx < target.len() {
             // Merge attributes (time sig, key, clef) from spacer into target
@@ -202,10 +226,7 @@ pub(super) fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure
             // big spacer measure (spacer_pos=0) but must fan out across many target measures.
             for dir in sm.directions.iter() {
                 let abs_pos = spacer_pos + dir.offset_frac;
-                let t_idx = target_boundaries
-                    .windows(2)
-                    .position(|w| abs_pos >= w[0] && abs_pos < w[1])
-                    .unwrap_or_else(|| target.len().saturating_sub(1));
+                let t_idx = measure_for_position(&target_boundaries, abs_pos, target.len());
                 if t_idx < target.len() {
                     let target_start = target_boundaries[t_idx];
                     let mut d = dir.clone();
@@ -237,10 +258,7 @@ pub(super) fn merge_spacer_by_duration(target: &mut [Measure], spacer: &[Measure
                 let dur = voice_element_duration(elem);
                 if let VoiceElement::Rest(r) = elem {
                     if !r.dynamics.is_empty() || !r.wedges.is_empty() {
-                        let tidx = target_boundaries
-                            .windows(2)
-                            .position(|w| vpos >= w[0] && vpos < w[1])
-                            .unwrap_or_else(|| target.len().saturating_sub(1));
+                        let tidx = measure_for_position(&target_boundaries, vpos, target.len());
                         if tidx < target.len() {
                             let target_start = target_boundaries[tidx];
                             let within_offset = if vpos >= target_start {
