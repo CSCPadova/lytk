@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-06-14 — chopin_n.ly conversion: timing, ornaments, structure ✅
+
+Branch `fix-chopin-conversion`. `tests/fixtures/ly/chopin_n.ly` (Chopin
+Nocturne Op. 9 No. 3) converted to MusicXML with **121/181 bars wrong**. A
+verified multi-agent audit isolated the causes; six fixes land them. The
+**entire main body (bars 1–69) is now bar-for-bar correct** and the MuseScore
+render matches the LilyPond reference (anacrusis, LH accompaniment, 5/7/4/8/9
+tuplets, pedal below the bass, dynamics, trills, fermatas).
+
+- **Tuplet chords overflowed the bar.** `apply_tuplet_ratio` scaled only the
+  `Chord` wrapper's duration; the exporter reads each chord member's own
+  duration, so tuplet chords emitted full un-scaled durations. Now every
+  `c.notes[*]` carries the ratio (and `push_voice_element` folds the *product*
+  of the whole `tuplet_stack` for nested tuplets).
+- **`q` chord-repetition was dropped.** It parsed as an unknown pitch and fell
+  through, losing notes and leaking the trailing tie/articulation onto the
+  previous note. Added `WalkState.last_chord_pitches` and a `q` arm that
+  re-emits those pitches with q's own duration + attachments.
+- **Ties were never closed.** `~` recorded only a tie *start* (43 starts, 0
+  stops). New `resolve_ties` postprocess pass adds a tie-stop to the next
+  element of matching pitch in the voice (runs after q-expansion).
+- **Slurs all used `number="1"`.** In a one-part piano score the RH and LH
+  slurs cross-paired into giant slurs across both staves. `assign_slur_numbers`
+  gives each voice a distinct lane.
+- **`\partial` pickup absorbed into bar 1.** The 1/8 anacrusis lived inside the
+  `upperStaff`/`lowerStaff` variables; the cadenza's per-staff time changes made
+  `unify_staff_time_signatures` re-bar via `resplit_measures_with_time_changes`,
+  whose boundary loop ignored the pickup — so the boundaries (0, 6/8, …) no
+  longer aligned with the bars, the pickup merged into bar 1, and every later
+  bar shifted (13/16, 11/16…). Both resplit paths now detect a short leading
+  measure as an anacrusis, span the first boundary by it, and flag it implicit.
+- **Fingered chords in grace blocks dropped.** `parse_grace_block` handled only
+  bare note symbols, so `<gisis-1>`/`<cis-2>` inside an `\acciaccatura` were
+  lost. It now flattens chord notes into the grace stream.
+
+867 tests (+6 regression: q-repeat, tuplet-chord scaling, tie-stop, slur lanes,
+pickup-in-variable); clippy clean. **Remaining (follow-ups):** the free-time
+cadenza (`\cadenzaOn`/`\cadenzaOff`, Scheme `skip-of-length`, `\repeat unfold`)
+— ~11 bars — and 6 scattered multi-voice measures in the 4/4 Agitato section.
+
 ## 2026-06-14 — Pedal renders below the left-hand staff (anchor + onset) ✅
 
 Branch `fix-piano-multistaff-directions`. Follow-up to the same-day multi-staff

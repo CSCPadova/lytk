@@ -177,6 +177,10 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 
 **Update 2026-06-13:** the 5 confirmed-but-open bugs are now all fixed — Score-path `\repeat volta N` count (via `Barline.repeat_times`), two-note tremolo emission (`\repeat tremolo`), multi-staff lyrics referencing, cross-staff voice duplication, and the MIDI conductor track reading only part[0]. 797 Rust tests green. Only `\change Staff` cross-staff beaming remains as a known notation gap.
 
+**Update 2026-06-14 (piano fidelity):** deep pass on the hardest piano fixtures.
+- **pedal.ly** — the sustain pedal now renders *below* the left-hand staff in MuseScore: empty staff bars carry an invisible anchor rest, and `\sustainOn`/`Off` attach at the note onset (LY post-event semantics). See changelog.
+- **chopin_n.ly** — was 121/181 bars wrong; the **whole main body (bars 1–69) is now bar-for-bar correct** and renders like the LilyPond reference. Fixed: tuplet chords scaling inner notes (+ nested-tuplet product), `q` chord-repetition, tie-stop resolution, per-voice slur numbering, `\partial` pickup preserved through the variable/time-change resplit, and fingered chords inside grace blocks. **Known limitations (follow-ups):** the free-time end cadenza (`\cadenzaOn`, Scheme `skip-of-length`, `\repeat unfold`, ~11 bars) and 6 scattered multi-voice bars in the 4/4 Agitato section.
+
 ### Epic D: ML Representations (`src/representations/`, modeled on muspy)
 
 | Task | Description | Status |
