@@ -951,3 +951,72 @@ fn empty_lower_staff_bar_gets_anchor_rest_for_pedal() {
         "bar 1 pedal start not anchored below staff 2:\n{bar1}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Epic H — multi-voice / multi-staff bar-splitting invariants (chopin_n.ly)
+// ---------------------------------------------------------------------------
+
+/// The whole opening section of chopin_n.ly (output bars 1–69, all 6/8) is
+/// bar-perfect: every staff fills exactly the active meter. Pins the
+/// currently-correct body as a regression guard before the Epic H rework.
+#[test]
+fn chopin_bars_1_69_bar_perfect() {
+    use _core::ir::duration::Frac;
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("chopin_n.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    let fills = staff_measure_fills(part);
+    let mut meter = Frac::new(3, 4); // 6/8
+    for (i, f) in fills.iter().enumerate().take(69) {
+        let m = &part.measures[i];
+        if let Some(a) = &m.attributes {
+            if let Some(ts) = &a.time {
+                meter = ts.beats_fraction();
+            }
+        }
+        if m.implicit {
+            continue; // the \partial 8 pickup
+        }
+        for (&staff, &dur) in f {
+            assert_eq!(
+                dur,
+                meter,
+                "bar {} staff {} fill {dur} != meter {meter}",
+                i + 1,
+                staff
+            );
+        }
+    }
+}
+
+/// No voice exceeds its bar's capacity in the pre-cadenza region (output bars
+/// 1–162). Catches the multi-voice collapse (bars 72/156/157 currently over-full
+/// at 6/4–9/4). The free-time cadenza (bars 163+) is a separate invariant
+/// (`chopin_rh_lh_total_duration_equal`). `#[ignore]` until Step 1 lands.
+#[test]
+#[ignore]
+fn chopin_no_overfull_voice_before_cadenza() {
+    use _core::ir::duration::Frac;
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("chopin_n.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    let fills = staff_measure_fills(part);
+    let mut meter = Frac::new(3, 4);
+    let mut bad = Vec::new();
+    for (i, f) in fills.iter().enumerate().take(162) {
+        let m = &part.measures[i];
+        if let Some(a) = &m.attributes {
+            if let Some(ts) = &a.time {
+                meter = ts.beats_fraction();
+            }
+        }
+        for (&staff, &dur) in f {
+            if dur > meter {
+                bad.push((i + 1, staff, dur));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "over-full voices before cadenza: {bad:?}");
+}
