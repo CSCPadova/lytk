@@ -60,6 +60,11 @@ pub(super) struct WalkState<'src> {
     pub(super) current_time_sig: Frac,
     /// Accumulated duration of voice elements in the current measure.
     pub(super) elapsed_in_measure: Frac,
+    /// Inside a `\cadenzaOn … \cadenzaOff` (senza misura) region. Measures
+    /// flushed while set are flagged `senza_misura`; bars still auto-split as
+    /// usual (so they stay aligned with non-cadenza staves) — the cadenza
+    /// bridging pass at assembly collapses the flagged run into one free bar.
+    pub(super) cadenza_active: bool,
     /// Onset (within the current measure) of the most recently pushed voice
     /// element. LilyPond post-events like `\sustainOn`/`\sustainOff` attach to
     /// the note they follow and occur at that note's onset, not after its
@@ -127,6 +132,7 @@ impl<'src> WalkState<'src> {
             last_duration: Duration::quarter(),
             current_time_sig: Frac::new(4, 4), // default 4/4 = 1 whole note
             elapsed_in_measure: Frac::from_integer(0),
+            cadenza_active: false,
             last_element_onset: Frac::from_integer(0),
             last_chord_pitches: Vec::new(),
             prev_pitch: None,
@@ -177,7 +183,10 @@ impl<'src> WalkState<'src> {
     /// Flush the current measure into the current part.
     pub(super) fn flush_measure(&mut self) {
         self.flush_voice();
-        if let Some(measure) = self.current_measure.take() {
+        if let Some(mut measure) = self.current_measure.take() {
+            if self.cadenza_active {
+                measure.senza_misura = true;
+            }
             self.ensure_part().measures.push(measure);
         }
     }

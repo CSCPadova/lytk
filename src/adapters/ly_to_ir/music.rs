@@ -868,8 +868,17 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
         "\\melismaEnd" => {
             state.melisma_active = false;
         }
-        "\\unset" | "\\cadenzaOn" | "\\cadenzaOff" | "\\dynamicUp" | "\\dynamicDown"
-        | "\\dynamicNeutral" | "\\context" | "\\unfoldRepeats" => {
+        "\\cadenzaOn" => {
+            // Enter senza misura: flag flushed measures (bars still auto-split so
+            // they stay aligned with non-cadenza staves; the bridging pass at
+            // assembly collapses the flagged run into one free measure).
+            state.cadenza_active = true;
+        }
+        "\\cadenzaOff" => {
+            state.cadenza_active = false;
+        }
+        "\\unset" | "\\dynamicUp" | "\\dynamicDown" | "\\dynamicNeutral" | "\\context"
+        | "\\unfoldRepeats" => {
             // Skip these commands; some may consume the next token
             // \context within music blocks is handled by named_context at the
             // walk_music_block level, but if tree-sitter doesn't wrap it as
