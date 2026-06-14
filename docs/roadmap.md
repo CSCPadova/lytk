@@ -218,6 +218,71 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 | EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ⬜ |
 | EGT5 | Tag **v1.0.0**; update roadmap (Completed) + changelog | ⬜ |
 
+### Epic H: Multi-voice / multi-staff bar-splitting rework ⬜
+
+**Why.** `chopin_n.ly` converts with the whole main body (bars 1–69) bar-for-bar
+correct, but two classes of error remain, both rooted in *how and when measures
+are split*: (1) **right-hand/left-hand drift** — a multi-voice bar puts both
+branches into one voice (e.g. bar 72 voice 2 = 6/4, bar 156 voice 2 = 9/4), so
+the RH runs 3 beats ahead of the LH from that point on (audible after the
+Agitato); (2) **the RH ends ~70 beats before the LH** — the free-time cadenza
+auto-splits into a different number of 4/4 bars per hand, so the staves fall out
+of measure-index alignment. The current code patches these with index-based
+merges and after-the-fact resplits that each handle only some cases.
+
+**Root cause (verified by stage-by-stage instrumentation).**
+
+1. **Staves are pre-parsed at the wrong meter.** `upperStaff`/`lowerStaff` are
+   pre-parsed into `VarDef::Measures` ([`mod.rs:174`]) while the active time sig
+   is the default 4/4 — `\time 6/8` lives in the separate `\global` variable,
+   resolved only later. So `push_voice_element`'s auto-bar-split
+   ([`state.rs:211`]) runs against 4/4 during pre-parse; correct bar boundaries
+   survive only because explicit `|` checks happen to land right. Every downstream
+   pass then has to "fix up" boundaries it should never have had to.
+2. **Multi-voice merge aligns by measure index, not time.** `<< { a } \new
+   Voice { b } >>` is parsed branch-by-branch and stitched by
+   `merge_simultaneous_block` ([`walk.rs:888`]) → `merge_voice_measure_streams`
+   ([`merge.rs:341`]), which zips streams **by index**. When the branches'
+   per-branch measure *counts* differ (a multi-bar `\new Voice` body vs a
+   one-bar sibling, or a 4/4-pre-parse mismatch), content collapses into one
+   over-full voice instead of overlaying by position.
+3. **Re-barring is a lossy fix-up, not the source of truth.**
+   `resplit_measures_for_time_sig` ([`merge.rs:761`]) and
+   `resplit_measures_with_time_changes` ([`merge.rs:1254`], driven by
+   `unify_staff_time_signatures` [`merge.rs:1602`]) re-flow already-built
+   measures. With per-staff drift, the unified timeline carries conflicting
+   time-change positions and the catch-up boundary logic mis-bars multi-voice
+   measures (verified: disabling unify changes *which* bars break, not *whether*).
+4. **`\cadenzaOn`/`\cadenzaOff` is ignored** ([`music.rs:871`]) and is
+   intrinsically **score-wide** — it must suppress barlines for *all* staves over
+   the same span. A per-variable senza-misura flag desyncs single-hand cadenzas
+   (it regressed `pedal.ly`).
+
+**Architectural decision — split bars once, at score-assembly, by absolute time.**
+Stop bar-splitting during per-variable pre-parse. Parse each voice into a flat,
+meter-agnostic element stream carrying explicit `|` checks, `\partial`,
+`\cadenzaOn/Off` span markers, and attribute events with their *time positions*.
+Build measures in **one** authoritative pass after the full score timeline (every
+staff's meter changes, partial, and cadenza spans) is known. This makes the four
+mechanisms above disappear rather than be patched.
+
+| Task | Description | Status |
+|------|-------------|--------|
+| EHT1 | **Defer bar-splitting.** Add a meter-agnostic `VarDef::Stream` (flat `Vec<VoiceEvent>` with positions + `|`/attribute/partial/cadenza markers) or make `VarDef::Measures` store the *active def-meter* and never auto-split (rely on `|`). Pre-parse stops calling the `state.rs:211` auto-flush; record `\time` as an event. | ⬜ |
+| EHT2 | **Position-based voice overlay.** Replace `merge_simultaneous_block` index-zip with a merge that lays each branch's events onto a shared timeline by absolute onset, so `<< { } \\ { } >>` and `<< { } \new Voice { } >>` overlay correctly regardless of per-branch bar counts. Reuse the `walk_parallel_music_voices`/`_staves` split detection but feed the new merge. | ⬜ |
+| EHT3 | **Single authoritative bar-splitter.** One function: given per-voice event streams + the unified timeline (meters, partial, cadenza spans) → measures. Subsumes `resplit_measures_for_time_sig`, `resplit_measures_with_time_changes`, the pickup/senza handling, and `synchronize_time_signatures`. Splits every voice at the same boundaries; voices in a bar align by position. | ⬜ |
+| EHT4 | **Score-wide cadenza.** Collect `\cadenzaOn/Off` spans per part during parse; at assembly, take the union of spans and mark them senza-misura across **all** staves, emitting one unbarred measure per span (`Measure.senza_misura`, already in the IR). Re-introduce `#(skip-of-length)` (already merged) + cadenza-mode under this model. Must keep `pedal.ly` (single-hand cadenza) and the senza emission correct. | ⬜ |
+| EHT5 | **Regression bar.** Golden per-staff bar-fill + RH/LH total-duration equality for `chopin_n.ly`, `pedal.ly`, `repeats.ly`; the existing main-body-bar-perfect property must not regress; full `cargo test` + render diff vs the LilyPond reference. | ⬜ |
+
+**Sequence & guardrails.** EHT1→EHT2→EHT3 are the spine (do together, behind the
+existing tests); EHT4 builds on EHT3's span model; EHT5 gates the whole thing.
+This touches the hottest path in `ly_to_ir` — land it on a branch with the full
+fixture suite green at every step, and treat *"bars 1–69 of chopin stay
+bar-perfect"* and *"`pedal.ly` staves stay aligned"* as non-negotiable
+invariants. Prototyped primitives already on master that this epic consumes:
+`Measure.senza_misura`, `#(skip-of-length)`, `\repeat unfold N`, the
+`\partial`-pickup preservation.
+
 ---
 
 ## Implementation Sequence
@@ -233,6 +298,7 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 | 7 | D ✅ | ML representations (note-array, event, piano-roll, numpy) |
 | 8 | E ✅ + F ✅ | ABC adapter + datasets & metrics (E done; F done bar the optional remote dataset) |
 | **9** | **G** | **Distribution: stubs, wheels, docs → tag v1.0.0** |
+| **10** | **H** | **Multi-voice/multi-staff bar-splitting rework (deferred bar-splitting; fixes chopin RH/LH drift + cadenza)** |
 
 ## Key Decisions
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-06-14 — `#(skip-of-length)`; chopin RH/LH-sync root-cause + Epic H plan
+
+- **`#(skip-of-length VAR)`** now emits a spacer the length of music variable
+  `VAR` (was ignored, leaving the bass cadenza ~9 beats short). Adds
+  `WalkState::variable_total_duration` + an `embedded_scheme` music handler.
+  Correctness fix; does not by itself re-sync the staves. 868 tests, clippy clean.
+
+- **chopin RH/LH desync — diagnosed to root cause, planned as Epic H.** Stage-by-
+  stage instrumentation of the full conversion pinned two failure classes that
+  the main-body-perfect render still has: (1) multi-voice bars collapsing both
+  branches into one over-full voice (bar 72 → 6/4, bar 156 → 9/4), so the RH runs
+  3 beats ahead of the LH after the Agitato; (2) the free-time cadenza
+  auto-splitting into a different bar count per hand, so the RH ends ~70 beats
+  before the LH. Both stem from **bar-splitting happening during per-variable
+  pre-parse at the wrong (default 4/4) meter** — `\time 6/8` lives in `\global`,
+  resolved later — compounded by index-based voice merges and after-the-fact
+  resplits. Verified: `merge_simultaneous_block` decides MERGE correctly, yet the
+  collapse appears at different stages for different bars (bar 156 pre-merge, bar
+  72 during the multi-staff merge), and disabling `unify` changes *which* bars
+  break, not *whether*. The fix is a focused rework (defer bar-splitting to one
+  authoritative position-based pass at score assembly; score-wide cadenza spans),
+  written up as **Epic H** in `docs/roadmap.md` with exact code locations. Not
+  attempted as ad-hoc edits to avoid regressing the bar-perfect main body.
+
 ## 2026-06-14 — `\repeat unfold N` + free-time cadenza investigation
 
 - **`\repeat unfold N { … }` now writes the body out N times.** It was walked
