@@ -802,6 +802,24 @@ pub(super) fn resplit_measures_for_time_sig(
         return measures.to_vec();
     }
 
+    // A leading measure shorter than the target time signature is an anacrusis
+    // (pickup). Preserve its boundary so re-splitting the rest of the variable
+    // to the target time sig doesn't reflow the pickup into the first full bar
+    // (which would shift every subsequent bar). resplit only runs on variables
+    // with a single, uniform time signature, so a short first bar here is a
+    // pickup, not a mid-piece partial measure.
+    let pickup_dur: Option<Frac> = {
+        let first = &measures[0];
+        let mut maxd = Frac::from_integer(0);
+        for v in &first.voices {
+            let d: Frac = v.elements.iter().map(voice_element_duration).sum();
+            if d > maxd {
+                maxd = d;
+            }
+        }
+        (maxd > Frac::from_integer(0) && maxd < target_time_sig).then_some(maxd)
+    };
+
     // 2. Re-split each voice's elements into measures by the target time sig
     let voice_nums: Vec<u8> = voice_elements.keys().copied().collect();
     let mut voice_split: BTreeMap<u8, Vec<Vec<VoiceElement>>> = BTreeMap::new();
@@ -811,13 +829,17 @@ pub(super) fn resplit_measures_for_time_sig(
         let mut split_measures: Vec<Vec<VoiceElement>> = Vec::new();
         let mut current: Vec<VoiceElement> = Vec::new();
         let mut elapsed = Frac::from_integer(0);
+        // The first output measure ends at the pickup duration (if any), then
+        // every subsequent measure spans a full target time signature.
+        let mut boundary = pickup_dur.unwrap_or(target_time_sig);
 
         for elem in elements {
             let dur = voice_element_duration(&elem);
             // Check if adding this element would exceed the measure
-            if elapsed >= target_time_sig && elapsed > Frac::from_integer(0) {
+            if elapsed >= boundary && elapsed > Frac::from_integer(0) {
                 split_measures.push(std::mem::take(&mut current));
-                elapsed -= target_time_sig;
+                elapsed -= boundary;
+                boundary = target_time_sig;
             }
             current.push(elem);
             elapsed += dur;
@@ -839,10 +861,19 @@ pub(super) fn resplit_measures_for_time_sig(
 
     for mi in 0..num_measures {
         let mut m = Measure::new(mi as u32 + 1);
+        // The first output measure spans only the pickup when there is one.
+        let this_span = if mi == 0 {
+            pickup_dur.unwrap_or(target_time_sig)
+        } else {
+            target_time_sig
+        };
+        if mi == 0 && pickup_dur.is_some() {
+            m.implicit = true;
+        }
 
         // Apply attributes/directions from original measures whose position falls
         // within this output measure's range
-        let out_end = out_cumulative + target_time_sig;
+        let out_end = out_cumulative + this_span;
         while attr_idx < measure_attrs.len() && measure_attrs[attr_idx].0 < out_end {
             let (_, ref attrs, ref dirs, ref lbar, ref rbar) = measure_attrs[attr_idx];
             if let Some(ref a) = attrs {
@@ -1273,6 +1304,23 @@ pub(super) fn resplit_measures_with_time_changes(
         return measures.to_vec();
     }
 
+    // A leading measure shorter than the initial time signature is an anacrusis.
+    // Its short span must offset every following bar boundary, otherwise the
+    // boundaries (0, ts, 2ts, …) no longer align with the original bar positions
+    // and time-change events land mid-bar — shifting every measure and reflowing
+    // the pickup into the first full bar.
+    let pickup_dur: Option<Frac> = {
+        let first = &measures[0];
+        let mut maxd = Frac::from_integer(0);
+        for v in &first.voices {
+            let d: Frac = v.elements.iter().map(voice_element_duration).sum();
+            if d > maxd {
+                maxd = d;
+            }
+        }
+        (maxd > Frac::from_integer(0) && maxd < initial_time_sig).then_some(maxd)
+    };
+
     // 2. Build measure boundaries from time_events. Events are applied with
     //    catch-up semantics (`epos <= pos`): an event that does not land
     //    exactly on a boundary (e.g. after an under-full bar) still takes
@@ -1284,6 +1332,7 @@ pub(super) fn resplit_measures_with_time_changes(
     let mut pos = Frac::from_integer(0);
     let mut current_ts = initial_time_sig;
     let mut ei = 0;
+    let mut first_bar = true;
 
     while pos < total_duration {
         let mut ts_change: Option<TimeSignature> = None;
@@ -1296,7 +1345,13 @@ pub(super) fn resplit_measures_with_time_changes(
             current_ts = Frac::from_integer(1);
         }
         boundaries.push((pos, ts_change));
-        pos += current_ts;
+        let span = if first_bar {
+            first_bar = false;
+            pickup_dur.unwrap_or(current_ts)
+        } else {
+            current_ts
+        };
+        pos += span;
     }
 
     // 3. Assign each element to the measure containing its position.
@@ -1324,6 +1379,9 @@ pub(super) fn resplit_measures_with_time_changes(
 
     for mi in 0..num_measures {
         let mut m = Measure::new(mi as u32 + 1);
+        if mi == 0 && pickup_dur.is_some() {
+            m.implicit = true;
+        }
 
         // Apply time sig change from the unified timeline
         if mi < boundaries.len() {

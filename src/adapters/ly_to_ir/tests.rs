@@ -3085,4 +3085,44 @@ middle = { \inner e' f' }
             "overlapping slurs in different voices must use distinct numbers"
         );
     }
+
+    /// A `\partial` pickup defined inside a variable (and resolved in a staff
+    /// whose `\global` sets the time signature, with sibling staves that force a
+    /// time-change resplit) must stay a short implicit first measure — not get
+    /// absorbed into the first full bar, which would shift every later bar.
+    #[test]
+    fn test_partial_pickup_in_variable_preserved() {
+        let adapter = LyToIrAdapter::new();
+        let src = r#"
+global = { \time 6/8 }
+upper = \relative c'' { \partial 8 c8 | d8 e f g a b | c8 b a g f e }
+lower = \relative c { \partial 8 c8 | d8 e f g a b | c8 b a g f e }
+\score {
+  \new PianoStaff <<
+    \new Staff { \global \upper }
+    \new Staff { \global \lower }
+  >>
+  \layout {}
+}
+"#;
+        let score = adapter.convert_str(src).unwrap();
+        let part = &score.parts()[0];
+        assert!(
+            part.measures[0].implicit,
+            "first measure must be the implicit pickup"
+        );
+        let dur0 = voice_element_duration(part.measures[0].voices[0].elements.first().unwrap());
+        assert_eq!(dur0, Frac::new(1, 8), "pickup is one eighth");
+        // The first full bar (measure 2) must contain a complete 6/8.
+        let bar1: Frac = part.measures[1].voices[0]
+            .elements
+            .iter()
+            .map(voice_element_duration)
+            .sum();
+        assert_eq!(
+            bar1,
+            Frac::new(6, 8),
+            "first full bar must be a complete 6/8"
+        );
+    }
 }
