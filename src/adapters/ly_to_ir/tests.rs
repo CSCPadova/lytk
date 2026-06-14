@@ -2967,4 +2967,122 @@ middle = { \inner e' f' }
             "the *8/7 factor must carry forward to durationless notes"
         );
     }
+
+    /// `q` repeats the previous chord's pitches with a fresh duration.
+    #[test]
+    fn test_chord_repeat_q() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter.convert_str(r#"{ <c' e'>4 q q q }"#).unwrap();
+        let part = &score.parts()[0];
+        let chords: Vec<&Chord> = part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Chord(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(chords.len(), 4, "1 chord + 3 q-repeats");
+        for c in &chords {
+            assert_eq!(c.notes.len(), 2, "each q repeats both chord pitches");
+            assert_eq!(c.notes[0].pitch.step, PitchStep::C);
+            assert_eq!(c.notes[1].pitch.step, PitchStep::E);
+            assert_eq!(
+                voice_element_duration(&VoiceElement::Chord((*c).clone())),
+                Frac::new(1, 4)
+            );
+        }
+    }
+
+    /// A chord inside a tuplet must scale its inner notes (not just the wrapper),
+    /// so the bar does not overflow.
+    #[test]
+    fn test_tuplet_chord_scales_inner_notes() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \tuplet 3/2 { <c' e'>8 <d' f'> <e' g'> } }"#)
+            .unwrap();
+        let part = &score.parts()[0];
+        let chord = part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .find_map(|e| match e {
+                VoiceElement::Chord(c) => Some(c),
+                _ => None,
+            })
+            .expect("a tuplet chord");
+        for n in &chord.notes {
+            assert_eq!(
+                n.duration.tuplet_actual, 3,
+                "inner note carries tuplet actual"
+            );
+            assert_eq!(
+                n.duration.tuplet_normal, 2,
+                "inner note carries tuplet normal"
+            );
+            // eighth * 2/3 = 1/12
+            assert_eq!(n.duration.actual_duration(), Frac::new(1, 12));
+        }
+    }
+
+    /// `~` now resolves a tie *stop* on the destination note.
+    #[test]
+    fn test_tie_stop_resolved() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter.convert_str(r#"{ c'2~ c'2 }"#).unwrap();
+        let part = &score.parts()[0];
+        let notes: Vec<&Note> = part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes.len(), 2);
+        assert!(
+            notes[0].ties.iter().any(|t| t.tie_type == StartStop::Start),
+            "first note has tie start"
+        );
+        assert!(
+            notes[1].ties.iter().any(|t| t.tie_type == StartStop::Stop),
+            "second (destination) note must get a tie stop"
+        );
+    }
+
+    /// Concurrent slurs in different voices of one part must get distinct numbers
+    /// so a renderer does not cross-pair them (the giant cross-staff slur bug).
+    #[test]
+    fn test_concurrent_slurs_get_distinct_numbers() {
+        let adapter = LyToIrAdapter::new();
+        // Two voices, each with an overlapping slur, in one Staff (one part).
+        let score = adapter
+            .convert_str(r#"\new Staff << { c'4( d' e' f') } \\ { c4( d e f) } >>"#)
+            .unwrap();
+        let part = &score.parts()[0];
+        let start_numbers: Vec<u8> = part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .flat_map(|e| match e {
+                VoiceElement::Note(n) => n.slurs.clone(),
+                VoiceElement::Chord(c) => c.notes.iter().flat_map(|n| n.slurs.clone()).collect(),
+                VoiceElement::Rest(_) => vec![],
+            })
+            .filter(|s| s.slur_type == StartStop::Start)
+            .map(|s| s.number)
+            .collect();
+        assert_eq!(start_numbers.len(), 2, "two slur starts");
+        assert_ne!(
+            start_numbers[0], start_numbers[1],
+            "overlapping slurs in different voices must use distinct numbers"
+        );
+    }
 }

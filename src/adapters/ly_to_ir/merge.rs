@@ -1415,6 +1415,14 @@ pub(super) fn apply_tuplet_ratio(elem: &mut VoiceElement, actual: u8, normal: u8
         VoiceElement::Chord(c) => {
             c.duration.tuplet_actual = actual;
             c.duration.tuplet_normal = normal;
+            // The MusicXML exporter reads each chord member's own duration for
+            // both <duration> and <time-modification>, so the ratio must reach
+            // the inner notes too — otherwise tuplet chords emit their full
+            // un-scaled duration and overflow the bar.
+            for note in &mut c.notes {
+                note.duration.tuplet_actual = actual;
+                note.duration.tuplet_normal = normal;
+            }
         }
     }
 }

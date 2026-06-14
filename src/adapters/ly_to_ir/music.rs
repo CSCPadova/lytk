@@ -8,7 +8,7 @@ use crate::ir::duration::Frac;
 use crate::ir::language::parse_pitch_name;
 use crate::ir::language::PitchMode;
 use crate::ir::measure::{Clef, KeyMode, KeySignature, MeasureAttributes, TimeSignature};
-use crate::ir::note::{ArpeggioType, Note, Rest, VoiceElement};
+use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
 
 use super::apply::{
     apply_chord_attachments, apply_note_attachments, apply_rest_attachments, attach_articulation,
@@ -85,6 +85,8 @@ pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
                 let chord = build_chord(state, chord_node, dur);
                 let mut chord = chord;
                 apply_chord_attachments(state, &mut chord, &attachments);
+                // Remember the chord's pitches for the `q` repeat shorthand.
+                state.last_chord_pitches = chord.notes.iter().map(|n| n.pitch).collect();
                 state.push_voice_element(VoiceElement::Chord(chord));
                 continue;
             }
@@ -245,6 +247,35 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                         });
                     }
                 }
+            }
+        }
+        "q" => {
+            // Chord repetition: `q` repeats the pitches of the most recent chord
+            // with its own (possibly defaulted) duration. Articulations/ties are
+            // attached to the q-chord itself, not copied from the original.
+            let mut dur = consume_duration(state, children, &mut i);
+            if let Some(scale) = consume_duration_scale(state, children, &mut i) {
+                dur.base *= scale;
+                state.last_duration = dur.clone();
+            }
+            let attachments = consume_attachments(state, children, &mut i);
+            if state.last_chord_pitches.is_empty() {
+                // No prior chord to repeat — emit a spacer to keep timing intact.
+                let mut rest = Rest::new(dur);
+                rest.is_spacer = true;
+                state.push_voice_element(VoiceElement::Rest(rest));
+            } else {
+                let notes: Vec<Note> = state
+                    .last_chord_pitches
+                    .iter()
+                    .map(|p| Note::new(*p, dur.clone()))
+                    .collect();
+                if state.in_relative {
+                    state.prev_pitch = state.last_chord_pitches.first().cloned();
+                }
+                let mut chord = Chord::new(dur, notes);
+                apply_chord_attachments(state, &mut chord, &attachments);
+                state.push_voice_element(VoiceElement::Chord(chord));
             }
         }
         _ => {

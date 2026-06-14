@@ -66,6 +66,10 @@ pub(super) struct WalkState<'src> {
     /// duration — so they read this rather than `elapsed_in_measure`.
     pub(super) last_element_onset: Frac,
 
+    /// Resolved pitches of the most recently parsed chord, for the `q`
+    /// chord-repetition shorthand (repeats those pitches with a fresh duration).
+    pub(super) last_chord_pitches: Vec<Pitch>,
+
     // Relative pitch state
     pub(super) prev_pitch: Option<Pitch>,
     pub(super) relative_ref: Option<Pitch>, // The pitch given after \relative
@@ -124,6 +128,7 @@ impl<'src> WalkState<'src> {
             current_time_sig: Frac::new(4, 4), // default 4/4 = 1 whole note
             elapsed_in_measure: Frac::from_integer(0),
             last_element_onset: Frac::from_integer(0),
+            last_chord_pitches: Vec::new(),
             prev_pitch: None,
             relative_ref: None,
             in_relative: false,
@@ -185,9 +190,16 @@ impl<'src> WalkState<'src> {
 
     /// Push a voice element and auto-split the measure if it's full.
     pub(super) fn push_voice_element(&mut self, mut elem: VoiceElement) {
-        // Apply active tuplet ratio to the element's duration
-        if let Some(&(actual, normal)) = self.tuplet_stack.last() {
-            apply_tuplet_ratio(&mut elem, actual, normal);
+        // Apply active tuplet ratio to the element's duration. For nested
+        // tuplets the effective scaling is the product of every enclosing
+        // ratio, not just the innermost — so fold the whole stack.
+        if !self.tuplet_stack.is_empty() {
+            let (mut actual, mut normal): (u32, u32) = (1, 1);
+            for &(a, n) in &self.tuplet_stack {
+                actual = actual.saturating_mul(a as u32);
+                normal = normal.saturating_mul(n as u32);
+            }
+            apply_tuplet_ratio(&mut elem, actual.min(255) as u8, normal.min(255) as u8);
         }
 
         let dur = voice_element_duration(&elem);
