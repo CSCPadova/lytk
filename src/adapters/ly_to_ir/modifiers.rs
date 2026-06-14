@@ -98,10 +98,19 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
         2
     };
 
-    // For unfold repeats, just walk the block N times
+    // For unfold repeats, walk the body block `repeat_count` times — the music
+    // is repeated literally (was previously walked only once, dropping N-1
+    // copies).
     if repeat_type == "unfold" {
-        i = consume_repeat_body(state, children, i);
-        return i;
+        if i < children.len() && children[i].kind() == "expression_block" {
+            let body = children[i];
+            for _ in 0..repeat_count.max(1) {
+                walk_music_block(state, body);
+            }
+            return i + 1;
+        }
+        // `\relative`-wrapped or other body: fall back to a single pass.
+        return consume_repeat_body(state, children, i);
     }
 
     // Insert forward repeat barline on the first measure of the repeat body

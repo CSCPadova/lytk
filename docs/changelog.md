@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-06-14 — `\repeat unfold N` + free-time cadenza investigation
+
+- **`\repeat unfold N { … }` now writes the body out N times.** It was walked
+  only once, dropping N−1 copies (e.g. chopin's `cadenzaA` lost half its notes).
+  Fixed in `consume_repeat`. 868 tests (+`test_repeat_unfold_emits_n_copies`).
+
+- **Free-time cadenza — investigated, deferred as a known limitation.** I built
+  and verified the individual primitives (`\cadenzaOn`/`\cadenzaOff` senza-misura
+  mode that suppresses auto-bar-splitting; `#(skip-of-length VAR)` Scheme idiom
+  computing a variable's length; a `Measure.senza_misura` flag preserved through
+  the re-barring passes; inlining nested cadenza variables) — each works in
+  isolation and in single-staff/multi-staff cadenzas where the lanes are equal
+  length. But the **full chopin cadenza is not yet supportable** and the
+  machinery regressed `pedal.ly`, so it was reverted. Two architectural blockers:
+  1. **`\cadenzaOn` is score-wide in LilyPond** (it suppresses the barline for
+     *all* staves), but each staff/voice is parsed from an independent variable,
+     so a cadenza in one hand (e.g. pedal.ly's `voicea`) leaves the other hand
+     barred and the staves desync.
+  2. The chopin cadenza has **three independent free-time lanes** (treble Staff,
+     bass Staff, Dynamics) aligned only by `#(skip-of-length …)`; merging them
+     into one measure needs flawless duration computation of very complex content
+     (dotted-dotted `1..`, `\tuplet 2/1`, mixed spacers) — any rounding cascades
+     into misalignment.
+  Proper support needs score-wide cadenza timing + multi-lane free-time
+  alignment (a dedicated epic). The `\repeat unfold` fix and the earlier ornament
+  fixes do make the cadenza's note *content* more complete.
+
 ## 2026-06-14 — chopin_n.ly conversion: timing, ornaments, structure ✅
 
 Branch `fix-chopin-conversion`. `tests/fixtures/ly/chopin_n.ly` (Chopin

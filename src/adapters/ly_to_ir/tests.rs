@@ -3125,4 +3125,33 @@ lower = \relative c { \partial 8 c8 | d8 e f g a b | c8 b a g f e }
             "first full bar must be a complete 6/8"
         );
     }
+
+    /// `\repeat unfold N { … }` writes the body out N times (was emitted once,
+    /// dropping N−1 copies).
+    #[test]
+    fn test_repeat_unfold_emits_n_copies() {
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \time 2/4 \repeat unfold 3 { c'16 d' e' f' } }"#)
+            .unwrap();
+        let part = &score.parts()[0];
+        let steps: Vec<PitchStep> = part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.pitch.step),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(steps.len(), 12, "3 unfolded copies of 4 notes = 12");
+        // The C–D–E–F pattern repeats three times.
+        for chunk in steps.chunks(4) {
+            assert_eq!(
+                chunk,
+                [PitchStep::C, PitchStep::D, PitchStep::E, PitchStep::F]
+            );
+        }
+    }
 }
