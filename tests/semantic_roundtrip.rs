@@ -876,3 +876,78 @@ fn repeats_pedal_emitted_in_lower_staff_stream() {
     }
     assert!(checked > 0, "expected pedal directions in repeats.ly");
 }
+
+/// A `\sustainOn`/`\sustainOff` attaches to the note it follows and occurs at
+/// that note's onset (LilyPond post-event semantics) — not after the note's
+/// duration. In `pedal.ly` the first bar is `s2\sustainOn s4 \sustainOff`, so
+/// the pedal-down must land at offset 0 (and the release strictly inside the
+/// bar), never on the bar's end boundary where it would spill into the next
+/// measure.
+#[test]
+fn pedal_events_attach_at_note_onset() {
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("pedal.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    let m1 = &part.measures[0];
+    let starts: Vec<_> = m1
+        .directions
+        .iter()
+        .filter(|d| d.pedal.as_ref().is_some_and(|p| p.pedal_type == "start"))
+        .collect();
+    assert!(!starts.is_empty(), "no pedal start in bar 1");
+    assert!(
+        starts
+            .iter()
+            .all(|d| d.offset_frac == num::rational::Ratio::new(0, 1)),
+        "pedal-down must be at the downbeat (offset 0), got {:?}",
+        starts.iter().map(|d| d.offset_frac).collect::<Vec<_>>()
+    );
+    // The release sits at the onset of the `s4` (offset 1/2), strictly inside
+    // the 3/4 bar — not at the 3/4 end boundary.
+    let stops: Vec<_> = m1
+        .directions
+        .iter()
+        .filter(|d| d.pedal.as_ref().is_some_and(|p| p.pedal_type == "stop"))
+        .collect();
+    assert!(
+        stops
+            .iter()
+            .all(|d| d.offset_frac < num::rational::Ratio::new(3, 4)),
+        "pedal release must stay inside bar 1, got {:?}",
+        stops.iter().map(|d| d.offset_frac).collect::<Vec<_>>()
+    );
+}
+
+/// When a staff rests for a whole bar (here the LH `\skip 4*3` under bar 1's
+/// pedal) it has no `<note>`/`<rest>` for a `<direction>` to bind to, so a
+/// renderer re-anchors the pedal to whatever staff *does* have a note at that
+/// tick (the other hand) and a `placement="below"` pedal lands above the LH.
+/// The empty staff bar must instead carry an invisible rest (`print-object="no"`)
+/// on staff 2 so the pedal anchors to — and renders below — the lower staff.
+#[test]
+fn empty_lower_staff_bar_gets_anchor_rest_for_pedal() {
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("pedal.ly"))
+        .expect("LY → Score");
+    let xml = IrToMxmlAdapter::new().convert(&score).expect("Score → XML");
+    let bar1 = xml
+        .split("<measure ")
+        .nth(1)
+        .and_then(|m| m.split("</measure>").next())
+        .expect("bar 1");
+    // Bar 1's lower staff is an invisible rest, not a bare <forward>.
+    assert!(
+        bar1.contains("print-object=\"no\""),
+        "bar 1 lower staff should carry an invisible anchor rest:\n{bar1}"
+    );
+    // And the pedal start in bar 1 is on staff 2, below.
+    assert!(
+        direction_blocks(bar1)
+            .iter()
+            .any(|b| b.contains("<pedal type=\"start\"")
+                && b.contains("<staff>2</staff>")
+                && b.contains("placement=\"below\"")),
+        "bar 1 pedal start not anchored below staff 2:\n{bar1}"
+    );
+}

@@ -176,6 +176,20 @@ impl IrToMxmlAdapter {
         for (vi, voice) in voices.iter().enumerate() {
             let vstaff = voice_staff(voice);
             let interleave_dirs = first_voice_for_staff.get(&vstaff) == Some(&vi);
+            // When a staff's only voice in this measure is entirely spacers (an
+            // empty staff, e.g. a hand resting), there is no ChordRest for a
+            // direction (pedal/dynamic) to anchor to. Notation programs then
+            // re-anchor the direction to whatever staff *does* have a note at
+            // that tick (typically the other hand), so a `placement="below"`
+            // pedal ends up in the inter-staff gap. Emitting an invisible rest
+            // (matching how MuseScore itself represents empty staff measures)
+            // gives the direction a same-staff ChordRest to bind to.
+            let voice_has_pitched = voice
+                .elements
+                .iter()
+                .any(|e| matches!(e, VoiceElement::Note(_) | VoiceElement::Chord(_)));
+            let staff_has_dirs = dirs_by_staff.get(&vstaff).is_some_and(|d| !d.is_empty());
+            let anchor_spacers_as_rests = !voice_has_pitched && interleave_dirs && staff_has_dirs;
             if vi > 0 {
                 // Backup to start of measure for subsequent voices
                 let prev = &voices[vi - 1];
@@ -238,7 +252,36 @@ impl IrToMxmlAdapter {
                         }
                     }
                     VoiceElement::Rest(r) => {
-                        if r.is_spacer {
+                        if r.is_spacer && anchor_spacers_as_rests {
+                            // Empty staff measure that must host a direction:
+                            // emit an invisible rest so the direction anchors to
+                            // this staff (see `anchor_spacers_as_rests` above).
+                            let dur_val = self.duration_to_divisions(&r.duration);
+                            let mut rest_note = self.build_rest_note(r, voice.number, part_staves);
+                            rest_note.attributes.print_object = Some(mdt::YesNo::No);
+                            elements.push(mxml::MeasureElement::Note(rest_note));
+                            fwd_pos += dur_val;
+                            for dyn_mark in &r.dynamics {
+                                let dir = Direction {
+                                    dynamic: Some(dyn_mark.clone()),
+                                    placement: Placement::Below,
+                                    ..Direction::default()
+                                };
+                                elements.push(mxml::MeasureElement::Direction(
+                                    self.build_direction(&dir),
+                                ));
+                            }
+                            for wedge in &r.wedges {
+                                let dir = Direction {
+                                    wedge: Some(wedge.clone()),
+                                    placement: Placement::Below,
+                                    ..Direction::default()
+                                };
+                                elements.push(mxml::MeasureElement::Direction(
+                                    self.build_direction(&dir),
+                                ));
+                            }
+                        } else if r.is_spacer {
                             // Emit spacer rests as MusicXML <forward>
                             let dur_val = self.duration_to_divisions(&r.duration);
                             let mut fwd_content = mxml::ForwardContents {

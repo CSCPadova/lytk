@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-06-14 — Pedal renders below the left-hand staff (anchor + onset) ✅
+
+Branch `fix-piano-multistaff-directions`. Follow-up to the same-day multi-staff
+fix: in MuseScore 3 the sustain pedal in `pedal.ly` still rendered **above** the
+left hand (in the inter-staff gap) instead of below it. Verified empirically by
+round-tripping the emitted MusicXML back through `mscore3` (which re-anchored the
+pedal **start** to `<staff>1</staff>`) and by rendering to PDF. Two root causes,
+both fixed:
+
+- **No anchor in empty staff bars.** `pedal.ly` bar 1 has the LH resting
+  (`\skip 4*3`), so staff 2 was emitted as bare `<forward>` spacers — no
+  ChordRest for the pedal `<direction>` to bind to. MuseScore then re-anchors the
+  spanner to the only note at that tick (the RH on staff 1), dragging a
+  `placement="below"` pedal into the gap. `ir_to_mxml/part.rs` now emits an
+  **invisible rest** (`<note print-object="no">`, matching MuseScore's own export
+  of empty staff bars) instead of a `<forward>` when a staff's sole voice is
+  all-spacer *and* hosts directions (`anchor_spacers_as_rests`).
+- **Pedal events placed after their note, not at it.** `\sustainOn`/`\sustainOff`
+  are LilyPond post-events that occur at the **onset** of the note they follow,
+  but the offset was read from `elapsed_in_measure` *after* that note's duration
+  — so `s2\sustainOn` landed at beat 3 (offset 1/2) instead of the downbeat, and
+  a release at a bar's end boundary spilled into the next measure. Added
+  `WalkState.last_element_onset` (set in `push_voice_element`); the pedal handler
+  now reads it. Pedal-downs now sit on the correct beat, aligned to staff-2 note
+  onsets.
+
+Net effect: `mscore3` re-export keeps **82/92** pedal starts on staff 2 (was the
+majority re-anchored to staff 1), and a PDF render shows every **Ped./✱** below
+the bass staff. 862 Rust tests (+ `pedal_events_attach_at_note_onset`,
+`empty_lower_staff_bar_gets_anchor_rest_for_pedal`); fmt + clippy clean. The
+remaining starts/stops land at mid-bar ticks with no LH note onset (pedal lane
+rhythm ≠ LH rhythm) and would need offset-snapping to the nearest LH note — a
+possible follow-up; they already render below the staff.
+
 ## 2026-06-14 — Fix multi-staff piano LY→XML: staves, dynamics, direction placement ✅
 
 Branch `fix-piano-multistaff-directions`. Piano scores with `\new Dynamics`

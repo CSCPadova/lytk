@@ -500,7 +500,10 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             } else {
                 "stop"
             };
-            let offset_frac = state.elapsed_in_measure;
+            // Pedal commands attach to the note they follow and occur at that
+            // note's onset (LilyPond post-event semantics), not after its
+            // duration has elapsed.
+            let offset_frac = state.last_element_onset;
             let dir = Direction {
                 pedal: Some(PedalEvent {
                     pedal_type: pedal_type.to_string(),

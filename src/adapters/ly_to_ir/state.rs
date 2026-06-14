@@ -60,6 +60,11 @@ pub(super) struct WalkState<'src> {
     pub(super) current_time_sig: Frac,
     /// Accumulated duration of voice elements in the current measure.
     pub(super) elapsed_in_measure: Frac,
+    /// Onset (within the current measure) of the most recently pushed voice
+    /// element. LilyPond post-events like `\sustainOn`/`\sustainOff` attach to
+    /// the note they follow and occur at that note's onset, not after its
+    /// duration — so they read this rather than `elapsed_in_measure`.
+    pub(super) last_element_onset: Frac,
 
     // Relative pitch state
     pub(super) prev_pitch: Option<Pitch>,
@@ -118,6 +123,7 @@ impl<'src> WalkState<'src> {
             last_duration: Duration::quarter(),
             current_time_sig: Frac::new(4, 4), // default 4/4 = 1 whole note
             elapsed_in_measure: Frac::from_integer(0),
+            last_element_onset: Frac::from_integer(0),
             prev_pitch: None,
             relative_ref: None,
             in_relative: false,
@@ -264,6 +270,9 @@ impl<'src> WalkState<'src> {
 
         // Grace notes don't consume time in the measure
         let is_grace = matches!(&elem, VoiceElement::Note(n) if n.is_grace);
+        // Record this element's onset so a following post-event (pedal, etc.)
+        // attaches at the note rather than after its duration.
+        self.last_element_onset = self.elapsed_in_measure;
         self.current_voice.push(elem);
         if !is_grace {
             self.elapsed_in_measure += dur;
