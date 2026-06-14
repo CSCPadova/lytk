@@ -218,7 +218,7 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 | EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ⬜ |
 | EGT5 | Tag **v1.0.0**; update roadmap (Completed) + changelog | ⬜ |
 
-### Epic H: Multi-voice / multi-staff bar-splitting rework ⬜
+### Epic H: Multi-voice / multi-staff bar-splitting rework 🟡
 
 **Why.** `chopin_n.ly` converts with the whole main body (bars 1–69) bar-for-bar
 correct, but two classes of error remain, both rooted in *how and when measures
@@ -282,6 +282,32 @@ bar-perfect"* and *"`pedal.ly` staves stay aligned"* as non-negotiable
 invariants. Prototyped primitives already on master that this epic consumes:
 `Measure.senza_misura`, `#(skip-of-length)`, `\repeat unfold N`, the
 `\partial`-pickup preservation.
+
+**Progress (2026-06-15, branch `epic-h-bar-splitting`).** A surgical, atomic,
+non-regressive subset of the rework landed (all 872 tests green at each step):
+- **Multi-voice collapse FIXED (the post-Agitato desync).** Root cause was not
+  the index-zip but `resplit_*` flattening by `v.number`, folding two
+  *simultaneous same-numbered* `Voice`s (e.g. `<< { } \new Voice { \voiceTwo …}>>`
+  leaves both numbered 2) into one over-full voice. `disambiguate_colliding_voice
+  _numbers` (merge.rs) renumbers the colliding voice before each by-number flatten
+  — a no-op for already-distinct voices, so byte-identical elsewhere. Fixes
+  chopin bar 72 and **re-syncs the whole post-Agitato section** (the +3-beat
+  offset is gone). Tests: `chopin_bar72_multivoice_not_collapsed`,
+  `chopin_no_overfull_voice_main_body` (bars 1–155), `chopin_bars_1_69_bar_perfect`.
+- **`Measure.senza_misura` + `<senza-misura/>` exporter** (inert plumbing).
+- **`\cadenzaOn/Off` parsed**, flagging cadenza measures senza (without
+  suppressing auto-split, so single-hand cadenzas stay aligned; pedal.ly gains a
+  correct `<senza-misura/>`).
+- **Cadenza bridging (EHT4) attempted, reverted — BLOCKED.** `bridge_cadenza_spans`
+  (collapse each staff's senza run to one aligned bar over the union span) is the
+  right design, but it can't union spans that don't overlap, and chopin's hands
+  reach their cadenzas at *different* absolute positions (RH ≈126 q, LH ≈146 q):
+  the LH has ~20 extra beats / ~36 extra measures *before* the cadenza. Causes:
+  the treble/bass cadenza lengths still differ, a spurious 9 q `skip-of-length`
+  spacer voice leaks onto the RH at output bar 156, and the dynamics-lane fold
+  interacts. **Prerequisite for EHT4: align the staves through the
+  cadenza-adjacent region first** (the bars-156–158 spacer-voice artifact + the
+  bassCadenza/skip-of-length placement) — this is the real next task.
 
 ---
 

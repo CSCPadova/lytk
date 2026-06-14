@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-06-15 — Epic H (Steps 0–3): multi-voice collapse fixed; cadenza blocked
+
+Atomic, non-regressive subset of the Epic H bar-splitting rework (branch
+`epic-h-bar-splitting`; all 872 tests green at each step):
+
+- **Step 1 — multi-voice collapse fixed (chopin post-Agitato desync).** A
+  `<< { } \new Voice { \voiceTwo … } >>` left two *simultaneous* `Voice`s sharing
+  a number; the `resplit_*` by-`v.number` flatten folded them into one over-full
+  voice (bar 72 → 6/4), putting the RH 3 beats ahead of the LH for the rest of the
+  piece. `disambiguate_colliding_voice_numbers` renumbers the colliding voice
+  before each by-number flatten (no-op when already distinct → byte-identical
+  elsewhere). Re-syncs the entire post-Agitato section. +3 tests.
+- **Step 2 — `Measure.senza_misura` + `<senza-misura/>` exporter** (inert).
+- **Step 3 — `\cadenzaOn/Off` parsed**, flags cadenza measures senza without
+  suppressing auto-split (single-hand cadenzas stay aligned; pedal.ly gains a
+  correct `<senza-misura/>`).
+- **Step 4 — cadenza bridging attempted and reverted (BLOCKED).** Collapsing each
+  staff's senza run into one aligned free bar is the right design, but chopin's
+  hands reach their cadenzas at different absolute positions (RH ≈126 q vs LH
+  ≈146 q — ~20 extra LH beats / 36 extra measures before the cadenza), so the
+  union-of-spans can't merge them. Real prerequisite: align the staves through the
+  cadenza-adjacent region first (the bars-156–158 spurious 9 q `skip-of-length`
+  spacer-voice artifact + bassCadenza placement). Documented as the next task in
+  Epic H (`docs/roadmap.md`).
+
 ## 2026-06-14 — `#(skip-of-length)`; chopin RH/LH-sync root-cause + Epic H plan
 
 - **`#(skip-of-length VAR)`** now emits a spacer the length of music variable
