@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-06-15 (cont.) — E2E cross-format conversion fidelity audit + fixes
+
+Built an end-to-end audit converting every fixture A → format B (ly/xml/mxl/midi/abc),
+re-parsing, and comparing the note signature (pitch multiset / count / durations) via the
+format-agnostic note-array. Added `tests/test_e2e_conversion.py` to pin the lossless
+invariant (pitch multiset preserved across A→{ly,xml,abc}→A) + regressions. The audit
+(a 7-way parallel root-cause workflow, each verdict adversarially verified) found:
+
+**Fixed**
+- **ly→ly relative-mode octave shift** (single-staff): `\relative a' { a' }` re-parsed an
+  octave high — the first note's marks were absolute-from-C3, not relative to the reference.
+  Seed the emit body with the reference pitch (`ir_to_ly/{parts,emit}.rs`). Fixed ~13 fixtures.
+- **ly→abc emitting zero notes**: `ir_to_abc` walked only the first branch of a `Simultaneous`,
+  so Music21 fixtures (`Simultaneous[empty staff, real staff]`) produced nothing. Walk every
+  branch, descend into the one with the most events. 0 → full note content.
+- **midi→midi note multiplication** (ties): `ir_to_midi` was tie-unaware, emitting a
+  NoteOn/Off per tied segment. Collapse tie chains into one sounding note.
+
+**Found, root-caused, not yet fixed** (documented for follow-up)
+- **ly→ly relative shift, multi-staff/multi-voice**: the `<<\\>>` relative flow + shared
+  per-staff `\relative` reference still shifts; needs per-voice prev-threading.
+- **midi→ly duration change**: `ir_to_ly` ignores a note's tuplet ratio for bare notes
+  (triplets emit without `\tuplet`), so MIDI-quantized triplets change duration on re-parse.
+- **xml→ly note loss** (one fixture): a backward repeat with no preceding forward (repeat-from-
+  the-top idiom) desyncs the `\repeat volta` block tracking in `ir_to_ly/emit.rs`.
+- **ly→midi grace notes**: `ir_to_midi` has no grace handling, so graces steal metrical time.
+
+**Format-inherent (not bugs)**
+- **→ ABC for polyphony**: ABC v1 emits a single melodic line; multi-voice/piano sources drop
+  voices (full fix = ABC v2 `V:` multi-voice support — a feature).
+- **→ MIDI**: durations are quantized and free-time (`\cadenzaOn`) can't be represented, so
+  duration equality and exact note boundaries are not preserved (pitch set is).
+
 ## 2026-06-15 (cont.) — Epic G: Python distribution & docs (release readiness)
 
 Release-prep, minus the version tag (intentionally deferred).

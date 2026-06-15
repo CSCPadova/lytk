@@ -162,6 +162,14 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 | EBT4 | `\figuremode` robustness (natural `!` + double accidentals `++`/`--`, round-trip via `figure_to_ly`) | ✅ |
 | EBT5 | MIDI **velocity ↔ dynamics** mapping both directions (shared `dynamics_velocity` map) | ✅ |
 | EBT6 | `\partial` in multi-movement contexts (reset per `\score` block — was leaking) | ✅ |
+| EBT7 | **E2E cross-format fidelity audit** (`tests/test_e2e_conversion.py` + note-array signature): fixed ly→ly relative octave (single-staff), ly→abc empty output, midi→midi tie multiplication | 🟡 follow-ups below |
+
+**EBT7 follow-up bugs (root-caused 2026-06-15, see changelog):**
+- ⬜ ly→ly relative octave shift for **multi-staff / multi-voice** (`<<\\>>` relative flow needs per-voice prev-threading in `ir_to_ly`)
+- ⬜ midi→ly **tuplet duration** loss (`ir_to_ly` ignores a bare note's tuplet ratio — emit `\tuplet`)
+- ⬜ xml→ly **repeat-from-the-top** note loss (backward repeat with no forward desyncs `\repeat volta` tracking in `ir_to_ly/emit.rs`)
+- ⬜ ly→midi **grace notes** steal metrical time (`ir_to_midi` grace-unaware)
+- ⬜ ABC **multi-voice (`V:`)** support — would make →ABC lossless for polyphony (currently v1 single-line, format-inherent)
 
 ### Epic C: Semantic Round-Trip Test Bar (quality gate)
 
