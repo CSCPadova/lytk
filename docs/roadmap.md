@@ -218,7 +218,16 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 | EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ⬜ |
 | EGT5 | Tag **v1.0.0**; update roadmap (Completed) + changelog | ⬜ |
 
-### Epic H: Multi-voice / multi-staff bar-splitting rework 🟡
+### Epic H: Multi-voice / multi-staff bar-splitting rework 🟢
+
+**Status (2026-06-15):** the two error classes below are both resolved on `master`.
+(1) RH/LH drift fixed by `disambiguate_colliding_voice_numbers` (multi-voice collapse)
++ the `\tuplet 3/2 4 {…}` group-duration parse fix (the LH-Agitato over-parse that was
+the real "RH ends ~70 beats before LH" cause). (2) The free-time end cadenza now
+collapses to one `senza_misura` bar holding both hands + a strict-time coda (EHT4 ✅).
+The clean-room EHT1–EHT3 rewrite (a single authoritative bar-splitter) remains an
+optional future refactor; it is no longer needed to fix chopin. The targeted, surgical
+path below shipped instead.
 
 **Why.** `chopin_n.ly` converts with the whole main body (bars 1–69) bar-for-bar
 correct, but two classes of error remain, both rooted in *how and when measures
@@ -271,7 +280,7 @@ mechanisms above disappear rather than be patched.
 | EHT1 | **Defer bar-splitting.** Add a meter-agnostic `VarDef::Stream` (flat `Vec<VoiceEvent>` with positions + `|`/attribute/partial/cadenza markers) or make `VarDef::Measures` store the *active def-meter* and never auto-split (rely on `|`). Pre-parse stops calling the `state.rs:211` auto-flush; record `\time` as an event. | ⬜ |
 | EHT2 | **Position-based voice overlay.** Replace `merge_simultaneous_block` index-zip with a merge that lays each branch's events onto a shared timeline by absolute onset, so `<< { } \\ { } >>` and `<< { } \new Voice { } >>` overlay correctly regardless of per-branch bar counts. Reuse the `walk_parallel_music_voices`/`_staves` split detection but feed the new merge. | ⬜ |
 | EHT3 | **Single authoritative bar-splitter.** One function: given per-voice event streams + the unified timeline (meters, partial, cadenza spans) → measures. Subsumes `resplit_measures_for_time_sig`, `resplit_measures_with_time_changes`, the pickup/senza handling, and `synchronize_time_signatures`. Splits every voice at the same boundaries; voices in a bar align by position. | ⬜ |
-| EHT4 | **Score-wide cadenza.** Collect `\cadenzaOn/Off` spans per part during parse; at assembly, take the union of spans and mark them senza-misura across **all** staves, emitting one unbarred measure per span (`Measure.senza_misura`, already in the IR). Re-introduce `#(skip-of-length)` (already merged) + cadenza-mode under this model. Must keep `pedal.ly` (single-hand cadenza) and the senza emission correct. | ⬜ |
+| EHT4 | **Score-wide cadenza.** ✅ **DONE (2026-06-15).** The `\cadenzaOn/Off` end cadenza now collapses to ONE `senza_misura` bar holding both hands, then the strict-time coda — matching the LilyPond reference. Implemented *without* the planned span-union: per-measure `measure_has_cadenza` flag + `resolve_variable` senza-flagging keep the whole cadenza flagged; resplit/unify preserve `senza_misura`; `merge::collapse_cadenza_runs` collapses each ≥2 run to one bar (re-joining voices by number); and for a score-wide cadenza (every staff free) each staff is collapsed *before* the PianoStaff index-merge so the bass coda isn't folded in. pedal.ly (single-hand) stays aligned via the auto-split. Test: `chopin_cadenza_is_single_senza_bar_with_both_hands`. | ✅ |
 | EHT5 | **Regression bar.** Golden per-staff bar-fill + RH/LH total-duration equality for `chopin_n.ly`, `pedal.ly`, `repeats.ly`; the existing main-body-bar-perfect property must not regress; full `cargo test` + render diff vs the LilyPond reference. | ⬜ |
 
 **Sequence & guardrails.** EHT1→EHT2→EHT3 are the spine (do together, behind the
@@ -314,14 +323,20 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
   `test_parse_tuplet_with_group_duration_arg`. (Supersedes the earlier
   "resplit per-voice positions" / "cadenza pre-split" hypotheses — those were
   downstream symptoms of the over-long LH stream being packed by the index-merge.)
-- **Cadenza bridging (EHT4) — remaining 6 q, much smaller now.** After the tuplet
-  fix the only residual is the genuine free-time cadenza-length difference:
-  `trebleCadenza` ≈ 31 q vs `bassCadenza` ≈ 24 q, so the LH cadenza ends ~6 q (≈2
-  bars) before the RH. The senza-misura/`skip-of-length` primitives are already in
-  the IR; EHT4 (mark the cadenza span senza across **all** staves, emit one unbarred
-  measure per span, pad the shorter hand) would close it. No longer blocked by a
-  large pre-cadenza misalignment — the staves are now aligned through the whole
-  6/8 body and the 4/4 coda to within the cadenza length.
+- **Cadenza collapse (EHT4) — ✅ DONE.** The end cadenza now collapses to ONE
+  `senza_misura` bar holding both hands, followed by the strict-time 4/4 coda with
+  both hands — matching the LilyPond reference (rendered & compared). Mechanism: keep
+  the whole `\cadenzaOn…\cadenzaOff` span flagged senza through the pipeline
+  (per-measure `measure_has_cadenza` for the lazy-flush tail; `resolve_variable` flags
+  sub-variable splices like cadenzaA/cadenzaB; resplit/unify preserve the flag), then
+  `merge::collapse_cadenza_runs` folds each ≥2 senza run into one bar, re-joining
+  voices by number. For a score-wide cadenza (every staff free) each staff is collapsed
+  *before* the PianoStaff index-merge, so a longer treble cadenza can't fold the bass
+  coda into its span. A single-hand cadenza (pedal.ly) is a run of 1 → left to the
+  auto-split, staying staff-aligned. The earlier "6 q residual" (treble 31 q vs bass
+  24 q) is simply the two hands' notated free-time lengths; both now share the one
+  cadenza bar and the coda aligns by bar. Test:
+  `chopin_cadenza_is_single_senza_bar_with_both_hands`.
 
 ---
 

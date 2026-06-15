@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-06-15 (cont.) — Epic H: end cadenza collapses to one senza-misura bar
+
+The free-time `\cadenzaOn…\cadenzaOff` end cadenza rendered as ~10 over-full/empty
+bars (chopin's mangled last page). It now collapses to ONE bar-less measure holding
+both hands, followed by the strict-time 4/4 coda — matching the LilyPond reference
+(verified by rendering both with `lilypond`/`mscore3`).
+
+- **Cadenza measures stay flagged through the whole pipeline.** A per-measure
+  `measure_has_cadenza` flag (state.rs) flags a bar senza even when `\cadenzaOff`
+  cleared `cadenza_active` before its lazy flush; `resolve_variable` flags measures
+  spliced from a sub-variable inside a cadenza (trebleCadenza splices cadenzaA/cadenzaB,
+  which carry no `\cadenzaOn`); and the resplit/unify passes now **preserve**
+  `senza_misura` (position spans) instead of dropping it via `Measure::new`.
+- **`collapse_cadenza_runs` (merge.rs)** collapses each maximal run of ≥2 consecutive
+  senza measures into one, re-joining each voice's element stream by number (the
+  inter-bar gaps are meter-split artifacts). A lone senza bar is a run of 1 → untouched.
+- **Score-wide collapse before the index-merge (walk.rs).** When every staff is in a
+  cadenza (chopin's two hands), each staff's run is collapsed to one bar *before* the
+  PianoStaff index-merge, so a longer treble cadenza can't fold the bass coda into its
+  senza span. Single-hand cadenzas (pedal.ly) skip this and stay aligned via the
+  auto-split.
+- **Result:** chopin cadenza 10 bars → 1 senza bar (both hands); the 4/4 coda keeps both
+  hands. pedal.ly's single-hand cadenza stays staff-aligned — its two free bars now merge
+  into one genuine one-bar cadenza (accepted). 874 tests green, clippy clean. Test:
+  `chopin_cadenza_is_single_senza_bar_with_both_hands`.
+
 ## 2026-06-15 (cont.) — Epic H: `\tuplet 3/2 4 {…}` fix resolves the RH/LH desync
 
 The "RH ends ~70 beats before the LH" symptom was **not** a cadenza re-barring
