@@ -333,6 +333,52 @@ pub(super) fn renumber_voices_in_measures(measures: Vec<Measure>, voice_num: u8)
         .collect()
 }
 
+/// Make every `Voice` within each measure carry a distinct number.
+///
+/// The LY walk can leave two *simultaneous* `Voice` objects sharing a number —
+/// e.g. `<< { … } \new Voice { \voiceTwo … } >>` produces a branch-1 voice that
+/// is still numbered 2 (from a prior `\voiceTwo`) alongside the inner `\voiceTwo`
+/// branch. The re-barring passes flatten elements keyed by `v.number`, so two
+/// same-numbered voices fold into a single over-full voice. This renumbers the
+/// 2nd-and-later colliding voice in each measure to the lowest unused number
+/// (stamping it onto every element), so the flatten keeps them apart.
+///
+/// No-op for any measure whose voices already have distinct numbers — every
+/// currently-correct case is left byte-identical.
+pub(super) fn disambiguate_colliding_voice_numbers(measures: &mut [Measure]) {
+    use std::collections::BTreeSet;
+    for m in measures {
+        if m.voices.len() < 2 {
+            continue;
+        }
+        let mut used: BTreeSet<u8> = BTreeSet::new();
+        for v in &mut m.voices {
+            if used.insert(v.number) {
+                continue; // first voice with this number — keep it
+            }
+            // Collision: assign the lowest number not yet used in this measure.
+            let mut n = 1u8;
+            while used.contains(&n) {
+                n = n.saturating_add(1);
+            }
+            used.insert(n);
+            v.number = n;
+            for elem in &mut v.elements {
+                match elem {
+                    VoiceElement::Note(note) => note.voice = n,
+                    VoiceElement::Rest(r) => r.voice = n,
+                    VoiceElement::Chord(c) => {
+                        c.voice = n;
+                        for note in &mut c.notes {
+                            note.voice = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Merge N voice-specific measure streams into a single stream.
 ///
 /// For each measure index, combines all voices from all streams into
@@ -765,6 +811,10 @@ pub(super) fn resplit_measures_for_time_sig(
     if measures.is_empty() || target_time_sig <= Frac::from_integer(0) {
         return measures.to_vec();
     }
+    // Keep simultaneous same-numbered voices apart before the by-number flatten.
+    let mut owned = measures.to_vec();
+    disambiguate_colliding_voice_numbers(&mut owned);
+    let measures = owned.as_slice();
 
     // 1. Collect all voice numbers and their elements in order
     let mut voice_elements: BTreeMap<u8, Vec<VoiceElement>> = BTreeMap::new();
@@ -1012,11 +1062,14 @@ pub(super) fn synchronize_time_signatures(score: &mut crate::ir::score::Score) {
             if tl.events.len() >= ref_timeline.events.len() {
                 return (false, Vec::new());
             }
-            // Flatten all voice elements from this part
+            // Flatten all voice elements from this part (keeping simultaneous
+            // same-numbered voices apart before the by-number flatten).
+            let mut part_measures = part.measures.clone();
+            disambiguate_colliding_voice_numbers(&mut part_measures);
             let mut voice_elems: BTreeMap<u8, Vec<VoiceElement>> = BTreeMap::new();
             let mut measure_metas: Vec<MeasureMeta> = Vec::new();
             let mut cumul = Frac::from_integer(0);
-            for m in &part.measures {
+            for m in &part_measures {
                 measure_metas.push((
                     cumul,
                     m.attributes.clone(),
@@ -1259,6 +1312,10 @@ pub(super) fn resplit_measures_with_time_changes(
     if measures.is_empty() {
         return Vec::new();
     }
+    // Keep simultaneous same-numbered voices apart before the by-number flatten.
+    let mut owned = measures.to_vec();
+    disambiguate_colliding_voice_numbers(&mut owned);
+    let measures = owned.as_slice();
 
     // 1. Flatten: collect all voice elements with their absolute positions,
     //    plus measure metadata keyed by the measure's start position.

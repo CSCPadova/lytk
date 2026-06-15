@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-06-15 (cont.) — Epic H: `\tuplet 3/2 4 {…}` fix resolves the RH/LH desync
+
+The "RH ends ~70 beats before the LH" symptom was **not** a cadenza re-barring
+problem — it was a tuplet parser bug, found by bisecting the over-long `lowerStaff`
+stream (618 q vs 533 q expected; the whole +85 q lives in the LH **Agitato**, which
+measured 250 q vs 168 q ≈ **3/2×**).
+
+- **`\tuplet` ratio/group-duration form (`\tuplet 3/2 4 { … }`)** now parses. The
+  `4` is LilyPond's optional group-duration argument (per-group beaming span; ratio
+  unchanged). The parser expected the music block immediately after the fraction, so
+  the block fell through and its notes parsed at **full duration** (3/2× too long)
+  with no `<time-modification>`. chopin's LH Agitato wraps ~40 bars in one such
+  tuplet, so the LH over-parsed by ~76 q and ran far past the RH (RH ended bar 166,
+  LH bar 185). Fix: skip an optional `unsigned_integer` (+dots) between the fraction
+  and the block (`music.rs`). No-op for the plain `\tuplet a/b { … }` form.
+- **Result:** chopin **RH/LH gap 76.5 q → 6 q**, output **186 → 167 measures**, the
+  ~19 phantom LH bars gone. 873 tests green, clippy clean. New test
+  `test_parse_tuplet_with_group_duration_arg`.
+- **Remaining:** the residual 6 q is the genuine free-time cadenza-length difference
+  (`trebleCadenza` ≈31 q vs `bassCadenza` ≈24 q) — the LH cadenza ends ~2 bars before
+  the RH. That is the senza-misura/bridging task (EHT4), now much smaller and no
+  longer blocked by a large pre-cadenza misalignment. (This supersedes the
+  "cadenza blocked / 20 extra LH beats" diagnosis below — that was a downstream
+  symptom of the over-long LH Agitato being packed by the index-merge.)
+
+## 2026-06-15 — Epic H (Steps 0–3): multi-voice collapse fixed; cadenza blocked
+
+Atomic, non-regressive subset of the Epic H bar-splitting rework (branch
+`epic-h-bar-splitting`; all 872 tests green at each step):
+
+- **Step 1 — multi-voice collapse fixed (chopin post-Agitato desync).** A
+  `<< { } \new Voice { \voiceTwo … } >>` left two *simultaneous* `Voice`s sharing
+  a number; the `resplit_*` by-`v.number` flatten folded them into one over-full
+  voice (bar 72 → 6/4), putting the RH 3 beats ahead of the LH for the rest of the
+  piece. `disambiguate_colliding_voice_numbers` renumbers the colliding voice
+  before each by-number flatten (no-op when already distinct → byte-identical
+  elsewhere). Re-syncs the entire post-Agitato section. +3 tests.
+- **Step 2 — `Measure.senza_misura` + `<senza-misura/>` exporter** (inert).
+- **Step 3 — `\cadenzaOn/Off` parsed**, flags cadenza measures senza without
+  suppressing auto-split (single-hand cadenzas stay aligned; pedal.ly gains a
+  correct `<senza-misura/>`).
+- **Step 4 — cadenza bridging attempted and reverted (BLOCKED).** Collapsing each
+  staff's senza run into one aligned free bar is the right design, but chopin's
+  hands reach their cadenzas at different absolute positions (RH ≈126 q vs LH
+  ≈146 q — ~20 extra LH beats / 36 extra measures before the cadenza), so the
+  union-of-spans can't merge them. Real prerequisite: align the staves through the
+  cadenza-adjacent region first (the bars-156–158 spurious 9 q `skip-of-length`
+  spacer-voice artifact + bassCadenza placement). Documented as the next task in
+  Epic H (`docs/roadmap.md`).
+
 ## 2026-06-14 — `#(skip-of-length)`; chopin RH/LH-sync root-cause + Epic H plan
 
 - **`#(skip-of-length VAR)`** now emits a spacer the length of music variable

@@ -62,6 +62,7 @@ fn convert_measure(
     let mut measure = crate::ir::measure::Measure {
         number,
         implicit,
+        senza_misura: false,
         width,
         attributes: None,
         left_barline: None,

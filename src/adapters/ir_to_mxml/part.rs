@@ -83,11 +83,16 @@ impl IrToMxmlAdapter {
             }
         }
 
-        // Attributes
-        if let Some(attrs) = &measure.attributes {
-            elements.push(mxml::MeasureElement::Attributes(
-                self.build_attributes(attrs, measure.multi_measure_rest),
-            ));
+        // Attributes. A senza-misura measure emits `<time><senza-misura/></time>`
+        // even when it carries no other attribute change.
+        if measure.attributes.is_some() || measure.senza_misura {
+            let default_attrs = MeasureAttributes::default();
+            let attrs = measure.attributes.as_ref().unwrap_or(&default_attrs);
+            elements.push(mxml::MeasureElement::Attributes(self.build_attributes(
+                attrs,
+                measure.multi_measure_rest,
+                measure.senza_misura,
+            )));
         }
 
         // Left barline
@@ -432,6 +437,7 @@ impl IrToMxmlAdapter {
         &self,
         attrs: &MeasureAttributes,
         multi_measure_rest: Option<u16>,
+        senza_misura: bool,
     ) -> mxml::Attributes {
         let divisions = Some(mxml::Divisions {
             attributes: (),
@@ -470,8 +476,21 @@ impl IrToMxmlAdapter {
             vec![]
         };
 
-        // Time
-        let time: Vec<mxml::Time> = if let Some(t) = &attrs.time {
+        // Time. A senza-misura (free-time) measure emits `<senza-misura/>`
+        // instead of a beat count.
+        let time: Vec<mxml::Time> = if senza_misura {
+            vec![mxml::Time {
+                attributes: mxml::TimeAttributes::default(),
+                content: mxml::TimeContents {
+                    beats: vec![],
+                    interchangeable: None,
+                    senza_misura: Some(mxml::SenzaMisura {
+                        attributes: (),
+                        content: String::new(),
+                    }),
+                },
+            }]
+        } else if let Some(t) = &attrs.time {
             let mut time_attrs = mxml::TimeAttributes::default();
             if let Some(sym) = &t.symbol {
                 time_attrs.symbol = match sym.as_str() {

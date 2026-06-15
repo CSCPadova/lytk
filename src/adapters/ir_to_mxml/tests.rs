@@ -34,6 +34,7 @@ fn make_simple_score() -> Score {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: Some(attrs),
         left_barline: None,
@@ -123,6 +124,7 @@ fn rest_emission() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -162,6 +164,7 @@ fn measure_rest() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -197,6 +200,7 @@ fn chord_emission() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -240,6 +244,7 @@ fn note_with_tie() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -282,6 +287,7 @@ fn note_with_articulations() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -321,6 +327,7 @@ fn direction_with_dynamics() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -363,6 +370,7 @@ fn direction_emits_staff_and_placement() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -405,6 +413,7 @@ fn direction_with_tempo() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -443,6 +452,7 @@ fn fermata_on_note() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -480,6 +490,7 @@ fn multi_voice_backup() {
     let measure = crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -922,6 +933,7 @@ fn make_empty_measure() -> crate::ir::measure::Measure {
     crate::ir::measure::Measure {
         number: 1,
         implicit: false,
+        senza_misura: false,
         width: None,
         attributes: None,
         left_barline: None,
@@ -1717,4 +1729,17 @@ fn test_emit_divisions_auto_computed() {
     }
     let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
     assert!(xml.contains("<divisions>"), "should emit divisions: {xml}");
+}
+
+#[test]
+fn senza_misura_measure_emits_senza_misura_time() {
+    let mut score = make_simple_score();
+    if let ScoreChild::Part(ref mut part) = score.children[0] {
+        part.measures[0].senza_misura = true;
+    }
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<senza-misura"),
+        "senza-misura measure should emit <senza-misura/>: {xml}"
+    );
 }

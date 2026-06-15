@@ -951,3 +951,124 @@ fn empty_lower_staff_bar_gets_anchor_rest_for_pedal() {
         "bar 1 pedal start not anchored below staff 2:\n{bar1}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Epic H — multi-voice / multi-staff bar-splitting invariants (chopin_n.ly)
+// ---------------------------------------------------------------------------
+
+/// The whole opening section of chopin_n.ly (output bars 1–69, all 6/8) is
+/// bar-perfect: every staff fills exactly the active meter. Pins the
+/// currently-correct body as a regression guard before the Epic H rework.
+#[test]
+fn chopin_bars_1_69_bar_perfect() {
+    use _core::ir::duration::Frac;
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("chopin_n.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    let fills = staff_measure_fills(part);
+    let mut meter = Frac::new(3, 4); // 6/8
+    for (i, f) in fills.iter().enumerate().take(69) {
+        let m = &part.measures[i];
+        if let Some(a) = &m.attributes {
+            if let Some(ts) = &a.time {
+                meter = ts.beats_fraction();
+            }
+        }
+        if m.implicit {
+            continue; // the \partial 8 pickup
+        }
+        for (&staff, &dur) in f {
+            assert_eq!(
+                dur,
+                meter,
+                "bar {} staff {} fill {dur} != meter {meter}",
+                i + 1,
+                staff
+            );
+        }
+    }
+}
+
+/// No voice exceeds its bar's capacity in the pre-cadenza region (output bars
+/// 1–162). Catches the multi-voice collapse (bars 72/156/157 currently over-full
+/// at 6/4–9/4). The free-time cadenza (bars 163+) is a separate invariant
+/// (`chopin_rh_lh_total_duration_equal`). `#[ignore]` until Step 1 lands.
+/// No voice exceeds its bar's capacity through the synced main body (output bars
+/// 1–155). This is the post-Agitato region that Step 1's voice-number
+/// disambiguation re-syncs (bar 72 was the +3-beat culprit). Output bars 156–158
+/// (a cadenza-adjacent spacer-voice artifact) and the free-time cadenza (163+)
+/// are separate invariants handled later in Epic H.
+#[test]
+fn chopin_no_overfull_voice_main_body() {
+    use _core::ir::duration::Frac;
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("chopin_n.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    let fills = staff_measure_fills(part);
+    let mut meter = Frac::new(3, 4);
+    let mut bad = Vec::new();
+    for (i, f) in fills.iter().enumerate().take(155) {
+        let m = &part.measures[i];
+        if let Some(a) = &m.attributes {
+            if let Some(ts) = &a.time {
+                meter = ts.beats_fraction();
+            }
+        }
+        for (&staff, &dur) in f {
+            if dur > meter {
+                bad.push((i + 1, staff, dur));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "over-full voices in main body: {bad:?}");
+}
+
+/// Bar 72 — `<< { tuplets } \new Voice { \voiceTwo s8*5 … } >>` — keeps its two
+/// RH voices distinct (was collapsed into one 6/4 over-full voice before the
+/// voice-number disambiguation). Both staff-1 voices fill exactly 3/4.
+#[test]
+fn chopin_bar72_multivoice_not_collapsed() {
+    use _core::ir::duration::Frac;
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("chopin_n.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+    // Output bar 72 = measure index 71.
+    let m = &part.measures[71];
+    let staff1_voices: Vec<&_core::ir::voice::Voice> = m
+        .voices
+        .iter()
+        .filter(|v| {
+            v.elements.iter().next().is_some_and(|e| match e {
+                _core::ir::note::VoiceElement::Note(n) => n.staff == 1,
+                _core::ir::note::VoiceElement::Rest(r) => r.staff == 1,
+                _core::ir::note::VoiceElement::Chord(c) => c.staff == 1,
+            })
+        })
+        .collect();
+    assert!(
+        staff1_voices.len() >= 2,
+        "bar 72 must keep both RH voices distinct, got {} on staff 1",
+        staff1_voices.len()
+    );
+    let three_quarters = Frac::new(3, 4);
+    for v in &staff1_voices {
+        let dur: Frac = v
+            .elements
+            .iter()
+            .filter(|e| !matches!(e, _core::ir::note::VoiceElement::Note(n) if n.is_grace))
+            .map(|e| match e {
+                _core::ir::note::VoiceElement::Note(n) => n.duration.actual_duration(),
+                _core::ir::note::VoiceElement::Rest(r) => r.duration.actual_duration(),
+                _core::ir::note::VoiceElement::Chord(c) => c.duration.actual_duration(),
+            })
+            .fold(Frac::from_integer(0), |a, d| a + d);
+        assert_eq!(
+            dur, three_quarters,
+            "bar 72 RH voice {} fill != 3/4",
+            v.number
+        );
+    }
+}

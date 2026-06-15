@@ -532,6 +532,37 @@ pB = { g4 a b c' }
     }
 
     #[test]
+    fn test_parse_tuplet_with_group_duration_arg() {
+        // `\tuplet 3/2 4 { … }` — the `4` is the optional group-duration argument
+        // (tells LilyPond each triplet group spans a quarter for beaming). It must
+        // be skipped so the ratio still applies to the music block. Regression:
+        // chopin_n.ly's left-hand Agitato wraps ~40 bars in one such tuplet; without
+        // this the notes parsed at full duration (3/2× too long), desyncing the staves.
+        let adapter = LyToIrAdapter::new();
+        let score = adapter
+            .convert_str(r#"{ \tuplet 3/2 4 { c'8 d' e' f' g' a' } }"#)
+            .unwrap();
+
+        let elems: Vec<&VoiceElement> = score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .collect();
+
+        assert_eq!(elems.len(), 6, "tuplet should produce 6 elements");
+        for elem in &elems {
+            match elem {
+                VoiceElement::Note(n) => {
+                    assert_eq!(n.duration.tuplet_actual, 3, "ratio must be applied");
+                    assert_eq!(n.duration.tuplet_normal, 2);
+                }
+                _ => panic!("expected Note in tuplet"),
+            }
+        }
+    }
+
+    #[test]
     fn test_parse_times_old_syntax() {
         let adapter = LyToIrAdapter::new();
         // \times has reversed fraction: normal/actual
