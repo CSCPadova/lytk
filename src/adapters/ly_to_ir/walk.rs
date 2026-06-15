@@ -1721,6 +1721,22 @@ fn merge_piano_staff_parts(
     // the real staves only (Dynamics lanes would pollute the timeline).
     super::merge::unify_staff_time_signatures(&mut staff_parts);
 
+    // Score-wide cadenza only: when EVERY staff is in a free-time span (e.g.
+    // chopin's two-hand cadenza), collapse each staff's senza run to ONE bar
+    // before the index-merge, so a longer treble cadenza can't leave the bass
+    // coda inside its senza span (which the merge would fold into the cadenza
+    // bar). A single-hand cadenza (e.g. pedal.ly: one staff free, the other in
+    // strict time) is left untouched here — collapsing only that staff would
+    // desync it from its sibling — and stays aligned via the auto-split.
+    let all_staves_cadenza = staff_parts
+        .iter()
+        .all(|(_, p)| p.measures.iter().any(|m| m.senza_misura));
+    if all_staves_cadenza {
+        for (_ctx, part) in &mut staff_parts {
+            super::merge::collapse_cadenza_runs_in_part(part);
+        }
+    }
+
     // The first real staff is the merge base.
     let (base_ctx, mut base) = staff_parts.remove(0);
     base.staves = num_staves as u8;

@@ -822,6 +822,10 @@ pub(super) fn resplit_measures_for_time_sig(
     // keyed by cumulative duration position (start of that measure in voice 1)
     let mut measure_attrs: Vec<MeasureMeta> = Vec::new();
     let mut cumulative_pos = Frac::from_integer(0);
+    // Position spans of free-time (senza-misura) input measures, so the flag
+    // survives the by-voice re-split (output measures rebuilt via Measure::new
+    // default to non-senza otherwise).
+    let mut senza_spans: Vec<(Frac, Frac)> = Vec::new();
 
     for m in measures {
         measure_attrs.push((
@@ -844,6 +848,9 @@ pub(super) fn resplit_measures_for_time_sig(
             if voice_dur > max_dur {
                 max_dur = voice_dur;
             }
+        }
+        if m.senza_misura {
+            senza_spans.push((cumulative_pos, cumulative_pos + max_dur));
         }
         cumulative_pos += max_dur;
     }
@@ -924,6 +931,14 @@ pub(super) fn resplit_measures_for_time_sig(
         // Apply attributes/directions from original measures whose position falls
         // within this output measure's range
         let out_end = out_cumulative + this_span;
+        // Carry the free-time flag onto any output bar that starts inside a senza
+        // span (the cadenza bridge later collapses the run into one bar).
+        if senza_spans
+            .iter()
+            .any(|&(a, b)| out_cumulative >= a && out_cumulative < b)
+        {
+            m.senza_misura = true;
+        }
         while attr_idx < measure_attrs.len() && measure_attrs[attr_idx].0 < out_end {
             let (_, ref attrs, ref dirs, ref lbar, ref rbar) = measure_attrs[attr_idx];
             if let Some(ref a) = attrs {
@@ -973,6 +988,71 @@ pub(super) fn resplit_measures_for_time_sig(
     }
 
     result
+}
+
+/// Collapse each maximal run of ≥2 consecutive free-time (`senza_misura`) measures
+/// into a single measure, re-joining every voice's element stream across the run.
+///
+/// `\cadenzaOn … \cadenzaOff` is bar-less, but the meter-based auto-split fragments
+/// it into many over-full / empty bars (the source of chopin's mangled last page).
+/// Each voice's stream is contiguous within the run — the inter-bar gaps are split
+/// artifacts — so concatenating a voice's elements by number restores the single
+/// free-time bar LilyPond renders. A lone `senza_misura` measure (e.g. a single-hand
+/// cadenza that already fits one bar, as in pedal.ly) is a run of length 1 and is
+/// left untouched, so multi-staff alignment there is preserved.
+pub(super) fn collapse_cadenza_runs(score: &mut crate::ir::score::Score) {
+    for part in score.parts_mut() {
+        collapse_cadenza_runs_in_part(part);
+    }
+}
+
+/// Per-part version of [`collapse_cadenza_runs`]. Run on each staff *before* the
+/// PianoStaff index-merge so that every staff ends up with exactly ONE cadenza
+/// bar at the same index — otherwise a longer treble cadenza leaves the bass
+/// coda inside the treble's senza span and the index-merge folds it in.
+pub(super) fn collapse_cadenza_runs_in_part(part: &mut crate::ir::Part) {
+    if !part.measures.iter().any(|m| m.senza_misura) {
+        return; // no cadenza in this part → byte-identical
+    }
+    let measures = std::mem::take(&mut part.measures);
+    let mut result: Vec<Measure> = Vec::new();
+    let mut i = 0;
+    while i < measures.len() {
+        if !measures[i].senza_misura {
+            result.push(measures[i].clone());
+            i += 1;
+            continue;
+        }
+        // Maximal run of consecutive senza measures: [i, j)
+        let mut j = i;
+        while j < measures.len() && measures[j].senza_misura {
+            j += 1;
+        }
+        if j - i < 2 {
+            result.push(measures[i].clone());
+            i = j;
+            continue;
+        }
+        let mut collapsed = measures[i].clone();
+        for m in &measures[i + 1..j] {
+            for v in &m.voices {
+                if let Some(bv) = collapsed.voices.iter_mut().find(|bv| bv.number == v.number) {
+                    bv.elements.extend(v.elements.iter().cloned());
+                } else {
+                    collapsed.voices.push(v.clone());
+                }
+            }
+            collapsed.directions.extend(m.directions.iter().cloned());
+            if m.right_barline.is_some() {
+                collapsed.right_barline = m.right_barline.clone();
+            }
+        }
+        collapsed.voices.sort_by_key(|v| v.number);
+        result.push(collapsed);
+        i = j;
+    }
+    part.measures = result;
+    renumber_measures(part);
 }
 
 /// Synchronize time signatures across all parts in a score.
@@ -1323,6 +1403,9 @@ pub(super) fn resplit_measures_with_time_changes(
     let mut measure_attrs: Vec<MeasureMeta> = Vec::new();
     let mut cumul = Frac::from_integer(0);
     let mut current_ts = initial_time_sig;
+    // Position spans of free-time (senza-misura) input measures, so the flag
+    // survives the by-voice re-split (the cadenza bridge collapses them later).
+    let mut senza_spans: Vec<(Frac, Frac)> = Vec::new();
 
     for m in measures {
         if let Some(ref attrs) = m.attributes {
@@ -1352,6 +1435,9 @@ pub(super) fn resplit_measures_with_time_changes(
         }
         if max_dur == Frac::from_integer(0) {
             max_dur = current_ts;
+        }
+        if m.senza_misura {
+            senza_spans.push((cumul, cumul + max_dur));
         }
         cumul += max_dur;
     }
@@ -1461,6 +1547,14 @@ pub(super) fn resplit_measures_with_time_changes(
         } else {
             total_duration
         };
+
+        // Carry the free-time flag onto any output bar starting inside a senza span.
+        if senza_spans
+            .iter()
+            .any(|&(a, b)| out_start >= a && out_start < b)
+        {
+            m.senza_misura = true;
+        }
 
         while attr_idx < measure_attrs.len() && measure_attrs[attr_idx].0 < out_end {
             let (apos, ref attrs, ref dirs, ref lbar, ref rbar) = measure_attrs[attr_idx];

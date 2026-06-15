@@ -248,6 +248,7 @@ impl LyToIrAdapter {
                     merge::merge_leading_attribute_measures(part);
                     merge::renumber_measures(part);
                 }
+                merge::collapse_cadenza_runs(score);
                 merge::propagate_first_tempo(score);
                 post_process_beams_and_stems(score);
                 resolve_ties(score);
@@ -297,6 +298,7 @@ impl LyToIrAdapter {
             merge::renumber_measures(part);
         }
         merge::synchronize_time_signatures(&mut score);
+        merge::collapse_cadenza_runs(&mut score);
         merge::synchronize_barlines(&mut score);
         merge::propagate_first_tempo(&mut score);
         post_process_beams_and_stems(&mut score);

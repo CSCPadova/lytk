@@ -65,6 +65,10 @@ pub(super) struct WalkState<'src> {
     /// usual (so they stay aligned with non-cadenza staves) — the cadenza
     /// bridging pass at assembly collapses the flagged run into one free bar.
     pub(super) cadenza_active: bool,
+    /// Set when cadenza content lands in the current (in-progress) measure;
+    /// persists until that measure is flushed so the senza flag survives a lazy
+    /// flush that happens after `\cadenzaOff`. Reset per measure at flush.
+    pub(super) measure_has_cadenza: bool,
     /// Onset (within the current measure) of the most recently pushed voice
     /// element. LilyPond post-events like `\sustainOn`/`\sustainOff` attach to
     /// the note they follow and occur at that note's onset, not after its
@@ -133,6 +137,7 @@ impl<'src> WalkState<'src> {
             current_time_sig: Frac::new(4, 4), // default 4/4 = 1 whole note
             elapsed_in_measure: Frac::from_integer(0),
             cadenza_active: false,
+            measure_has_cadenza: false,
             last_element_onset: Frac::from_integer(0),
             last_chord_pitches: Vec::new(),
             prev_pitch: None,
@@ -184,11 +189,17 @@ impl<'src> WalkState<'src> {
     pub(super) fn flush_measure(&mut self) {
         self.flush_voice();
         if let Some(mut measure) = self.current_measure.take() {
-            if self.cadenza_active {
+            // A measure is free-time if any cadenza content landed in it — even
+            // when `\cadenzaOff` already cleared `cadenza_active` before this
+            // (lazy) flush, e.g. the trailing fragment of a cadenza variable
+            // flushed when the following `\time`/bar arrives. Otherwise that tail
+            // bar escapes the senza run and the cadenza bridge can't collapse it.
+            if self.cadenza_active || self.measure_has_cadenza {
                 measure.senza_misura = true;
             }
             self.ensure_part().measures.push(measure);
         }
+        self.measure_has_cadenza = false;
     }
 
     /// Start a new measure (bar check encountered).
@@ -222,6 +233,9 @@ impl<'src> WalkState<'src> {
         {
             self.flush_measure();
             self.elapsed_in_measure -= self.current_time_sig;
+        }
+        if self.cadenza_active {
+            self.measure_has_cadenza = true;
         }
 
         // Apply beam "continue" for notes inside a manual beam group
@@ -392,7 +406,7 @@ impl<'src> WalkState<'src> {
                     // than the external one, re-split the measures to match.
                     // But skip resplit if the variable has its own time sig changes
                     // (it already knows its own measure boundaries).
-                    let measures = if !has_own_time_sigs
+                    let mut measures = if !has_own_time_sigs
                         && def_time_sig != external_time_sig
                         && external_time_sig > Frac::from_integer(0)
                         && !measures_are_spacer_only(&measures)
@@ -401,6 +415,15 @@ impl<'src> WalkState<'src> {
                     } else {
                         measures
                     };
+                    // A variable resolved inside a `\cadenzaOn … \cadenzaOff` span is
+                    // free-time (e.g. trebleCadenza splices the `cadenzaA`/`cadenzaB`
+                    // variables, which carry no `\cadenzaOn` of their own). Flag the
+                    // spliced measures so the cadenza bridge can collapse them.
+                    if self.cadenza_active {
+                        for m in &mut measures {
+                            m.senza_misura = true;
+                        }
+                    }
                     // Flush any in-progress measure before adding pre-split measures
                     self.flush_measure();
                     self.elapsed_in_measure = Frac::from_integer(0);

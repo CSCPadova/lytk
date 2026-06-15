@@ -1072,3 +1072,61 @@ fn chopin_bar72_multivoice_not_collapsed() {
         );
     }
 }
+
+/// The free-time end cadenza (`\cadenzaOn…\cadenzaOff` in trebleCadenza +
+/// bassCadenza) must collapse to ONE `senza_misura` bar holding BOTH hands —
+/// not the meter-split run of ~10 over-full/empty bars it used to become — and
+/// the strict-time 4/4 coda after it must keep both staves.
+#[test]
+fn chopin_cadenza_is_single_senza_bar_with_both_hands() {
+    let score = LyToIrAdapter::new()
+        .convert_str(&read_ly("chopin_n.ly"))
+        .expect("LY → Score");
+    let part = &score.parts()[0];
+
+    let staves_in = |m: &_core::ir::measure::Measure| -> std::collections::BTreeSet<u8> {
+        m.voices
+            .iter()
+            .flat_map(|v| v.elements.iter())
+            .map(|e| match e {
+                _core::ir::note::VoiceElement::Note(n) => n.staff,
+                _core::ir::note::VoiceElement::Rest(r) => r.staff,
+                _core::ir::note::VoiceElement::Chord(c) => c.staff,
+            })
+            .collect()
+    };
+
+    let senza: Vec<usize> = part
+        .measures
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.senza_misura)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        senza.len(),
+        1,
+        "the two-hand cadenza must collapse to exactly one senza-misura bar, got {} ({:?})",
+        senza.len(),
+        senza
+    );
+
+    let ci = senza[0];
+    assert!(
+        staves_in(&part.measures[ci]).len() >= 2,
+        "the cadenza bar must contain both staves, got {:?}",
+        staves_in(&part.measures[ci])
+    );
+
+    // The bar right after the cadenza is the strict-time coda — both hands.
+    let coda = &part.measures[ci + 1];
+    assert!(
+        !coda.senza_misura,
+        "the bar after the cadenza must be strict-time (the 4/4 coda)"
+    );
+    assert!(
+        staves_in(coda).len() >= 2,
+        "the coda must keep both staves (the bass run must not be folded into the cadenza), got {:?}",
+        staves_in(coda)
+    );
+}
