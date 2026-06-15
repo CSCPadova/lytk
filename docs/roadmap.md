@@ -179,7 +179,14 @@ Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multise
 
 **Update 2026-06-14 (piano fidelity):** deep pass on the hardest piano fixtures.
 - **pedal.ly** — the sustain pedal now renders *below* the left-hand staff in MuseScore: empty staff bars carry an invisible anchor rest, and `\sustainOn`/`Off` attach at the note onset (LY post-event semantics). See changelog.
-- **chopin_n.ly** — was 121/181 bars wrong; the **whole main body (bars 1–69) is now bar-for-bar correct** and renders like the LilyPond reference. Fixed: tuplet chords scaling inner notes (+ nested-tuplet product), `q` chord-repetition, tie-stop resolution, per-voice slur numbering, `\partial` pickup preserved through the variable/time-change resplit, fingered chords inside grace blocks, and `\repeat unfold N` (was emitted once). **Known limitation — the free-time end cadenza (~11 bars):** investigated in depth and deferred as a dedicated epic. Two blockers: `\cadenzaOn` is score-wide in LilyPond (per-variable parsing can't suppress the barline across staves — a single-hand cadenza like pedal.ly's desyncs the staves), and the cadenza's three independent free-time lanes (treble/bass/Dynamics) aligned only via `#(skip-of-length …)` need flawless duration computation to merge into one measure. The senza-misura/`skip-of-length`/cadenza-mode primitives were prototyped (work in isolation) but reverted to avoid regressing pedal.ly. Also remaining: 6 scattered multi-voice bars in the 4/4 Agitato section.
+- **chopin_n.ly** — was 121/181 bars wrong; the **whole main body (bars 1–69) is now bar-for-bar correct** and renders like the LilyPond reference. Fixed: tuplet chords scaling inner notes (+ nested-tuplet product), `q` chord-repetition, tie-stop resolution, per-voice slur numbering, `\partial` pickup preserved through the variable/time-change resplit, fingered chords inside grace blocks, and `\repeat unfold N` (was emitted once). **Update 2026-06-15 — end cadenza + Agitato now fixed (Epic H):** the whole fixture
+now converts correctly. The post-Agitato RH/LH drift is gone (`disambiguate_colliding
+_voice_numbers` + the `\tuplet 3/2 4 {…}` group-duration parse fix — the real cause of
+the LH Agitato over-parse), and the free-time end cadenza now collapses to ONE
+`senza_misura` bar holding both hands followed by the strict-time 4/4 coda, matching the
+LilyPond reference (rendered & compared). See Epic H. Residual polish only: the cadenza's
+internal free-time voice rhythm and a slightly over-long coda flourish bar are cosmetic,
+not structural.
 
 ### Epic D: ML Representations (`src/representations/`, modeled on muspy)
 
