@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-06-15 (cont.) — Epic H: `\tuplet 3/2 4 {…}` fix resolves the RH/LH desync
+
+The "RH ends ~70 beats before the LH" symptom was **not** a cadenza re-barring
+problem — it was a tuplet parser bug, found by bisecting the over-long `lowerStaff`
+stream (618 q vs 533 q expected; the whole +85 q lives in the LH **Agitato**, which
+measured 250 q vs 168 q ≈ **3/2×**).
+
+- **`\tuplet` ratio/group-duration form (`\tuplet 3/2 4 { … }`)** now parses. The
+  `4` is LilyPond's optional group-duration argument (per-group beaming span; ratio
+  unchanged). The parser expected the music block immediately after the fraction, so
+  the block fell through and its notes parsed at **full duration** (3/2× too long)
+  with no `<time-modification>`. chopin's LH Agitato wraps ~40 bars in one such
+  tuplet, so the LH over-parsed by ~76 q and ran far past the RH (RH ended bar 166,
+  LH bar 185). Fix: skip an optional `unsigned_integer` (+dots) between the fraction
+  and the block (`music.rs`). No-op for the plain `\tuplet a/b { … }` form.
+- **Result:** chopin **RH/LH gap 76.5 q → 6 q**, output **186 → 167 measures**, the
+  ~19 phantom LH bars gone. 873 tests green, clippy clean. New test
+  `test_parse_tuplet_with_group_duration_arg`.
+- **Remaining:** the residual 6 q is the genuine free-time cadenza-length difference
+  (`trebleCadenza` ≈31 q vs `bassCadenza` ≈24 q) — the LH cadenza ends ~2 bars before
+  the RH. That is the senza-misura/bridging task (EHT4), now much smaller and no
+  longer blocked by a large pre-cadenza misalignment. (This supersedes the
+  "cadenza blocked / 20 extra LH beats" diagnosis below — that was a downstream
+  symptom of the over-long LH Agitato being packed by the index-merge.)
+
 ## 2026-06-15 — Epic H (Steps 0–3): multi-voice collapse fixed; cadenza blocked
 
 Atomic, non-regressive subset of the Epic H bar-splitting rework (branch

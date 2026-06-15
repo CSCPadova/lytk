@@ -298,16 +298,30 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
 - **`\cadenzaOn/Off` parsed**, flagging cadenza measures senza (without
   suppressing auto-split, so single-hand cadenzas stay aligned; pedal.ly gains a
   correct `<senza-misura/>`).
-- **Cadenza bridging (EHT4) attempted, reverted — BLOCKED.** `bridge_cadenza_spans`
-  (collapse each staff's senza run to one aligned bar over the union span) is the
-  right design, but it can't union spans that don't overlap, and chopin's hands
-  reach their cadenzas at *different* absolute positions (RH ≈126 q, LH ≈146 q):
-  the LH has ~20 extra beats / ~36 extra measures *before* the cadenza. Causes:
-  the treble/bass cadenza lengths still differ, a spurious 9 q `skip-of-length`
-  spacer voice leaks onto the RH at output bar 156, and the dynamics-lane fold
-  interacts. **Prerequisite for EHT4: align the staves through the
-  cadenza-adjacent region first** (the bars-156–158 spacer-voice artifact + the
-  bassCadenza/skip-of-length placement) — this is the real next task.
+- **`\tuplet` ratio/group-duration form fixed — this was the real RH/LH desync.**
+  The "RH ends ~70 beats before the LH" symptom turned out **not** to be a cadenza
+  re-barring problem at all. A bisection (`upperStaff` 545 q correct vs `lowerStaff`
+  618 q, +85 q over expected; the gap is wholly in the LH **Agitato**, 250 q vs
+  168 q ≈ **3/2×**) pinned it on the tuplet parser. `\tuplet 3/2 4 { … }` — the `4`
+  is LilyPond's optional *group-duration* argument (per-group beaming span, ratio
+  unchanged) — was unrecognized: the parser expected the music block immediately
+  after the fraction, so the block fell through and its notes parsed at **full
+  duration** (3/2× too long) with no `<time-modification>`. chopin's LH Agitato
+  wraps ~40 bars in one such tuplet. Fix ([`music.rs`]): skip an optional
+  `unsigned_integer` (+dots) between the fraction and the block. Result: the chopin
+  **RH/LH gap collapses 76.5 q → 6 q**, output **186 → 167 measures**, the ~19
+  phantom LH bars gone. No-op for the plain `\tuplet a/b { … }` form. Test:
+  `test_parse_tuplet_with_group_duration_arg`. (Supersedes the earlier
+  "resplit per-voice positions" / "cadenza pre-split" hypotheses — those were
+  downstream symptoms of the over-long LH stream being packed by the index-merge.)
+- **Cadenza bridging (EHT4) — remaining 6 q, much smaller now.** After the tuplet
+  fix the only residual is the genuine free-time cadenza-length difference:
+  `trebleCadenza` ≈ 31 q vs `bassCadenza` ≈ 24 q, so the LH cadenza ends ~6 q (≈2
+  bars) before the RH. The senza-misura/`skip-of-length` primitives are already in
+  the IR; EHT4 (mark the cadenza span senza across **all** staves, emit one unbarred
+  measure per span, pad the shorter hand) would close it. No longer blocked by a
+  large pre-cadenza misalignment — the staves are now aligned through the whole
+  6/8 body and the 4/4 coda to within the cadenza length.
 
 ---
 
