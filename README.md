@@ -16,22 +16,35 @@ for dataset creation and research.
 ```bash
 # Rust CLI
 cargo build --release
-./target/release/lytk convert input.xml -o output.ly
+./target/release/lytk convert input.xml -o output.ly      # ly · xml · mxl · abc · midi
 ./target/release/lytk flatten score.ly -o flat.ly
 ./target/release/lytk transpose input.ly --semitones 3 -o transposed.ly
 ./target/release/lytk info input.xml
 
 # Python
-pip install lytk  # (once published)
+pip install lytk            # (once published)
+pip install lytk[torch]     # optional: torch dataset adapters (or lytk[tensorflow])
 ```
 
 ```python
 import lytk
 
-score = lytk.from_musicxml("input.xml")
-score = lytk.transpose(score, semitones=3)
-lytk.to_lilypond(score, "output.ly")
+# Convert — any format to any format, in-memory or to a file.
+score = lytk.from_musicxml("input.xml")        # also: from_lilypond, from_midi, from_abc
+score = lytk.transpose(score, semitones=3)     # also: invert, retrograde, change_language
+lytk.to_lilypond(score, "output.ly")           # also: to_musicxml, to_midi, to_abc
+abc_text = lytk.to_abc(score)                   # any emitter returns the string too
+
+# ML representations (NumPy in/out) via the Layer-1 Music tree.
+doc = score.to_music_document()
+notes = lytk.to_note_array(doc)                 # (N, 4): onset, duration, pitch, velocity
+roll = lytk.to_piano_roll(doc)                  # (T, 128)
+events = lytk.to_event_sequence(doc)            # 1-D Performance-RNN event codes
+metrics = lytk.compute_metrics(doc)             # pitch-class entropy, polyphony, …
 ```
+
+The Python package ships prebuilt **abi3** wheels (one wheel per platform covers
+CPython 3.10+) and full type stubs (`lytk/_core.pyi`).
 
 ## Architecture
 
@@ -45,11 +58,19 @@ lytk.to_lilypond(score, "output.ly")
 
 ### Conversion Pipeline
 
+Every format converts to every other through the shared IR:
+
 ```
-MusicXML (.xml/.mxl)  ──→  IR (Score tree)  ──→  LilyPond (.ly)
-LilyPond (.ly)        ──→  IR (Score tree)  ──→  MusicXML (.xml)
-MIDI (.mid)           ──→  IR (Score tree)  ──→  LilyPond / MusicXML
+            ┌─ LilyPond (.ly/.ily)
+MusicXML ──┤   MusicXML (.xml/.mxl)
+(.xml/.mxl) │
+LilyPond ──┼─→  IR (Score / Music tree)  ──→  LilyPond · MusicXML · MIDI · ABC
+MIDI ──────┤
+ABC ───────┘
 ```
+
+See [`docs/import-export.md`](docs/import-export.md) for the full per-format
+support matrix (what each reader/writer preserves).
 
 ### Module Layout
 

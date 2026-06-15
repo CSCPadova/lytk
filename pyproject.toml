@@ -1,13 +1,53 @@
 [project]
 name = "lytk"
 version = "0.1.0"
-description = "LilyPond toolkit"
+description = "Fast music-notation conversion and augmentation: LilyPond, MusicXML/MXL, MIDI, and ABC through a shared IR, with ML representations."
 readme = "README.md"
 authors = [
     { name = "Matteo Spanio", email = "spanio@dei.unipd.it" }
 ]
 requires-python = ">=3.10"
+license = "GPL-2.0-or-later"
+license-files = ["LICENSE"]
+keywords = [
+    "music",
+    "notation",
+    "lilypond",
+    "musicxml",
+    "midi",
+    "abc",
+    "music-information-retrieval",
+    "symbolic-music",
+    "conversion",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
+    "Topic :: Scientific/Engineering",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: OS Independent",
+]
 dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+torch = ["torch"]
+tensorflow = ["tensorflow"]
+
+[project.urls]
+Homepage = "https://github.com/CSCPadova/lytk"
+Repository = "https://github.com/CSCPadova/lytk"
+Documentation = "https://github.com/CSCPadova/lytk/tree/master/docs"
+Changelog = "https://github.com/CSCPadova/lytk/blob/master/docs/changelog.md"
+Issues = "https://github.com/CSCPadova/lytk/issues"
 
 [project.scripts]
 lytk = "lytk.cli:main"

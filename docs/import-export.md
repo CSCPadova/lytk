@@ -3,6 +3,28 @@
 Overview of supported features for each format adapter. Each section covers
 what the adapter can parse (import) and emit (export).
 
+## Format support at a glance
+
+Every format reads/writes through the shared IR, so any input converts to any
+output. The library has two IR layers — Layer 2 (`Score`, measure-based) and
+Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
+
+| Format | Extensions | Import | Export | Notes |
+|---|---|:---:|:---:|---|
+| LilyPond | `.ly` `.ily` | ✅ | ✅ | Score + Music-tree paths; 11 pitch languages |
+| MusicXML | `.xml` `.musicxml` | ✅ | ✅ | The most complete adapter |
+| Compressed MusicXML | `.mxl` | ✅ | ✅ | ZIP handled natively |
+| MIDI | `.mid` `.midi` | ✅ | ✅ | Lossy (no slurs/articulations/lyrics) |
+| ABC | `.abc` | ✅ | ✅ | Core subset (headers, notes, chords, ties, repeats) |
+| MEI | `.mei` | 🔲 | 🔲 | Planned |
+| Humdrum | `.krn` | 🔲 | 🔲 | Planned |
+
+**Python:** `from_lilypond` · `from_musicxml` · `from_midi` · `from_abc`
+(+ `_string` variants) → `Score`; `to_lilypond` · `to_musicxml` · `to_midi` ·
+`to_abc` ← `Score`. ML representations (`to_note_array`, `to_piano_roll`,
+`to_event_sequence`, `compute_metrics`) operate on a `MusicDocument`
+(`score.to_music_document()`).
+
 ---
 
 ## MusicXML
@@ -168,7 +190,7 @@ what the adapter can parse (import) and emit (export).
 | `\context Voice = "name"` | ✅ | Named voices for lyrics attachment |
 | Lyrics | ✅ | `\lyricsto`, `\lyricmode`, `\context Lyrics`, `\addlyrics` |
 | Staff variables | ✅ | `staffX = \new Staff { ... }` with full part metadata |
-| `\cadenzaOn/Off` | ✅ | Gracefully skipped |
+| `\cadenzaOn/Off` | ✅ | Free-time span collapses to one `senza_misura` measure (both hands, score-wide) |
 | `\melisma/End` | ✅ | Gracefully skipped |
 | `\autoBeamOff/On` | ✅ | Gracefully skipped |
 | `\dynamicUp/Down` | ✅ | Gracefully skipped |
@@ -276,13 +298,49 @@ MIDI support is always compiled (the `midi` feature gate was removed in Epic 4).
 
 ---
 
+## ABC
+
+A core subset of ABC notation. Conversion goes through the Layer-1 Music tree
+(`ToMusicAdapter` / `FromMusicAdapter`), so the Python `to_abc(score)` lifts the
+score internally.
+
+### Import (ABC → IR) — `src/adapters/abc_to_ir.rs`
+
+| Feature | Status | Notes |
+|---|---|---|
+| Tune headers | ✅ | `X` `T` `C` `M` `L` `K` `Q` |
+| Notes with pitch | ✅ | Octave marks (`,` / `'`), explicit accidentals |
+| Default unit length | ✅ | `L:` rule; inferred from `M:` when absent |
+| Durations (fractional) | ✅ | `a2`, `a/2`, `a3/2` |
+| Rests | ✅ | `z`, `x` |
+| Chords | ✅ | `[CEG]` |
+| Ties | ✅ | `-` |
+| Bar lines + repeats | ✅ | `|`, `||`, `|:`, `:|` |
+| Key signatures | ✅ | Tonic + mode → fifths (incl. church modes) |
+| Time signatures | ✅ | `M:` (incl. `C`/`C|`) |
+| Tempo | ✅ | `Q:` |
+| Chord symbols `"…"` | 🔲 | Skipped gracefully |
+| Decorations / grace / inline fields | 🔲 | Skipped gracefully |
+
+### Export (IR → ABC) — `src/adapters/ir_to_abc.rs`
+
+| Feature | Status | Notes |
+|---|---|---|
+| Tune headers | ✅ | `X` `T` `C` `M` `L` `K` |
+| Notes with pitch | ✅ | Body emitted at `L:1/8` |
+| Durations | ✅ | Relative to the unit length |
+| Rests | ✅ | |
+| Chords | ✅ | `[…]` |
+| Ties | ✅ | |
+| Bar lines + repeats | ✅ | |
+| Key / meter | ✅ | |
+| Key-aware accidental re-spelling | 🔲 | v1 carries only explicit accidentals (self-consistent on round-trip) |
+
+---
+
 ## MEI (planned)
 
 Not yet implemented. Reference material available in `MEILER/` subproject.
-
-## ABC (planned)
-
-Not yet implemented. Lower priority.
 
 ## Humdrum (planned)
 

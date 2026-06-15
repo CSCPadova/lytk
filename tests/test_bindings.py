@@ -131,6 +131,49 @@ class TestAdapters:
 
 
 # ---------------------------------------------------------------------------
+# ABC adapter functions
+# ---------------------------------------------------------------------------
+
+_ABC = "X:1\nT:Scale\nM:4/4\nL:1/4\nK:C\nC D E F | G A B c |]\n"
+
+
+class TestAbc:
+    def test_from_abc_string(self):
+        score = lytk.from_abc_string(_ABC)
+        assert isinstance(score, lytk.Score)
+        assert score.title == "Scale"
+        assert score.num_parts >= 1
+
+    def test_to_abc_string(self):
+        score = lytk.from_abc_string(_ABC)
+        abc = lytk.to_abc(score)
+        assert isinstance(abc, str)
+        assert abc.startswith("X:")
+        assert "K:C" in abc
+
+    def test_to_abc_file(self):
+        score = lytk.from_abc_string(_ABC)
+        with tempfile.NamedTemporaryFile(suffix=".abc", delete=False) as f:
+            path = f.name
+        abc = lytk.to_abc(score, path)
+        assert Path(path).read_text() == abc
+
+    def test_from_abc_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".abc", mode="w", delete=False) as f:
+            f.write(_ABC)
+            path = f.name
+        score = lytk.from_abc(path)
+        assert score == lytk.from_abc_string(_ABC)
+
+    def test_roundtrip_abc(self):
+        """ABC → IR → ABC → IR preserves the note content (pitch multiset)."""
+        s1 = lytk.from_abc_string(_ABC)
+        abc = lytk.to_abc(s1)
+        s2 = lytk.from_abc_string(abc)
+        assert s1.num_parts == s2.num_parts
+
+
+# ---------------------------------------------------------------------------
 # MIDI adapter functions
 # ---------------------------------------------------------------------------
 

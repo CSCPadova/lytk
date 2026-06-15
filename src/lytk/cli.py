@@ -6,8 +6,8 @@ the interface of the Rust ``main.rs`` binary.
 
 Subcommands::
 
-    lytk convert  <input> -o <output> [--format ly|xml|midi] [--jobs N]
-    lytk transpose <input> -o <output> --semitones N [--format ly|xml|midi]
+    lytk convert  <input> -o <output> [--format ly|xml|abc|midi] [--jobs N]
+    lytk transpose <input> -o <output> --semitones N [--format ly|xml|abc|midi]
     lytk info     <input>
 """
 
@@ -25,7 +25,7 @@ import lytk
 # Helpers
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_EXTS: set[str] = {".ly", ".ily", ".xml", ".musicxml", ".mxl"}
+_SUPPORTED_EXTS: set[str] = {".ly", ".ily", ".xml", ".musicxml", ".mxl", ".abc"}
 _has_midi = hasattr(lytk, "to_midi")
 if _has_midi:
     _SUPPORTED_EXTS |= {".mid", ".midi"}
@@ -37,6 +37,8 @@ def _parse_input(path: Path) -> lytk.Score:
         return lytk.from_lilypond(str(path))
     if ext in {".xml", ".musicxml", ".mxl"}:
         return lytk.from_musicxml(str(path))
+    if ext == ".abc":
+        return lytk.from_abc(str(path))
     if _has_midi and ext in {".mid", ".midi"}:
         return lytk.from_midi(str(path))
     print(f"error: unsupported input format: {ext}", file=sys.stderr)
@@ -50,6 +52,8 @@ def _invert_ext(path: Path) -> str:
     if ext in {".xml", ".musicxml", ".mxl"}:
         return ".ly"
     if ext in {".mid", ".midi"}:
+        return ".ly"
+    if ext == ".abc":
         return ".ly"
     return ".ly"
 
@@ -69,6 +73,8 @@ def _write_output(
         lytk.to_lilypond(score, str(path), language=lang)
     elif ext in {".xml", ".musicxml"}:
         lytk.to_musicxml(score, str(path))
+    elif ext == ".abc":
+        lytk.to_abc(score, str(path))
     elif _has_midi and ext in {".mid", ".midi"}:
         lytk.to_midi(score, str(path))
     else:
@@ -192,13 +198,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # -- convert -------------------------------------------------------------
-    fmt_choices = ["ly", "xml"]
+    fmt_choices = ["ly", "xml", "abc"]
     if _has_midi:
         fmt_choices.append("midi")
 
     p_convert = sub.add_parser(
         "convert",
-        help="Convert files between LilyPond, MusicXML, and MXL formats.",
+        help="Convert files between LilyPond, MusicXML, MXL, ABC, and MIDI formats.",
     )
     p_convert.add_argument("input", help="Input file or directory.")
     p_convert.add_argument("-o", "--output", required=True, help="Output file or directory.")

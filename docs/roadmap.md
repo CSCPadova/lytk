@@ -215,15 +215,15 @@ not structural.
 | EFT3 | Objective metrics (`src/representations/metrics.rs` + Python): pitch-class histogram/entropy, n-PC rate, polyphony, empty-beat rate, scale & groove consistency | ✅ `src/representations/metrics.rs` (11 metrics + helpers): n_pitches/n_pitch_classes_used, pitch_range, pitch_class_histogram, pitch/pitch_class_entropy, polyphony, polyphony_rate, empty_beat_rate, pitch_in_scale_rate, scale_consistency, groove_consistency. PyO3 `compute_metrics` → dict + stub. 7 Rust + 3 pytest. Adversarially verified against muspy (6-group workflow, 0 discrepancies) |
 | EFT4 | Tests: folder → dataset → batch tensor shapes; metrics on hand-built fixtures | ✅ `tests/test_datasets.py` (14 cases: load .ly/.xml/.mxl/.mid, folder discovery, representation conversion, metrics, splits, caching) + metric tests (Rust + pytest, muspy-verified) |
 
-### Epic G: Python Distribution & Docs (release readiness)
+### Epic G: Python Distribution & Docs (release readiness) 🟡
 
 | Task | Description | Status |
 |------|-------------|--------|
-| EGT1 | Complete `.pyi` stubs for `_core` incl. representations | ⬜ |
-| EGT2 | Python wrappers for ABC + representations | ⬜ |
-| EGT3 | maturin GitHub Actions wheel matrix (Linux/macOS/Windows, abi3) | ⬜ |
-| EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ⬜ |
-| EGT5 | Tag **v1.0.0**; update roadmap (Completed) + changelog | ⬜ |
+| EGT1 | Complete `.pyi` stubs for `_core` incl. representations | ✅ `_core.pyi` covers both classes + every bound function incl. ABC (`from_abc`/`from_abc_string`/`to_abc`) and the numpy representation/metric functions |
+| EGT2 | Python wrappers for ABC + representations | ✅ Bound ABC in PyO3 (`from_abc`, `from_abc_string`, `to_abc` — emit lifts Score→Music internally); re-exported in `__init__.py`; `.abc` added to the Python CLI (read/write/info, `-f abc`). Representations already exposed + re-exported. 5 ABC pytests |
+| EGT3 | maturin GitHub Actions wheel matrix (Linux/macOS/Windows, abi3) | ✅ `.github/workflows/release.yml`: abi3 wheels (Linux x86_64+aarch64, macOS x86_64+arm64, Windows x64) + sdist via `PyO3/maturin-action`, publish-to-PyPI job (Trusted Publishing/OIDC) gated on a `v*` tag |
+| EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ✅ `pyproject.toml`: `license = "GPL-2.0-or-later"` (matches the repo LICENSE) + classifiers, keywords, URLs, `torch`/`tensorflow` extras (verified in the built wheel METADATA). README Python quickstart expanded (ABC, representations, MIDI, extras). `import-export.md`: top-level format matrix + real ABC section + `\cadenzaOn/Off` updated |
+| EGT5 | Tag **v1.0.0**; update roadmap (Completed) + changelog | ⬜ Deferred — the version tag is intentionally NOT created yet (per request). Everything else for release is in place; bump `version` in `pyproject.toml`/`Cargo.toml` + push a `v*` tag to trigger the wheel build/publish when ready |
 
 ### Epic H: Multi-voice / multi-staff bar-splitting rework 🟢
 

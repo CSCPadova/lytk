@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-06-15 (cont.) — Epic G: Python distribution & docs (release readiness)
+
+Release-prep, minus the version tag (intentionally deferred).
+
+- **ABC bound to Python.** `from_abc`, `from_abc_string`, `to_abc` (emission lifts
+  Score→Music internally) added to `lytk._core`, re-exported from `lytk`, and stubbed
+  in `_core.pyi`. The Python CLI gains full `.abc` support (read/write/info, `-f abc`).
+  5 new pytests. (The Rust ABC adapter from Epic E was previously unreachable from
+  Python.)
+- **Wheel/release workflow.** `.github/workflows/release.yml` builds abi3 wheels
+  (Linux x86_64+aarch64, macOS x86_64+arm64, Windows x64) + an sdist via
+  `PyO3/maturin-action`, with a PyPI publish job (Trusted Publishing/OIDC) gated on a
+  `v*` tag. One abi3 wheel per platform covers CPython 3.10+.
+- **Package metadata.** `pyproject.toml` now declares `license = "GPL-2.0-or-later"`
+  (matching the repo's existing GPL-2.0 LICENSE), classifiers, keywords, project URLs,
+  and `torch`/`tensorflow` extras — verified in the built wheel's METADATA.
+- **Docs.** README Python quickstart expanded (ABC, representations, MIDI, extras);
+  `docs/import-export.md` gains a top-level format-support matrix, a real ABC
+  import/export section (was "planned"), and a corrected `\cadenzaOn/Off` entry.
+- Verified: 78 pytests, 874 Rust tests, CI clippy clean, wheel builds.
+
 ## 2026-06-15 (cont.) — Epic H: end cadenza collapses to one senza-misura bar
 
 The free-time `\cadenzaOn…\cadenzaOff` end cadenza rendered as ~10 over-full/empty

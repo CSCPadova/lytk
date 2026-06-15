@@ -346,6 +346,43 @@ fn to_musicxml(score: &PyScore, path: Option<&str>) -> PyResult<String> {
     Ok(output)
 }
 
+/// Parse an ABC notation (``.abc``) file into a :class:`Score`.
+#[pyfunction]
+fn from_abc(path: &str) -> PyResult<PyScore> {
+    let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
+    let score = adapter
+        .convert_file(Path::new(path))
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+    Ok(PyScore { inner: score })
+}
+
+/// Parse an ABC notation string into a :class:`Score`.
+#[pyfunction]
+fn from_abc_string(text: &str) -> PyResult<PyScore> {
+    let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
+    let score = adapter
+        .convert_str(text)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(PyScore { inner: score })
+}
+
+/// Emit a :class:`Score` as an ABC notation string.  If *path* is given the
+/// result is also written to that file.  (ABC emission goes through the Layer-1
+/// Music tree, so the score is lifted internally.)
+#[pyfunction]
+#[pyo3(signature = (score, path=None))]
+fn to_abc(score: &PyScore, path: Option<&str>) -> PyResult<String> {
+    let doc = ir::lift::lift_to_music(&score.inner);
+    let adapter = adapters::ir_to_abc::IrToAbcAdapter::new();
+    let output = adapter
+        .convert_music(&doc)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    if let Some(p) = path {
+        std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    }
+    Ok(output)
+}
+
 /// Parse a Standard MIDI File into a :class:`Score`.
 #[pyfunction]
 fn from_midi(path: &str) -> PyResult<PyScore> {
@@ -646,6 +683,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(to_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(to_musicxml, m)?)?;
+    m.add_function(wrap_pyfunction!(from_abc, m)?)?;
+    m.add_function(wrap_pyfunction!(from_abc_string, m)?)?;
+    m.add_function(wrap_pyfunction!(to_abc, m)?)?;
 
     m.add_function(wrap_pyfunction!(from_midi, m)?)?;
     m.add_function(wrap_pyfunction!(to_midi, m)?)?;
