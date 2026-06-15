@@ -508,6 +508,22 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                             (d, n) // \times has reversed fraction
                         };
                         i += 1;
+                        // Optional group-duration argument, e.g. `\tuplet 3/2 4 { … }`
+                        // (the `4` tells LilyPond the span of each tuplet group for
+                        // beaming; it does not change the ratio). Skip it — and any
+                        // trailing dots — so the music block is still found.
+                        if children
+                            .get(i)
+                            .is_some_and(|n| n.kind() == "unsigned_integer")
+                        {
+                            i += 1;
+                            while children
+                                .get(i)
+                                .is_some_and(|n| n.kind() == "punctuation" && state.text(*n) == ".")
+                            {
+                                i += 1;
+                            }
+                        }
                         if let Some(block) = children.get(i) {
                             if block.kind() == "expression_block" {
                                 // Push tuplet ratio so notes created inside get
