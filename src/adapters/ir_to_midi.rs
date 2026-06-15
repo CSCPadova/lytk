@@ -20,6 +20,16 @@ use crate::ir::measure::KeyMode;
 use crate::ir::note::VoiceElement;
 use crate::ir::Score;
 
+/// `(has_start, has_stop)` for a note's tie events — used to collapse a tie
+/// chain into a single MIDI note (one NoteOn at the start, one NoteOff at the end).
+fn tie_flags(ties: &[crate::ir::articulation::TieEvent]) -> (bool, bool) {
+    use crate::ir::articulation::StartStop;
+    (
+        ties.iter().any(|t| t.tie_type == StartStop::Start),
+        ties.iter().any(|t| t.tie_type == StartStop::Stop),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -509,26 +519,37 @@ impl IrToMidiAdapter {
                                 cur_vel = dynamic_to_velocity(&d.sign);
                             }
                             let vel = u7::new(cur_vel);
-                            timed.push((
-                                voice_tick,
-                                TrackEventKind::Midi {
-                                    channel,
-                                    message: MidiMessage::NoteOn {
-                                        key: u7::new(midi_key),
-                                        vel,
+                            // A tie chain is ONE sounding note: emit NoteOn only when
+                            // this note begins it (not a continuation, i.e. no Stop) and
+                            // NoteOff only when it ends it (not tied onward, i.e. no
+                            // Start). Otherwise midi->IR (which splits notes across
+                            // barlines into tied segments) -> midi would multiply the
+                            // note-on/off events on every round trip.
+                            let (has_start, has_stop) = tie_flags(&note.ties);
+                            if !has_stop {
+                                timed.push((
+                                    voice_tick,
+                                    TrackEventKind::Midi {
+                                        channel,
+                                        message: MidiMessage::NoteOn {
+                                            key: u7::new(midi_key),
+                                            vel,
+                                        },
                                     },
-                                },
-                            ));
-                            timed.push((
-                                voice_tick + dur_ticks,
-                                TrackEventKind::Midi {
-                                    channel,
-                                    message: MidiMessage::NoteOff {
-                                        key: u7::new(midi_key),
-                                        vel: u7::new(64),
+                                ));
+                            }
+                            if !has_start {
+                                timed.push((
+                                    voice_tick + dur_ticks,
+                                    TrackEventKind::Midi {
+                                        channel,
+                                        message: MidiMessage::NoteOff {
+                                            key: u7::new(midi_key),
+                                            vel: u7::new(64),
+                                        },
                                     },
-                                },
-                            ));
+                                ));
+                            }
 
                             voice_tick += dur_ticks;
                         }
