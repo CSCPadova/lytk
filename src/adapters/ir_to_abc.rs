@@ -147,10 +147,19 @@ fn walk(music: &Music, out: &mut Vec<Music>) {
         Music::Context { content, .. }
         | Music::Variable { content, .. }
         | Music::Tuplet { content, .. } => walk(content, out),
-        // First branch of a Simultaneous block (ABC is single-voice in v1).
+        // ABC is single-voice in v1: pick the branch with the most leaf events
+        // (the first non-empty branch), so an empty leading staff/part is skipped.
         Music::Simultaneous(items) => {
-            if let Some(first) = items.first() {
-                walk(first, out);
+            let best = items
+                .iter()
+                .map(|b| {
+                    let mut tmp = Vec::new();
+                    walk(b, &mut tmp);
+                    (tmp.len(), b)
+                })
+                .max_by_key(|(n, _)| *n);
+            if let Some((_, branch)) = best {
+                walk(branch, out);
             }
         }
         other => out.push(other.clone()),
@@ -349,6 +358,44 @@ mod tests {
         let abc = emit(&doc);
         // 1/16 = "/2"; 3/16 = "3/2"; rest 1/4 = "z2".
         assert!(abc.contains("C/2 C3/2 z2"), "body was: {abc}");
+    }
+
+    #[test]
+    fn test_empty_leading_staff_simultaneous() {
+        use crate::ir::music::ContextType;
+        // Mirror the lifted tree for the Music21-exported fixture:
+        // Simultaneous[ empty Staff, full Staff ].
+        let empty_staff =
+            Music::Sequential(vec![]).in_context(ContextType::Staff, Some("P1".to_string()));
+        let full_staff = Music::Sequential(vec![
+            Music::TimeSignature(TimeSignature {
+                beats: "2".to_string(),
+                beat_type: 2,
+                symbol: None,
+            }),
+            note(PitchStep::A, 4, Frac::new(1, 4)),
+            note(PitchStep::B, 4, Frac::new(1, 4)),
+        ])
+        .in_context(ContextType::Staff, None);
+        let doc = MusicDocument::new(Music::Simultaneous(vec![empty_staff, full_staff]));
+        let abc = emit(&doc);
+        assert!(abc.contains("M:2/2"), "meter missing, abc was:\n{abc}");
+        assert!(abc.contains("A2 B2"), "notes missing, abc was:\n{abc}");
+
+        // And the reverse order (full staff first) must also work.
+        let empty_staff2 =
+            Music::Sequential(vec![]).in_context(ContextType::Staff, Some("P1".to_string()));
+        let full_staff2 = Music::Sequential(vec![
+            note(PitchStep::A, 4, Frac::new(1, 4)),
+            note(PitchStep::B, 4, Frac::new(1, 4)),
+        ])
+        .in_context(ContextType::Staff, None);
+        let doc2 = MusicDocument::new(Music::Simultaneous(vec![full_staff2, empty_staff2]));
+        let abc2 = emit(&doc2);
+        assert!(
+            abc2.contains("A2 B2"),
+            "notes missing (rev), abc was:\n{abc2}"
+        );
     }
 
     #[test]

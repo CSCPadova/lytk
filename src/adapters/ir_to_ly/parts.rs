@@ -5,6 +5,7 @@ use num::rational::Ratio;
 use crate::ir::duration::Duration;
 use crate::ir::language::{pitch_name, PitchLanguage, PitchMode};
 use crate::ir::note::VoiceElement;
+use crate::ir::pitch::Pitch;
 use crate::ir::Part;
 
 use super::emit::emit_measures;
@@ -182,32 +183,34 @@ pub(super) fn emit_part_variable(
     lines: &mut Vec<String>,
 ) {
     let var = part_var_name(part);
-    let relative_prefix = if mode == PitchMode::Relative {
-        // Find the first pitch to use as the reference pitch
-        let first_pitch = part
-            .measures
+    // The `\relative` reference pitch — the part's first note. It must be both the
+    // printed `\relative REF` prefix AND the `prev` seed for emitting the first
+    // note's octave marks, so the two stay consistent (else the round-trip shifts
+    // an octave).
+    let relative_ref: Option<Pitch> = if mode == PitchMode::Relative {
+        part.measures
             .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
             .find_map(|e| match e {
-                VoiceElement::Note(n) => Some(&n.pitch),
+                VoiceElement::Note(n) => Some(n.pitch),
                 _ => None,
-            });
-        if let Some(p) = first_pitch {
-            let name =
-                pitch_name(p.step, p.alter, lang).unwrap_or_else(|| p.step.name().to_lowercase());
-            let oct = p.octave - 3;
-            let oct_marks = if oct > 0 {
-                "'".repeat(oct as usize)
-            } else if oct < 0 {
-                ",".repeat((-oct) as usize)
-            } else {
-                String::new()
-            };
-            format!("\\relative {name}{oct_marks} ")
+            })
+    } else {
+        None
+    };
+    let relative_prefix = if let Some(p) = &relative_ref {
+        let name =
+            pitch_name(p.step, p.alter, lang).unwrap_or_else(|| p.step.name().to_lowercase());
+        let oct = p.octave - 3;
+        let oct_marks = if oct > 0 {
+            "'".repeat(oct as usize)
+        } else if oct < 0 {
+            ",".repeat((-oct) as usize)
         } else {
             String::new()
-        }
+        };
+        format!("\\relative {name}{oct_marks} ")
     } else {
         String::new()
     };
@@ -228,7 +231,16 @@ pub(super) fn emit_part_variable(
                 // trim trailing newline -- push as a separate line
                 lines.push(midi_set.trim_end().to_string());
             }
-            emit_measures(part, lang, mode, Some(staff_num), partial_dur, 2, lines);
+            emit_measures(
+                part,
+                lang,
+                mode,
+                Some(staff_num),
+                partial_dur,
+                relative_ref.as_ref(),
+                2,
+                lines,
+            );
             lines.push("}".to_string());
             lines.push(String::new());
         }
@@ -237,7 +249,16 @@ pub(super) fn emit_part_variable(
         if !midi_set.is_empty() {
             lines.push(midi_set.trim_end().to_string());
         }
-        emit_measures(part, lang, mode, None, partial_dur, 2, lines);
+        emit_measures(
+            part,
+            lang,
+            mode,
+            None,
+            partial_dur,
+            relative_ref.as_ref(),
+            2,
+            lines,
+        );
         lines.push("}".to_string());
         lines.push(String::new());
     }

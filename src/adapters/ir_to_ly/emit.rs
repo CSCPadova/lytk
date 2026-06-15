@@ -47,17 +47,27 @@ fn duration_to_divisions(dur: &Duration, divisions: i64) -> i64 {
     (*frac.numer() / *frac.denom()).max(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_measures(
     part: &Part,
     lang: PitchLanguage,
     mode: PitchMode,
     staff_filter: Option<u8>,
     partial_dur: Option<&Duration>,
+    relative_ref: Option<&Pitch>,
     indent: usize,
     lines: &mut Vec<String>,
 ) {
     let pad = " ".repeat(indent);
     let mut emit_state = EmitState::default();
+    // In relative mode the body is wrapped in `\relative REF { … }` (REF is the
+    // part's first pitch, chosen in parts.rs). The first note's octave marks must
+    // be computed relative to REF, not absolute — otherwise `\relative a' { a' }`
+    // re-parses an octave high. Seeding prev_pitch with REF makes the first note
+    // (== REF for staff 1) emit with no spurious octave tick.
+    if mode == PitchMode::Relative {
+        emit_state.prev_pitch = relative_ref.cloned();
+    }
     let mut is_first_measure = true;
     let mut last_divisions: i64 = 1;
 
