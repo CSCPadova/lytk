@@ -349,6 +349,10 @@ fn emit_voice_elements(
 ) {
     let mut tokens: Vec<String> = Vec::new();
     let mut in_tuplet = false;
+    // Open duration-ratio tuplet (actual, normal) for elements that carry a
+    // tuplet ratio in their Duration but no explicit TupletDisplay — see the
+    // fallback below.
+    let mut dur_tuplet: Option<(u8, u8)> = None;
     let mut current_stem: String = String::new(); // track stem direction changes
 
     // Running forward position in divisions -- mirrors the value computed in
@@ -395,9 +399,39 @@ fn emit_voice_elements(
             }
         }
 
+        // Duration-ratio tuplet fallback. Elements carrying a tuplet ratio in
+        // their Duration but no explicit TupletDisplay (imported from MIDI, or
+        // from MusicXML `<time-modification>` with no `<tuplet>` bracket) still
+        // need a `\tuplet a/b { … }` wrapper — otherwise three triplet eighths
+        // print as three plain eighths and overfill the bar (invalid LilyPond).
+        // Group consecutive same-ratio elements into one wrapper. Skipped while
+        // an explicit TupletDisplay tuplet is open (it manages its own braces).
+        if !in_tuplet && element_tuplet(elem).is_none() {
+            let (actual, normal) = element_tuplet_ratio(elem);
+            let desired = if actual != normal && actual != 0 && normal != 0 {
+                Some((actual, normal))
+            } else {
+                None
+            };
+            if desired != dur_tuplet {
+                if dur_tuplet.is_some() {
+                    tokens.push("}".to_string());
+                }
+                if let Some((a, b)) = desired {
+                    tokens.push(format!("\\tuplet {a}/{b} {{"));
+                }
+                dur_tuplet = desired;
+            }
+        }
+
         // Check for tuplet start
         if let Some(td) = element_tuplet(elem) {
             if td.tuplet_type == StartStop::Start && !in_tuplet {
+                // An explicit tuplet supersedes any open duration-ratio wrapper.
+                if dur_tuplet.is_some() {
+                    tokens.push("}".to_string());
+                    dur_tuplet = None;
+                }
                 let (actual, normal) = element_tuplet_ratio(elem);
                 tokens.push(format!("\\tuplet {actual}/{normal} {{"));
                 in_tuplet = true;
@@ -537,8 +571,8 @@ fn emit_voice_elements(
         }
     }
 
-    // Safety: close any unclosed tuplet
-    if in_tuplet {
+    // Safety: close any unclosed tuplet (explicit or duration-ratio).
+    if in_tuplet || dur_tuplet.is_some() {
         tokens.push("}".to_string());
     }
 

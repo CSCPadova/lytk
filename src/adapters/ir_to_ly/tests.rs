@@ -79,6 +79,48 @@ fn test_emit_simple_score() {
 }
 
 #[test]
+fn test_duration_ratio_tuplet_emits_wrapper() {
+    // Three triplet eighths carrying only a Duration ratio (no TupletDisplay) —
+    // as produced by MIDI import / MusicXML <time-modification> without a
+    // <tuplet> bracket. They must be wrapped in `\tuplet 3/2 { … }`, not emitted
+    // as three plain eighths (which would overfill the bar → invalid LilyPond).
+    let mut e = Duration::eighth();
+    e.tuplet_actual = 3;
+    e.tuplet_normal = 2;
+    let notes = vec![
+        VoiceElement::Note(Box::new(make_note(PitchStep::C, 5, e.clone()))),
+        VoiceElement::Note(Box::new(make_note(PitchStep::D, 5, e.clone()))),
+        VoiceElement::Note(Box::new(make_note(PitchStep::E, 5, e))),
+    ];
+    let mut measure = Measure::new(1);
+    measure.attributes = Some(MeasureAttributes {
+        time: Some(TimeSignature::default()),
+        clefs: {
+            let mut m = HashMap::new();
+            m.insert(1, Clef::default());
+            m
+        },
+        ..Default::default()
+    });
+    measure.voices.push(Voice {
+        number: 1,
+        elements: notes,
+    });
+    let mut part = Part::new("P1");
+    part.measures.push(measure);
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    assert!(
+        ly.contains("\\tuplet 3/2 {"),
+        "duration-ratio triplet must emit a \\tuplet wrapper; got:\n{ly}"
+    );
+    // Exactly one wrapper opened and closed (braces balanced overall).
+    assert_eq!(ly.matches('{').count(), ly.matches('}').count());
+}
+
+#[test]
 fn test_emit_duration_formats() {
     assert_eq!(duration_to_ly(&Duration::whole()), "1");
     assert_eq!(duration_to_ly(&Duration::half()), "2");

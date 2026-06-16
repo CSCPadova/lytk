@@ -29,6 +29,17 @@ left open is closed at the end of the variable. New test
 `tests/repeat_braces_roundtrip.rs` asserts balanced braces and no content loss
 for fixtures 45a (backward-only) and 45g (forward-not-ended).
 
+**Phase 3c — Conversion fidelity: tuplet emission to LilyPond.** Elements that
+carry a tuplet ratio in their `Duration` but no explicit `TupletDisplay` —
+produced by MIDI import and by MusicXML `<time-modification>` without a
+`<tuplet>` bracket — emitted as plain notes, so three triplet eighths printed as
+three plain eighths and overfilled the bar (invalid LilyPond) on `midi→ly` and
+`xml→ly`. `ir_to_ly/emit.rs` now wraps consecutive same-ratio elements in
+`\tuplet a/b { … }` (grouped, closed on ratio change/end), skipped while an
+explicit `TupletDisplay` tuplet is open so the two never nest. The inner notes
+keep their base durations (already correct inside `\tuplet`). Test: a
+duration-ratio triplet emits a single balanced `\tuplet 3/2 { … }` wrapper.
+
 **Phase 1 — BLOCKER fixed: tie chains now collapse in the ML representations.**
 `to_note_array` (and therefore the event-sequence, piano-roll and metric paths
 that build on it) re-articulated every tied note as separate notes: a half tied
