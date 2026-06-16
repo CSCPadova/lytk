@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-06-16 (cont.) — 1.0.0 hardening (audit remediation)
+
+Working through the [1.0.0 hardening plan](roadmap.md) from the release-readiness
+audit. Release-critical spine first (blocker → robustness → fidelity).
+
+**Phase 1 — BLOCKER fixed: tie chains now collapse in the ML representations.**
+`to_note_array` (and therefore the event-sequence, piano-roll and metric paths
+that build on it) re-articulated every tied note as separate notes: a half tied
+to a quarter became two rows instead of one 3-beat note, and every note the
+MusicXML/MIDI importers split at a barline (`README`: "notes crossing a barline
+are split and tied") became a spurious re-onset — silently corrupting training
+data on the library's core path (`from_musicxml`/`from_midi` →
+`to_music_document` → `to_note_array`).
+- `src/representations/note_array.rs`: the tree walk now fuses tie chains via a
+  per-voice `open: HashMap<pitch, idx>` map. Fusion is *forward-looking* on
+  `TieStart` (extends the held note with the next same-pitch note) so it works
+  for all three tie conventions — the lift path's `TieStart`+`TieStop`
+  (MusicXML/MIDI), ABC's `TieStart`-only, and middle-of-chain `TieStop`+`TieStart`
+  — mirroring the chain-collapse rule already in `ir_to_midi`'s `tie_flags`. Ties
+  are scoped per simultaneous branch so they never cross voices.
+- Tests: half-tied-to-quarter → one 1440-step row; 3-segment chain → one row;
+  ABC forward-only tie collapses; un-tied repeated pitches stay separate
+  (anti-over-fusion); ties do not cross parallel voices. 519 lib tests green.
+
 ## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
 
 A behavior-preserving readability/simplification sweep across the package

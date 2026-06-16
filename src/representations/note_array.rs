@@ -11,6 +11,8 @@
 //! (onset/duration/pitch are exact; velocity is exact when it round-trips
 //! through the dynamics map, otherwise banded).
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::dynamics_velocity::{dynamic_to_velocity, velocity_to_dynamic};
@@ -102,24 +104,77 @@ fn apply_dynamics(vel: &mut u8, annotations: &[Annotation]) {
     }
 }
 
+/// Emit a note row, collapsing tie chains into a single sounding note.
+///
+/// Tie conventions differ across import paths — the lift path (MusicXML/MIDI)
+/// marks the first segment `TieStart` and the continuation `TieStop`, while ABC
+/// (and the LilyPond `~`) mark only `TieStart` on the first segment. So fusion
+/// is *forward-looking*: a pitch with an open tie is extended by the next
+/// same-pitch note regardless of whether that note carries `TieStop`. `open`
+/// maps a MIDI pitch to the index (in `out`) of the note currently absorbing
+/// its tie continuation, and is scoped per simultaneous voice so ties never
+/// cross voices. Mirrors the chain-collapsing rule in `ir_to_midi`'s
+/// `tie_flags`.
+fn emit_or_fuse(
+    pitch: i32,
+    dur: Frac,
+    velocity: u8,
+    time: Frac,
+    has_start: bool,
+    open: &mut HashMap<i32, usize>,
+    out: &mut Vec<FlatNote>,
+) {
+    if let Some(&idx) = open.get(&pitch) {
+        // Continuation of an open tie: extend the held note, don't re-articulate.
+        out[idx].duration += dur;
+        if !has_start {
+            open.remove(&pitch);
+        }
+    } else {
+        let idx = out.len();
+        out.push(FlatNote {
+            onset: time,
+            duration: dur,
+            pitch,
+            velocity,
+        });
+        if has_start {
+            open.insert(pitch, idx);
+        }
+    }
+}
+
+/// Whether an annotation list opens a tie.
+fn has_tie_start(annotations: &[Annotation]) -> bool {
+    annotations.contains(&Annotation::TieStart)
+}
+
 /// Recursively flatten `music` into absolute-timed notes. `time` is the start
 /// position (whole-note `Frac`); returns the end position. `vel` carries the
 /// running velocity across the walk.
-fn walk(music: &Music, time: Frac, vel: &mut u8, out: &mut Vec<FlatNote>) -> Frac {
+fn walk(
+    music: &Music,
+    time: Frac,
+    vel: &mut u8,
+    open: &mut HashMap<i32, usize>,
+    out: &mut Vec<FlatNote>,
+) -> Frac {
     match music {
         Music::Sequential(items) => {
             let mut t = time;
             for m in items {
-                t = walk(m, t, vel, out);
+                t = walk(m, t, vel, open, out);
             }
             t
         }
         Music::Simultaneous(items) => {
             // Each branch starts at the same time; the block ends at the
-            // latest branch end.
+            // latest branch end. Ties never cross voices, so each branch gets a
+            // fresh tie scope.
             let mut end = time;
             for m in items {
-                let e = walk(m, time, vel, out);
+                let mut branch_open: HashMap<i32, usize> = HashMap::new();
+                let e = walk(m, time, vel, &mut branch_open, out);
                 if e > end {
                     end = e;
                 }
@@ -128,10 +183,10 @@ fn walk(music: &Music, time: Frac, vel: &mut u8, out: &mut Vec<FlatNote>) -> Fra
         }
         Music::Context { content, .. }
         | Music::Variable { content, .. }
-        | Music::Tuplet { content, .. } => walk(content, time, vel, out),
+        | Music::Tuplet { content, .. } => walk(content, time, vel, open, out),
         Music::Grace { content, .. } => {
             // Grace notes do not consume time; they sound at `time`.
-            walk(content, time, vel, out);
+            walk(content, time, vel, open, out);
             time
         }
         Music::Note {
@@ -141,12 +196,15 @@ fn walk(music: &Music, time: Frac, vel: &mut u8, out: &mut Vec<FlatNote>) -> Fra
         } => {
             apply_dynamics(vel, annotations);
             let dur = duration.actual_duration();
-            out.push(FlatNote {
-                onset: time,
-                duration: dur,
-                pitch: pitch.midi_number(),
-                velocity: *vel,
-            });
+            emit_or_fuse(
+                pitch.midi_number(),
+                dur,
+                *vel,
+                time,
+                has_tie_start(annotations),
+                open,
+                out,
+            );
             time + dur
         }
         Music::Chord {
@@ -156,13 +214,18 @@ fn walk(music: &Music, time: Frac, vel: &mut u8, out: &mut Vec<FlatNote>) -> Fra
         } => {
             apply_dynamics(vel, annotations);
             let dur = duration.actual_duration();
-            for (p, _) in pitches {
-                out.push(FlatNote {
-                    onset: time,
-                    duration: dur,
-                    pitch: p.midi_number(),
-                    velocity: *vel,
-                });
+            // A chord-level tie ties every pitch; a pitch may also carry its own.
+            let chord_tie = has_tie_start(annotations);
+            for (p, pitch_anns) in pitches {
+                emit_or_fuse(
+                    p.midi_number(),
+                    dur,
+                    *vel,
+                    time,
+                    chord_tie || has_tie_start(pitch_anns),
+                    open,
+                    out,
+                );
             }
             time + dur
         }
@@ -174,7 +237,7 @@ fn walk(music: &Music, time: Frac, vel: &mut u8, out: &mut Vec<FlatNote>) -> Fra
             body,
             alternatives,
             ..
-        } => walk_repeat(*count, body, alternatives, time, vel, out),
+        } => walk_repeat(*count, body, alternatives, time, vel, open, out),
         // Attribute events / directions carry no notes and no time.
         _ => time,
     }
@@ -189,19 +252,20 @@ fn walk_repeat(
     alternatives: &[Music],
     time: Frac,
     vel: &mut u8,
+    open: &mut HashMap<i32, usize>,
     out: &mut Vec<FlatNote>,
 ) -> Frac {
     let reps = count.max(1) as usize;
     let mut t = time;
     if alternatives.is_empty() {
         for _ in 0..reps {
-            t = walk(body, t, vel, out);
+            t = walk(body, t, vel, open, out);
         }
     } else {
         for i in 0..reps {
-            t = walk(body, t, vel, out);
+            t = walk(body, t, vel, open, out);
             let alt = &alternatives[i.min(alternatives.len() - 1)];
-            t = walk(alt, t, vel, out);
+            t = walk(alt, t, vel, open, out);
         }
     }
     t
@@ -212,7 +276,14 @@ fn walk_repeat(
 pub fn to_note_array(doc: &MusicDocument, resolution: u16) -> NoteArray {
     let mut flat: Vec<FlatNote> = Vec::new();
     let mut vel = DEFAULT_VELOCITY;
-    walk(&doc.music, Frac::from_integer(0), &mut vel, &mut flat);
+    let mut open: HashMap<i32, usize> = HashMap::new();
+    walk(
+        &doc.music,
+        Frac::from_integer(0),
+        &mut vel,
+        &mut open,
+        &mut flat,
+    );
 
     let mut notes: Vec<NoteRow> = flat
         .iter()
@@ -502,5 +573,127 @@ mod tests {
         assert!(arr.notes.iter().all(|n| n.velocity == DEFAULT_VELOCITY));
         let arr2 = to_note_array(&from_note_array(&arr), 480);
         assert_eq!(arr, arr2);
+    }
+
+    /// Build a note carrying tie annotations (lift/ABC style).
+    fn tied(step: PitchStep, octave: i32, dur: Duration, anns: Vec<Annotation>) -> Music {
+        Music::Note {
+            pitch: Pitch::new(step, octave),
+            duration: dur,
+            annotations: anns,
+        }
+    }
+
+    #[test]
+    fn test_tie_collapses_to_single_note() {
+        // c'2~ c'4 — a half tied to a quarter is ONE sounding note (1440 steps),
+        // not two re-articulations. (lift convention: TieStart then TieStop.)
+        let m = Music::Sequential(vec![
+            tied(
+                PitchStep::C,
+                4,
+                Duration::half(),
+                vec![Annotation::TieStart],
+            ),
+            tied(
+                PitchStep::C,
+                4,
+                Duration::quarter(),
+                vec![Annotation::TieStop],
+            ),
+        ]);
+        let arr = to_note_array(&doc(m), 480);
+        assert_eq!(arr.notes.len(), 1, "tied notes must collapse to one row");
+        assert_eq!(arr.notes[0].onset, 0);
+        assert_eq!(arr.notes[0].duration, 960 + 480);
+        assert_eq!(arr.notes[0].pitch, 60);
+    }
+
+    #[test]
+    fn test_tie_chain_of_three_collapses() {
+        // c'4~ c'4~ c'4 — three-segment chain → one note of 1440 steps.
+        // (middle segment carries both TieStop and TieStart, as the lift path emits.)
+        let m = Music::Sequential(vec![
+            tied(
+                PitchStep::C,
+                4,
+                Duration::quarter(),
+                vec![Annotation::TieStart],
+            ),
+            tied(
+                PitchStep::C,
+                4,
+                Duration::quarter(),
+                vec![Annotation::TieStop, Annotation::TieStart],
+            ),
+            tied(
+                PitchStep::C,
+                4,
+                Duration::quarter(),
+                vec![Annotation::TieStop],
+            ),
+        ]);
+        let arr = to_note_array(&doc(m), 480);
+        assert_eq!(arr.notes.len(), 1);
+        assert_eq!(arr.notes[0].duration, 1440);
+    }
+
+    #[test]
+    fn test_tie_forward_only_collapses_abc_style() {
+        // ABC attaches only a TieStart to the first note; the continuation has
+        // no TieStop. Forward-looking fusion must still collapse them.
+        let m = Music::Sequential(vec![
+            tied(
+                PitchStep::G,
+                4,
+                Duration::quarter(),
+                vec![Annotation::TieStart],
+            ),
+            note(PitchStep::G, 4, Duration::quarter()),
+        ]);
+        let arr = to_note_array(&doc(m), 480);
+        assert_eq!(arr.notes.len(), 1);
+        assert_eq!(arr.notes[0].duration, 960);
+    }
+
+    #[test]
+    fn test_untied_repeated_pitch_stays_separate() {
+        // Regression: two un-tied same-pitch quarters must remain TWO notes
+        // (fusion must not over-collapse repeated pitches).
+        let m = Music::Sequential(vec![
+            note(PitchStep::C, 4, Duration::quarter()),
+            note(PitchStep::C, 4, Duration::quarter()),
+        ]);
+        let arr = to_note_array(&doc(m), 480);
+        assert_eq!(arr.notes.len(), 2);
+        assert_eq!(arr.notes[0].onset, 0);
+        assert_eq!(arr.notes[1].onset, 480);
+    }
+
+    #[test]
+    fn test_tie_does_not_cross_simultaneous_voices() {
+        // An open tie in one voice must not fuse a same-pitch note in a parallel
+        // voice. Voice 1: c'4~ c'4 (→ one 960 note). Voice 2: c'2 (independent).
+        let m = Music::Simultaneous(vec![
+            Music::Sequential(vec![
+                tied(
+                    PitchStep::C,
+                    4,
+                    Duration::quarter(),
+                    vec![Annotation::TieStart],
+                ),
+                tied(
+                    PitchStep::C,
+                    4,
+                    Duration::quarter(),
+                    vec![Annotation::TieStop],
+                ),
+            ]),
+            Music::Sequential(vec![note(PitchStep::C, 4, Duration::half())]),
+        ]);
+        let arr = to_note_array(&doc(m), 480);
+        // Voice 1 collapses to one 960 note; voice 2 is one 960 note → 2 total.
+        assert_eq!(arr.notes.len(), 2);
+        assert!(arr.notes.iter().all(|n| n.pitch == 60 && n.duration == 960));
     }
 }
