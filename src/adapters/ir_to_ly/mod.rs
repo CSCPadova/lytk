@@ -97,10 +97,23 @@ impl FromIrAdapter for IrToLyAdapter {
 
         // Part variables
         for part in score.parts() {
+            // Relative octave threading only round-trips reliably for a
+            // single-staff, single-voice part: a multi-staff (piano) part and a
+            // multi-voice `<< \\ >>` part each resolve octaves from references
+            // this linear emitter doesn't track the way LilyPond's `\relative`
+            // does, which previously octave-shifted whole staves/voices on
+            // re-parse. For those, emit unambiguous absolute octaves — matching
+            // the always-absolute Music/CLI emit path. Simple parts keep the
+            // tidy `\relative` form.
+            let part_mode = if mode == PitchMode::Relative && relative_is_reliable(part) {
+                PitchMode::Relative
+            } else {
+                PitchMode::Absolute
+            };
             emit_part_variable(
                 part,
                 lang,
-                mode,
+                part_mode,
                 score.metadata.partial_duration.as_ref(),
                 &mut lines,
             );
@@ -343,6 +356,19 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
     } else {
         lines.push(format!("{pad}\\new Staff \\{var}"));
     }
+}
+
+/// Whether `\relative` octave emission round-trips reliably for this part.
+///
+/// True only for a single-staff part whose every measure has at most one voice
+/// with content. Multi-staff (piano) and multi-voice `<< \\ >>` parts must be
+/// emitted with absolute octaves instead (see the call site).
+fn relative_is_reliable(part: &Part) -> bool {
+    part.staves <= 1
+        && part
+            .measures
+            .iter()
+            .all(|m| m.voices.iter().filter(|v| voice_has_content(v)).count() <= 1)
 }
 
 /// Returns true if the voice contains any real music content (notes, rests, chords),

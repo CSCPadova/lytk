@@ -5,6 +5,19 @@
 Working through the [1.0.0 hardening plan](roadmap.md) from the release-readiness
 audit. Release-critical spine first (blocker → robustness → fidelity).
 
+**Phase 3a — Conversion fidelity: relative multi-staff octave shift.** The
+Score-path LilyPond emitter (used by Python `to_lilypond(score)`) octave-shifted
+whole staves/voices on a relative multi-staff or multi-voice score, because a
+single linear `prev_pitch` can't reproduce LilyPond's `\relative` octave
+resolution across `<< \\ >>` voices and separate piano staves — pedal.ly drifted
+on ~1450 of 1479 notes on round-trip. Fix (`ir_to_ly/mod.rs`): emit a part with
+**absolute** octaves whenever relative threading is unreliable (multi-staff, or
+any multi-voice measure), matching the always-absolute Music/CLI emit path;
+simple single-staff single-voice parts keep the tidy `\relative` form. New
+tracked test `tests/relative_multistaff_roundtrip.rs` asserts pedal.ly and
+chopin_n.ly preserve their pitch multiset through a Score-path round-trip, and
+that a simple part still emits `\relative`. (Replaces a throwaway scratch test.)
+
 **Phase 1 — BLOCKER fixed: tie chains now collapse in the ML representations.**
 `to_note_array` (and therefore the event-sequence, piano-roll and metric paths
 that build on it) re-articulated every tied note as separate notes: a half tied
