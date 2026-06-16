@@ -284,7 +284,7 @@ fn run_batch(
 
     if jobs == 1 {
         for file in &files {
-            if let Err(e) = process_one_file(file, input_dir, output_dir, format) {
+            if let Err(e) = process_one_file_caught(file, input_dir, output_dir, format) {
                 eprintln!("{}: {e}", file.display());
                 failures.fetch_add(1, Ordering::Relaxed);
             }
@@ -295,7 +295,7 @@ fn run_batch(
 
         pool.install(|| {
             files.par_iter().for_each(|file| {
-                if let Err(e) = process_one_file(file, input_dir, output_dir, format) {
+                if let Err(e) = process_one_file_caught(file, input_dir, output_dir, format) {
                     eprintln!("{}: {e}", file.display());
                     failures.fetch_add(1, Ordering::Relaxed);
                 }
@@ -311,6 +311,24 @@ fn run_batch(
         anyhow::bail!("{failed} of {} file(s) failed to convert", files.len());
     }
     Ok(())
+}
+
+/// Run [`process_one_file`], converting a panic into an error so that a single
+/// pathological file fails only itself instead of unwinding out of the rayon
+/// worker and aborting the entire batch. The underlying panics are also fixed at
+/// the source (Phase 2 robustness work); this is defense-in-depth.
+fn process_one_file_caught(
+    file: &Path,
+    input_dir: &Path,
+    output_dir: &Path,
+    format: Option<OutputFormat>,
+) -> anyhow::Result<()> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        process_one_file(file, input_dir, output_dir, format)
+    })) {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("panicked while processing file"),
+    }
 }
 
 fn process_one_file(

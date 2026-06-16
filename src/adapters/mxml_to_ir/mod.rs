@@ -43,18 +43,39 @@ impl Default for MxmlToIrAdapter {
     }
 }
 
+/// Run a `musicxml`-crate read, converting a panic into a normal error.
+///
+/// The vendored `musicxml` 1.1.2 ZIP reader trusts attacker-controlled offsets
+/// in an `.mxl` central directory and can panic (an out-of-bounds slice) on a
+/// crafted archive. Without this firewall that panic crosses the PyO3 boundary
+/// as an opaque `PanicException` (and prints a backtrace); here it becomes a
+/// clean `AdapterError::Parse` the caller can handle. (The underlying upstream
+/// out-of-bounds read should still be fixed upstream — see SECURITY / the audit;
+/// this also does not bound a decompression *bomb*, which OOMs rather than
+/// panicking.)
+fn catch_read<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => Err(AdapterError::Parse(
+            "malformed MusicXML/MXL: the reader panicked (rejected)".into(),
+        )),
+    }
+}
+
 impl ToIrAdapter for MxmlToIrAdapter {
     fn convert_file(&self, path: &Path) -> Result<Score> {
         let path_str = path
             .to_str()
             .ok_or_else(|| AdapterError::Parse("Invalid path".into()))?;
-        let mxml_score = musicxml::read_score_partwise(path_str).map_err(AdapterError::Parse)?;
+        let mxml_score =
+            catch_read(|| musicxml::read_score_partwise(path_str).map_err(AdapterError::Parse))?;
         convert_mxml_score(&mxml_score)
     }
 
     fn convert_str(&self, text: &str) -> Result<Score> {
         let data = text.as_bytes().to_vec();
-        let mxml_score = musicxml::read_score_data_partwise(data).map_err(AdapterError::Parse)?;
+        let mxml_score =
+            catch_read(|| musicxml::read_score_data_partwise(data).map_err(AdapterError::Parse))?;
         convert_mxml_score(&mxml_score)
     }
 }

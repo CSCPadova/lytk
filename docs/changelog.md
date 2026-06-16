@@ -57,6 +57,22 @@ the post-parse lift inherits this guard, and `from_json` is capped by
 serde_json's built-in recursion limit. Test: 8000-deep braces → clean error
 (no overflow); normal nesting unaffected. 527 lib tests green.
 
+**Phase 2c — Panic firewall + overflow checks + batch isolation.**
+- `mxml_to_ir`: the vendored `musicxml` 1.1.2 ZIP reader can panic (an
+  out-of-bounds slice) on a crafted `.mxl` central directory; both read paths are
+  now wrapped in `catch_unwind` so that panic becomes an `AdapterError::Parse`
+  instead of crossing the PyO3 boundary as an opaque `PanicException`.
+- `Cargo.toml`: `overflow-checks = true` for `[profile.release]` — a missed
+  integer overflow on attacker-controlled durations/ticks now panics (caught at
+  the FFI boundary) rather than silently wrapping into corrupt output in wheels.
+- `main.rs`: batch conversion wraps each file in `catch_unwind`
+  (`process_one_file_caught`) so one pathological file fails only itself instead
+  of unwinding out of the rayon worker and aborting the whole run.
+- **Known residual (follow-up):** an `.mxl` decompression *bomb* OOMs inside the
+  third-party `musicxml` crate's zip reader (no decompressed-size cap); a real fix
+  needs a bounded unzip pass (a dependency/architecture decision) or an upstream
+  fix. Tracked in the audit; not addressed here.
+
 ## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
 
 A behavior-preserving readability/simplification sweep across the package

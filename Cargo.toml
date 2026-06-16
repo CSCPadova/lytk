@@ -25,6 +25,14 @@ path = "src/main.rs"
 [features]
 default = []
 
+# Keep integer-overflow checks on in release/wheel builds as defense-in-depth:
+# a missed overflow on attacker-controlled durations/ticks then panics (caught at
+# the FFI boundary) rather than silently wrapping into corrupt output. The hot
+# paths already use checked/saturating arithmetic; the perf cost is negligible
+# for this workload.
+[profile.release]
+overflow-checks = true
+
 [build-dependencies]
 cc = "1"
 
