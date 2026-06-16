@@ -40,6 +40,16 @@ explicit `TupletDisplay` tuplet is open so the two never nest. The inner notes
 keep their base durations (already correct inside `\tuplet`). Test: a
 duration-ratio triplet emits a single balanced `\tuplet 3/2 { … }` wrapper.
 
+**Phase 3d — Conversion fidelity: grace-note MIDI timing.** `ir_to_midi` treated
+a grace note like a metrical note, advancing the voice clock by its notated
+duration — so every later onset shifted, the bar overflowed, and a round trip
+split/duplicated the displaced notes (`ly→midi`). `build_part_track` now emits a
+short grace note at the current tick **without advancing** it (mirroring the
+note-array, where grace notes consume no time). Test (emit-level): with a grace
+eighth before four quarters, D4 stays at tick 0 and G4 at three quarters. (The
+re-import side can't recover grace-ness from MIDI — inherent and out of scope.)
+This completes Phase 3 conversion fidelity (H6–H9).
+
 **Phase 1 — BLOCKER fixed: tie chains now collapse in the ML representations.**
 `to_note_array` (and therefore the event-sequence, piano-roll and metric paths
 that build on it) re-articulated every tied note as separate notes: a half tied

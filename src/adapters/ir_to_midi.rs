@@ -513,6 +513,40 @@ impl IrToMidiAdapter {
                                 cur_vel = dynamic_to_velocity(&d.sign);
                             }
                             let vel = u7::new(cur_vel);
+
+                            if note.is_grace {
+                                // Grace notes ornament the following note and must NOT
+                                // consume metrical time: advancing voice_tick by their
+                                // notated duration shifted every later onset, overflowed
+                                // the bar, and on a round trip split/duplicated the
+                                // displaced notes. Emit a short grace at the current tick
+                                // and leave voice_tick untouched — mirroring the
+                                // note-array representation (grace = zero duration).
+                                let grace_len = dur_ticks.min(self.divisions as u64 / 2).max(1);
+                                timed.push((
+                                    voice_tick,
+                                    TrackEventKind::Midi {
+                                        channel,
+                                        message: MidiMessage::NoteOn {
+                                            key: u7::new(midi_key),
+                                            vel,
+                                        },
+                                    },
+                                ));
+                                timed.push((
+                                    voice_tick + grace_len,
+                                    TrackEventKind::Midi {
+                                        channel,
+                                        message: MidiMessage::NoteOff {
+                                            key: u7::new(midi_key),
+                                            vel: u7::new(64),
+                                        },
+                                    },
+                                ));
+                                // No voice_tick advance.
+                                continue;
+                            }
+
                             // A tie chain is ONE sounding note: emit NoteOn only when
                             // this note begins it (not a continuation, i.e. no Stop) and
                             // NoteOff only when it ends it (not tied onward, i.e. no
@@ -827,6 +861,69 @@ mod tests {
             }
         });
         assert!(has_e4, "Expected E4 note in roundtrip");
+    }
+
+    #[test]
+    fn test_grace_note_does_not_steal_metrical_time() {
+        // One 4/4 bar: grace eighth (C5) then D4 E4 F4 G4 quarters. The grace
+        // must not push the metrical notes later — D4 stays at tick 0 and G4 at
+        // three quarters. (Before the fix the grace consumed a quarter, shifting
+        // every later note and overflowing the bar.)
+        let mut grace = Note::new(Pitch::new(PitchStep::C, 5), Duration::eighth());
+        grace.is_grace = true;
+        let q =
+            |s, o| VoiceElement::Note(Box::new(Note::new(Pitch::new(s, o), Duration::quarter())));
+        let mut voice = Voice::new(1);
+        voice.elements.push(VoiceElement::Note(Box::new(grace)));
+        voice.elements.push(q(PitchStep::D, 4));
+        voice.elements.push(q(PitchStep::E, 4));
+        voice.elements.push(q(PitchStep::F, 4));
+        voice.elements.push(q(PitchStep::G, 4));
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            time: Some(TimeSignature::default()),
+            ..MeasureAttributes::default()
+        });
+        measure.voices.push(voice);
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let score = Score {
+            metadata: ScoreMetadata::default(),
+            page_layout: None,
+            children: vec![ScoreChild::Part(part)],
+        };
+
+        let adapter = IrToMidiAdapter::new(); // 384 ticks/quarter
+        let quarter = 384u32;
+        let bytes = adapter.convert_bytes(&score).unwrap();
+        let smf = Smf::parse(&bytes).unwrap();
+
+        // Collect (pitch, absolute tick) for every real note-on.
+        let mut onsets: Vec<(u8, u32)> = Vec::new();
+        for track in &smf.tracks {
+            let mut t = 0u32;
+            for ev in track {
+                t += ev.delta.as_int();
+                if let TrackEventKind::Midi {
+                    message: MidiMessage::NoteOn { key, vel },
+                    ..
+                } = ev.kind
+                {
+                    if vel.as_int() > 0 {
+                        onsets.push((key.as_int(), t));
+                    }
+                }
+            }
+        }
+        let onset_of = |k: u8| onsets.iter().find(|(p, _)| *p == k).map(|(_, t)| *t);
+        // D4=62 (right after the grace) must start at tick 0.
+        assert_eq!(onset_of(62), Some(0), "grace stole time: D4 not at tick 0");
+        // G4=67 must start at 3 quarters (one bar holds all four quarters).
+        assert_eq!(
+            onset_of(67),
+            Some(3 * quarter),
+            "bar overflowed past the grace"
+        );
     }
 
     #[test]
