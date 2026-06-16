@@ -381,123 +381,85 @@ fn make_key_sig(fifths: i8, minor: bool) -> KeySignature {
     }
 }
 
-fn build_part(
-    notes: &[&RawNote],
-    meta: &TrackMeta,
-    divisions: u32,
-    part_id: &str,
-    name: &str,
-    channel: u8,
-    program: u8,
-) -> Part {
-    let mut part = Part::new(part_id);
-    part.name = name.to_string();
-    part.midi_channel = channel;
-    part.midi_program = program;
+/// Partition a part's notes into independent monophonic voices.
+///
+/// MIDI has no voice concept, so a polyphonic part arrives as overlapping notes
+/// on one channel. We reconstruct voices by greedy interval colouring: notes
+/// sharing an exact (start, end) are first grouped into a chord-event (so a chord
+/// stays in one voice), then each event is placed in the first voice whose last
+/// note has already ended. A monophonic part collapses to a single voice
+/// (identical to the previous single-voice behaviour); polyphony is separated so
+/// overlapping notes keep their true onsets and each voice fills its bar.
+fn assign_voices(notes: &[&RawNote]) -> Vec<Vec<WorkNote>> {
+    // Order by (start, end, key) and coalesce identical (start, end) into chords.
+    let mut order: Vec<usize> = (0..notes.len()).collect();
+    order.sort_by_key(|&i| (notes[i].start_tick, notes[i].end_tick, notes[i].midi_key));
 
-    // Determine measure boundaries from time signature events.
-    let time_sigs = resolve_time_signatures(meta, divisions);
-    let key_sigs = &meta.key_sig_changes;
-
-    // Find the last tick among all notes.
-    let last_tick = notes.iter().map(|n| n.end_tick).max().unwrap_or(0);
-
-    // Build measure boundaries.
-    let measure_boundaries = compute_measure_boundaries(&time_sigs, divisions, last_tick);
-
-    // Build a sorted list of notes by start tick.
-    let mut sorted_notes: Vec<WorkNote> = notes
-        .iter()
-        .map(|n| WorkNote {
+    let mut events: Vec<(u64, u64, Vec<WorkNote>)> = Vec::new();
+    for &i in &order {
+        let n = notes[i];
+        let wn = WorkNote {
             start_tick: n.start_tick,
             end_tick: n.end_tick,
             midi_key: n.midi_key,
             velocity: n.velocity,
             tied_from_prev: false,
-        })
-        .collect();
+        };
+        match events.last_mut() {
+            Some((s, e, group)) if *s == n.start_tick && *e == n.end_tick => group.push(wn),
+            _ => events.push((n.start_tick, n.end_tick, vec![wn])),
+        }
+    }
+
+    let mut voices: Vec<Vec<WorkNote>> = Vec::new();
+    let mut last_end: Vec<u64> = Vec::new();
+    for (start, end, group) in events {
+        // First voice that is free at `start` (its previous note has ended).
+        let slot = last_end.iter().position(|&e| e <= start);
+        let vi = slot.unwrap_or_else(|| {
+            voices.push(Vec::new());
+            last_end.push(0);
+            voices.len() - 1
+        });
+        voices[vi].extend(group);
+        last_end[vi] = end;
+    }
+    voices
+}
+
+/// Build the per-measure [`VoiceElement`] streams for one monophonic voice:
+/// returns one `Vec<VoiceElement>` per measure boundary (empty where the voice is
+/// silent). Notes crossing a barline are split and tied; gaps become rests.
+fn build_voice_elements(
+    mut sorted_notes: Vec<WorkNote>,
+    boundaries: &[(u64, u64)],
+    divisions: u32,
+    use_sharps: bool,
+) -> Vec<Vec<VoiceElement>> {
     sorted_notes.sort_by_key(|n| (n.start_tick, n.midi_key));
-
-    // Determine key context (for sharp/flat note naming)
-    let initial_key_fifths = key_sigs.first().map(|(_, f, _)| *f).unwrap_or(0);
-    let use_sharps = initial_key_fifths >= 0;
-
-    // Assign notes to measures and build IR.
-    // Running dynamic: attach a mark only when the velocity band changes, so a
-    // crescendo of equal-velocity notes does not spam a dynamic on every note.
     let mut prev_dyn: Option<&'static str> = None;
     let mut note_idx = 0;
-    for (m_idx, (m_start, m_end)) in measure_boundaries.iter().enumerate() {
-        let mut measure = Measure::new((m_idx + 1) as u32);
+    let mut per_measure: Vec<Vec<VoiceElement>> = Vec::with_capacity(boundaries.len());
 
-        // Set attributes on first measure or when time/key changes.
-        if m_idx == 0 {
-            let mut attrs = MeasureAttributes {
-                divisions: divisions as u16,
-                ..Default::default()
-            };
-            if let Some(&(_, num, den_pow)) = time_sigs.first() {
-                attrs.time = Some(make_time_sig(num, den_pow));
-            } else {
-                attrs.time = Some(TimeSignature::default());
-            }
-            if let Some(&(_, fifths, minor)) = key_sigs.first() {
-                attrs.key = Some(make_key_sig(fifths, minor));
-            }
-            attrs.clefs.insert(1, Clef::default());
-            measure.attributes = Some(attrs);
-        } else {
-            // Check for time/key changes at this measure boundary.
-            let mut attrs: Option<MeasureAttributes> = None;
-            for &(tick, num, den_pow) in &time_sigs {
-                if tick == *m_start {
-                    let a = attrs.get_or_insert_with(|| MeasureAttributes {
-                        divisions: divisions as u16,
-                        ..Default::default()
-                    });
-                    a.time = Some(make_time_sig(num, den_pow));
-                }
-            }
-            for &(tick, fifths, minor) in key_sigs {
-                if tick == *m_start {
-                    let a = attrs.get_or_insert_with(|| MeasureAttributes {
-                        divisions: divisions as u16,
-                        ..Default::default()
-                    });
-                    a.key = Some(make_key_sig(fifths, minor));
-                }
-            }
-            measure.attributes = attrs;
-        }
-
-        // Add tempo directions.
-        for &(tick, uspq) in &meta.tempo_changes {
-            if tick >= *m_start && tick < *m_end {
-                let bpm = 60_000_000.0 / uspq as f64;
-                measure.directions.push(Direction {
-                    tempo: Some(TempoDirection {
-                        text: None,
-                        beat_unit: Some("quarter".to_string()),
-                        per_minute: Some(bpm),
-                        dots: 0,
-                        placement: Placement::Above,
-                    }),
-                    ..Direction::default()
-                });
-            }
-        }
-
-        // Collect notes in this measure.
+    for (m_start, m_end) in boundaries {
         let mut voice_elements: Vec<VoiceElement> = Vec::new();
-        let mut cursor = *m_start; // current time position in ticks
+        let mut cursor = *m_start;
+        // Quantized budget for this monophonic voice's bar: keep the sum of
+        // emitted quantized durations within the measure so rounding can't
+        // over-fill it (which de-syncs the midi round-trip). `cursor` tracks real
+        // ticks; `q_used` the quantized total.
+        let m_total = m_end.saturating_sub(*m_start);
+        let mut q_used: u64 = 0;
 
         while note_idx < sorted_notes.len() && sorted_notes[note_idx].start_tick < *m_end {
             let n = sorted_notes[note_idx];
 
-            // Insert rest for any gap before this note.
+            // Insert rest for any gap before this note (capped to the bar budget).
             if n.start_tick > cursor {
                 let gap_ticks = n.start_tick - cursor;
-                if let Some(rest_dur) = quantize_ticks(gap_ticks, divisions) {
+                let cap = m_total.saturating_sub(q_used);
+                if let Some(rest_dur) = quantize_capped(gap_ticks, cap, divisions) {
+                    q_used += duration_ticks(&rest_dur, divisions);
                     voice_elements.push(VoiceElement::Rest(Rest::new(rest_dur)));
                 }
             }
@@ -517,7 +479,9 @@ fn build_part(
             let note_end = n.end_tick.min(*m_end);
             let note_ticks = note_end.saturating_sub(n.start_tick);
 
-            if let Some(dur) = quantize_ticks(note_ticks, divisions) {
+            let cap = m_total.saturating_sub(q_used);
+            if let Some(dur) = quantize_capped(note_ticks, cap, divisions) {
+                q_used += duration_ticks(&dur, divisions);
                 let band = velocity_to_dynamic(n.velocity);
                 let mark = if prev_dyn != Some(band) {
                     prev_dyn = Some(band);
@@ -579,18 +543,131 @@ fn build_part(
             }
         }
 
-        // Fill remaining measure time with rest.
-        if cursor < *m_end {
-            let gap = *m_end - cursor;
-            if let Some(rest_dur) = quantize_ticks(gap, divisions) {
-                voice_elements.push(VoiceElement::Rest(Rest::new(rest_dur)));
+        // Fill the remaining bar budget with a rest, decided in QUANTIZED ticks
+        // so it's identical whether built from raw MIDI ticks (first import) or
+        // re-exported quantized ticks (round-trip). A sub-grid remainder that
+        // can't be represented as a duration ≤ the gap is dropped consistently,
+        // keeping `midi → IR → midi` stable.
+        let remaining = m_total.saturating_sub(q_used);
+        if remaining > 0 {
+            if let Some(rest_dur) = quantize_capped(remaining, remaining, divisions) {
+                if duration_ticks(&rest_dur, divisions) <= remaining {
+                    voice_elements.push(VoiceElement::Rest(Rest::new(rest_dur)));
+                }
             }
         }
 
-        if !voice_elements.is_empty() {
-            let mut voice = Voice::new(1);
-            voice.elements = voice_elements;
-            measure.voices.push(voice);
+        per_measure.push(voice_elements);
+    }
+
+    per_measure
+}
+
+fn build_part(
+    notes: &[&RawNote],
+    meta: &TrackMeta,
+    divisions: u32,
+    part_id: &str,
+    name: &str,
+    channel: u8,
+    program: u8,
+) -> Part {
+    let mut part = Part::new(part_id);
+    part.name = name.to_string();
+    part.midi_channel = channel;
+    part.midi_program = program;
+
+    // Determine measure boundaries from time signature events.
+    let time_sigs = resolve_time_signatures(meta, divisions);
+    let key_sigs = &meta.key_sig_changes;
+
+    // Find the last tick among all notes.
+    let last_tick = notes.iter().map(|n| n.end_tick).max().unwrap_or(0);
+
+    // Build measure boundaries.
+    let measure_boundaries = compute_measure_boundaries(&time_sigs, divisions, last_tick);
+
+    // Determine key context (for sharp/flat note naming)
+    let initial_key_fifths = key_sigs.first().map(|(_, f, _)| *f).unwrap_or(0);
+    let use_sharps = initial_key_fifths >= 0;
+
+    // Reconstruct independent voices from overlapping notes, then build each
+    // voice's per-measure element stream. A monophonic part yields a single
+    // voice (identical to the previous behaviour); polyphony is separated so
+    // overlapping notes keep their true onsets and each voice fills its bar.
+    let mut per_voice: Vec<Vec<Vec<VoiceElement>>> = assign_voices(notes)
+        .into_iter()
+        .map(|g| build_voice_elements(g, &measure_boundaries, divisions, use_sharps))
+        .collect();
+
+    for (m_idx, (m_start, m_end)) in measure_boundaries.iter().enumerate() {
+        let mut measure = Measure::new((m_idx + 1) as u32);
+
+        // Set attributes on first measure or when time/key changes.
+        if m_idx == 0 {
+            let mut attrs = MeasureAttributes {
+                divisions: divisions as u16,
+                ..Default::default()
+            };
+            if let Some(&(_, num, den_pow)) = time_sigs.first() {
+                attrs.time = Some(make_time_sig(num, den_pow));
+            } else {
+                attrs.time = Some(TimeSignature::default());
+            }
+            if let Some(&(_, fifths, minor)) = key_sigs.first() {
+                attrs.key = Some(make_key_sig(fifths, minor));
+            }
+            attrs.clefs.insert(1, Clef::default());
+            measure.attributes = Some(attrs);
+        } else {
+            // Check for time/key changes at this measure boundary.
+            let mut attrs: Option<MeasureAttributes> = None;
+            for &(tick, num, den_pow) in &time_sigs {
+                if tick == *m_start {
+                    let a = attrs.get_or_insert_with(|| MeasureAttributes {
+                        divisions: divisions as u16,
+                        ..Default::default()
+                    });
+                    a.time = Some(make_time_sig(num, den_pow));
+                }
+            }
+            for &(tick, fifths, minor) in key_sigs {
+                if tick == *m_start {
+                    let a = attrs.get_or_insert_with(|| MeasureAttributes {
+                        divisions: divisions as u16,
+                        ..Default::default()
+                    });
+                    a.key = Some(make_key_sig(fifths, minor));
+                }
+            }
+            measure.attributes = attrs;
+        }
+
+        // Add tempo directions.
+        for &(tick, uspq) in &meta.tempo_changes {
+            if tick >= *m_start && tick < *m_end {
+                let bpm = 60_000_000.0 / uspq as f64;
+                measure.directions.push(Direction {
+                    tempo: Some(TempoDirection {
+                        text: None,
+                        beat_unit: Some("quarter".to_string()),
+                        per_minute: Some(bpm),
+                        dots: 0,
+                        placement: Placement::Above,
+                    }),
+                    ..Direction::default()
+                });
+            }
+        }
+
+        // Attach each reconstructed voice's elements for this measure.
+        for (vi, voice_measures) in per_voice.iter_mut().enumerate() {
+            let elems = std::mem::take(&mut voice_measures[m_idx]);
+            if !elems.is_empty() {
+                let mut voice = Voice::new((vi + 1) as u8);
+                voice.elements = elems;
+                measure.voices.push(voice);
+            }
         }
 
         part.measures.push(measure);
@@ -700,27 +777,39 @@ fn candidate_ticks(
     *ticks_frac.numer() / *ticks_frac.denom()
 }
 
-/// Quantise a tick duration to the nearest standard musical duration.
-/// Returns `None` for zero-length durations.
-fn quantize_ticks(ticks: u64, divisions: u32) -> Option<Duration> {
-    if ticks == 0 {
+/// Tick value of a quantised [`Duration`] at `divisions` (matches [`candidate_ticks`]).
+fn duration_ticks(dur: &Duration, divisions: u32) -> u64 {
+    let t = dur.actual_duration() * Frac::from_integer(4 * divisions as i64);
+    (*t.numer() / *t.denom()).max(0) as u64
+}
+
+/// Quantise `ticks` to the nearest standard musical duration, but never longer
+/// than `cap_ticks`. Within a monophonic
+/// voice this keeps the running quantized duration from over-filling the bar:
+/// independent per-note rounding otherwise sums to MORE than the measure, so on
+/// export the overflow crosses the barline and is clamped shorter on re-import —
+/// breaking `midi → IR → midi` stability. (Safe per-voice because voices are
+/// monophonic; overlapping notes live in separate voices.)
+fn quantize_capped(ticks: u64, cap_ticks: u64, divisions: u32) -> Option<Duration> {
+    if cap_ticks == 0 {
         return None;
     }
-
-    let ticks_i64 = ticks as i64;
-    let mut best_diff = i64::MAX;
-    let mut best_idx = 0;
-
+    let target = ticks.min(cap_ticks) as i64;
+    let cap = cap_ticks as i64;
+    let mut best_fit: Option<(i64, usize)> = None; // ct <= cap, nearest target
+    let mut nearest: Option<(i64, usize)> = None; // nearest overall (fallback)
     for (i, &(bn, bd, dots, ta, tn)) in CANDIDATES.iter().enumerate() {
         let ct = candidate_ticks(bn, bd, dots, ta, tn, divisions);
-        let diff = (ct - ticks_i64).abs();
-        if diff < best_diff {
-            best_diff = diff;
-            best_idx = i;
+        let diff = (ct - target).abs();
+        if nearest.is_none_or(|(d, _)| diff < d) {
+            nearest = Some((diff, i));
+        }
+        if ct <= cap && best_fit.is_none_or(|(d, _)| diff < d) {
+            best_fit = Some((diff, i));
         }
     }
-
-    let &(bn, bd, dots, ta, tn) = &CANDIDATES[best_idx];
+    let idx = best_fit.or(nearest).map(|(_, i)| i)?;
+    let &(bn, bd, dots, ta, tn) = &CANDIDATES[idx];
     Some(Duration {
         base: Frac::new(bn, bd),
         dots,
@@ -786,6 +875,53 @@ fn midi_key_to_pitch(midi_key: u8, use_sharps: bool) -> Pitch {
 mod tests {
     use super::*;
     use crate::ir::articulation::StartStop;
+
+    #[test]
+    fn test_assign_voices_splits_overlap_keeps_chords() {
+        let raw = |start, end, key| RawNote {
+            start_tick: start,
+            end_tick: end,
+            midi_key: key,
+            velocity: 80,
+            channel: 0,
+        };
+        // Two notes overlapping in time (same onset, different end) → two voices.
+        let (a, b) = (raw(0, 480, 60), raw(0, 960, 64));
+        assert_eq!(assign_voices(&[&a, &b]).len(), 2);
+        // A chord (identical onset AND end) stays in one voice with both notes.
+        let (c, d) = (raw(0, 480, 60), raw(0, 480, 64));
+        let chord = assign_voices(&[&c, &d]);
+        assert_eq!(chord.len(), 1);
+        assert_eq!(chord[0].len(), 2);
+        // Sequential non-overlapping notes stay in one voice.
+        let (e, f) = (raw(0, 480, 60), raw(480, 960, 62));
+        assert_eq!(assign_voices(&[&e, &f]).len(), 1);
+    }
+
+    #[test]
+    fn test_midi_roundtrip_note_array_stable() {
+        // A multi-part MIDI must round-trip with an identical sounding note-array
+        // (onset, duration, pitch) — the multi-voice reconstruction + per-voice
+        // quantized budget keep `midi → IR → midi → IR` stable for this fixture.
+        let bytes = std::fs::read("tests/fixtures/midi/example2_0.midi").unwrap();
+        let before = MidiToIrAdapter::new().convert_bytes(&bytes).unwrap();
+        let out = crate::adapters::ir_to_midi::IrToMidiAdapter::new()
+            .convert_bytes(&before)
+            .unwrap();
+        let after = MidiToIrAdapter::new().convert_bytes(&out).unwrap();
+        let na = |s: &Score| {
+            let arr =
+                crate::representations::to_note_array(&crate::ir::lift::lift_to_music(s), 480);
+            let mut v: Vec<_> = arr
+                .notes
+                .iter()
+                .map(|n| (n.onset, n.duration, n.pitch))
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(na(&before), na(&after));
+    }
 
     #[test]
     fn test_compute_measure_boundaries_zero_numerator_terminates() {
@@ -944,7 +1080,7 @@ mod tests {
     #[test]
     fn test_quantize_quarter() {
         // At divisions=480, quarter = 480 ticks
-        let d = quantize_ticks(480, 480).unwrap();
+        let d = quantize_capped(480, 480, 480).unwrap();
         assert_eq!(d.base, Frac::new(1, 4));
         assert_eq!(d.dots, 0);
     }
@@ -952,7 +1088,7 @@ mod tests {
     #[test]
     fn test_quantize_dotted_quarter() {
         // At divisions=480, dotted quarter = 720 ticks
-        let d = quantize_ticks(720, 480).unwrap();
+        let d = quantize_capped(720, 720, 480).unwrap();
         assert_eq!(d.base, Frac::new(1, 4));
         assert_eq!(d.dots, 1);
     }
@@ -960,7 +1096,7 @@ mod tests {
     #[test]
     fn test_quantize_triplet_quarter() {
         // At divisions=480, triplet quarter = 320 ticks
-        let d = quantize_ticks(320, 480).unwrap();
+        let d = quantize_capped(320, 320, 480).unwrap();
         assert_eq!(d.base, Frac::new(1, 4));
         assert_eq!(d.tuplet_actual, 3);
         assert_eq!(d.tuplet_normal, 2);
@@ -968,14 +1104,14 @@ mod tests {
 
     #[test]
     fn test_quantize_eighth() {
-        let d = quantize_ticks(240, 480).unwrap();
+        let d = quantize_capped(240, 240, 480).unwrap();
         assert_eq!(d.base, Frac::new(1, 8));
         assert_eq!(d.dots, 0);
     }
 
     #[test]
     fn test_quantize_whole() {
-        let d = quantize_ticks(1920, 480).unwrap();
+        let d = quantize_capped(1920, 1920, 480).unwrap();
         assert_eq!(d.base, Frac::new(1, 1));
         assert_eq!(d.dots, 0);
     }

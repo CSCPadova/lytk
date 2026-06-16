@@ -145,6 +145,27 @@ fidelity); ABC 3/3/3; MIDI measured & reported but not yet gated above 0
 (midi→midi re-imports with different bar-splitting, so note counts shift — the
 sound is preserved, the notation isn't note-for-note stable; a known limitation).
 
+**MIDI → IR → MIDI round-trip: multi-voice reconstruction.** `midi_to_ir`
+previously flattened a part's overlapping notes into a single voice (lossy and
+non-idempotent for polyphony), and independent per-note quantization over-filled
+bars (durations summed past the time signature), so the round-trip drifted. Now:
+- `assign_voices` reconstructs independent **monophonic voices** by greedy
+  interval colouring (chords — identical onset+offset — stay in one voice), so
+  overlapping notes keep their true onsets and each voice fills its own bar. A
+  monophonic part still collapses to one voice (no behavior change).
+- the extracted `build_voice_elements` caps each note/rest to the bar's remaining
+  **quantized budget** (`quantize_capped`) so rounding can't over-fill a bar; the
+  trailing rest is decided in quantized ticks and sub-grid remainders are dropped
+  consistently — making the import a fixed point of export∘import for the simple
+  fixtures. (The IR→MIDI exporter already overlays voices correctly.)
+
+Result: the MIDI scoreboard goes **0/5 → 2/5 on all three metrics**; the 3
+hardest multi-voice piano fixtures (example2_1, chopin_n, pedal) still drift on
+cross-measure tie/tuplet interactions and remain a documented limitation, gated
+at the 2/5 floor. Tests: `assign_voices` splits overlap / keeps chords / keeps
+sequential; a multi-part MIDI round-trips with an identical sounding note-array.
+No regressions.
+
 ## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
 
 A behavior-preserving readability/simplification sweep across the package

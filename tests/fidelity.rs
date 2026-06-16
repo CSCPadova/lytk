@@ -49,12 +49,14 @@ const XML_DUR_BASELINE: usize = 152; // full onset+duration fidelity
 const ABC_NOTES_BASELINE: usize = 3;
 const ABC_PITCHES_BASELINE: usize = 3;
 const ABC_DUR_BASELINE: usize = 3;
-// MIDI round-trip re-imports with different bar-splitting/quantization, so note
-// counts shift (the *sound* is preserved, the notation isn't note-for-note
-// stable). Measured & reported but not yet gated above 0; a known limitation.
-const MIDI_NOTES_BASELINE: usize = 0;
-const MIDI_PITCHES_BASELINE: usize = 0;
-const MIDI_DUR_BASELINE: usize = 0;
+// MIDI round-trip after multi-voice reconstruction + per-voice quantized
+// budget: the simple fixtures are now fully stable (note-count, pitch AND
+// onset+duration). The 3 hardest multi-voice piano fixtures (example2_1,
+// chopin_n, pedal) still drift on cross-measure tie/tuplet interactions — gated
+// at the current floor so they can't regress.
+const MIDI_NOTES_BASELINE: usize = 2;
+const MIDI_PITCHES_BASELINE: usize = 2;
+const MIDI_DUR_BASELINE: usize = 2;
 
 #[derive(Default)]
 struct Board {
