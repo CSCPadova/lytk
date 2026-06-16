@@ -11,6 +11,7 @@ mod part;
 mod tests;
 
 use std::collections::HashMap;
+use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
 use num::rational::Ratio;
@@ -45,14 +46,11 @@ impl Default for MxmlToIrAdapter {
 
 /// Run a `musicxml`-crate read, converting a panic into a normal error.
 ///
-/// The vendored `musicxml` 1.1.2 ZIP reader trusts attacker-controlled offsets
-/// in an `.mxl` central directory and can panic (an out-of-bounds slice) on a
-/// crafted archive. Without this firewall that panic crosses the PyO3 boundary
-/// as an opaque `PanicException` (and prints a backtrace); here it becomes a
-/// clean `AdapterError::Parse` the caller can handle. (The underlying upstream
-/// out-of-bounds read should still be fixed upstream — see SECURITY / the audit;
-/// this also does not bound a decompression *bomb*, which OOMs rather than
-/// panicking.)
+/// We feed the crate only plain XML (`.mxl` is decompressed by us first, see
+/// [`xml_bytes_from_input`], which avoids its panic-prone ZIP reader entirely),
+/// but its XML parser can still panic on malformed input. This firewall turns
+/// such a panic into a clean `AdapterError::Parse` instead of letting it cross
+/// the PyO3 boundary as an opaque `PanicException`.
 fn catch_read<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(r) => r,
@@ -62,21 +60,102 @@ fn catch_read<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     }
 }
 
+/// Maximum accepted raw input size (compressed `.mxl` or plain `.xml`).
+const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+/// Maximum decompressed MusicXML size — caps a `.mxl` decompression bomb.
+const MAX_XML_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB
+/// ZIP local-file-header magic, identifying an `.mxl` archive.
+const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
+
+/// First `full-path="…"` value from an MXL `META-INF/container.xml`.
+fn container_full_path(xml: &str) -> Option<String> {
+    let rest = &xml[xml.find("full-path")?..];
+    let qpos = rest.find(['"', '\''])?;
+    let quote = rest.as_bytes()[qpos] as char;
+    let after = &rest[qpos + 1..];
+    let end = after.find(quote)?;
+    Some(after[..end].to_string())
+}
+
+/// Name of the root MusicXML part inside an MXL archive: the `full-path` declared
+/// in `META-INF/container.xml`, else the first non-`META-INF` `.xml`/`.musicxml`.
+fn mxl_rootfile_name<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) -> Result<String> {
+    if let Ok(mut c) = zip.by_name("META-INF/container.xml") {
+        let mut s = String::new();
+        if c.by_ref().take(1 << 20).read_to_string(&mut s).is_ok() {
+            if let Some(p) = container_full_path(&s) {
+                return Ok(p);
+            }
+        }
+    }
+    let names: Vec<String> = (0..zip.len())
+        .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
+        .collect();
+    names
+        .into_iter()
+        .find(|n| !n.starts_with("META-INF/") && (n.ends_with(".xml") || n.ends_with(".musicxml")))
+        .ok_or_else(|| AdapterError::Parse("MXL archive has no MusicXML part".into()))
+}
+
+/// If `bytes` is an MXL (ZIP) archive, decompress its root MusicXML part with a
+/// bounded reader (rejecting a decompression bomb); otherwise return the bytes
+/// unchanged (plain XML). This deliberately bypasses the vendored `musicxml`
+/// crate's unbounded, panic-prone ZIP reader for `.mxl`.
+fn xml_bytes_from_input(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    xml_bytes_from_input_capped(bytes, MAX_XML_BYTES)
+}
+
+/// [`xml_bytes_from_input`] with an explicit decompressed-size cap (parameterised
+/// so tests can exercise bomb rejection without allocating the production cap).
+fn xml_bytes_from_input_capped(bytes: Vec<u8>, max_xml: u64) -> Result<Vec<u8>> {
+    if bytes.len() < 4 || &bytes[..4] != ZIP_MAGIC {
+        return Ok(bytes); // plain XML
+    }
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| AdapterError::Parse(format!("invalid MXL archive: {e}")))?;
+    let root = mxl_rootfile_name(&mut zip)?;
+    let mut entry = zip
+        .by_name(&root)
+        .map_err(|e| AdapterError::Parse(format!("MXL root part '{root}' not found: {e}")))?;
+    // Read at most max_xml + 1: anything larger is rejected as a decompression
+    // bomb rather than allowed to exhaust memory.
+    let mut out = Vec::new();
+    entry
+        .by_ref()
+        .take(max_xml + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| AdapterError::Parse(format!("MXL decompression failed: {e}")))?;
+    if out.len() as u64 > max_xml {
+        return Err(AdapterError::Parse(format!(
+            "MXL decompresses past the {} MiB limit (possible decompression bomb)",
+            max_xml / (1024 * 1024)
+        )));
+    }
+    Ok(out)
+}
+
+/// Parse raw MusicXML/MXL bytes into a [`Score`] with bomb/panic firewalls.
+fn read_partwise_bytes(bytes: Vec<u8>) -> Result<Score> {
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err(AdapterError::Parse(format!(
+            "MusicXML input exceeds the {} MiB limit",
+            MAX_INPUT_BYTES / (1024 * 1024)
+        )));
+    }
+    let xml = xml_bytes_from_input(bytes)?;
+    let mxml_score =
+        catch_read(|| musicxml::read_score_data_partwise(xml).map_err(AdapterError::Parse))?;
+    convert_mxml_score(&mxml_score)
+}
+
 impl ToIrAdapter for MxmlToIrAdapter {
     fn convert_file(&self, path: &Path) -> Result<Score> {
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| AdapterError::Parse("Invalid path".into()))?;
-        let mxml_score =
-            catch_read(|| musicxml::read_score_partwise(path_str).map_err(AdapterError::Parse))?;
-        convert_mxml_score(&mxml_score)
+        let bytes = std::fs::read(path)?;
+        read_partwise_bytes(bytes)
     }
 
     fn convert_str(&self, text: &str) -> Result<Score> {
-        let data = text.as_bytes().to_vec();
-        let mxml_score =
-            catch_read(|| musicxml::read_score_data_partwise(data).map_err(AdapterError::Parse))?;
-        convert_mxml_score(&mxml_score)
+        read_partwise_bytes(text.as_bytes().to_vec())
     }
 }
 

@@ -113,10 +113,17 @@ serde_json's built-in recursion limit. Test: 8000-deep braces → clean error
 - `main.rs`: batch conversion wraps each file in `catch_unwind`
   (`process_one_file_caught`) so one pathological file fails only itself instead
   of unwinding out of the rayon worker and aborting the whole run.
-- **Known residual (follow-up):** an `.mxl` decompression *bomb* OOMs inside the
-  third-party `musicxml` crate's zip reader (no decompressed-size cap); a real fix
-  needs a bounded unzip pass (a dependency/architecture decision) or an upstream
-  fix. Tracked in the audit; not addressed here.
+- **Phase 2c residual now fixed (bounded unzip).** `.mxl` is a ZIP archive;
+  previously lytk handed the raw bytes to the `musicxml` crate, whose ZIP reader
+  has no decompressed-size cap (decompression-bomb OOM) and an out-of-bounds read
+  on crafted offsets. lytk now decompresses `.mxl` itself via the `zip` crate
+  (deflate only) with a **256 MiB decompressed cap** and a 64 MiB input cap,
+  selecting the root part from `META-INF/container.xml` (fallback: first
+  non-`META-INF` `.xml`), then hands plain XML to the `musicxml` crate — bypassing
+  its ZIP path entirely, so both the bomb and the OOB read are gone. Tests build a
+  small `.mxl` and assert it's rejected under a tiny cap and decompresses under an
+  ample one; plain XML passes through untouched. All 10 `.mxl` fixtures still
+  parse.
 
 ## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
 

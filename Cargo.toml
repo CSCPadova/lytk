@@ -52,6 +52,10 @@ anyhow = "1"
 midly = "0.5"
 musicxml = "1.1.2"
 numpy = "0.22"
+# Bounded MXL (ZIP) decompression: we unzip `.mxl` ourselves with a size cap and
+# hand plain XML to the `musicxml` crate, bypassing its unbounded, panic-prone
+# ZIP reader (decompression-bomb + out-of-bounds-read hardening). deflate only.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 proptest = "1"

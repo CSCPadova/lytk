@@ -2320,3 +2320,36 @@ fn test_mid_measure_direction_position_roundtrip() {
         "mid-measure direction must not snap to measure start on round-trip"
     );
 }
+
+#[test]
+fn mxl_decompression_bomb_is_rejected() {
+    use std::io::Write;
+
+    // A small .mxl whose root part decompresses to 4 KB.
+    let payload = "x".repeat(4000);
+    let mut buf = Vec::new();
+    {
+        let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zw.start_file("score.xml", opts).unwrap();
+        zw.write_all(payload.as_bytes()).unwrap();
+        zw.finish().unwrap();
+    }
+
+    // Under a tiny cap the 4 KB payload is rejected as a bomb (no unbounded read).
+    assert!(
+        super::xml_bytes_from_input_capped(buf.clone(), 1000).is_err(),
+        "oversized decompression must be rejected"
+    );
+    // Under an ample cap it decompresses back to the original bytes.
+    let out = super::xml_bytes_from_input_capped(buf, 100_000).expect("should decompress");
+    assert_eq!(out, payload.as_bytes());
+}
+
+#[test]
+fn plain_xml_passes_through_unzipped() {
+    let xml = b"<?xml version=\"1.0\"?><score-partwise></score-partwise>".to_vec();
+    let out = super::xml_bytes_from_input(xml.clone()).unwrap();
+    assert_eq!(out, xml, "non-zip input must pass through untouched");
+}
