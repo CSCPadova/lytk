@@ -117,13 +117,14 @@ support matrix (what each reader/writer preserves).
   train/val/test splits, on-disk representation caching, and lazy PyTorch / TensorFlow
   adapters (optional `lytk[torch]` / `lytk[tensorflow]` extras)
 - **Python bindings** — full PyO3 API: `from_musicxml`, `from_lilypond`, `from_abc`,
-  `to_musicxml`, `to_lilypond`, `to_abc`, `from_midi`, `to_midi`, `transpose`,
+  `to_musicxml`, `to_lilypond`, `to_abc`, `from_midi`, `to_midi`, `flatten`, `transpose`,
   `change_language`, `invert`, `retrograde`, `Score.to_json/dict`, representation
   encoders and metrics
 - **Python CLI** — the shipped `lytk` console script mirrors the Rust binary
-  (`convert`, `transpose`, `info`) with process-parallel batch conversion honoring `--jobs`
-- **874 Rust tests** (513 unit + 361 integration: CLI, fixture regression, property-based,
-  round-trip, semantic round-trip, fidelity scoreboard) + 112 Python tests, all passing
+  (`convert`, `transpose`, `info`, `flatten`) with process-parallel batch conversion
+  honoring `--jobs`; batch mode exits non-zero if any file fails
+- **876 Rust tests** (514 unit + 362 integration: CLI, fixture regression, property-based,
+  round-trip, semantic round-trip, fidelity scoreboard) + 117 Python tests, all passing
 - **Semantic fidelity gate** — committed non-decreasing baselines: LilyPond 35/35 and
   MusicXML 152/152 fixtures preserve note counts and pitch multisets on round-trip
 - **Criterion benchmarks** — ~52× faster than python-ly for transpose; ~40× for language change

@@ -256,50 +256,39 @@ fn canonicalize(path: &Path) -> Result<PathBuf, FlattenError> {
 // Post-processing normalization pass
 // ---------------------------------------------------------------------------
 
+/// Mark every line matching `is_match` for removal except the last, warning
+/// (using the directive `name`) when more than one occurrence is found.
+fn dedup_keep_last(
+    lines: &[&str],
+    is_match: impl Fn(&str) -> bool,
+    name: &str,
+    remove: &mut std::collections::HashSet<usize>,
+) {
+    let idxs: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_match(l))
+        .map(|(i, _)| i)
+        .collect();
+    if idxs.len() > 1 {
+        eprintln!(
+            "warning: multiple {name} directives found — keeping last, removing {} earlier occurrence(s)",
+            idxs.len() - 1
+        );
+        for &i in &idxs[..idxs.len() - 1] {
+            remove.insert(i);
+        }
+    }
+}
+
 /// Run deduplication and validation on the fully-expanded text.
 fn normalize(text: String) -> Result<String, FlattenError> {
     let lines: Vec<&str> = text.lines().collect();
 
-    // Phase A & B: collect indices of \version and \language lines.
-    let version_indices: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| is_version_line(l))
-        .map(|(i, _)| i)
-        .collect();
-
-    let language_indices: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| is_language_line(l))
-        .map(|(i, _)| i)
-        .collect();
-
-    if version_indices.len() > 1 {
-        eprintln!(
-            "warning: multiple \\version directives found — keeping last, removing {} earlier occurrence(s)",
-            version_indices.len() - 1
-        );
-    }
-    if language_indices.len() > 1 {
-        eprintln!(
-            "warning: multiple \\language directives found — keeping last, removing {} earlier occurrence(s)",
-            language_indices.len() - 1
-        );
-    }
-
-    // Build the set of line indices to remove (all but the last occurrence).
+    // Phase A & B: for \version and \language, keep only the last occurrence.
     let mut remove: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    if version_indices.len() > 1 {
-        for &i in &version_indices[..version_indices.len() - 1] {
-            remove.insert(i);
-        }
-    }
-    if language_indices.len() > 1 {
-        for &i in &language_indices[..language_indices.len() - 1] {
-            remove.insert(i);
-        }
-    }
+    dedup_keep_last(&lines, is_version_line, "\\version", &mut remove);
+    dedup_keep_last(&lines, is_language_line, "\\language", &mut remove);
 
     // Phase C: count \header blocks using brace depth tracking.
     let header_count = count_header_blocks(&lines);

@@ -162,6 +162,24 @@ class TestConvertBatch:
             (dst / sub / s.name).write_bytes(s.read_bytes())
         return dst
 
+    def test_batch_partial_failure_exits_nonzero(self, tmp_path: Path):
+        """If any file in a batch fails, the CLI must exit non-zero while
+        still converting the valid files."""
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        good = FIXTURE_XML_DIR / "01a-Pitches-Pitches.xml"
+        (in_dir / "good.xml").write_bytes(good.read_bytes())
+        (in_dir / "bad.xml").write_text("this is not valid musicxml")
+
+        out_dir = tmp_path / "out"
+        result = run_lytk("convert", str(in_dir), "-o", str(out_dir), check=False)
+
+        assert result.returncode != 0, "partial failure must be a non-zero exit"
+        assert "Processed 2 files" in result.stderr
+        assert "failed to convert" in result.stderr
+        # The valid file is still converted.
+        assert (out_dir / "good.ly").exists()
+
     def test_batch_parallel_matches_serial(self, tmp_path: Path):
         """A real --jobs 4 run (across processes) must produce byte-identical
         output to a serial --jobs 1 run, including in nested subfolders."""
@@ -304,3 +322,46 @@ class TestTranspose:
         orig_info = run_lytk("info", str(FIXTURE_XML))
         back_info = run_lytk("info", str(back))
         assert orig_info.stdout == back_info.stdout
+
+
+# ---------------------------------------------------------------------------
+# `flatten` subcommand (Finding 2 — parity with the Rust CLI)
+# ---------------------------------------------------------------------------
+
+
+class TestFlatten:
+    def _project(self, tmp_path: Path, included: str = "{ c'4 d'4 }\n") -> Path:
+        (tmp_path / "inc.ily").write_text(included)
+        main = tmp_path / "main.ly"
+        main.write_text('\\include "inc.ily"\n')
+        return main
+
+    def test_flatten_subcommand_exists(self, tmp_path: Path):
+        """Regression: the installed lytk used to reject `flatten` outright."""
+        main = self._project(tmp_path)
+        result = run_lytk("flatten", str(main), check=False)
+        assert result.returncode == 0, result.stderr
+        assert "invalid choice" not in result.stderr
+
+    def test_flatten_expands_includes_to_file(self, tmp_path: Path):
+        main = self._project(tmp_path)
+        out = tmp_path / "flat.ly"
+        result = run_lytk("flatten", str(main), "-o", str(out))
+        assert result.returncode == 0
+        text = out.read_text()
+        assert "c'4 d'4" in text           # included content was inlined
+        assert "\\include" not in text       # the directive is gone
+
+    def test_flatten_to_stdout(self, tmp_path: Path):
+        main = self._project(tmp_path, "{ e'4 }\n")
+        result = run_lytk("flatten", str(main))
+        assert result.returncode == 0
+        assert "e'4" in result.stdout
+
+    def test_flatten_no_markers(self, tmp_path: Path):
+        main = self._project(tmp_path, "{ g'4 }\n")
+        with_markers = run_lytk("flatten", str(main))
+        without = run_lytk("flatten", str(main), "--no-markers")
+        assert "BEGIN INCLUDE" in with_markers.stdout
+        assert "BEGIN INCLUDE" not in without.stdout
+        assert "g'4" in without.stdout

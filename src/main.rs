@@ -28,7 +28,14 @@ use _core::transforms::transpose;
 
 /// lytk — music notation conversion and augmentation toolkit.
 #[derive(Parser)]
-#[command(name = "lytk", version, about)]
+// `about` is set explicitly (rather than inherited from the crate
+// `description`) so the CLI banner stays human-facing and consistent with the
+// Python entry point; the Cargo manifest keeps its package-metadata wording.
+#[command(
+    name = "lytk",
+    version,
+    about = "lytk — music notation conversion and augmentation toolkit."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -152,7 +159,7 @@ fn run_convert(
     jobs: usize,
 ) -> anyhow::Result<()> {
     if input.is_dir() {
-        run_batch(input, output, format, jobs, None::<&fn(&Score) -> Score>)
+        run_batch(input, output, format, jobs)
     } else {
         // LY→LY single-file: use Music tree path for better structural fidelity
         let in_fmt = detect_input_format(input)?;
@@ -258,16 +265,12 @@ fn run_info(input: &Path) -> anyhow::Result<()> {
 // Batch processing
 // ---------------------------------------------------------------------------
 
-fn run_batch<F>(
+fn run_batch(
     input_dir: &Path,
     output_dir: &Path,
     format: Option<OutputFormat>,
     jobs: usize,
-    transform: Option<&F>,
-) -> anyhow::Result<()>
-where
-    F: Fn(&Score) -> Score + Sync + Send,
-{
+) -> anyhow::Result<()> {
     let files = collect_input_files(input_dir)?;
     if files.is_empty() {
         eprintln!("No supported files found in {}", input_dir.display());
@@ -276,44 +279,51 @@ where
 
     std::fs::create_dir_all(output_dir)?;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let failures = AtomicUsize::new(0);
+
     if jobs == 1 {
         for file in &files {
-            if let Err(e) = process_one_file(file, input_dir, output_dir, format, transform) {
+            if let Err(e) = process_one_file(file, input_dir, output_dir, format) {
                 eprintln!("{}: {e}", file.display());
+                failures.fetch_add(1, Ordering::Relaxed);
             }
         }
     } else {
-        // Configure rayon thread pool
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(if jobs == 0 { 0 } else { jobs })
-            .build()?;
+        // Configure rayon thread pool (0 = rayon's default: one thread per CPU).
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
 
         pool.install(|| {
             files.par_iter().for_each(|file| {
-                if let Err(e) = process_one_file(file, input_dir, output_dir, format, transform) {
+                if let Err(e) = process_one_file(file, input_dir, output_dir, format) {
                     eprintln!("{}: {e}", file.display());
+                    failures.fetch_add(1, Ordering::Relaxed);
                 }
             });
         });
     }
 
+    let failed = failures.load(Ordering::Relaxed);
     eprintln!("Processed {} files", files.len());
+    // A batch where some files failed must not report success: automation
+    // should be able to detect partial failures from the exit code.
+    if failed > 0 {
+        anyhow::bail!("{failed} of {} file(s) failed to convert", files.len());
+    }
     Ok(())
 }
 
-fn process_one_file<F>(
+fn process_one_file(
     file: &Path,
     input_dir: &Path,
     output_dir: &Path,
     format: Option<OutputFormat>,
-    transform: Option<&F>,
-) -> anyhow::Result<()>
-where
-    F: Fn(&Score) -> Score,
-{
+) -> anyhow::Result<()> {
     let relative = file
         .strip_prefix(input_dir)
-        .unwrap_or(file.file_name().map(Path::new).unwrap_or(file));
+        .ok()
+        .or_else(|| file.file_name().map(Path::new))
+        .unwrap_or(file);
 
     let out_ext = match format {
         Some(OutputFormat::Ly) => "ly",
@@ -328,10 +338,7 @@ where
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut score = parse_input(file)?;
-    if let Some(t) = transform {
-        score = t(&score);
-    }
+    let score = parse_input(file)?;
     write_output(&score, &out_path, format)?;
     Ok(())
 }

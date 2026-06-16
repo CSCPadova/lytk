@@ -223,8 +223,16 @@ impl Default for MeasureAttributes {
 /// From lytk-py's `Measure(IRNode)`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Measure {
-    /// 1-based measure number.
+    /// 1-based measure number (numeric value used for re-barring / arithmetic).
     pub number: u32,
+    /// Original measure label when it is not a plain integer (e.g. MusicXML
+    /// `number="3A"` or `"X1"`). `None` means the label is exactly
+    /// [`number`](Self::number) rendered as a decimal. The MusicXML exporter
+    /// emits this verbatim when present, so non-numeric labels round-trip
+    /// instead of collapsing to `0`. Omitted from serialization when `None`
+    /// so existing numeric-measure JSON is byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number_label: Option<String>,
     /// Whether this is an implicit measure (e.g. anacrusis / pickup).
     pub implicit: bool,
     /// Senza misura (free time, e.g. inside `\cadenzaOn … \cadenzaOff`). Such a
@@ -257,6 +265,7 @@ impl Measure {
     pub fn new(number: u32) -> Self {
         Self {
             number,
+            number_label: None,
             implicit: false,
             senza_misura: false,
             width: None,

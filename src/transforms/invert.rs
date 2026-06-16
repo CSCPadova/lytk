@@ -119,12 +119,9 @@ pub fn invert_music(doc: &MusicDocument, axis: Pitch) -> MusicDocument {
 
 /// Reflect a single pitch across the axis MIDI number.
 fn invert_pitch(pitch: Pitch, axis_midi: i32) -> Pitch {
-    let pitch_midi = pitch.midi_number();
-    let interval = pitch_midi - axis_midi;
-    // Reflect: new_midi = axis - interval = axis - (pitch - axis) = 2*axis - pitch
-    let target_midi = axis_midi - interval;
-    let semitone_diff = target_midi - pitch_midi;
-    pitch.transposed(semitone_diff)
+    // Reflect across the axis: new_midi = 2*axis - pitch, i.e. shift the pitch
+    // by 2*(axis - pitch).
+    pitch.transposed(2 * (axis_midi - pitch.midi_number()))
 }
 
 #[cfg(test)]
@@ -148,6 +145,7 @@ mod tests {
         };
         let measure = Measure {
             number: 1,
+            number_label: None,
             implicit: false,
             senza_misura: false,
             width: None,

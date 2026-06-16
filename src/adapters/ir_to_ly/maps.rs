@@ -213,13 +213,7 @@ pub(super) fn pitch_to_ly(
         PitchMode::Absolute => pitch.octave - 3,
     };
 
-    let oct_marks = if octave_diff > 0 {
-        "'".repeat(octave_diff as usize)
-    } else if octave_diff < 0 {
-        ",".repeat((-octave_diff) as usize)
-    } else {
-        String::new()
-    };
+    let oct_marks = super::helpers::octave_marks(octave_diff);
 
     let acc_suffix = match pitch.accidental {
         crate::ir::pitch::AccidentalDisplay::Forced => "!",

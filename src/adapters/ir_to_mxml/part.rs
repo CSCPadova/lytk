@@ -36,7 +36,12 @@ impl IrToMxmlAdapter {
 
     fn build_measure(&self, measure: &Measure, part_staves: u8) -> mxml::Measure {
         let attrs = mxml::MeasureAttributes {
-            number: mdt::Token(measure.number.to_string()),
+            number: mdt::Token(
+                measure
+                    .number_label
+                    .clone()
+                    .unwrap_or_else(|| measure.number.to_string()),
+            ),
             id: None,
             implicit: if measure.implicit {
                 Some(mdt::YesNo::Yes)
@@ -54,6 +59,29 @@ impl IrToMxmlAdapter {
             attributes: attrs,
             content,
         }
+    }
+
+    /// Build the `<direction>` elements for a rest's dynamics and wedges (all
+    /// placed below). Shared by the anchor-spacer, spacer, and normal-rest paths.
+    fn rest_direction_elements(&self, r: &crate::ir::note::Rest) -> Vec<mxml::MeasureElement> {
+        let mut out = Vec::new();
+        for dyn_mark in &r.dynamics {
+            let dir = Direction {
+                dynamic: Some(dyn_mark.clone()),
+                placement: Placement::Below,
+                ..Direction::default()
+            };
+            out.push(mxml::MeasureElement::Direction(self.build_direction(&dir)));
+        }
+        for wedge in &r.wedges {
+            let dir = Direction {
+                wedge: Some(wedge.clone()),
+                placement: Placement::Below,
+                ..Direction::default()
+            };
+            out.push(mxml::MeasureElement::Direction(self.build_direction(&dir)));
+        }
+        out
     }
 
     fn build_measure_elements(
@@ -266,26 +294,7 @@ impl IrToMxmlAdapter {
                             rest_note.attributes.print_object = Some(mdt::YesNo::No);
                             elements.push(mxml::MeasureElement::Note(rest_note));
                             fwd_pos += dur_val;
-                            for dyn_mark in &r.dynamics {
-                                let dir = Direction {
-                                    dynamic: Some(dyn_mark.clone()),
-                                    placement: Placement::Below,
-                                    ..Direction::default()
-                                };
-                                elements.push(mxml::MeasureElement::Direction(
-                                    self.build_direction(&dir),
-                                ));
-                            }
-                            for wedge in &r.wedges {
-                                let dir = Direction {
-                                    wedge: Some(wedge.clone()),
-                                    placement: Placement::Below,
-                                    ..Direction::default()
-                                };
-                                elements.push(mxml::MeasureElement::Direction(
-                                    self.build_direction(&dir),
-                                ));
-                            }
+                            elements.extend(self.rest_direction_elements(r));
                         } else if r.is_spacer {
                             // Emit spacer rests as MusicXML <forward>
                             let dur_val = self.duration_to_divisions(&r.duration);
@@ -313,49 +322,11 @@ impl IrToMxmlAdapter {
                                 content: fwd_content,
                             }));
                             fwd_pos += dur_val;
-                            // Emit dynamics/wedges attached to this spacer rest
-                            for dyn_mark in &r.dynamics {
-                                let dir = Direction {
-                                    dynamic: Some(dyn_mark.clone()),
-                                    placement: Placement::Below,
-                                    ..Direction::default()
-                                };
-                                elements.push(mxml::MeasureElement::Direction(
-                                    self.build_direction(&dir),
-                                ));
-                            }
-                            for wedge in &r.wedges {
-                                let dir = Direction {
-                                    wedge: Some(wedge.clone()),
-                                    placement: Placement::Below,
-                                    ..Direction::default()
-                                };
-                                elements.push(mxml::MeasureElement::Direction(
-                                    self.build_direction(&dir),
-                                ));
-                            }
+                            // Emit dynamics/wedges attached to this spacer rest.
+                            elements.extend(self.rest_direction_elements(r));
                         } else {
-                            // Emit dynamics/wedges attached to this rest
-                            for dyn_mark in &r.dynamics {
-                                let dir = Direction {
-                                    dynamic: Some(dyn_mark.clone()),
-                                    placement: Placement::Below,
-                                    ..Direction::default()
-                                };
-                                elements.push(mxml::MeasureElement::Direction(
-                                    self.build_direction(&dir),
-                                ));
-                            }
-                            for wedge in &r.wedges {
-                                let dir = Direction {
-                                    wedge: Some(wedge.clone()),
-                                    placement: Placement::Below,
-                                    ..Direction::default()
-                                };
-                                elements.push(mxml::MeasureElement::Direction(
-                                    self.build_direction(&dir),
-                                ));
-                            }
+                            // Emit dynamics/wedges attached to this rest.
+                            elements.extend(self.rest_direction_elements(r));
                             let rest_note = self.build_rest_note(r, voice.number, part_staves);
                             elements.push(mxml::MeasureElement::Note(rest_note));
                             fwd_pos += self.duration_to_divisions(&r.duration);

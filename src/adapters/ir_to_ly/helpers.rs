@@ -8,6 +8,35 @@ pub(super) fn escape_ly_string(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Pack space-separated `tokens` into lines no longer than ~72 characters, each
+/// prefixed with `pad`, appending the lines to `lines`. Empty input is a no-op.
+pub(super) fn push_wrapped(tokens: &[String], pad: &str, lines: &mut Vec<String>) {
+    let mut line: Vec<&str> = Vec::new();
+    let mut len = 0usize;
+    for token in tokens {
+        len += token.len() + 1;
+        line.push(token);
+        if len > 72 {
+            lines.push(format!("{pad}{}", line.join(" ")));
+            line.clear();
+            len = 0;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(format!("{pad}{}", line.join(" ")));
+    }
+}
+
+/// Render an octave displacement as LilyPond tick marks: `'` per octave up,
+/// `,` per octave down, empty for none.
+pub(super) fn octave_marks(diff: i32) -> String {
+    match diff.cmp(&0) {
+        std::cmp::Ordering::Greater => "'".repeat(diff as usize),
+        std::cmp::Ordering::Less => ",".repeat((-diff) as usize),
+        std::cmp::Ordering::Equal => String::new(),
+    }
+}
+
 /// Sanitise a part id/name into a valid LilyPond variable name.
 pub(super) fn part_var_name(part: &Part) -> String {
     let raw = if !part.part_id.is_empty() {

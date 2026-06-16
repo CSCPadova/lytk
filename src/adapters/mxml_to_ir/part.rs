@@ -55,12 +55,21 @@ fn convert_measure(
     mxml_measure: &mxml::Measure,
     mut divisions: i64,
 ) -> Result<(crate::ir::measure::Measure, i64)> {
-    let number: u32 = mxml_measure.attributes.number.0.parse().unwrap_or(0);
+    let raw_number = mxml_measure.attributes.number.0.clone();
+    let number: u32 = raw_number.parse().unwrap_or(0);
+    // Preserve the original label whenever it isn't exactly the decimal form of
+    // `number` (e.g. "3A", "X1", or "03"); a plain integer needs no label.
+    let number_label = if number.to_string() == raw_number {
+        None
+    } else {
+        Some(raw_number)
+    };
     let implicit = mxml_measure.attributes.implicit == Some(mdt::YesNo::Yes);
     let width: Option<f32> = mxml_measure.attributes.width.as_ref().map(|w| w.0 as f32);
 
     let mut measure = crate::ir::measure::Measure {
         number,
+        number_label,
         implicit,
         senza_misura: false,
         width,

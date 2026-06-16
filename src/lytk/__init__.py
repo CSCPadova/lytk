@@ -7,6 +7,7 @@ from lytk._core import (
     Score,
     change_language,
     compute_metrics,
+    flatten,
     from_abc,
     from_abc_string,
     from_event_sequence,
@@ -46,6 +47,8 @@ __all__ = [
     "to_lilypond_music",
     "to_musicxml",
     "to_abc",
+    # LilyPond \include flattening
+    "flatten",
     # Transforms
     "transpose",
     "change_language",

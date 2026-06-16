@@ -420,23 +420,19 @@ fn lift_voice_elements(elements: &[VoiceElement]) -> Vec<Music> {
     for elem in elements {
         match elem {
             VoiceElement::Note(n) => {
-                if n.is_grace {
-                    let grace_note = Music::Note {
-                        pitch: n.pitch,
-                        duration: n.duration.clone(),
-                        annotations: note_to_annotations(n),
-                    };
-                    result.push(Music::Grace {
-                        content: Box::new(grace_note),
+                let note = Music::Note {
+                    pitch: n.pitch,
+                    duration: n.duration.clone(),
+                    annotations: note_to_annotations(n),
+                };
+                result.push(if n.is_grace {
+                    Music::Grace {
+                        content: Box::new(note),
                         slash: n.grace_slash,
-                    });
+                    }
                 } else {
-                    result.push(Music::Note {
-                        pitch: n.pitch,
-                        duration: n.duration.clone(),
-                        annotations: note_to_annotations(n),
-                    });
-                }
+                    note
+                });
             }
             VoiceElement::Rest(r) => {
                 if r.is_spacer {

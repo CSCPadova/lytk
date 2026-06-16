@@ -193,17 +193,20 @@ pub(super) fn convert_note(mxml_note: &mxml::Note, divisions: i64) -> Option<Not
 // Pitch extraction
 // ---------------------------------------------------------------------------
 
-fn extract_pitch(mxml_note: &mxml::Note) -> Option<Pitch> {
-    let audible = match &mxml_note.content.info {
+/// Reach the `AudibleType` (pitch / unpitched / rest) inside any note variant.
+fn note_audible(note: &mxml::Note) -> &mxml::AudibleType {
+    match &note.content.info {
         mxml::NoteType::Normal(info) => &info.audible,
         mxml::NoteType::Grace(info) => match &info.info {
             mxml::GraceType::Normal(n) => &n.audible,
             mxml::GraceType::Cue(c) => &c.audible,
         },
         mxml::NoteType::Cue(info) => &info.audible,
-    };
+    }
+}
 
-    match audible {
+fn extract_pitch(mxml_note: &mxml::Note) -> Option<Pitch> {
+    match note_audible(mxml_note) {
         mxml::AudibleType::Pitch(p) => {
             let step = convert_step(&p.content.step.content);
             let octave = p.content.octave.content.0 as i32;
@@ -230,27 +233,11 @@ fn extract_pitch(mxml_note: &mxml::Note) -> Option<Pitch> {
 }
 
 fn note_is_rest(note: &mxml::Note) -> bool {
-    let audible = match &note.content.info {
-        mxml::NoteType::Normal(info) => &info.audible,
-        mxml::NoteType::Grace(info) => match &info.info {
-            mxml::GraceType::Normal(n) => &n.audible,
-            mxml::GraceType::Cue(c) => &c.audible,
-        },
-        mxml::NoteType::Cue(info) => &info.audible,
-    };
-    matches!(audible, mxml::AudibleType::Rest(_))
+    matches!(note_audible(note), mxml::AudibleType::Rest(_))
 }
 
 fn extract_rest_info(note: &mxml::Note) -> (Option<String>, Option<i32>, bool) {
-    let audible = match &note.content.info {
-        mxml::NoteType::Normal(info) => &info.audible,
-        mxml::NoteType::Grace(info) => match &info.info {
-            mxml::GraceType::Normal(n) => &n.audible,
-            mxml::GraceType::Cue(c) => &c.audible,
-        },
-        mxml::NoteType::Cue(info) => &info.audible,
-    };
-    if let mxml::AudibleType::Rest(rest) = audible {
+    if let mxml::AudibleType::Rest(rest) = note_audible(note) {
         let display_step = rest
             .content
             .display_step
@@ -475,88 +462,56 @@ fn parse_lyric(lyric: &mxml::Lyric) -> Option<LyricSyllable> {
 // Articulation, ornament, and technical conversion
 // ---------------------------------------------------------------------------
 
+/// Resolve an optional MusicXML above/below placement, defaulting to unspecified.
+fn placement_or_unspecified(p: &Option<mdt::AboveBelow>) -> Placement {
+    p.as_ref()
+        .map(convert_above_below)
+        .unwrap_or(Placement::Unspecified)
+}
+
 fn convert_articulation(art: &mxml::ArticulationsType) -> (Option<&str>, Placement) {
     use mxml::ArticulationsType::*;
+    // Every arm reports its name plus the (uniformly typed) placement attribute.
     match art {
         Accent(a) => (
             Some("accent"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         StrongAccent(a) => (
             Some("strong-accent"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         Staccato(a) => (
             Some("staccato"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         Tenuto(a) => (
             Some("tenuto"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         DetachedLegato(a) => (
             Some("detached-legato"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         Staccatissimo(a) => (
             Some("staccatissimo"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         Spiccato(a) => (
             Some("spiccato"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         BreathMark(a) => (
             Some("breath-mark"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         Caesura(a) => (
             Some("caesura"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         Stress(a) => (
             Some("stress"),
-            a.attributes
-                .placement
-                .as_ref()
-                .map(convert_above_below)
-                .unwrap_or(Placement::Unspecified),
+            placement_or_unspecified(&a.attributes.placement),
         ),
         _ => (None, Placement::Unspecified),
     }

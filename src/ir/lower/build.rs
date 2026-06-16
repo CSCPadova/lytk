@@ -198,7 +198,7 @@ fn split_events_into_measures(events: &[(Frac, TimedEvent)]) -> Vec<Measure> {
         let voice_events = collect_voice_events(events, start, end);
 
         for (voice_num, v_events) in &voice_events {
-            let voice = build_voice_from_events(v_events, *voice_num, start, end);
+            let voice = build_voice_from_events(v_events, *voice_num);
             if !voice.elements.is_empty() {
                 m.voices.push(voice);
             }
@@ -267,24 +267,13 @@ pub(super) fn compute_measure_boundaries(
             .find(|(t, _)| *t > pos && *t <= next_bar);
 
         if let Some((change_time, new_ts)) = next_change {
-            if *change_time < next_bar {
-                // Time sig change mid-measure — split here
-                boundaries.push((*change_time, Some(new_ts.clone())));
-                current_ts_frac = new_ts.beats_fraction();
-                pos = *change_time;
-                // Advance ts_idx past all changes at this position
-                while ts_idx < time_sig_changes.len() && time_sig_changes[ts_idx].0 <= *change_time
-                {
-                    ts_idx += 1;
-                }
-            } else {
-                // Time sig change exactly at next bar
-                boundaries.push((next_bar, Some(new_ts.clone())));
-                current_ts_frac = new_ts.beats_fraction();
-                pos = next_bar;
-                while ts_idx < time_sig_changes.len() && time_sig_changes[ts_idx].0 <= next_bar {
-                    ts_idx += 1;
-                }
+            // change_time is in (pos, next_bar] — split the measure there.
+            boundaries.push((*change_time, Some(new_ts.clone())));
+            current_ts_frac = new_ts.beats_fraction();
+            pos = *change_time;
+            // Advance ts_idx past all changes at this position.
+            while ts_idx < time_sig_changes.len() && time_sig_changes[ts_idx].0 <= *change_time {
+                ts_idx += 1;
             }
         } else {
             // No time sig change before next bar
@@ -346,13 +335,8 @@ fn event_duration(event: &TimedEvent) -> Frac {
     }
 }
 
-/// Build a Voice from timed events within a measure range.
-fn build_voice_from_events(
-    events: &[&(Frac, TimedEvent)],
-    voice_num: u8,
-    _measure_start: Frac,
-    _measure_end: Frac,
-) -> Voice {
+/// Build a Voice from a slice of already-filtered timed events.
+fn build_voice_from_events(events: &[&(Frac, TimedEvent)], voice_num: u8) -> Voice {
     let mut voice = Voice::new(voice_num);
 
     for ev in events {

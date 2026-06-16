@@ -6,6 +6,60 @@ use crate::ir::pitch::{AccidentalDisplay, Alter, PitchStep};
 use num::rational::Ratio;
 
 #[test]
+fn non_numeric_measure_number_round_trips() {
+    // A MusicXML measure label like "3A" is not a plain integer; it must be
+    // preserved rather than collapsing to 0 (regression: REVIEW.md Finding 3).
+    use crate::adapters::FromIrAdapter;
+
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list>
+<score-part id="P1">
+  <part-name>Music</part-name>
+</score-part>
+  </part-list>
+  <part id="P1">
+<measure number="3A">
+  <attributes>
+    <divisions>1</divisions>
+    <time><beats>4</beats><beat-type>4</beat-type></time>
+    <clef><sign>G</sign><line>2</line></clef>
+  </attributes>
+  <note>
+    <pitch><step>C</step><octave>4</octave></pitch>
+    <duration>1</duration>
+    <voice>1</voice>
+    <type>quarter</type>
+  </note>
+</measure>
+  </part>
+</score-partwise>"#;
+
+    let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+    let measure = &score.parts()[0].measures[0];
+    // The numeric field is best-effort (0 for a non-numeric label) ...
+    assert_eq!(measure.number, 0);
+    // ... but the original textual label is preserved.
+    assert_eq!(measure.number_label.as_deref(), Some("3A"));
+
+    // It survives re-emission to MusicXML ...
+    let xml_out = crate::adapters::ir_to_mxml::IrToMxmlAdapter::new()
+        .convert(&score)
+        .unwrap();
+    assert!(
+        xml_out.contains("number=\"3A\""),
+        "expected measure number=\"3A\" in emitted XML, got:\n{xml_out}"
+    );
+
+    // ... and a full round-trip yields the same label.
+    let score2 = MxmlToIrAdapter::new().convert_str(&xml_out).unwrap();
+    assert_eq!(
+        score2.parts()[0].measures[0].number_label.as_deref(),
+        Some("3A")
+    );
+}
+
+#[test]
 fn test_parse_minimal_score() {
     let xml = r#"<?xml version="1.0"?>
 <score-partwise>

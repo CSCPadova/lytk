@@ -202,14 +202,7 @@ pub(super) fn emit_part_variable(
     let relative_prefix = if let Some(p) = &relative_ref {
         let name =
             pitch_name(p.step, p.alter, lang).unwrap_or_else(|| p.step.name().to_lowercase());
-        let oct = p.octave - 3;
-        let oct_marks = if oct > 0 {
-            "'".repeat(oct as usize)
-        } else if oct < 0 {
-            ",".repeat((-oct) as usize)
-        } else {
-            String::new()
-        };
+        let oct_marks = super::helpers::octave_marks(p.octave - 3);
         format!("\\relative {name}{oct_marks} ")
     } else {
         String::new()
@@ -223,37 +216,28 @@ pub(super) fn emit_part_variable(
         String::new()
     };
 
-    if part.staves > 1 {
-        for staff_num in 1..=part.staves {
-            let staff_var = format!("{}Staff{}", var, roman(staff_num));
-            lines.push(format!("{staff_var} = {relative_prefix}{{"));
-            if !midi_set.is_empty() {
-                // trim trailing newline -- push as a separate line
-                lines.push(midi_set.trim_end().to_string());
-            }
-            emit_measures(
-                part,
-                lang,
-                mode,
-                Some(staff_num),
-                partial_dur,
-                relative_ref.as_ref(),
-                2,
-                lines,
-            );
-            lines.push("}".to_string());
-            lines.push(String::new());
-        }
+    // A multi-staff part emits one variable per staff (filtered by staff
+    // number); a single-staff part emits one unfiltered variable. Both follow
+    // the identical "var = { … }" shape, so handle them with one loop.
+    let staff_specs: Vec<(String, Option<u8>)> = if part.staves > 1 {
+        (1..=part.staves)
+            .map(|n| (format!("{}Staff{}", var, roman(n)), Some(n)))
+            .collect()
     } else {
-        lines.push(format!("{var} = {relative_prefix}{{"));
+        vec![(var.clone(), None)]
+    };
+
+    for (name, staff_filter) in staff_specs {
+        lines.push(format!("{name} = {relative_prefix}{{"));
         if !midi_set.is_empty() {
+            // trim trailing newline -- push as a separate line
             lines.push(midi_set.trim_end().to_string());
         }
         emit_measures(
             part,
             lang,
             mode,
-            None,
+            staff_filter,
             partial_dur,
             relative_ref.as_ref(),
             2,

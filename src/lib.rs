@@ -228,15 +228,19 @@ fn from_musicxml_string(xml: &str) -> PyResult<PyScore> {
     Ok(PyScore { inner: score })
 }
 
+/// Resolve a pitch-language name, raising a `ValueError` for unknown names.
+fn parse_language(name: &str) -> PyResult<PitchLanguage> {
+    PitchLanguage::from_str_loose(name)
+        .ok_or_else(|| PyValueError::new_err(format!("unknown language: {name}")))
+}
+
 /// Parse a LilyPond (``.ly``) file into a :class:`Score`.
 #[pyfunction]
 #[pyo3(signature = (path, *, language=None))]
 fn from_lilypond(path: &str, language: Option<&str>) -> PyResult<PyScore> {
     let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
     if let Some(lang_str) = language {
-        let lang = PitchLanguage::from_str_loose(lang_str)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown language: {lang_str}")))?;
-        adapter = adapter.with_language(lang);
+        adapter = adapter.with_language(parse_language(lang_str)?);
     }
     let score = adapter
         .convert_file(Path::new(path))
@@ -250,9 +254,7 @@ fn from_lilypond(path: &str, language: Option<&str>) -> PyResult<PyScore> {
 fn from_lilypond_string(text: &str, language: Option<&str>) -> PyResult<PyScore> {
     let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
     if let Some(lang_str) = language {
-        let lang = PitchLanguage::from_str_loose(lang_str)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown language: {lang_str}")))?;
-        adapter = adapter.with_language(lang);
+        adapter = adapter.with_language(parse_language(lang_str)?);
     }
     let score = adapter
         .convert_str(text)
@@ -268,9 +270,7 @@ fn from_lilypond_string(text: &str, language: Option<&str>) -> PyResult<PyScore>
 fn from_lilypond_music(path: &str, language: Option<&str>) -> PyResult<PyMusicDocument> {
     let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
     if let Some(lang_str) = language {
-        let lang = PitchLanguage::from_str_loose(lang_str)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown language: {lang_str}")))?;
-        adapter = adapter.with_language(lang);
+        adapter = adapter.with_language(parse_language(lang_str)?);
     }
     let doc = adapter
         .convert_file_to_music(Path::new(path))
@@ -284,9 +284,7 @@ fn from_lilypond_music(path: &str, language: Option<&str>) -> PyResult<PyMusicDo
 fn from_lilypond_music_string(text: &str, language: Option<&str>) -> PyResult<PyMusicDocument> {
     let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
     if let Some(lang_str) = language {
-        let lang = PitchLanguage::from_str_loose(lang_str)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown language: {lang_str}")))?;
-        adapter = adapter.with_language(lang);
+        adapter = adapter.with_language(parse_language(lang_str)?);
     }
     let doc = adapter
         .convert_str_to_music(text)
@@ -316,9 +314,7 @@ fn to_lilypond_music(doc: &PyMusicDocument, path: Option<&str>) -> PyResult<Stri
 fn to_lilypond(score: &PyScore, path: Option<&str>, language: Option<&str>) -> PyResult<String> {
     let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
     if let Some(lang_str) = language {
-        let lang = PitchLanguage::from_str_loose(lang_str)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown language: {lang_str}")))?;
-        adapter = adapter.with_language(lang);
+        adapter = adapter.with_language(parse_language(lang_str)?);
     } else if let Some(lang) = score.inner.metadata.pitch_language {
         adapter = adapter.with_language(lang);
     }
@@ -344,6 +340,36 @@ fn to_musicxml(score: &PyScore, path: Option<&str>) -> PyResult<String> {
         std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
     }
     Ok(output)
+}
+
+/// Recursively expand ``\include`` directives in a LilyPond file, returning the
+/// flattened source.  If *output* is given the result is also written there.
+///
+/// *include_paths* are extra directories searched for includes; pass
+/// ``add_markers=False`` to suppress the ``% === BEGIN/END INCLUDE ===``
+/// comments.
+#[pyfunction]
+#[pyo3(signature = (input, output=None, *, include_paths=None, add_markers=true))]
+fn flatten(
+    input: &str,
+    output: Option<&str>,
+    include_paths: Option<Vec<String>>,
+    add_markers: bool,
+) -> PyResult<String> {
+    let opts = adapters::ly_flatten::FlattenOpts {
+        include_paths: include_paths
+            .unwrap_or_default()
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
+        add_markers,
+    };
+    let text = adapters::ly_flatten::flatten(Path::new(input), opts)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    if let Some(p) = output {
+        std::fs::write(p, &text).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    }
+    Ok(text)
 }
 
 /// Parse an ABC notation (``.abc``) file into a :class:`Score`.
@@ -421,8 +447,7 @@ fn transpose(score: &PyScore, semitones: i32) -> PyScore {
 /// Returns a new :class:`Score`.
 #[pyfunction]
 fn change_language(score: &PyScore, language: &str) -> PyResult<PyScore> {
-    let lang = PitchLanguage::from_str_loose(language)
-        .ok_or_else(|| PyValueError::new_err(format!("unknown language: {language}")))?;
+    let lang = parse_language(language)?;
     Ok(PyScore {
         inner: transforms::language::change_language(&score.inner, lang),
     })
@@ -682,6 +707,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_lilypond_music_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond_music, m)?)?;
+    m.add_function(wrap_pyfunction!(flatten, m)?)?;
     m.add_function(wrap_pyfunction!(to_musicxml, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc_string, m)?)?;

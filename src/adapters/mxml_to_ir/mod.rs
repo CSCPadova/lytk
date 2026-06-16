@@ -405,22 +405,16 @@ fn parse_part_group(pg: &mxml::PartGroup) -> PartGroup {
         group.name = name.content.clone();
     }
     if let Some(ref sym) = pg.content.group_symbol {
-        use musicxml::datatypes::GroupSymbolValue;
-        let sym_str = match sym.content {
-            GroupSymbolValue::Brace => "brace",
-            GroupSymbolValue::Bracket => "bracket",
-            GroupSymbolValue::Line => "line",
-            GroupSymbolValue::Square => "square",
-            GroupSymbolValue::None => "none",
+        use musicxml::datatypes::GroupSymbolValue as G;
+        let (bracket, group_type) = match sym.content {
+            G::Brace => ("brace", "PianoStaff"),
+            G::Bracket => ("bracket", "StaffGroup"),
+            G::Line => ("line", "ChoirStaff"),
+            G::Square => ("square", "StaffGroup"),
+            G::None => ("none", "StaffGroup"),
         };
-        group.bracket = sym_str.to_string();
-        group.group_type = match sym_str {
-            "brace" => "PianoStaff",
-            "bracket" => "StaffGroup",
-            "line" => "ChoirStaff",
-            _ => "StaffGroup",
-        }
-        .to_string();
+        group.bracket = bracket.to_string();
+        group.group_type = group_type.to_string();
     }
     if let Some(ref num) = pg.attributes.number {
         group.number = num.0.parse().unwrap_or(1);

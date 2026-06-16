@@ -33,6 +33,7 @@ fn make_simple_score() -> Score {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -123,6 +124,7 @@ fn rest_emission() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -163,6 +165,7 @@ fn measure_rest() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -199,6 +202,7 @@ fn chord_emission() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -243,6 +247,7 @@ fn note_with_tie() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -286,6 +291,7 @@ fn note_with_articulations() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -326,6 +332,7 @@ fn direction_with_dynamics() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -369,6 +376,7 @@ fn direction_emits_staff_and_placement() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -412,6 +420,7 @@ fn direction_with_tempo() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -451,6 +460,7 @@ fn fermata_on_note() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -489,6 +499,7 @@ fn multi_voice_backup() {
     };
     let measure = crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,
@@ -932,6 +943,7 @@ fn emit_measure(measure: crate::ir::measure::Measure) -> String {
 fn make_empty_measure() -> crate::ir::measure::Measure {
     crate::ir::measure::Measure {
         number: 1,
+        number_label: None,
         implicit: false,
         senza_misura: false,
         width: None,

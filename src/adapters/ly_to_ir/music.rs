@@ -95,8 +95,7 @@ pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
                     state.last_duration = dur.clone();
                 }
                 let attachments = consume_attachments(state, &children, &mut i);
-                let chord = build_chord(state, chord_node, dur);
-                let mut chord = chord;
+                let mut chord = build_chord(state, chord_node, dur);
                 apply_chord_attachments(state, &mut chord, &attachments);
                 // Remember the chord's pitches for the `q` repeat shorthand.
                 state.last_chord_pitches = chord.notes.iter().map(|n| n.pitch).collect();

@@ -221,37 +221,31 @@ impl IrToMidiAdapter {
         // Track 0: conductor (tempo, time sig, key sig)
         smf.tracks.push(self.build_conductor_track(score));
 
-        // One track per part (or per staff for multi-staff parts).
-        // Assign channels sequentially, skip ch 9 = percussion.
+        // One track per part (or per staff for multi-staff parts). Use the
+        // part's explicit channel, else hand out the next free one, skipping
+        // ch 9 (percussion).
         let mut ch: u8 = 0;
+        let mut next_channel = |explicit: u8| -> u8 {
+            if explicit != 0 {
+                return explicit;
+            }
+            let c = ch;
+            ch += 1;
+            if ch == 9 {
+                ch = 10;
+            }
+            c
+        };
         for part in score.parts() {
             if part.staves > 1 {
                 // Split multi-staff part into per-staff tracks
                 for staff_num in 1..=part.staves {
-                    let channel = if part.midi_channel != 0 {
-                        part.midi_channel
-                    } else {
-                        let c = ch;
-                        ch += 1;
-                        if ch == 9 {
-                            ch = 10;
-                        }
-                        c
-                    };
+                    let channel = next_channel(part.midi_channel);
                     let sub_part = self.filter_part_by_staff(part, staff_num);
                     smf.tracks.push(self.build_part_track(&sub_part, channel));
                 }
             } else {
-                let channel = if part.midi_channel != 0 {
-                    part.midi_channel
-                } else {
-                    let c = ch;
-                    ch += 1;
-                    if ch == 9 {
-                        ch = 10;
-                    }
-                    c
-                };
+                let channel = next_channel(part.midi_channel);
                 smf.tracks.push(self.build_part_track(part, channel));
             }
         }

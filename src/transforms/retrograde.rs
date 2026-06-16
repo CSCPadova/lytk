@@ -127,6 +127,7 @@ mod tests {
         };
         let measure = Measure {
             number: 1,
+            number_label: None,
             implicit: false,
             senza_misura: false,
             width: None,

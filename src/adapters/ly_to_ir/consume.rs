@@ -338,6 +338,9 @@ pub(super) fn is_post_note_command(text: &str) -> bool {
 pub(super) fn punct_text(state: &WalkState, node: Node) -> String {
     if node.child_count() > 0 {
         let mut c = node.walk();
+        // The explicit binding keeps the cursor borrow alive until the result
+        // (an owned String) is materialised — returning the chain directly
+        // would drop `c` too early.
         let result = node
             .children(&mut c)
             .next()

@@ -127,29 +127,19 @@ pub fn transpose_music(doc: &MusicDocument, semitones: i32) -> MusicDocument {
 
 /// Transpose a key signature on the circle of fifths.
 ///
-/// Each semitone maps to a number of fifths steps. The result is clamped
-/// to the valid range -7..=7 (wrapping enharmonically when needed).
+/// Each semitone maps to a number of fifths steps; every entry in the table
+/// below is already within the valid -7..=7 range, so no clamping is needed.
 fn transpose_key(key: KeySignature, semitones: i32) -> KeySignature {
     // Semitone-to-fifths mapping: C→0, C#→7, D→2, Eb→-3, E→4, F→-1,
     // F#→6, G→1, Ab→-4, A→3, Bb→-2, B→5
     const SEMITONE_TO_FIFTHS: [i32; 12] = [0, 7, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
 
-    // Current root pitch in semitones from C (based on fifths position)
+    // Current root pitch in semitones from C (based on fifths position).
     let current_semitones = fifths_to_semitones(key.fifths as i32);
     let target_semitones = (current_semitones + semitones).rem_euclid(12) as usize;
-    let new_fifths = SEMITONE_TO_FIFTHS[target_semitones];
-
-    // Clamp to -7..=7 (enharmonic wrap)
-    let clamped = if new_fifths > 7 {
-        new_fifths - 12
-    } else if new_fifths < -7 {
-        new_fifths + 12
-    } else {
-        new_fifths
-    };
 
     KeySignature {
-        fifths: clamped as i8,
+        fifths: SEMITONE_TO_FIFTHS[target_semitones] as i8,
         mode: key.mode,
     }
 }
@@ -198,6 +188,7 @@ mod tests {
         };
         let measure = Measure {
             number: 1,
+            number_label: None,
             implicit: false,
             senza_misura: false,
             width: None,

@@ -509,23 +509,8 @@ fn emit_voice_elements(
         tokens.push("}".to_string());
     }
 
-    // Group tokens into lines of ~72 chars
-    if !tokens.is_empty() {
-        let mut current_line: Vec<&str> = Vec::new();
-        let mut current_len = 0usize;
-        for token in &tokens {
-            current_len += token.len() + 1;
-            current_line.push(token);
-            if current_len > 72 {
-                lines.push(format!("{pad}{}", current_line.join(" ")));
-                current_line.clear();
-                current_len = 0;
-            }
-        }
-        if !current_line.is_empty() {
-            lines.push(format!("{pad}{}", current_line.join(" ")));
-        }
-    }
+    // Group tokens into lines of ~72 chars.
+    super::helpers::push_wrapped(&tokens, pad, lines);
 }
 
 /// Emit a two-note tremolo as `\repeat tremolo N { a b }` from a start/stop

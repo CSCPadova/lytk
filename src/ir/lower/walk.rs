@@ -194,7 +194,12 @@ fn walk_context(
             state.current_staff = saved_staff;
         }
 
-        ContextType::PianoStaff | ContextType::GrandStaff => {
+        // All group contexts behave identically; the stored `context_type`
+        // is what later distinguishes PianoStaff/GrandStaff from StaffGroup/ChoirStaff.
+        ContextType::PianoStaff
+        | ContextType::GrandStaff
+        | ContextType::StaffGroup
+        | ContextType::ChoirStaff => {
             let group_idx = state.groups.len();
             state.groups.push((
                 context_type.clone(),
@@ -204,21 +209,7 @@ fn walk_context(
             let staff_count_before = state.staves.len();
             walk_music(content, state);
             let staff_count_after = state.staves.len();
-            // Record which staves belong to this group
-            let staff_indices: Vec<usize> = (staff_count_before..staff_count_after).collect();
-            state.groups[group_idx].2 = staff_indices;
-        }
-
-        ContextType::StaffGroup | ContextType::ChoirStaff => {
-            let group_idx = state.groups.len();
-            state.groups.push((
-                context_type.clone(),
-                name.map(|s| s.to_string()),
-                Vec::new(),
-            ));
-            let staff_count_before = state.staves.len();
-            walk_music(content, state);
-            let staff_count_after = state.staves.len();
+            // Record which staves belong to this group.
             let staff_indices: Vec<usize> = (staff_count_before..staff_count_after).collect();
             state.groups[group_idx].2 = staff_indices;
         }
@@ -252,34 +243,14 @@ fn walk_repeat(
     state: &mut LowerState,
 ) {
     match repeat_type {
-        RepeatType::Volta => {
-            // For volta repeats, we unfold for the score layout
-            // (MusicXML emitter handles volta brackets separately)
-            if alternatives.is_empty() {
-                for _ in 0..count {
-                    walk_music(body, state);
-                }
-            } else {
-                for i in 0..count as usize {
-                    walk_music(body, state);
-                    let alt_idx = if i < alternatives.len() {
-                        i
-                    } else {
-                        alternatives.len() - 1
-                    };
-                    walk_music(&alternatives[alt_idx], state);
-                }
-            }
-        }
-        RepeatType::Unfold => {
+        // Volta and Unfold both unfold the body for score layout (the MusicXML
+        // emitter handles volta brackets separately). An empty `alternatives`
+        // simply skips the alternative pass.
+        RepeatType::Volta | RepeatType::Unfold => {
             for i in 0..count as usize {
                 walk_music(body, state);
                 if !alternatives.is_empty() {
-                    let alt_idx = if i < alternatives.len() {
-                        i
-                    } else {
-                        alternatives.len() - 1
-                    };
+                    let alt_idx = i.min(alternatives.len() - 1);
                     walk_music(&alternatives[alt_idx], state);
                 }
             }

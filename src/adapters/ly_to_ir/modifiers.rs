@@ -214,23 +214,6 @@ fn consume_repeat_body(state: &mut WalkState, children: &[Node], mut i: usize) -
 
 /// Parse `\alternative { { alt1 } { alt2 } ... }` and mark endings.
 fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u8) {
-    let mut cursor = alt_block.walk();
-    let _alt_blocks: Vec<Node> = {
-        let mut v = Vec::new();
-        if cursor.goto_first_child() {
-            loop {
-                let node = cursor.node();
-                if node.kind() == "expression_block" {
-                    v.push(node);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        v
-    };
-
     // Walk through children more carefully to handle \relative alternatives
     let children: Vec<Node> = {
         let mut c = Vec::new();

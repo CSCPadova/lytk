@@ -84,9 +84,9 @@ class Dataset:
         memory, so it scales to large folders. When a ``cache_dir`` is set the
         per-item cache is consulted as each item is produced.
         """
-        fn = _require_representation(representation)
+        _require_representation(representation)  # validate the name up front
         for i in range(len(self)):
-            yield self._convert_item(i, representation, fn, kwargs)
+            yield self._convert_item(i, representation, kwargs)
 
     def to_representation(self, representation: str, **kwargs: Any) -> list[np.ndarray]:
         """Eagerly convert every item to ``representation`` (one array per item).
@@ -96,8 +96,8 @@ class Dataset:
         """
         return list(self.iter_representation(representation, **kwargs))
 
-    def _convert_item(self, index, representation, fn, kwargs) -> np.ndarray:
-        return fn(self[index], **kwargs)
+    def _convert_item(self, index, representation, kwargs) -> np.ndarray:
+        return _REPRESENTATIONS[representation](self[index], **kwargs)
 
     def to_note_arrays(self, resolution: int = 480) -> list[np.ndarray]:
         return self.to_representation("note_array", resolution=resolution)
@@ -138,14 +138,12 @@ class Dataset:
         total = float(sum(ratios))
         subsets: list[Subset] = []
         start = 0
-        for k, r in enumerate(ratios):
-            # The last subset takes the remainder so all items are used.
-            if k == len(ratios) - 1:
-                end = n
-            else:
-                end = start + int(round(n * r / total))
+        for r in ratios[:-1]:
+            end = start + int(round(n * r / total))
             subsets.append(Subset(self, indices[start:end]))
             start = end
+        # The last subset takes the remainder so every item is used.
+        subsets.append(Subset(self, indices[start:]))
         return tuple(subsets)
 
     # -- ML framework adapters (lazy imports) --------------------------------
@@ -164,7 +162,7 @@ class Dataset:
         except ImportError as exc:  # pragma: no cover - optional dep
             raise ImportError("PyTorch is required for to_pytorch_dataset()") from exc
 
-        fn = _require_representation(representation)
+        _require_representation(representation)  # validate the name up front
         outer = self
 
         class _LytkTorchDataset(TorchDataset):
@@ -172,7 +170,7 @@ class Dataset:
                 return len(outer)
 
             def __getitem__(self, i: int):
-                arr = outer._convert_item(i, representation, fn, kwargs)
+                arr = outer._convert_item(i, representation, kwargs)
                 return torch.as_tensor(np.asarray(arr))
 
         return _LytkTorchDataset()
@@ -190,18 +188,18 @@ class Dataset:
         except ImportError as exc:  # pragma: no cover - optional dep
             raise ImportError("TensorFlow is required for to_tensorflow_dataset()") from exc
 
-        fn = _require_representation(representation)
+        _require_representation(representation)  # validate the name up front
         outer = self
         n = len(outer)
 
         def _gen():
             for i in range(n):
-                yield np.asarray(outer._convert_item(i, representation, fn, kwargs))
+                yield np.asarray(outer._convert_item(i, representation, kwargs))
 
         if n:
             # Convert a single probe item to derive the tensor spec; this is
             # one item, not the whole dataset (and it warms the cache).
-            probe = np.asarray(outer._convert_item(0, representation, fn, kwargs))
+            probe = np.asarray(outer._convert_item(0, representation, kwargs))
             spec = tf.TensorSpec(shape=[None] * probe.ndim, dtype=probe.dtype)
         else:  # pragma: no cover - empty dataset
             spec = tf.TensorSpec(shape=[None], dtype=tf.int32)
@@ -274,16 +272,17 @@ class FolderDataset(Dataset):
             rel = path
         return hashlib.sha1(rel.as_posix().encode("utf-8")).hexdigest()[:16]
 
-    def _convert_item(self, index, representation, fn, kwargs) -> np.ndarray:
+    def _convert_item(self, index, representation, kwargs) -> np.ndarray:
         # On-disk cache of converted representations (EFT2).
+        convert = _REPRESENTATIONS[representation]
         if self.cache_dir is None:
-            return fn(self[index], **kwargs)
+            return convert(self[index], **kwargs)
         key = "_".join(f"{k}-{v}" for k, v in sorted(kwargs.items()))
         stem = self.paths[index].stem
         path_hash = self._path_hash(index)
         cache_file = self.cache_dir / f"{stem}__{representation}__{key}__{path_hash}.npy"
         if cache_file.exists():
             return np.load(cache_file, allow_pickle=False)
-        arr = fn(self[index], **kwargs)
+        arr = convert(self[index], **kwargs)
         np.save(cache_file, np.asarray(arr), allow_pickle=False)
         return arr

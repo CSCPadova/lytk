@@ -1,5 +1,75 @@
 # Changelog
 
+## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
+
+A behavior-preserving readability/simplification sweep across the package
+(driven by a parallel multi-agent review, then ablated one change at a time
+against the full test suite). No public behavior changed: 514 Rust unit +
+integration tests, 117 Python tests, `cargo clippy -D warnings`, and `uv build`
+all stay green.
+
+**Removed duplication / dead code**
+- `ly_to_ir::apply`: the chord attachment handler's second loop was a ~190-line
+  verbatim copy of `apply_note_attachments`. It now delegates to that function
+  (filtering out `\arpeggio`/`\glissando`, which the chord-specific first loop
+  still handles); the chord and its notes share one duration so beam levels are
+  identical. Biggest single cleanup.
+- Batch CLI (`main.rs`): dropped a dead `transform: Option<&F>` generic that the
+  only caller always passed as `None`; `run_batch`/`process_one_file` are now
+  plain functions.
+- `transpose_key`: removed a `-7..=7` clamp that could never fire (every table
+  entry is already in range) — output is unchanged.
+- New small shared helpers replacing copy-paste: `push_wrapped` + `octave_marks`
+  (ir_to_ly), `rest_direction_elements` (ir_to_mxml, was triplicated),
+  `note_audible` + `placement_or_unspecified` (mxml_to_ir), `parse_language`
+  (lib.rs, ×6), `next_channel` (ir_to_midi), `make_time_sig`/`make_key_sig` and
+  a `rev().find_map` (midi_to_ir), `dedup_keep_last` (ly_flatten), and a `build`
+  helper shared by MusicXML `convert`/`write`.
+- Merged identical match arms (group contexts and Volta/Unfold repeats in
+  `lower/walk.rs`; a redundant time-sig-boundary split in `lower/build.rs`),
+  dropped two dead params from `build_voice_from_events`, and deleted a dead
+  `_alt_blocks` traversal in `ly_to_ir::modifiers`.
+- Python: `_invert_ext` reduced to its two real cases; `Dataset._convert_item`
+  no longer threads a redundant `fn` (derivable from `representation`);
+  `Dataset.split` flattened.
+
+**Left as-is (deliberately)**
+- Reverted one suggested change: the `let result = …; result` bindings in the
+  tree-sitter walkers are load-bearing (they keep a cursor borrow alive); the
+  borrow checker rejects the "simpler" direct return.
+- Skipped a few low-gain/medium-risk suggestions (inline `\relative` reuse in
+  the parser, a `beats_fraction` swap with a `.max(1)` edge case, a closure→fn
+  in the LY emitter) to avoid risk that outweighs the readability gain.
+
+## 2026-06-16 — Second REVIEW.md round: batch exit codes, CLI parity, measure labels
+
+Addressed a fresh round of review findings (behavior/CLI/IR), all approved approaches.
+
+**Fixed**
+- **High — batch conversion masked partial failures.** Both `run_batch` (`src/main.rs`)
+  and the Python `_run_batch` printed per-file errors but still exited `0`. They now count
+  failures, print a summary, and exit non-zero when any file fails — while still converting
+  the valid files. Tests in `tests/cli.rs` and `tests/test_cli.py` feed a malformed file
+  alongside a good one and assert the non-zero exit + that the good file is still produced.
+- **Medium — Python `lytk` lacked the documented `flatten` subcommand.** `flatten` had no
+  Python binding at all. Added a PyO3 `flatten(input, output=None, *, include_paths=None,
+  add_markers=True)` wrapping `ly_flatten::flatten`, exported `lytk.flatten` + a `.pyi`
+  stub, and registered the `flatten` subcommand (`-o`, repeatable `-I`, `--no-markers`) in
+  `cli.py`. Now at parity with the Rust CLI. + CLI tests.
+- **Medium — non-numeric MusicXML measure numbers collapsed to `0`.** Added
+  `Measure.number_label: Option<String>` (`#[serde(default, skip_serializing_if)]` so
+  existing numeric-measure JSON is unchanged). The importer preserves the raw label whenever
+  it isn't the plain decimal of `number` (e.g. `"3A"`, `"X1"`, `"03"`); the MusicXML exporter
+  emits it verbatim. Round-trip test in `src/adapters/mxml_to_ir/tests.rs`.
+- **Low — `cargo test` was red (`cli_help_flag`) — a regression from the prior round.**
+  Adding a `Cargo.toml` `description` made clap source the `--help` banner from it
+  (hyphenated "music-notation"). The Rust CLI now sets an explicit `about` matching the
+  Python entry point ("lytk — music notation conversion and augmentation toolkit."), keeping
+  the manifest description for package metadata. Suite is green again.
+
+Counts: 876 Rust tests (514 unit + 362 integration) + 117 Python; `cargo clippy -D warnings`
+and `uv build` both clean.
+
 ## 2026-06-15 (cont.) — REVIEW.md follow-up: dataset/CLI/docs fixes
 
 Addressed the four findings raised in `REVIEW.md` (package/ML-layer polish; the

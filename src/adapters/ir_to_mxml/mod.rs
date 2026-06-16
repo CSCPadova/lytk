@@ -46,6 +46,17 @@ impl IrToMxmlAdapter {
         self.divisions = divisions;
         self
     }
+
+    /// Build the MusicXML score tree, auto-computing divisions that accommodate
+    /// every tuplet ratio in the score. Shared by `convert` and `write`.
+    fn build(&self, score: &Score) -> musicxml::elements::ScorePartwise {
+        let effective_divisions = compute_score_divisions(score, self.divisions);
+        let adapter = Self {
+            version: self.version.clone(),
+            divisions: effective_divisions,
+        };
+        adapter.build_score_partwise(score)
+    }
 }
 
 impl Default for IrToMxmlAdapter {
@@ -56,14 +67,7 @@ impl Default for IrToMxmlAdapter {
 
 impl FromIrAdapter for IrToMxmlAdapter {
     fn convert(&self, score: &Score) -> Result<String> {
-        // Auto-compute divisions that accommodate all tuplet ratios in the score
-        let effective_divisions = compute_score_divisions(score, self.divisions);
-        let adapter = Self {
-            version: self.version.clone(),
-            divisions: effective_divisions,
-        };
-
-        let mxml_score = adapter.build_score_partwise(score);
+        let mxml_score = self.build(score);
 
         let bytes = musicxml::write_partwise_score_data(&mxml_score, false, false)
             .map_err(AdapterError::Parse)?;
@@ -72,13 +76,7 @@ impl FromIrAdapter for IrToMxmlAdapter {
     }
 
     fn write(&self, score: &Score, path: &Path) -> Result<()> {
-        let effective_divisions = compute_score_divisions(score, self.divisions);
-        let adapter = Self {
-            version: self.version.clone(),
-            divisions: effective_divisions,
-        };
-
-        let mxml_score = adapter.build_score_partwise(score);
+        let mxml_score = self.build(score);
 
         let path_str = path
             .to_str()

@@ -9,6 +9,7 @@ Subcommands::
     lytk convert  <input> -o <output> [--format ly|xml|abc|midi] [--jobs N]
     lytk transpose <input> -o <output> --semitones N [--format ly|xml|abc|midi]
     lytk info     <input>
+    lytk flatten  <input> [-o <output>] [-I <dir> ...] [--no-markers]
 """
 
 from __future__ import annotations
@@ -47,15 +48,9 @@ def _parse_input(path: Path) -> lytk.Score:
 
 
 def _invert_ext(path: Path) -> str:
-    ext = path.suffix.lower()
-    if ext in {".ly", ".ily"}:
+    # LilyPond inverts to MusicXML; every other input inverts to LilyPond.
+    if path.suffix.lower() in {".ly", ".ily"}:
         return ".xml"
-    if ext in {".xml", ".musicxml", ".mxl"}:
-        return ".ly"
-    if ext in {".mid", ".midi"}:
-        return ".ly"
-    if ext == ".abc":
-        return ".ly"
     return ".ly"
 
 
@@ -177,11 +172,20 @@ def _run_batch(
         with ProcessPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
             results = list(pool.map(_convert_one, tasks))
 
-    for file_str, error in results:
-        if error is not None:
-            print(f"{file_str}: {error}", file=sys.stderr)
+    failures = [(f, e) for f, e in results if e is not None]
+    for file_str, error in failures:
+        print(f"{file_str}: {error}", file=sys.stderr)
 
     print(f"Processed {len(files)} files", file=sys.stderr)
+
+    # A batch where some files failed must not report success: automation
+    # should be able to detect partial failures from the exit code.
+    if failures:
+        print(
+            f"error: {len(failures)} of {len(files)} file(s) failed to convert",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _run_transpose(args: argparse.Namespace) -> None:
@@ -211,6 +215,18 @@ def _run_info(args: argparse.Namespace) -> None:
     print(f"Parts:    {len(parts)}")
     for name in parts:
         print(f"  - {name}")
+
+
+def _run_flatten(args: argparse.Namespace) -> None:
+    text = lytk.flatten(
+        args.input,
+        args.output,
+        include_paths=args.include or [],
+        add_markers=not args.no_markers,
+    )
+    # The binding writes the file when --output is given; otherwise emit to stdout.
+    if args.output is None:
+        sys.stdout.write(text)
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +302,33 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_info.add_argument("input", help="Input file.")
     p_info.set_defaults(func=_run_info)
+
+    # -- flatten -------------------------------------------------------------
+    p_flatten = sub.add_parser(
+        "flatten",
+        help="Recursively expand \\include directives into a single flat file.",
+    )
+    p_flatten.add_argument("input", help="Input LilyPond file.")
+    p_flatten.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output file (prints to stdout if omitted).",
+    )
+    p_flatten.add_argument(
+        "-I",
+        "--include",
+        action="append",
+        default=None,
+        metavar="DIR",
+        help="Extra directory to search for \\include files (repeatable).",
+    )
+    p_flatten.add_argument(
+        "--no-markers",
+        action="store_true",
+        help="Suppress %% === BEGIN/END INCLUDE === comment markers.",
+    )
+    p_flatten.set_defaults(func=_run_flatten)
 
     return parser
 

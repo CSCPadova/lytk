@@ -203,6 +203,42 @@ fn convert_batch_directory() {
     );
 }
 
+#[test]
+fn convert_batch_partial_failure_exits_nonzero() {
+    let tmp = TempDir::new().unwrap();
+    let in_dir = tmp.path().join("in");
+    let out_dir = tmp.path().join("out");
+    fs::create_dir_all(&in_dir).unwrap();
+
+    // One valid fixture + one malformed file in the same batch.
+    fs::copy(
+        "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+        in_dir.join("good.xml"),
+    )
+    .unwrap();
+    fs::write(in_dir.join("bad.xml"), "this is not valid musicxml").unwrap();
+
+    lytk()
+        .args([
+            "convert",
+            in_dir.to_str().unwrap(),
+            "-o",
+            out_dir.to_str().unwrap(),
+            "--jobs",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Processed 2 files"))
+        .stderr(predicate::str::contains("failed to convert"));
+
+    // The valid file is still converted even though the batch reports failure.
+    assert!(
+        out_dir.join("good.ly").exists(),
+        "the valid file should still be converted"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // `transpose` subcommand
 // ---------------------------------------------------------------------------

@@ -233,12 +233,12 @@ impl MidiToIrAdapter {
 
         for ch in channels {
             let ch_notes = by_channel.get(&ch).unwrap();
+            // Most recent program change for this channel (scan from the end).
             let program = meta
                 .program_changes
                 .iter()
-                .filter(|(_, c, _)| *c == ch)
-                .map(|(_, _, p)| *p)
-                .next_back()
+                .rev()
+                .find_map(|(_, c, p)| (*c == ch).then_some(*p))
                 .unwrap_or(0);
 
             let part = build_part(
@@ -355,6 +355,25 @@ fn merge_meta(conductor: &TrackMeta, track: &TrackMeta) -> TrackMeta {
 }
 
 /// Build a single [`Part`] from a set of raw MIDI notes.
+fn make_time_sig(num: u8, den_pow: u8) -> TimeSignature {
+    TimeSignature {
+        beats: num.to_string(),
+        beat_type: 1u8 << den_pow,
+        symbol: None,
+    }
+}
+
+fn make_key_sig(fifths: i8, minor: bool) -> KeySignature {
+    KeySignature {
+        fifths,
+        mode: if minor {
+            KeyMode::Minor
+        } else {
+            KeyMode::Major
+        },
+    }
+}
+
 fn build_part(
     notes: &[&RawNote],
     meta: &TrackMeta,
@@ -411,23 +430,12 @@ fn build_part(
                 ..Default::default()
             };
             if let Some(&(_, num, den_pow)) = time_sigs.first() {
-                attrs.time = Some(TimeSignature {
-                    beats: num.to_string(),
-                    beat_type: 1u8 << den_pow,
-                    symbol: None,
-                });
+                attrs.time = Some(make_time_sig(num, den_pow));
             } else {
                 attrs.time = Some(TimeSignature::default());
             }
             if let Some(&(_, fifths, minor)) = key_sigs.first() {
-                attrs.key = Some(KeySignature {
-                    fifths,
-                    mode: if minor {
-                        KeyMode::Minor
-                    } else {
-                        KeyMode::Major
-                    },
-                });
+                attrs.key = Some(make_key_sig(fifths, minor));
             }
             attrs.clefs.insert(1, Clef::default());
             measure.attributes = Some(attrs);
@@ -440,11 +448,7 @@ fn build_part(
                         divisions: divisions as u16,
                         ..Default::default()
                     });
-                    a.time = Some(TimeSignature {
-                        beats: num.to_string(),
-                        beat_type: 1u8 << den_pow,
-                        symbol: None,
-                    });
+                    a.time = Some(make_time_sig(num, den_pow));
                 }
             }
             for &(tick, fifths, minor) in key_sigs {
@@ -453,14 +457,7 @@ fn build_part(
                         divisions: divisions as u16,
                         ..Default::default()
                     });
-                    a.key = Some(KeySignature {
-                        fifths,
-                        mode: if minor {
-                            KeyMode::Minor
-                        } else {
-                            KeyMode::Major
-                        },
-                    });
+                    a.key = Some(make_key_sig(fifths, minor));
                 }
             }
             measure.attributes = attrs;
