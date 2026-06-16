@@ -49,10 +49,16 @@ impl PianoRoll {
     }
 }
 
+/// Hard cap on a piano roll's time steps, bounding the `num_steps * 128`
+/// allocation against adversarial durations/resolution from a user-supplied
+/// note array (`from_note_array` → `to_piano_roll`). ~16M steps × 128 ≈ 2 GiB
+/// worst case; content beyond this is truncated rather than risking an OOM abort.
+pub const MAX_STEPS: u32 = 16_000_000;
+
 /// Encode a [`NoteArray`] as a [`PianoRoll`]. When `encode_velocity` is false,
 /// on-cells are `1`.
 pub fn to_piano_roll(arr: &NoteArray, encode_velocity: bool) -> PianoRoll {
-    let num_steps = arr.length();
+    let num_steps = arr.length().min(MAX_STEPS);
     let mut data = vec![0u8; num_steps as usize * PITCH_COUNT];
 
     for n in &arr.notes {
@@ -64,8 +70,8 @@ pub fn to_piano_roll(arr: &NoteArray, encode_velocity: bool) -> PianoRoll {
         } else {
             1
         };
-        let start = n.onset as usize;
-        let end = (n.onset + n.duration).min(num_steps) as usize;
+        let start = (n.onset as usize).min(num_steps as usize);
+        let end = (n.onset.saturating_add(n.duration)).min(num_steps) as usize;
         for t in start..end {
             data[t * PITCH_COUNT + n.pitch as usize] = value;
         }

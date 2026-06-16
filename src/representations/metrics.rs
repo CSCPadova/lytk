@@ -8,6 +8,12 @@
 use super::note_array::NoteArray;
 use super::piano_roll::{to_piano_roll, PITCH_COUNT};
 
+/// Upper bound on the per-beat / per-measure scratch buffers the beat/groove
+/// metrics allocate. Bounds memory against adversarial length/resolution from a
+/// user-supplied note array; beyond this the metric returns `NaN` rather than
+/// risking a multi-gigabyte allocation.
+const MAX_METRIC_SLOTS: usize = 64_000_000;
+
 /// Number of unique MIDI pitches used.
 pub fn n_pitches_used(arr: &NoteArray) -> usize {
     let mut seen = [false; PITCH_COUNT];
@@ -152,12 +158,13 @@ pub fn empty_beat_rate(arr: &NoteArray) -> f64 {
         return f64::NAN;
     }
     let res = arr.resolution.max(1) as u32;
-    let n_beats = (length / res + 1) as usize;
+    // Bound the allocation against adversarial lengths from a user note array.
+    let n_beats = ((length / res + 1) as usize).min(MAX_METRIC_SLOTS);
     let mut is_empty = vec![true; n_beats];
     let mut count = 0usize;
     for note in &arr.notes {
-        let start = (note.onset / res) as usize;
-        let end = (((note.onset + note.duration) / res) as usize).min(n_beats - 1);
+        let start = ((note.onset / res) as usize).min(n_beats - 1);
+        let end = ((note.onset.saturating_add(note.duration) / res) as usize).min(n_beats - 1);
         for slot in is_empty[start..=end].iter_mut() {
             if *slot {
                 *slot = false;
@@ -236,16 +243,22 @@ pub fn scale_consistency(arr: &NoteArray) -> f64 {
 /// onset patterns`. `measure_resolution` is the number of steps per measure.
 /// `NaN` if there are fewer than two measures.
 pub fn groove_consistency(arr: &NoteArray, measure_resolution: u32) -> f64 {
-    assert!(
-        measure_resolution >= 1,
-        "measure_resolution must be a positive integer"
-    );
+    // A zero measure resolution is undefined (was an `assert!` panic, reachable
+    // from the public Rust API); return NaN like the other empty cases.
+    if measure_resolution < 1 {
+        return f64::NAN;
+    }
     let length = arr.length();
     let n_measures = (length / measure_resolution + 1) as usize;
     if n_measures < 2 {
         return f64::NAN;
     }
     let mr = measure_resolution as usize;
+    // Bound the `n_measures * mr` allocation against adversarial
+    // length/measure_resolution from a user note array.
+    if n_measures.saturating_mul(mr) > MAX_METRIC_SLOTS {
+        return f64::NAN;
+    }
     let mut patterns = vec![false; n_measures * mr];
     for note in &arr.notes {
         let measure = (note.onset / measure_resolution) as usize;
@@ -269,6 +282,22 @@ pub fn groove_consistency(arr: &NoteArray, measure_resolution: u32) -> f64 {
 mod tests {
     use super::super::note_array::NoteRow;
     use super::*;
+
+    #[test]
+    fn test_groove_consistency_zero_measure_resolution_is_nan_not_panic() {
+        // Was an assert! panic in a public fn; now returns NaN.
+        let arr = na(480, &[(0, 480, 60), (480, 480, 62)]);
+        assert!(groove_consistency(&arr, 0).is_nan());
+    }
+
+    #[test]
+    fn test_metrics_bounded_on_adversarial_length() {
+        // A single note with an enormous duration must not allocate gigabytes;
+        // the beat/groove metrics cap their scratch buffers (NaN past the cap).
+        let arr = na(1, &[(0, u32::MAX / 2, 60)]);
+        let _ = empty_beat_rate(&arr); // must not OOM/panic
+        assert!(groove_consistency(&arr, u32::MAX / 2).is_nan());
+    }
 
     /// Build a note-array from `(onset, duration, pitch)` triples (velocity 64).
     fn na(resolution: u16, rows: &[(u32, u32, u8)]) -> NoteArray {

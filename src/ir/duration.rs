@@ -16,6 +16,22 @@ use serde::{Deserialize, Serialize};
 /// Fractional duration type (fraction of a whole note).
 pub type Frac = Ratio<i64>;
 
+/// Largest augmentation-dot count we honor. Beyond this the `1 << dots` shift
+/// would overflow `i64` (panicking in debug, masking the shift in release), and
+/// such dot counts are musically meaningless anyway. Inputs above this are
+/// clamped rather than crashing — see [`dot_multiplier`].
+pub const MAX_DOTS: u8 = 20;
+
+/// The dotted-duration multiplier `2 − 1/2^dots`, with `dots` clamped to
+/// [`MAX_DOTS`] so the shift cannot overflow on adversarial/degenerate input
+/// (a note carrying dozens of dots from a crafted MusicXML/LilyPond/MIDI file
+/// or a hand-edited JSON score). Shared by [`Duration::actual_duration`] and the
+/// MIDI tick math.
+pub fn dot_multiplier(dots: u8) -> Frac {
+    let d = dots.min(MAX_DOTS) as u32;
+    Frac::from_integer(2) - Frac::new(1, 1_i64 << d)
+}
+
 /// A duration value object.
 ///
 /// `base` is measured as a fraction of a whole note (quarter = 1/4).
@@ -61,8 +77,7 @@ impl Duration {
     /// `duration()` function.
     pub fn actual_duration(&self) -> Frac {
         // Dot formula: base * (2 - 1/2^dots)
-        let dot_multiplier = Frac::from_integer(2) - Frac::new(1, 1_i64 << self.dots as u32);
-        let dotted = self.base * dot_multiplier;
+        let dotted = self.base * dot_multiplier(self.dots);
         // Tuplet scaling
         dotted * Frac::new(self.tuplet_normal as i64, self.tuplet_actual as i64)
     }
@@ -233,6 +248,36 @@ mod tests {
         let q = Duration::quarter();
         assert_eq!(q.actual_duration(), Frac::new(1, 4));
         assert_eq!(q.lilypond_log(), Some(2));
+    }
+
+    #[test]
+    fn test_extreme_dots_do_not_overflow() {
+        // dots ≥ 63 used to panic (1<<63 = i64::MIN) in debug / corrupt in
+        // release. Reachable from a crafted .ly/.xml/.json. Must stay finite.
+        for dots in [MAX_DOTS, 63, 64, 200, 255] {
+            let d = Duration {
+                base: Frac::new(1, 4),
+                dots,
+                tuplet_normal: 1,
+                tuplet_actual: 1,
+            };
+            let v = d.actual_duration();
+            assert!(*v.numer() > 0 && *v.denom() > 0, "dots={dots} → {v}");
+        }
+        // Clamped: anything ≥ MAX_DOTS behaves identically.
+        let a = Duration {
+            base: Frac::new(1, 4),
+            dots: MAX_DOTS,
+            tuplet_normal: 1,
+            tuplet_actual: 1,
+        };
+        let b = Duration {
+            base: Frac::new(1, 4),
+            dots: 255,
+            tuplet_normal: 1,
+            tuplet_actual: 1,
+        };
+        assert_eq!(a.actual_duration(), b.actual_duration());
     }
 
     #[test]

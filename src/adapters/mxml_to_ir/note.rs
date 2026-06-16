@@ -33,8 +33,13 @@ pub(super) fn convert_note(mxml_note: &mxml::Note, divisions: i64) -> Option<Not
         .map(|s| s.content.0 as u8)
         .unwrap_or(1);
 
-    // Duration
-    let dots = mxml_note.content.dot.len() as u8;
+    // Duration. Cap the dot count so a crafted note with hundreds of <dot/>
+    // elements can't truncate-wrap the u8 (dot_multiplier clamps it anyway).
+    let dots = mxml_note
+        .content
+        .dot
+        .len()
+        .min(crate::ir::duration::MAX_DOTS as usize) as u8;
     let type_name = mxml_note
         .content
         .r#type

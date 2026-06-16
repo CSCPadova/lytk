@@ -106,13 +106,15 @@ pub(super) fn consume_duration(
     state.last_duration.clone()
 }
 
-/// Consume trailing duration dots (`.` punctuation nodes).
+/// Consume trailing duration dots (`.` punctuation nodes). Saturating so a note
+/// followed by 256+ `.` tokens in a crafted file can't overflow the `u8`
+/// counter; [`crate::ir::duration::dot_multiplier`] clamps the effective value.
 fn consume_dots(state: &WalkState, children: &[Node], i: &mut usize) -> u8 {
     let mut dots = 0u8;
     while *i < children.len() {
         let node = children[*i];
         if node.kind() == "punctuation" && punct_text(state, node) == "." {
-            dots += 1;
+            dots = dots.saturating_add(1);
             *i += 1;
         } else {
             break;

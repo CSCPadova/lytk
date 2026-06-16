@@ -53,10 +53,13 @@ pub struct NoteArray {
 
 impl NoteArray {
     /// The total length of the piece in time steps (end of the last note).
+    ///
+    /// Uses saturating addition so adversarial `onset`/`duration` values from a
+    /// user-supplied note array (`from_note_array`) can't overflow `u32`.
     pub fn length(&self) -> u32 {
         self.notes
             .iter()
-            .map(|n| n.onset + n.duration)
+            .map(|n| n.onset.saturating_add(n.duration))
             .max()
             .unwrap_or(0)
     }

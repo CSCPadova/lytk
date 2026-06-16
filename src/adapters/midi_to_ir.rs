@@ -45,7 +45,11 @@ impl MidiToIrAdapter {
                 // SMPTE: use fps×sub as approximate ticks-per-quarter
                 (fps.as_int() as u32) * (sub as u32)
             }
-        };
+        }
+        // A crafted/corrupt SMF header can declare 0 ticks-per-quarter (or a
+        // 0-subframe SMPTE timing). Clamp to 1 so the measure-boundary math
+        // below can't divide-by-zero / loop forever.
+        .max(1);
 
         match smf.header.format {
             Format::SingleTrack => self.parse_format0(&smf.tracks, divisions),
@@ -358,7 +362,10 @@ fn merge_meta(conductor: &TrackMeta, track: &TrackMeta) -> TrackMeta {
 fn make_time_sig(num: u8, den_pow: u8) -> TimeSignature {
     TimeSignature {
         beats: num.to_string(),
-        beat_type: 1u8 << den_pow,
+        // `den_pow` is the raw denominator-power byte from the MIDI file; a real
+        // one is ≤ 7 (128th-note beat). Clamp so the u8 shift can't overflow on
+        // a crafted value (den_pow ≥ 8).
+        beat_type: 1u8 << den_pow.min(7),
         symbol: None,
     }
 }
@@ -621,10 +628,18 @@ fn compute_measure_boundaries(
             ts_idx += 1;
         }
         let (_, num, den_pow) = time_sigs[ts_idx];
-        let den = 1u32 << den_pow;
+        // Clamp the denominator power so the shift can't overflow on a crafted
+        // time signature (den_pow ≥ 32).
+        let den = 1u64 << (den_pow.min(31));
         // Measure length in ticks = (num / den) * 4 * divisions
         //   = num * 4 * divisions / den
-        let measure_ticks = (num as u64) * 4 * (divisions as u64) / (den as u64);
+        let measure_ticks = (num as u64) * 4 * (divisions as u64) / den;
+        // A 0/N time signature (num == 0) — legal to encode, invalid musically —
+        // yields a zero-length measure; without this guard `cursor` never
+        // advances and the loop runs forever, growing `boundaries` until OOM.
+        if measure_ticks == 0 {
+            break;
+        }
         let end = (cursor + measure_ticks).min(last_tick);
         boundaries.push((cursor, end));
         cursor += measure_ticks;
@@ -676,7 +691,7 @@ fn candidate_ticks(
     divisions: u32,
 ) -> i64 {
     let base = Frac::new(base_n, base_d);
-    let dot_mult = Frac::from_integer(2) - Frac::new(1, 1_i64 << dots as u32);
+    let dot_mult = crate::ir::duration::dot_multiplier(dots);
     let tuplet_mult = Frac::new(tuplet_normal as i64, tuplet_actual as i64);
     let actual = base * dot_mult * tuplet_mult;
     // ticks = actual_duration_whole_notes * 4 * divisions
@@ -771,6 +786,37 @@ fn midi_key_to_pitch(midi_key: u8, use_sharps: bool) -> Pitch {
 mod tests {
     use super::*;
     use crate::ir::articulation::StartStop;
+
+    #[test]
+    fn test_compute_measure_boundaries_zero_numerator_terminates() {
+        // A 0/4 time signature (num == 0) yields zero-length measures; the loop
+        // must break instead of spinning forever / OOMing.
+        let bounds = compute_measure_boundaries(&[(0, 0, 2)], 480, 1920);
+        assert!(!bounds.is_empty());
+    }
+
+    #[test]
+    fn test_compute_measure_boundaries_huge_den_pow_no_overflow() {
+        // A crafted denominator power (≥ 32) must not overflow the shift.
+        let bounds = compute_measure_boundaries(&[(0, 4, 200)], 480, 1920);
+        assert!(!bounds.is_empty());
+    }
+
+    #[test]
+    fn test_zero_tpb_header_is_clamped() {
+        // A MIDI header declaring 0 ticks-per-quarter must not divide-by-zero or
+        // loop forever. Minimal format-0 SMF: header + one (empty) track.
+        let bytes: &[u8] = &[
+            b'M', b'T', b'h', b'd', 0, 0, 0, 6, // header chunk, len 6
+            0, 0, // format 0
+            0, 1, // 1 track
+            0, 0, // division = 0 ticks-per-quarter (degenerate)
+            b'M', b'T', b'r', b'k', 0, 0, 0, 4, // track chunk, len 4
+            0, 0xFF, 0x2F, 0x00, // end-of-track
+        ];
+        // Must return (Ok or Err) without panicking/hanging.
+        let _ = MidiToIrAdapter::new().convert_bytes(bytes);
+    }
 
     #[test]
     fn test_midi_key_to_pitch_middle_c() {

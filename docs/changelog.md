@@ -24,6 +24,27 @@ data on the library's core path (`from_musicxml`/`from_midi` →
   ABC forward-only tie collapses; un-tied repeated pitches stay separate
   (anti-over-fusion); ties do not cross parallel voices. 519 lib tests green.
 
+**Phase 2a — Untrusted-input clamping / checked arithmetic.** Several reachable
+crashes/hangs on crafted-but-parseable input are now bounded (debug panics /
+release corruption / infinite loops / multi-GB allocations → safe behavior):
+- `ir/duration.rs`: new shared `dot_multiplier(dots)` clamps the `1 << dots`
+  shift to `MAX_DOTS` (was UB/panic at dots ≥ 63 from a crafted .ly/.xml/.json).
+  Reused by `midi_to_ir`'s tick math; dot counting saturates in `consume_dots`
+  and is capped in `mxml_to_ir/note.rs`.
+- `representations/event_sequence.rs`: clamp `max_time_shift`/`velocity_bins` to
+  ≥ 1 (was an infinite loop + OOM for `max_time_shift=0`, and an underflow for
+  `velocity_bins=0`); `velocity_to_bin`/`bin_to_velocity` guard `bins=0`.
+- `adapters/midi_to_ir.rs`: clamp header `divisions` to ≥ 1, clamp time-sig
+  denominator-power shifts, and break on a zero-length measure (a `0/N` time sig
+  or `0`-tpq header was an infinite loop → OOM in `compute_measure_boundaries`).
+- `representations/{note_array,piano_roll,metrics}.rs`: saturating `onset+duration`,
+  a `MAX_STEPS` cap on the piano-roll allocation, and `MAX_METRIC_SLOTS` caps on
+  the beat/groove scratch buffers; `groove_consistency`'s `assert!(measure_resolution≥1)`
+  panic is now a `NaN` return.
+- Tests: extreme dots stay finite; `max_time_shift=0`/`velocity_bins=0` terminate;
+  `0/4` time sig and `0`-tpq MIDI header don't hang; metrics bounded on huge
+  durations. 526 lib tests green; default-target `clippy -D warnings` clean.
+
 ## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
 
 A behavior-preserving readability/simplification sweep across the package

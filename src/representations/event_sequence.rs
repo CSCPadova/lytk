@@ -103,18 +103,29 @@ impl EventSequence {
 }
 
 /// Quantise a MIDI velocity into a bin index `0 .. velocity_bins`.
+/// `bins` is clamped to ≥ 1 so a degenerate `bins == 0` can't underflow.
 fn velocity_to_bin(velocity: u8, bins: u8) -> u32 {
-    (velocity as u32 * bins as u32 / 128).min(bins as u32 - 1)
+    let bins = (bins as u32).max(1);
+    (velocity as u32 * bins / 128).min(bins - 1)
 }
 
-/// Inverse of [`velocity_to_bin`] (banded).
+/// Inverse of [`velocity_to_bin`] (banded). `bins` is clamped to ≥ 1 so a
+/// degenerate `bins == 0` can't divide by zero.
 fn bin_to_velocity(bin: u32, bins: u8) -> u8 {
-    (bin * 128 / bins as u32).clamp(1, 127) as u8
+    let bins = (bins as u32).max(1);
+    (bin * 128 / bins).clamp(1, 127) as u8
 }
 
 /// Encode a [`NoteArray`] as an [`EventSequence`].
 pub fn to_event_sequence(arr: &NoteArray, opts: &EventOptions) -> EventSequence {
-    let off_velocity = OFFSET_TIME_SHIFT + opts.max_time_shift;
+    // `max_time_shift == 0` would make the time-shift loop below never advance
+    // (infinite loop + unbounded `codes` growth → OOM); `velocity_bins == 0`
+    // would underflow in `velocity_to_bin`. Both are reachable from the PyO3
+    // wrapper, which accepts arbitrary values. Clamp to a valid vocabulary and
+    // record the effective values so decode stays consistent.
+    let max_time_shift = opts.max_time_shift.max(1);
+    let velocity_bins = opts.velocity_bins.max(1);
+    let off_velocity = OFFSET_TIME_SHIFT + max_time_shift;
 
     // Build timed (time, code) events. Notes are already sorted by
     // (onset, pitch, duration, velocity) in the NoteArray.
@@ -122,7 +133,7 @@ pub fn to_event_sequence(arr: &NoteArray, opts: &EventOptions) -> EventSequence 
     let mut last_bin: i64 = -1;
     for n in &arr.notes {
         if opts.encode_velocity {
-            let bin = velocity_to_bin(n.velocity, opts.velocity_bins);
+            let bin = velocity_to_bin(n.velocity, velocity_bins);
             if bin as i64 != last_bin {
                 timed.push((n.onset, off_velocity + bin));
                 last_bin = bin as i64;
@@ -142,9 +153,9 @@ pub fn to_event_sequence(arr: &NoteArray, opts: &EventOptions) -> EventSequence 
     for (time, code) in timed {
         if time > cursor {
             let mut delta = time - cursor;
-            while delta > opts.max_time_shift {
-                codes.push(OFFSET_TIME_SHIFT + opts.max_time_shift - 1);
-                delta -= opts.max_time_shift;
+            while delta > max_time_shift {
+                codes.push(OFFSET_TIME_SHIFT + max_time_shift - 1);
+                delta -= max_time_shift;
             }
             if delta > 0 {
                 codes.push(OFFSET_TIME_SHIFT + delta - 1);
@@ -157,8 +168,8 @@ pub fn to_event_sequence(arr: &NoteArray, opts: &EventOptions) -> EventSequence 
     EventSequence {
         codes,
         resolution: arr.resolution,
-        max_time_shift: opts.max_time_shift,
-        velocity_bins: opts.velocity_bins,
+        max_time_shift,
+        velocity_bins,
         encode_velocity: opts.encode_velocity,
     }
 }
@@ -367,5 +378,31 @@ mod tests {
             },
         );
         assert_eq!(seq2.vocab_size(), 356);
+    }
+
+    #[test]
+    fn test_zero_max_time_shift_terminates() {
+        // max_time_shift == 0 used to be an infinite loop + unbounded OOM for any
+        // note not at time 0. Must terminate and clamp to a valid vocabulary.
+        let arr = array_from(
+            Music::Sequential(vec![
+                Music::Rest {
+                    duration: Duration::quarter(),
+                    is_measure_rest: false,
+                },
+                note(PitchStep::C, 4, Duration::quarter()),
+            ]),
+            480,
+        );
+        let opts = EventOptions {
+            max_time_shift: 0,
+            velocity_bins: 0, // also degenerate: must not underflow
+            encode_velocity: true,
+        };
+        let seq = to_event_sequence(&arr, &opts);
+        assert!(seq.max_time_shift >= 1);
+        assert!(seq.velocity_bins >= 1);
+        // Decode must not panic either.
+        let _ = from_event_sequence(&seq);
     }
 }
