@@ -108,20 +108,28 @@ support matrix (what each reader/writer preserves).
 - **MIDI adapter** — `midly`-based MIDI → IR and IR → MIDI (always included); simultaneous
   note-ons import as chords, notes crossing a barline are split and tied
 - **CLI** — `convert`, `transpose`, `info`, `flatten` subcommands; batch mode with rayon
-- **Python bindings** — full PyO3 API: `from_musicxml`, `from_lilypond`, `to_musicxml`,
-  `to_lilypond`, `from_midi`, `to_midi`, `transpose`, `change_language`, `invert`,
-  `retrograde`, `Score.to_json/dict`
-- **797 Rust tests** (457 unit + 340 integration: CLI, fixture regression, property-based,
-  round-trip, semantic round-trip, fidelity scoreboard) + 44 Python tests, all passing
+- **ABC notation adapter** — `from_abc` / `to_abc` reader and writer through the IR,
+  exposed in both the Rust CLI and the Python API
+- **ML representations** — note-array `(N, 4)`, Performance-RNN event sequences, and
+  piano-roll `(T, 128)` encoders, plus objective metrics (pitch-class entropy, polyphony,
+  scale consistency, …), all NumPy in/out via the Layer-1 Music tree
+- **Dataset loaders** — `lytk.datasets` with a lazy `Dataset`/`FolderDataset`, deterministic
+  train/val/test splits, on-disk representation caching, and lazy PyTorch / TensorFlow
+  adapters (optional `lytk[torch]` / `lytk[tensorflow]` extras)
+- **Python bindings** — full PyO3 API: `from_musicxml`, `from_lilypond`, `from_abc`,
+  `to_musicxml`, `to_lilypond`, `to_abc`, `from_midi`, `to_midi`, `transpose`,
+  `change_language`, `invert`, `retrograde`, `Score.to_json/dict`, representation
+  encoders and metrics
+- **Python CLI** — the shipped `lytk` console script mirrors the Rust binary
+  (`convert`, `transpose`, `info`) with process-parallel batch conversion honoring `--jobs`
+- **874 Rust tests** (513 unit + 361 integration: CLI, fixture regression, property-based,
+  round-trip, semantic round-trip, fidelity scoreboard) + 112 Python tests, all passing
 - **Semantic fidelity gate** — committed non-decreasing baselines: LilyPond 35/35 and
   MusicXML 152/152 fixtures preserve note counts and pitch multisets on round-trip
 - **Criterion benchmarks** — ~52× faster than python-ly for transpose; ~40× for language change
 
 ### Not yet implemented
 
-- ML representations (note-array, event sequence, piano-roll) — Epic D
-- ABC notation adapter — Epic E
-- Dataset loaders and objective metrics — Epic F
 - music21-parity MIR features (see roadmap)
 - MEI adapter (deferred past v1.0)
 - Humdrum adapter (deferred past v1.0)

@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-06-15 (cont.) — REVIEW.md follow-up: dataset/CLI/docs fixes
+
+Addressed the four findings raised in `REVIEW.md` (package/ML-layer polish; the
+parser/IR/adapter core was already sound).
+
+**Fixed**
+- **Cache-key collision in `FolderDataset` (correctness).** The on-disk representation
+  cache keyed only on `path.stem` + representation + kwargs, so with the default recursive
+  discovery `train/foo.ly` and `valid/foo.xml` clobbered each other. The key now includes a
+  stable short hash of the path relative to the dataset root (`_path_hash`), so distinct
+  sources never share a cache file. Regression test in `tests/test_datasets.py`.
+- **Python CLI `--jobs` was a no-op.** The shipped `lytk` console script declared `--jobs`
+  but ran batch conversion serially (help text said "Currently ignored"). Batch mode now
+  dispatches per-file work across a `ProcessPoolExecutor` honoring `--jobs` (0 = auto, one
+  per CPU; 1 = serial). Output subdirectories are pre-created in the parent to avoid worker
+  races. Tests assert the pool is actually used for `--jobs > 1`, skipped for `--jobs 1`,
+  and that a real cross-process run is byte-identical to the serial run.
+- **Eager dataset materialization.** `to_pytorch_dataset` / `to_tensorflow_dataset` no longer
+  materialize the whole corpus up front — they convert (and cache) one item at a time on
+  access. Added `Dataset.iter_representation()` (a memory-bounded generator); `to_representation`
+  now delegates to it as the explicit eager "materialize all" path.
+- **Stale release-facing docs/metadata.** README moved ML representations, the ABC adapter,
+  and dataset loaders out of "Not yet implemented" into "Implemented", and refreshed the test
+  counts (874 Rust + 112 Python). Added crate metadata to `Cargo.toml`
+  (description, authors, license, homepage, repository, documentation, keywords, categories);
+  `uv build` no longer warns about missing manifest fields.
+
 ## 2026-06-15 (cont.) — E2E cross-format conversion fidelity audit + fixes
 
 Built an end-to-end audit converting every fixture A → format B (ly/xml/mxl/midi/abc),

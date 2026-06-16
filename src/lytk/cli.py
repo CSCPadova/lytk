@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import lytk
@@ -96,6 +97,28 @@ def _collect_input_files(directory: Path) -> list[Path]:
     return files
 
 
+def _resolve_jobs(jobs: int) -> int:
+    """Resolve the requested worker count (``0`` = auto → one per CPU)."""
+    if jobs and jobs > 0:
+        return jobs
+    return os.cpu_count() or 1
+
+
+def _convert_one(task: tuple[str, str, str | None]) -> tuple[str, str | None]:
+    """Convert a single (input, output, format) task in a worker process.
+
+    Returns ``(input_path, None)`` on success or ``(input_path, message)`` on
+    failure, so one bad file never aborts the whole batch.
+    """
+    file_str, out_str, fmt = task
+    try:
+        score = _parse_input(Path(file_str))
+        _write_output(score, Path(out_str), fmt)
+        return (file_str, None)
+    except Exception as exc:  # noqa: BLE001 - report per file, keep going
+        return (file_str, str(exc) or exc.__class__.__name__)
+
+
 # ---------------------------------------------------------------------------
 # Subcommand implementations
 # ---------------------------------------------------------------------------
@@ -107,7 +130,7 @@ def _run_convert(args: argparse.Namespace) -> None:
     fmt = args.format
 
     if inp.is_dir():
-        _run_batch(inp, out, fmt)
+        _run_batch(inp, out, fmt, args.jobs)
     else:
         score = _parse_input(inp)
         if fmt is None and out.suffix == "":
@@ -119,6 +142,7 @@ def _run_batch(
     input_dir: Path,
     output_dir: Path,
     fmt: str | None,
+    jobs: int = 0,
 ) -> None:
     files = _collect_input_files(input_dir)
     if not files:
@@ -130,24 +154,32 @@ def _run_batch(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build the (input, output, format) task list and pre-create output
+    # subdirectories in the parent so workers never race on mkdir.
+    tasks: list[tuple[str, str, str | None]] = []
     for file in files:
         try:
             relative = file.relative_to(input_dir)
         except ValueError:
             relative = Path(file.name)
 
-        if fmt is None:
-            out_ext = _invert_ext(file)
-        else:
-            out_ext = f".{fmt}"
+        out_ext = _invert_ext(file) if fmt is None else f".{fmt}"
         out_path = (output_dir / relative).with_suffix(out_ext)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        tasks.append((str(file), str(out_path), fmt))
 
-        try:
-            score = _parse_input(file)
-            _write_output(score, out_path, fmt)
-        except Exception as exc:  # noqa: BLE001
-            print(f"{file}: {exc}", file=sys.stderr)
+    workers = _resolve_jobs(jobs)
+    if workers <= 1 or len(tasks) <= 1:
+        results = [_convert_one(t) for t in tasks]
+    else:
+        # Conversion work is CPU-bound and lives in the Rust extension, so use
+        # processes to get true parallelism without GIL contention.
+        with ProcessPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
+            results = list(pool.map(_convert_one, tasks))
+
+    for file_str, error in results:
+        if error is not None:
+            print(f"{file_str}: {error}", file=sys.stderr)
 
     print(f"Processed {len(files)} files", file=sys.stderr)
 
@@ -220,7 +252,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--jobs",
         type=int,
         default=0,
-        help="Number of parallel threads for batch mode (0 = auto). Currently ignored; reserved for future use.",
+        help="Number of parallel worker processes for batch mode (0 = auto, one per CPU).",
     )
     p_convert.set_defaults(func=_run_convert)
 

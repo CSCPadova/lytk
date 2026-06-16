@@ -152,6 +152,93 @@ class TestConvertBatch:
         assert result.returncode == 0
         assert "Processed" in result.stderr
 
+    def _small_xml_corpus(self, tmp_path: Path, n: int = 6) -> Path:
+        srcs = sorted(FIXTURE_XML_DIR.glob("*.xml"))[:n]
+        dst = tmp_path / "in"
+        (dst / "a").mkdir(parents=True)
+        (dst / "b").mkdir(parents=True)
+        for i, s in enumerate(srcs):
+            sub = "a" if i % 2 == 0 else "b"
+            (dst / sub / s.name).write_bytes(s.read_bytes())
+        return dst
+
+    def test_batch_parallel_matches_serial(self, tmp_path: Path):
+        """A real --jobs 4 run (across processes) must produce byte-identical
+        output to a serial --jobs 1 run, including in nested subfolders."""
+        corpus = self._small_xml_corpus(tmp_path)
+        serial = tmp_path / "serial"
+        parallel = tmp_path / "parallel"
+
+        r1 = run_lytk("convert", str(corpus), "-o", str(serial), "--jobs", "1")
+        r4 = run_lytk("convert", str(corpus), "-o", str(parallel), "--jobs", "4")
+        assert r1.returncode == 0 and r4.returncode == 0
+
+        s = {p.relative_to(serial): p.read_text() for p in serial.rglob("*.ly")}
+        p = {p.relative_to(parallel): p.read_text() for p in parallel.rglob("*.ly")}
+        assert s, "serial run produced no output"
+        assert s.keys() == p.keys()
+        for rel in s:
+            assert s[rel] == p[rel], f"parallel output differs for {rel}"
+
+
+# ---------------------------------------------------------------------------
+# `convert` batch — parallelism is actually honored (Finding 2)
+# ---------------------------------------------------------------------------
+
+
+class TestBatchParallelism:
+    """Unit-level checks that --jobs drives the worker pool, not just that
+    batch mode succeeds."""
+
+    def test_resolve_jobs(self):
+        from lytk import cli
+
+        assert cli._resolve_jobs(4) == 4
+        assert cli._resolve_jobs(1) == 1
+        # 0 = auto → at least one worker.
+        assert cli._resolve_jobs(0) >= 1
+
+    def test_parallel_jobs_use_process_pool(self, tmp_path, monkeypatch):
+        from lytk import cli
+
+        used: dict[str, int | None] = {"workers": None}
+
+        class _SpyPool:
+            def __init__(self, max_workers=None):
+                used["workers"] = max_workers
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def map(self, fn, tasks):
+                return [fn(t) for t in tasks]
+
+        monkeypatch.setattr(cli, "ProcessPoolExecutor", _SpyPool)
+        out_dir = tmp_path / "out"
+        cli._run_batch(FIXTURE_XML_DIR, out_dir, None, jobs=4)
+
+        assert used["workers"] == 4, "--jobs 4 should spawn 4 workers"
+        assert list(out_dir.glob("*.ly")), "batch should still produce output"
+
+    def test_serial_jobs_skip_process_pool(self, tmp_path, monkeypatch):
+        from lytk import cli
+
+        instantiated = {"n": 0}
+
+        class _Boom:
+            def __init__(self, *a, **k):
+                instantiated["n"] += 1
+
+        monkeypatch.setattr(cli, "ProcessPoolExecutor", _Boom)
+        out_dir = tmp_path / "out"
+        cli._run_batch(FIXTURE_XML_DIR, out_dir, None, jobs=1)
+
+        assert instantiated["n"] == 0, "--jobs 1 must not start a process pool"
+        assert list(out_dir.glob("*.ly"))
+
 
 # ---------------------------------------------------------------------------
 # `transpose` subcommand

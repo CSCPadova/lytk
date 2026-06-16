@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import random
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
@@ -42,6 +43,16 @@ _REPRESENTATIONS: dict[str, Callable[..., np.ndarray]] = {
 }
 
 
+def _require_representation(representation: str) -> Callable[..., np.ndarray]:
+    """Return the converter for ``representation`` or raise ``ValueError``."""
+    if representation not in _REPRESENTATIONS:
+        raise ValueError(
+            f"unknown representation {representation!r}; "
+            f"choose from {sorted(_REPRESENTATIONS)}"
+        )
+    return _REPRESENTATIONS[representation]
+
+
 class Dataset:
     """Abstract base: an indexable collection of :class:`MusicDocument` objects.
 
@@ -62,19 +73,28 @@ class Dataset:
 
     # -- representation conversion -------------------------------------------
 
-    def to_representation(self, representation: str, **kwargs: Any) -> list[np.ndarray]:
-        """Convert every item to ``representation`` (one array per item).
+    def iter_representation(
+        self, representation: str, **kwargs: Any
+    ) -> Iterator[np.ndarray]:
+        """Lazily convert each item to ``representation``, one array at a time.
 
         ``representation`` is one of ``"note_array"``, ``"event_sequence"``,
-        ``"piano_roll"``; ``**kwargs`` are forwarded to the converter.
+        ``"piano_roll"``; ``**kwargs`` are forwarded to the converter. Unlike
+        :meth:`to_representation`, this never materialises the whole dataset in
+        memory, so it scales to large folders. When a ``cache_dir`` is set the
+        per-item cache is consulted as each item is produced.
         """
-        if representation not in _REPRESENTATIONS:
-            raise ValueError(
-                f"unknown representation {representation!r}; "
-                f"choose from {sorted(_REPRESENTATIONS)}"
-            )
-        fn = _REPRESENTATIONS[representation]
-        return [self._convert_item(i, representation, fn, kwargs) for i in range(len(self))]
+        fn = _require_representation(representation)
+        for i in range(len(self)):
+            yield self._convert_item(i, representation, fn, kwargs)
+
+    def to_representation(self, representation: str, **kwargs: Any) -> list[np.ndarray]:
+        """Eagerly convert every item to ``representation`` (one array per item).
+
+        This materialises the whole dataset; use :meth:`iter_representation`
+        for a memory-bounded stream over large corpora.
+        """
+        return list(self.iter_representation(representation, **kwargs))
 
     def _convert_item(self, index, representation, fn, kwargs) -> np.ndarray:
         return fn(self[index], **kwargs)
@@ -132,39 +152,57 @@ class Dataset:
 
     def to_pytorch_dataset(self, representation: str = "note_array", **kwargs: Any):
         """Return a ``torch.utils.data.Dataset`` yielding tensors of the
-        chosen representation. Requires PyTorch."""
+        chosen representation. Requires PyTorch.
+
+        Conversion is lazy: each item is converted (and cached, if a
+        ``cache_dir`` is set) only when it is indexed, so constructing the
+        dataset does not materialise the whole corpus in memory.
+        """
         try:
             import torch
             from torch.utils.data import Dataset as TorchDataset
         except ImportError as exc:  # pragma: no cover - optional dep
             raise ImportError("PyTorch is required for to_pytorch_dataset()") from exc
 
-        arrays = self.to_representation(representation, **kwargs)
+        fn = _require_representation(representation)
+        outer = self
 
         class _LytkTorchDataset(TorchDataset):
             def __len__(self) -> int:
-                return len(arrays)
+                return len(outer)
 
             def __getitem__(self, i: int):
-                return torch.as_tensor(np.asarray(arrays[i]))
+                arr = outer._convert_item(i, representation, fn, kwargs)
+                return torch.as_tensor(np.asarray(arr))
 
         return _LytkTorchDataset()
 
     def to_tensorflow_dataset(self, representation: str = "note_array", **kwargs: Any):
         """Return a ``tf.data.Dataset`` of the chosen representation.
-        Requires TensorFlow."""
+        Requires TensorFlow.
+
+        The dataset streams items through a generator, converting (and
+        caching, if a ``cache_dir`` is set) one item at a time rather than
+        building the whole corpus up front.
+        """
         try:
             import tensorflow as tf
         except ImportError as exc:  # pragma: no cover - optional dep
             raise ImportError("TensorFlow is required for to_tensorflow_dataset()") from exc
 
-        arrays = self.to_representation(representation, **kwargs)
+        fn = _require_representation(representation)
+        outer = self
+        n = len(outer)
 
         def _gen():
-            yield from arrays
+            for i in range(n):
+                yield np.asarray(outer._convert_item(i, representation, fn, kwargs))
 
-        if arrays:
-            spec = tf.TensorSpec(shape=[None] * arrays[0].ndim, dtype=arrays[0].dtype)
+        if n:
+            # Convert a single probe item to derive the tensor spec; this is
+            # one item, not the whole dataset (and it warms the cache).
+            probe = np.asarray(outer._convert_item(0, representation, fn, kwargs))
+            spec = tf.TensorSpec(shape=[None] * probe.ndim, dtype=probe.dtype)
         else:  # pragma: no cover - empty dataset
             spec = tf.TensorSpec(shape=[None], dtype=tf.int32)
         return tf.data.Dataset.from_generator(_gen, output_signature=spec)
@@ -221,13 +259,29 @@ class FolderDataset(Dataset):
     def filenames(self) -> list[str]:
         return [p.name for p in self.paths]
 
+    def _path_hash(self, index: int) -> str:
+        """Stable short hash identifying the source file.
+
+        Derived from the path relative to ``root`` (falling back to the
+        absolute path), so two files that share a stem but live in different
+        subfolders — or differ only by extension, e.g. ``train/foo.ly`` and
+        ``valid/foo.xml`` — get distinct cache keys instead of colliding.
+        """
+        path = self.paths[index]
+        try:
+            rel = path.relative_to(self.root)
+        except ValueError:  # pragma: no cover - path outside root
+            rel = path
+        return hashlib.sha1(rel.as_posix().encode("utf-8")).hexdigest()[:16]
+
     def _convert_item(self, index, representation, fn, kwargs) -> np.ndarray:
         # On-disk cache of converted representations (EFT2).
         if self.cache_dir is None:
             return fn(self[index], **kwargs)
         key = "_".join(f"{k}-{v}" for k, v in sorted(kwargs.items()))
         stem = self.paths[index].stem
-        cache_file = self.cache_dir / f"{stem}__{representation}__{key}.npy"
+        path_hash = self._path_hash(index)
+        cache_file = self.cache_dir / f"{stem}__{representation}__{key}__{path_hash}.npy"
         if cache_file.exists():
             return np.load(cache_file, allow_pickle=False)
         arr = fn(self[index], **kwargs)

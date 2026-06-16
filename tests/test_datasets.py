@@ -140,3 +140,98 @@ class TestCaching:
         second = ds.to_note_arrays(resolution=24)
         for a, b in zip(first, second):
             assert np.array_equal(a, b)
+
+    def test_cache_keys_unique_across_subfolders(self, tmp_path):
+        """Two files sharing a stem in different subfolders must not collide.
+
+        Regression test: the cache key used to be derived from the stem only,
+        so ``train/foo.ly`` and ``valid/foo.ly`` overwrote each other.
+        """
+        srcs = sorted(LY_DIR.glob("*.ly"))[:2]
+        assert len(srcs) == 2 and srcs[0].read_text() != srcs[1].read_text()
+
+        root = tmp_path / "corpus"
+        (root / "train").mkdir(parents=True)
+        (root / "valid").mkdir(parents=True)
+        # Same file *name* (same stem) in two subfolders, different content.
+        (root / "train" / "foo.ly").write_text(srcs[0].read_text())
+        (root / "valid" / "foo.ly").write_text(srcs[1].read_text())
+
+        cache = tmp_path / "cache"
+        ds = FolderDataset(root, recursive=True, cache_dir=cache)
+        assert len(ds) == 2
+
+        arrays = ds.to_note_arrays(resolution=24)
+        # Each source produced its own cache file (no clobbering).
+        assert len(list(cache.glob("*.npy"))) == 2
+        # Re-reading from cache returns each file's own representation, and the
+        # two distinct sources do not collapse to a single shared array.
+        cached = ds.to_note_arrays(resolution=24)
+        for a, b in zip(arrays, cached):
+            assert np.array_equal(a, b)
+        assert not np.array_equal(arrays[0], arrays[1])
+
+
+# ---------------------------------------------------------------------------
+# Lazy conversion + framework adapters (Finding 3)
+# ---------------------------------------------------------------------------
+
+
+class TestLazyConversion:
+    def test_iter_representation_is_lazy(self, tmp_path):
+        ds = FolderDataset(_small_ly_folder(tmp_path, 3))
+        it = ds.iter_representation("note_array", resolution=24)
+        # A generator, not a materialised list.
+        assert iter(it) is it
+        arrays = list(it)
+        assert len(arrays) == 3
+        assert all(a.ndim == 2 and a.shape[1] == 4 for a in arrays)
+
+    def test_iter_representation_rejects_unknown(self, tmp_path):
+        ds = FolderDataset(_small_ly_folder(tmp_path, 1))
+        with pytest.raises(ValueError):
+            list(ds.iter_representation("nope"))
+
+    def test_to_representation_matches_iter(self, tmp_path):
+        ds = FolderDataset(_small_ly_folder(tmp_path, 2))
+        eager = ds.to_representation("note_array", resolution=24)
+        lazy = list(ds.iter_representation("note_array", resolution=24))
+        assert len(eager) == len(lazy)
+        for a, b in zip(eager, lazy):
+            assert np.array_equal(a, b)
+
+    def test_pytorch_dataset_is_lazy(self, tmp_path):
+        """The torch adapter must not materialise the whole dataset up front."""
+        pytest.importorskip("torch")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 3))
+
+        calls: list[int] = []
+        original = ds._convert_item
+
+        def _spy(index, *a, **k):
+            calls.append(index)
+            return original(index, *a, **k)
+
+        ds._convert_item = _spy  # type: ignore[method-assign]
+        td = ds.to_pytorch_dataset("note_array", resolution=24)
+        # Constructing the torch dataset converts nothing.
+        assert calls == []
+        assert len(td) == 3
+        item0 = td[0]
+        # Only the accessed item is converted.
+        assert calls == [0]
+        assert item0.ndim == 2
+
+    def test_pytorch_dataset_rejects_unknown(self, tmp_path):
+        pytest.importorskip("torch")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 1))
+        with pytest.raises(ValueError):
+            ds.to_pytorch_dataset("nope")
+
+    def test_tensorflow_dataset_streams(self, tmp_path):
+        tf = pytest.importorskip("tensorflow")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 2))
+        tfds = ds.to_tensorflow_dataset("note_array", resolution=24)
+        collected = [x.numpy() for x in tfds]
+        assert len(collected) == 2
+        assert all(x.shape[-1] == 4 for x in collected)
