@@ -87,6 +87,22 @@ pub fn pitch_multiset(score: &Score) -> Vec<i32> {
     v
 }
 
+/// Sorted `(onset, duration, pitch)` multiset in 480-steps-per-quarter, computed
+/// via the Music-tree note-array. Unlike [`pitch_multiset`] this also captures
+/// ONSET and DURATION, so it catches corruption (tuplet ratios, grace timing,
+/// tie collapse, bar drift) that an unchanged pitch set would hide.
+pub fn note_signature(score: &Score) -> Vec<(u32, u32, i32)> {
+    let doc = _core::ir::lift::lift_to_music(score);
+    let arr = _core::representations::to_note_array(&doc, 480);
+    let mut v: Vec<(u32, u32, i32)> = arr
+        .notes
+        .iter()
+        .map(|n| (n.onset, n.duration, n.pitch as i32))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
 pub fn signature(score: &Score) -> Sig {
     let mut s = Sig {
         parts: score.parts().len(),

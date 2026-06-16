@@ -134,6 +134,17 @@ still reached `Frac::new(_, 0)` — `parse_meter` now rejects a zero numerator o
 denominator (mirroring `parse_fraction`), so the meter is dropped instead of
 crashing.
 
+**Phase 0/3 — Fidelity scoreboard extended.** The gate was duration/onset-blind
+(pitch-multiset only) — exactly why the tuplet/grace bugs hid behind an unchanged
+pitch set. Added a `(onset, duration, pitch)` **note signature** (via the
+note-array) and two new round-trip directions (**ABC** and **MIDI**) alongside
+LY and XML, each gated on a committed non-decreasing baseline. Current floors:
+LY 35/35 note+pitch, 27/35 onset+dur (8 complex multi-voice fixtures still drift,
+now gated so they can't get worse); XML **152/152/152** (full onset+duration
+fidelity); ABC 3/3/3; MIDI measured & reported but not yet gated above 0
+(midi→midi re-imports with different bar-splitting, so note counts shift — the
+sound is preserved, the notation isn't note-for-note stable; a known limitation).
+
 ## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
 
 A behavior-preserving readability/simplification sweep across the package
