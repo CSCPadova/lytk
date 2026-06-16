@@ -125,6 +125,15 @@ serde_json's built-in recursion limit. Test: 8000-deep braces → clean error
   ample one; plain XML passes through untouched. All 10 `.mxl` fixtures still
   parse.
 
+**Phase 0 — Parser fuzz net.** New `tests/fuzz_inputs.rs`: proptest feeds random
+text/bytes to every `ToIr` parser (LilyPond, MusicXML/MXL incl. the zip path,
+MIDI, ABC) asserting they never panic/hang/OOM, plus targeted regression cases
+for the audit's crafted crashers (deep nesting, `M:4/0`, `0`-tpq MIDI, garbage).
+The net immediately caught a residual panic Phase 2a had missed: ABC `M:4/0`
+still reached `Frac::new(_, 0)` — `parse_meter` now rejects a zero numerator or
+denominator (mirroring `parse_fraction`), so the meter is dropped instead of
+crashing.
+
 ## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
 
 A behavior-preserving readability/simplification sweep across the package

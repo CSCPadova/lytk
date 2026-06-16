@@ -209,6 +209,12 @@ fn parse_meter(value: &str) -> Option<(u8, u8)> {
         .filter_map(|p| p.trim().parse::<u32>().ok())
         .sum();
     let den: u8 = d.trim().parse().ok()?;
+    // Reject a zero numerator or denominator: both are musically meaningless and
+    // a 0 denominator panics `Frac::new` downstream (mirrors the guard in
+    // `parse_fraction`). A crafted `M:4/0` must not crash the parser.
+    if num == 0 || den == 0 {
+        return None;
+    }
     Some((num as u8, den))
 }
 
