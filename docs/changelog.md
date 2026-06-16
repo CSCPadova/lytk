@@ -45,6 +45,18 @@ release corruption / infinite loops / multi-GB allocations → safe behavior):
   `0/4` time sig and `0`-tpq MIDI header don't hang; metrics bounded on huge
   durations. 526 lib tests green; default-target `clippy -D warnings` clean.
 
+**Phase 2b — Recursion-depth guard (stack-overflow DoS).** Deeply nested
+LilyPond (`{{{ … }}}` thousands deep) overflowed the IR walk's stack and
+*aborted the process* (a stack overflow is not a catchable panic; via PyO3 it
+killed the host interpreter). `parser.rs` now rejects input whose tree-sitter
+tree exceeds `MAX_NESTING_DEPTH` (2000 — astronomically above any real score,
+well below the recursion ceiling) with `ParseError::TooDeeplyNested`, checked
+iteratively (no recursion) at the single parse chokepoint so both the Score and
+Music paths are covered. The other recursive consumers are bounded transitively:
+the post-parse lift inherits this guard, and `from_json` is capped by
+serde_json's built-in recursion limit. Test: 8000-deep braces → clean error
+(no overflow); normal nesting unaffected. 527 lib tests green.
+
 ## 2026-06-16 (cont.) — Simplicity pass ("keep it simple")
 
 A behavior-preserving readability/simplification sweep across the package

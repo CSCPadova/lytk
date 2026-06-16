@@ -5,6 +5,16 @@
 
 use tree_sitter::{Language, Parser, Tree};
 
+/// Maximum tree-sitter syntax-tree depth we will walk. The IR walk that consumes
+/// the tree is deeply recursive (one frame per `{ }` / `<< >>` nesting level), so
+/// pathologically nested input — easy to generate, e.g. `{{{ … }}}` thousands
+/// deep — would overflow the stack and **abort the process** (a stack overflow is
+/// not a catchable panic). We reject such input up front with a normal error
+/// instead. Real scores nest only a few dozen levels; this bound (tree depth, a
+/// small multiple of brace-nesting) is astronomically above any genuine score
+/// yet well below the recursion ceiling.
+pub const MAX_NESTING_DEPTH: usize = 2000;
+
 /// Errors that can occur during parsing.
 #[derive(Debug)]
 pub enum ParseError {
@@ -12,6 +22,9 @@ pub enum ParseError {
     LanguageError(String),
     /// tree-sitter returned `None` from `parse()`.
     ParseFailed,
+    /// The syntax tree is nested deeper than [`MAX_NESTING_DEPTH`]; walking it
+    /// would risk a stack-overflow abort, so we refuse it.
+    TooDeeplyNested(usize),
 }
 
 impl std::fmt::Display for ParseError {
@@ -19,6 +32,35 @@ impl std::fmt::Display for ParseError {
         match self {
             Self::LanguageError(msg) => write!(f, "language error: {msg}"),
             Self::ParseFailed => write!(f, "tree-sitter parse returned None"),
+            Self::TooDeeplyNested(limit) => {
+                write!(f, "input nested deeper than the limit of {limit} levels")
+            }
+        }
+    }
+}
+
+/// Iteratively (no recursion) test whether `tree`'s maximum node depth exceeds
+/// `limit`. Returns `true` as soon as the bound is crossed, so it is cheap on
+/// adversarial input.
+fn tree_depth_exceeds(tree: &Tree, limit: usize) -> bool {
+    let mut cursor = tree.walk();
+    let mut depth: usize = 0;
+    loop {
+        if cursor.goto_first_child() {
+            depth += 1;
+            if depth > limit {
+                return true;
+            }
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return false; // returned to the root: whole tree within bound
+            }
+            depth -= 1;
         }
     }
 }
@@ -52,10 +94,18 @@ impl LilyPondParser {
     }
 
     /// Parse LilyPond source text into a tree-sitter [`Tree`].
+    ///
+    /// Rejects input nested deeper than [`MAX_NESTING_DEPTH`] (which would risk a
+    /// stack-overflow abort during the IR walk) with [`ParseError::TooDeeplyNested`].
     pub fn parse(&mut self, source: &str) -> Result<Tree, ParseError> {
-        self.parser
+        let tree = self
+            .parser
             .parse(source, None)
-            .ok_or(ParseError::ParseFailed)
+            .ok_or(ParseError::ParseFailed)?;
+        if tree_depth_exceeds(&tree, MAX_NESTING_DEPTH) {
+            return Err(ParseError::TooDeeplyNested(MAX_NESTING_DEPTH));
+        }
+        Ok(tree)
     }
 
     /// Parse with an existing tree for incremental re-parsing.
@@ -110,6 +160,21 @@ mod tests {
         let root = tree.root_node();
         assert_eq!(root.kind(), "lilypond_program");
         assert!(!root.has_error());
+    }
+
+    #[test]
+    fn test_deeply_nested_input_is_rejected_not_overflowed() {
+        // Pathologically nested braces would overflow the IR walk's stack and
+        // abort the process; the depth guard must turn it into a clean error.
+        let mut parser = LilyPondParser::new().unwrap();
+        let deep = format!("{}{}", "{ ".repeat(8000), " }".repeat(8000));
+        assert!(matches!(
+            parser.parse(&deep),
+            Err(ParseError::TooDeeplyNested(_))
+        ));
+        // A normally-nested score is unaffected.
+        let shallow = "{ << { c'4 d' } \\\\ { e'4 f' } >> }";
+        assert!(parser.parse(shallow).is_ok());
     }
 
     #[test]
