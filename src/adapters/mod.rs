@@ -27,7 +27,11 @@ pub mod midi_to_ir;
 // ---------------------------------------------------------------------------
 
 /// Errors produced by format adapters.
+///
+/// `#[non_exhaustive]`: new variants may be added in future minor versions, so
+/// downstream `match`es must include a wildcard arm.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AdapterError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

@@ -16,6 +16,7 @@ from lytk._core import (
     from_lilypond_music_string,
     from_lilypond_string,
     from_musicxml,
+    from_musicxml_bytes,
     from_musicxml_string,
     from_note_array,
     from_piano_roll,
@@ -37,6 +38,7 @@ __all__ = [
     # Adapters
     "from_musicxml",
     "from_musicxml_string",
+    "from_musicxml_bytes",
     "from_lilypond",
     "from_lilypond_string",
     "from_lilypond_music",
@@ -64,10 +66,12 @@ __all__ = [
     "compute_metrics",
 ]
 
-# MIDI functions are only available when built with the "midi" feature.
-try:
-    from lytk._core import from_midi, to_midi
+# MIDI is always built into the extension.
+from lytk._core import (  # noqa: E402
+    from_midi,
+    from_midi_bytes,
+    to_midi,
+    to_midi_bytes,
+)
 
-    __all__ += ["from_midi", "to_midi"]
-except ImportError:
-    pass
+__all__ += ["from_midi", "from_midi_bytes", "to_midi", "to_midi_bytes"]

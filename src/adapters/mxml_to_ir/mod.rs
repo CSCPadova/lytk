@@ -36,6 +36,13 @@ impl MxmlToIrAdapter {
     pub fn new() -> Self {
         Self
     }
+
+    /// Parse MusicXML or compressed MXL from raw bytes into a [`Score`],
+    /// auto-detecting an `.mxl` ZIP archive vs plain XML (with the same bomb /
+    /// panic firewalls as the file/string paths).
+    pub fn convert_bytes(&self, bytes: &[u8]) -> Result<Score> {
+        read_partwise_bytes(bytes.to_vec())
+    }
 }
 
 impl Default for MxmlToIrAdapter {

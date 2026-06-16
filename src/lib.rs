@@ -1,3 +1,32 @@
+//! # lytk — fast symbolic-music conversion & augmentation
+//!
+//! lytk converts between **LilyPond**, **MusicXML/MXL**, **MIDI** and **ABC**
+//! through a shared Internal Representation (IR), applies composable transforms
+//! (transpose, invert, retrograde, language change), and emits ML
+//! representations (note-array, event-sequence, piano-roll). It ships as a Rust
+//! crate plus a CLI and Python bindings (the `_core` extension module).
+//!
+//! ## Architecture
+//! - [`ir`] — the IR: a measure-based [`Score`] (Layer 2) and a recursive
+//!   [`MusicDocument`] music tree (Layer 1), bridged by lift/lower.
+//! - [`adapters`] — per-format readers/writers ([`ToIrAdapter`]/[`FromIrAdapter`]).
+//! - [`transforms`] — composable IR passes.
+//! - [`representations`] — note-array / event-sequence / piano-roll encoders.
+//!
+//! ## Rust quickstart
+//! ```no_run
+//! use _core::adapters::mxml_to_ir::MxmlToIrAdapter;
+//! use _core::adapters::ir_to_ly::IrToLyAdapter;
+//! use _core::adapters::{ToIrAdapter, FromIrAdapter};
+//!
+//! let score = MxmlToIrAdapter::new().convert_file("in.musicxml".as_ref())?;
+//! let lilypond = IrToLyAdapter::new().convert(&score)?;
+//! # Ok::<(), _core::adapters::AdapterError>(())
+//! ```
+//!
+//! The most-used types are re-exported at the crate root: [`Score`] and
+//! [`MusicDocument`].
+
 // pyo3 proc macros wrap return values with `Into::into()` on the error path,
 // which clippy flags as a no-op when the error is already `PyErr`.
 #![allow(clippy::useless_conversion)]
@@ -6,7 +35,7 @@ use std::path::Path;
 
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyBytes, PyModule};
 
 pub mod adapters;
 pub mod ir;
@@ -16,9 +45,12 @@ pub mod transforms;
 
 use adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
 use ir::language::PitchLanguage;
-use ir::music::MusicDocument;
 use ir::pitch::{Alter, Pitch, PitchStep};
-use ir::Score;
+
+// Re-export the core IR types at the crate root for Rust consumers (also used
+// internally by the bindings below).
+pub use ir::music::MusicDocument;
+pub use ir::Score;
 
 // ---------------------------------------------------------------------------
 // PyScore — opaque wrapper for the IR Score
@@ -132,6 +164,20 @@ impl PyScore {
         }
     }
 
+    /// The score's notes as ``(onset, duration, pitch, velocity)`` tuples in time
+    /// steps (``resolution`` = steps per quarter note). A lightweight, numpy-free
+    /// way to iterate notes directly, without going through
+    /// :func:`to_note_array` or hand-walking :meth:`to_dict`.
+    #[pyo3(signature = (resolution = representations::note_array::DEFAULT_RESOLUTION))]
+    fn notes(&self, resolution: u16) -> Vec<(u32, u32, u8, u8)> {
+        let doc = ir::lift::lift_to_music(&self.inner);
+        representations::to_note_array(&doc, resolution)
+            .notes
+            .iter()
+            .map(|n| (n.onset, n.duration, n.pitch, n.velocity))
+            .collect()
+    }
+
     fn __repr__(&self) -> String {
         format!("{}", self.inner)
     }
@@ -174,6 +220,39 @@ impl PyMusicDocument {
         self.inner.metadata.composer.clone()
     }
 
+    /// Subtitle.
+    #[getter]
+    fn subtitle(&self) -> Option<String> {
+        self.inner.metadata.subtitle.clone()
+    }
+
+    /// Arranger name.
+    #[getter]
+    fn arranger(&self) -> Option<String> {
+        self.inner.metadata.arranger.clone()
+    }
+
+    /// Active LilyPond pitch language (e.g. ``"nederlands"``), or *None*.
+    #[getter]
+    fn language(&self) -> Option<String> {
+        self.inner
+            .metadata
+            .pitch_language
+            .map(|l| l.as_str().to_string())
+    }
+
+    /// The document's notes as ``(onset, duration, pitch, velocity)`` tuples in
+    /// time steps (``resolution`` = steps per quarter note) — a lightweight,
+    /// numpy-free way to iterate notes directly.
+    #[pyo3(signature = (resolution = representations::note_array::DEFAULT_RESOLUTION))]
+    fn notes(&self, resolution: u16) -> Vec<(u32, u32, u8, u8)> {
+        representations::to_note_array(&self.inner, resolution)
+            .notes
+            .iter()
+            .map(|n| (n.onset, n.duration, n.pitch, n.velocity))
+            .collect()
+    }
+
     /// Serialize the music document to a JSON string.
     fn to_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.inner).map_err(|e| PyValueError::new_err(e.to_string()))
@@ -207,14 +286,26 @@ impl PyMusicDocument {
 // Adapter functions
 // ---------------------------------------------------------------------------
 
+/// Map an adapter error to the appropriate Python exception: an I/O failure
+/// becomes `IOError`, every parse/validation failure becomes `ValueError`.
+///
+/// Previously the file readers mapped *all* adapter errors to `IOError`, so a
+/// malformed-but-readable file looked the same as a missing one — a batch loader
+/// wrapping reads in `except IOError` would silently swallow corrupt files.
+fn adapter_err(e: adapters::AdapterError) -> PyErr {
+    let msg = e.to_string();
+    match e {
+        adapters::AdapterError::Io(_) => PyIOError::new_err(msg),
+        _ => PyValueError::new_err(msg),
+    }
+}
+
 /// Parse a MusicXML (``.xml``, ``.musicxml``) or compressed MXL file into a
 /// :class:`Score`.
 #[pyfunction]
 fn from_musicxml(path: &str) -> PyResult<PyScore> {
     let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
-    let score = adapter
-        .convert_file(Path::new(path))
-        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+    let score = adapter.convert_file(Path::new(path)).map_err(adapter_err)?;
     Ok(PyScore { inner: score })
 }
 
@@ -242,9 +333,7 @@ fn from_lilypond(path: &str, language: Option<&str>) -> PyResult<PyScore> {
     if let Some(lang_str) = language {
         adapter = adapter.with_language(parse_language(lang_str)?);
     }
-    let score = adapter
-        .convert_file(Path::new(path))
-        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+    let score = adapter.convert_file(Path::new(path)).map_err(adapter_err)?;
     Ok(PyScore { inner: score })
 }
 
@@ -274,7 +363,7 @@ fn from_lilypond_music(path: &str, language: Option<&str>) -> PyResult<PyMusicDo
     }
     let doc = adapter
         .convert_file_to_music(Path::new(path))
-        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        .map_err(adapter_err)?;
     Ok(PyMusicDocument { inner: doc })
 }
 
@@ -376,9 +465,7 @@ fn flatten(
 #[pyfunction]
 fn from_abc(path: &str) -> PyResult<PyScore> {
     let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
-    let score = adapter
-        .convert_file(Path::new(path))
-        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+    let score = adapter.convert_file(Path::new(path)).map_err(adapter_err)?;
     Ok(PyScore { inner: score })
 }
 
@@ -414,9 +501,25 @@ fn to_abc(score: &PyScore, path: Option<&str>) -> PyResult<String> {
 fn from_midi(path: &str) -> PyResult<PyScore> {
     let bytes = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
     let adapter = adapters::midi_to_ir::MidiToIrAdapter::new();
-    let score = adapter
-        .convert_bytes(&bytes)
-        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+    let score = adapter.convert_bytes(&bytes).map_err(adapter_err)?;
+    Ok(PyScore { inner: score })
+}
+
+/// Parse a Standard MIDI File from in-memory ``bytes`` into a :class:`Score`
+/// (no temp file needed — for archives, HTTP responses, dataset buffers).
+#[pyfunction]
+fn from_midi_bytes(data: &[u8]) -> PyResult<PyScore> {
+    let adapter = adapters::midi_to_ir::MidiToIrAdapter::new();
+    let score = adapter.convert_bytes(data).map_err(adapter_err)?;
+    Ok(PyScore { inner: score })
+}
+
+/// Parse MusicXML or compressed MXL from in-memory ``bytes`` into a
+/// :class:`Score` (auto-detects `.mxl` vs plain XML; no temp file needed).
+#[pyfunction]
+fn from_musicxml_bytes(data: &[u8]) -> PyResult<PyScore> {
+    let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
+    let score = adapter.convert_bytes(data).map_err(adapter_err)?;
     Ok(PyScore { inner: score })
 }
 
@@ -426,8 +529,17 @@ fn to_midi(score: &PyScore, path: &str) -> PyResult<()> {
     let adapter = adapters::ir_to_midi::IrToMidiAdapter::new();
     adapter
         .write(&score.inner, Path::new(path))
-        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        .map_err(adapter_err)?;
     Ok(())
+}
+
+/// Serialize a :class:`Score` to Standard MIDI File ``bytes`` (the in-memory
+/// counterpart of :func:`to_midi`, which writes to a path).
+#[pyfunction]
+fn to_midi_bytes<'py>(py: Python<'py>, score: &PyScore) -> PyResult<Bound<'py, PyBytes>> {
+    let adapter = adapters::ir_to_midi::IrToMidiAdapter::new();
+    let bytes = adapter.convert_bytes(&score.inner).map_err(adapter_err)?;
+    Ok(PyBytes::new_bound(py, &bytes))
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +813,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Adapter functions
     m.add_function(wrap_pyfunction!(from_musicxml, m)?)?;
     m.add_function(wrap_pyfunction!(from_musicxml_string, m)?)?;
+    m.add_function(wrap_pyfunction!(from_musicxml_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music, m)?)?;
@@ -714,7 +827,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(to_abc, m)?)?;
 
     m.add_function(wrap_pyfunction!(from_midi, m)?)?;
+    m.add_function(wrap_pyfunction!(from_midi_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(to_midi, m)?)?;
+    m.add_function(wrap_pyfunction!(to_midi_bytes, m)?)?;
 
     // Transform functions
     m.add_function(wrap_pyfunction!(transpose, m)?)?;

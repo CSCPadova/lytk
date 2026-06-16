@@ -5,6 +5,28 @@
 Working through the [1.0.0 hardening plan](roadmap.md) from the release-readiness
 audit. Release-critical spine first (blocker → robustness → fidelity).
 
+**Phase 4 — Public API stabilization.**
+- **Typed errors:** a new `adapter_err` helper maps `AdapterError::Io` →
+  `IOError` and every parse/validation failure → `ValueError`. The file/bytes
+  readers previously raised *all* errors as `IOError`, so a malformed-but-readable
+  file looked like a missing one (a batch loader's `except IOError` swallowed
+  corrupt input). `AdapterError` is now `#[non_exhaustive]`.
+- **Bytes I/O** (no temp files for archives/HTTP/dataset buffers):
+  `from_midi_bytes`, `to_midi_bytes` (returns `bytes`), and `from_musicxml_bytes`
+  (auto-detects `.mxl` vs plain XML via the bounded reader). Added
+  `MxmlToIrAdapter::convert_bytes`.
+- **Read-only note navigation:** `Score.notes()` and `MusicDocument.notes()`
+  return `(onset, duration, pitch, velocity)` tuples in time steps — a
+  lightweight, numpy-free way to iterate notes without `to_note_array` or
+  hand-walking `to_dict`. `MusicDocument` also gained the `subtitle`/`arranger`/
+  `language` getters for parity with `Score`.
+- **Rust crate identity:** added a crate-level `//!` doc (so docs.rs renders a
+  landing page) and re-exported `Score` and `MusicDocument` at the crate root.
+- Removed the stale "MIDI only with the midi feature" `try/except` in
+  `__init__.py` (MIDI is always built); `.pyi` stubs updated for all of the above.
+- Tests: bytes round-trip (MIDI + MXL), `notes()` shape, and that a malformed
+  string raises `ValueError` not `IOError`. 124 Python + full Rust suite green.
+
 **Phase 3a — Conversion fidelity: relative multi-staff octave shift.** The
 Score-path LilyPond emitter (used by Python `to_lilypond(score)`) octave-shifted
 whole staves/voices on a relative multi-staff or multi-voice score, because a

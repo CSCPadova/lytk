@@ -252,3 +252,60 @@ class TestTransforms:
         score = lytk.from_musicxml(str(FIXTURE_XML))
         r = lytk.retrograde(lytk.retrograde(score))
         assert score == r
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: bytes I/O, note navigation, typed errors, MusicDocument parity
+# ---------------------------------------------------------------------------
+
+
+class TestBytesIO:
+    def test_from_musicxml_bytes_matches_path(self):
+        data = FIXTURE_XML.read_bytes()
+        assert lytk.from_musicxml_bytes(data) == lytk.from_musicxml(str(FIXTURE_XML))
+
+    def test_from_musicxml_bytes_reads_mxl(self):
+        mxl = sorted(Path("tests/fixtures/mxl").glob("*.mxl"))[0]
+        score = lytk.from_musicxml_bytes(mxl.read_bytes())
+        assert score.num_parts >= 1
+
+    def test_midi_bytes_roundtrip(self):
+        score = lytk.from_musicxml(str(FIXTURE_XML))
+        data = lytk.to_midi_bytes(score)
+        assert isinstance(data, bytes)
+        assert data[:4] == b"MThd"
+        reloaded = lytk.from_midi_bytes(data)
+        assert reloaded.num_parts >= 1
+
+
+class TestNoteNavigation:
+    def test_score_notes(self):
+        score = lytk.from_musicxml(str(FIXTURE_XML))
+        notes = score.notes()
+        assert isinstance(notes, list)
+        assert notes, "expected at least one note"
+        onset, dur, pitch, vel = notes[0]
+        assert all(isinstance(x, int) for x in (onset, dur, pitch, vel))
+        assert 0 <= pitch <= 127
+
+    def test_music_document_notes_and_metadata(self):
+        doc = lytk.from_musicxml(str(FIXTURE_XML)).to_music_document()
+        assert isinstance(doc.notes(), list)
+        # Mirrored metadata getters (parity with Score).
+        assert hasattr(doc, "subtitle")
+        assert hasattr(doc, "arranger")
+        assert hasattr(doc, "language")
+
+
+class TestTypedErrors:
+    def test_missing_file_raises_ioerror(self):
+        with pytest.raises((IOError, OSError)):
+            lytk.from_musicxml("/no/such/file.xml")
+
+    def test_malformed_string_raises_valueerror_not_ioerror(self):
+        # A parse failure must be a ValueError, not an IOError — so batch loaders
+        # wrapping reads in `except IOError` don't silently swallow corrupt input.
+        with pytest.raises(ValueError):
+            lytk.from_musicxml_string("this is not valid musicxml <<<")
+        with pytest.raises(ValueError):
+            lytk.from_abc_string("\x00\x01 not abc")
