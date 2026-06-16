@@ -18,6 +18,17 @@ tracked test `tests/relative_multistaff_roundtrip.rs` asserts pedal.ly and
 chopin_n.ly preserve their pitch multiset through a Score-path round-trip, and
 that a simple part still emits `\relative`. (Replaces a throwaway scratch test.)
 
+**Phase 3b — Conversion fidelity: repeat brace balancing.** A MusicXML bare
+backward repeat (repeat-to-top, no forward `|:`) made the Score-path emitter
+write a closing `}` with no matching open, truncating the part variable and
+silently dropping every later measure's notes (`xml→ly`); a forward repeat with
+no end left an unmatched open `{`. `ir_to_ly/emit.rs` now tracks repeat-brace
+depth: a backward repeat at depth 0 wraps the section retroactively in
+`\repeat volta N { … }` instead of emitting a stray `}`, and any forward repeat
+left open is closed at the end of the variable. New test
+`tests/repeat_braces_roundtrip.rs` asserts balanced braces and no content loss
+for fixtures 45a (backward-only) and 45g (forward-not-ended).
+
 **Phase 1 — BLOCKER fixed: tie chains now collapse in the ML representations.**
 `to_note_array` (and therefore the event-sequence, piano-roll and metric paths
 that build on it) re-articulated every tied note as separate notes: a half tied

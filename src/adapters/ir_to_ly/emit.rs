@@ -71,6 +71,14 @@ pub(super) fn emit_measures(
     let mut is_first_measure = true;
     let mut last_divisions: i64 = 1;
 
+    // Repeat-brace balancing. `repeat_depth` counts open `\repeat volta {` blocks
+    // (the non-alternative ones); `section_start` marks where the current section
+    // began in `lines`, so a backward repeat with no matching forward `|:` (a
+    // MusicXML repeat-to-top) can be wrapped retroactively instead of emitting an
+    // unmatched `}` that truncates the variable and drops every later note.
+    let mut repeat_depth: i32 = 0;
+    let mut section_start = lines.len();
+
     for measure in &part.measures {
         // Anacrusis: emit \partial before first measure
         if is_first_measure {
@@ -202,12 +210,14 @@ pub(super) fn emit_measures(
             if bl.repeat_direction.is_some() && bl.ending_number.is_none() {
                 let times = bl.repeat_times.unwrap_or(2);
                 lines.push(format!("{pad}\\repeat volta {times} {{"));
+                repeat_depth += 1;
             }
             if let Some(ending_num) = bl.ending_number {
                 if bl.ending_type.as_deref() == Some("start") {
                     if ending_num == 1 {
                         // Close the repeat body and open \alternative
                         lines.push(format!("{pad}}}"));
+                        repeat_depth = (repeat_depth - 1).max(0);
                         lines.push(format!("{pad}\\alternative {{"));
                     }
                     // Open this alternative's block
@@ -281,7 +291,22 @@ pub(super) fn emit_measures(
                     lines.push(format!("{pad}}}"));
                 }
             } else if bl.repeat_direction.is_some() {
-                lines.push(format!("{pad}}}"));
+                if repeat_depth > 0 {
+                    // Matching close for a forward `|:` opened earlier.
+                    lines.push(format!("{pad}}}"));
+                    repeat_depth -= 1;
+                } else {
+                    // Backward repeat with no forward `|:` = repeat from the top
+                    // of the section. Wrap the section retroactively rather than
+                    // emit an unmatched `}` (which truncated the variable and lost
+                    // every later note). LilyPond ignores indentation, so the
+                    // inserted opener needs no re-flow.
+                    let times = bl.repeat_times.unwrap_or(2);
+                    lines.insert(section_start, format!("{pad}\\repeat volta {times} {{"));
+                    lines.push(format!("{pad}}}"));
+                    // Anything after this is a new section.
+                    section_start = lines.len();
+                }
             } else {
                 let bar_cmd = match bl.style {
                     crate::ir::direction::BarlineType::Final => Some("\\bar \"|.\""),
@@ -300,6 +325,14 @@ pub(super) fn emit_measures(
         if measure.number > 0 {
             lines.push(format!("{pad}| % {}", measure.number));
         }
+    }
+
+    // Close any forward `|:` that never got a matching backward repeat (e.g. a
+    // MusicXML forward repeat with no end), so the variable's braces stay
+    // balanced instead of leaving an unmatched `{`.
+    while repeat_depth > 0 {
+        lines.push(format!("{pad}}}"));
+        repeat_depth -= 1;
     }
 }
 
