@@ -28,9 +28,9 @@ import lytk
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_EXTS: set[str] = {".ly", ".ily", ".xml", ".musicxml", ".mxl", ".abc"}
-_has_midi = hasattr(lytk, "to_midi")
-if _has_midi:
-    _SUPPORTED_EXTS |= {".mid", ".midi"}
+# MIDI is always built into the extension.
+_has_midi = True
+_SUPPORTED_EXTS |= {".mid", ".midi"}
 
 
 def _parse_input(path: Path) -> lytk.Score:

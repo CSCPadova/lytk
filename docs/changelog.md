@@ -15,6 +15,27 @@ extra (deps lazy-imported, so the module loads without them):
 Added the `eval` extra (`scipy`, `torch`, `transformers`). Tests in
 `tests/test_metrics_eval.py` (5: JS math + end-to-end, FMD identity/separation/arity).
 
+## 2026-06-16 (cont.) — Phase 5: packaging & release metadata (1.0.0)
+
+- **Version → 1.0.0** in `Cargo.toml` + `pyproject.toml`; classifier
+  `Development Status :: 5 - Production/Stable`.
+- **abi3-py39 → abi3-py310** so the wheel tag (`cp310-abi3`) matches
+  `requires-python = ">=3.10"` and the classifiers (built against Python 3.10.19).
+- **License reconciled to `GPL-2.0-only`** in both manifests — matches the actual
+  bundled `LICENSE` (bare GPLv2) and the README, which the `GPL-2.0-or-later`
+  metadata previously contradicted. (If "or later" was intended, add the per-file
+  grant and flip these back.)
+- Added `src/lytk/py.typed` (PEP 561) so downstream type checkers see the stubs;
+  deleted the empty `src/lytk/transforms.py`; `cli.py` no longer probes for MIDI
+  (`_has_midi = True`, always built in).
+- `release.yml`: added **musllinux** wheels (x86_64 + aarch64) and disambiguated
+  the artifact names by `manylinux` tag (the new rows reused runner+target).
+- **Skipped:** making `pyo3/extension-module` an opt-in crate feature. It only
+  matters for `cargo add lytk` from crates.io, which is not a publish target
+  (release is PyPI-only); the refactor risks the working `cargo test` libpython
+  linking for no real consumer. lytk stays PyPI-only; the `.cargo/config.toml`
+  macOS hack keeps local `cargo test` green.
+
 ## 2026-06-16 (cont.) — 1.0.0 hardening (audit remediation)
 
 Working through the [1.0.0 hardening plan](roadmap.md) from the release-readiness
