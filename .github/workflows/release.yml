@@ -71,11 +71,31 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  # Gate publishing on the test suite actually passing for the tagged commit —
+  # otherwise a regression merged after the last CI run would ship to PyPI.
+  test:
+    name: Test gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - run: pip install maturin pytest scipy
+      - run: maturin develop
+      - run: pytest tests/ -q
+
   publish:
     name: Publish to PyPI
     # Only on a version tag — manual/dispatch runs stop at the artifacts above.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [wheels, sdist]
+    needs: [wheels, sdist, test]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

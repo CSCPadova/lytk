@@ -55,6 +55,11 @@ Issues = "https://github.com/CSCPadova/lytk/issues"
 [project.scripts]
 lytk = "lytk.cli:main"
 
+[tool.pytest.ini_options]
+# Restrict collection to our suite — a bare `pytest` otherwise tries to collect
+# the vendored reference projects (symusic/, lilybench/, …) and dies.
+testpaths = ["tests"]
+
 [tool.maturin]
 module-name = "lytk._core"
 python-packages = ["lytk"]

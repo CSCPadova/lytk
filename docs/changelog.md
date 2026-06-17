@@ -15,6 +15,20 @@ extra (deps lazy-imported, so the module loads without them):
 Added the `eval` extra (`scipy`, `torch`, `transformers`). Tests in
 `tests/test_metrics_eval.py` (5: JS math + end-to-end, FMD identity/separation/arity).
 
+## 2026-06-16 (cont.) — Phase 6: CI & quality gates
+
+- `[tool.pytest.ini_options] testpaths = ["tests"]` — a bare `pytest` no longer
+  tries to collect the vendored reference projects and die.
+- CI now installs `scipy` + CPU-only `torch`, so the torch dataset-adapter tests
+  and the eval-metric tests **run** instead of being skipped.
+- `release.yml`: a **Test gate** job (cargo test + maturin develop + pytest) now
+  gates the PyPI publish (`publish` `needs: […, test]`) — a regression merged
+  after the last CI run can no longer ship to PyPI untested.
+- **Skipped:** `clippy --all-targets` in CI (36 warnings, all in test code; the
+  shipped lib+bin are already gated by default-target `clippy -D warnings`) and a
+  pinned MSRV (`rust-version`) — pinning it correctly needs testing old
+  toolchains; deferred rather than guessed.
+
 ## 2026-06-16 (cont.) — Phase 5: packaging & release metadata (1.0.0)
 
 - **Version → 1.0.0** in `Cargo.toml` + `pyproject.toml`; classifier
