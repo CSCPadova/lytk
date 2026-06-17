@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-06-16 (cont.) — Generation-evaluation metrics (JS-similarity, FMD)
+
+New `lytk.metrics` (ported from `lilybench/`), behind the optional `lytk[eval]`
+extra (deps lazy-imported, so the module loads without them):
+- **JS-similarity** (`js_similarity`, `js_descriptor_similarity`,
+  `aggregate_descriptor_stats`) — `100·exp(-2·mean(JS div))` over Gaussians fit to
+  the three MusPy descriptors (`polyphony_rate`, `groove_consistency`,
+  `scale_consistency`), taken from lytk's own `compute_metrics` (no muspy needed;
+  scipy only).
+- **Fréchet Music Distance** (`frechet_music_distance`, `lilybert_embed`,
+  `load_documents`) — `||μx−μy||² + Tr(Σx+Σy−2√(ΣxΣy))` over LilyBERT layer-6
+  embeddings of raw `.ly` (torch + transformers + a checkpoint).
+Added the `eval` extra (`scipy`, `torch`, `transformers`). Tests in
+`tests/test_metrics_eval.py` (5: JS math + end-to-end, FMD identity/separation/arity).
+
 ## 2026-06-16 (cont.) — 1.0.0 hardening (audit remediation)
 
 Working through the [1.0.0 hardening plan](roadmap.md) from the release-readiness

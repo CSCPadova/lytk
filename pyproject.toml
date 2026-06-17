@@ -41,6 +41,9 @@ dependencies = ["numpy>=1.21"]
 [project.optional-dependencies]
 torch = ["torch"]
 tensorflow = ["tensorflow"]
+# Generation-evaluation metrics (lytk.metrics): JS-similarity needs scipy;
+# Fréchet Music Distance also needs torch + transformers + a LilyBERT checkpoint.
+eval = ["scipy>=1.10", "torch", "transformers"]
 
 [project.urls]
 Homepage = "https://github.com/CSCPadova/lytk"

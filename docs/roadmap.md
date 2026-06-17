@@ -385,6 +385,18 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
 MEI parser/emitter (`mei_to_ir.rs` / `ir_to_mei.rs`), Humdrum import (`hum_to_ir.rs`).
 Reference material in `MEILER/`, `hum2ly/`.
 
+### Generation-evaluation metrics: JS-similarity & Fréchet Music Distance ✅
+Implemented in `src/lytk/metrics.py` (ported from `lilybench/`), behind the
+optional `lytk[eval]` extra (lazy imports — the module loads without the deps):
+- **JS-similarity** — `js_similarity` / `js_descriptor_similarity`;
+  `100·exp(-2·mean(JS div))` over Gaussians fit to the `polyphony_rate`,
+  `groove_consistency`, `scale_consistency` descriptors, sourced from lytk's own
+  `compute_metrics` (no muspy round-trip). Needs `scipy`.
+- **Fréchet Music Distance** — `frechet_music_distance` (numpy + scipy) +
+  `lilybert_embed` (LilyBERT layer-6 embeddings of raw `.ly`; needs
+  `torch`/`transformers` + a checkpoint).
+Tests: `tests/test_metrics_eval.py`.
+
 ### Audio rendering / synthesis (v1.1)
 Listen-back via a synthesizer (reference muspy/symusic synth).
 
