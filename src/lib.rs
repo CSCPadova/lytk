@@ -45,6 +45,7 @@ pub mod representations;
 pub mod transforms;
 
 use adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
+use ir::interval::Interval;
 use ir::language::PitchLanguage;
 use ir::pitch::{Alter, Pitch, PitchStep};
 
@@ -568,6 +569,17 @@ fn transpose(score: &PyScore, semitones: i32) -> PyScore {
     }
 }
 
+/// Transpose all pitches by a named diatonic *interval* (e.g. ``"M3"``, ``"m3"``,
+/// ``"P5"``, ``"A4"``, ``"-m2"``), preserving correct enharmonic spelling.
+/// Returns a new :class:`Score`. Raises :class:`ValueError` on an invalid name.
+#[pyfunction]
+fn transpose_interval(score: &PyScore, interval: &str) -> PyResult<PyScore> {
+    let iv = Interval::from_name(interval).map_err(PyValueError::new_err)?;
+    Ok(PyScore {
+        inner: transforms::transpose::transpose_interval(&score.inner, iv),
+    })
+}
+
 /// Change the LilyPond pitch language (e.g. ``"english"``, ``"deutsch"``).
 /// Returns a new :class:`Score`.
 #[pyfunction]
@@ -849,6 +861,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Transform functions
     m.add_function(wrap_pyfunction!(transpose, m)?)?;
+    m.add_function(wrap_pyfunction!(transpose_interval, m)?)?;
     m.add_function(wrap_pyfunction!(change_language, m)?)?;
     m.add_function(wrap_pyfunction!(invert, m)?)?;
     m.add_function(wrap_pyfunction!(retrograde, m)?)?;

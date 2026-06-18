@@ -509,3 +509,447 @@ fn convert_ly_to_abc() {
     let content = fs::read_to_string(&abc_out).unwrap();
     assert!(content.contains("K:"), "ABC output missing key header");
 }
+
+// ---------------------------------------------------------------------------
+// stdin/stdout streaming + transform subcommands (Epic P1)
+// ---------------------------------------------------------------------------
+
+/// A single-staff, single-voice absolute-entry snippet — relative threading is
+/// reliable for it, so `abs2rel` can emit a `\relative` wrapper.
+const SIMPLE_LY: &str = "\\version \"2.24.0\"\n{ c'4 e'4 g'4 }\n";
+
+#[test]
+fn convert_stdin_to_stdout() {
+    lytk()
+        .args(["convert", "-", "-o", "-", "--from", "ly", "-f", "xml"])
+        .write_stdin(SIMPLE_LY)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("score-partwise"));
+}
+
+#[test]
+fn convert_stdin_without_from_fails() {
+    lytk()
+        .args(["convert", "-", "-o", "out.xml"])
+        .write_stdin(SIMPLE_LY)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --from"));
+}
+
+#[test]
+fn convert_stdout_without_format_fails() {
+    lytk()
+        .args([
+            "convert",
+            "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+            "-o",
+            "-",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --format"));
+}
+
+#[test]
+fn invert_subcommand_writes_output() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    let out = tmp.path().join("out.ly");
+    lytk()
+        .args([
+            "invert",
+            inp.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--axis",
+            "c4",
+        ])
+        .assert()
+        .success();
+    assert!(out.exists(), "invert should write the output file");
+}
+
+#[test]
+fn invert_bad_axis_fails() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    lytk()
+        .args([
+            "invert",
+            inp.to_str().unwrap(),
+            "-o",
+            "-",
+            "-f",
+            "ly",
+            "--axis",
+            "zzz",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("axis"));
+}
+
+#[test]
+fn retrograde_subcommand_writes_output() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    let out = tmp.path().join("out.ly");
+    lytk()
+        .args([
+            "retrograde",
+            inp.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(out.exists(), "retrograde should write the output file");
+}
+
+#[test]
+fn change_language_subcommand() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    let out = tmp.path().join("out.ly");
+    lytk()
+        .args([
+            "change-language",
+            inp.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "-l",
+            "italiano",
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&out).unwrap();
+    assert!(
+        content.contains("italiano"),
+        "expected \\language \"italiano\" in output"
+    );
+}
+
+#[test]
+fn change_language_unknown_fails() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    lytk()
+        .args([
+            "change-language",
+            inp.to_str().unwrap(),
+            "-o",
+            "-",
+            "-f",
+            "ly",
+            "-l",
+            "klingon",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown pitch language"));
+}
+
+#[test]
+fn abs2rel_emits_relative() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap(); // absolute entry
+    let out = tmp.path().join("out.ly");
+    lytk()
+        .args([
+            "abs2rel",
+            inp.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&out).unwrap();
+    assert!(
+        content.contains("\\relative"),
+        "abs2rel output should use \\relative, got:\n{content}"
+    );
+}
+
+#[test]
+fn rel2abs_drops_relative() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, "\\version \"2.24.0\"\n\\relative c' { c4 d4 e4 }\n").unwrap();
+    let out = tmp.path().join("out.ly");
+    lytk()
+        .args([
+            "rel2abs",
+            inp.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let content = fs::read_to_string(&out).unwrap();
+    assert!(
+        !content.contains("\\relative"),
+        "rel2abs output should not wrap in \\relative, got:\n{content}"
+    );
+}
+
+#[test]
+fn abs2rel_rejects_non_lilypond() {
+    lytk()
+        .args([
+            "abs2rel",
+            "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+            "-o",
+            "-",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("LilyPond"));
+}
+
+#[test]
+fn transpose_by_interval() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    let out = tmp.path().join("out.ly");
+    lytk()
+        .args([
+            "transpose",
+            inp.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--interval",
+            "M3",
+        ])
+        .assert()
+        .success();
+    assert!(out.exists());
+}
+
+#[test]
+fn transpose_to_key_subcommand() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    let out = tmp.path().join("out.ly");
+    lytk()
+        .args([
+            "transpose",
+            inp.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--to-key",
+            "D",
+        ])
+        .assert()
+        .success();
+    assert!(out.exists());
+}
+
+#[test]
+fn transpose_requires_exactly_one_mode() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    // No mode given.
+    lytk()
+        .args(["transpose", inp.to_str().unwrap(), "-o", "-", "-f", "ly"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exactly one"));
+    // Two modes given.
+    lytk()
+        .args([
+            "transpose",
+            inp.to_str().unwrap(),
+            "-o",
+            "-",
+            "-f",
+            "ly",
+            "-s",
+            "2",
+            "--interval",
+            "M3",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exactly one"));
+}
+
+#[test]
+fn transpose_bad_interval_fails() {
+    let tmp = TempDir::new().unwrap();
+    let inp = tmp.path().join("in.ly");
+    fs::write(&inp, SIMPLE_LY).unwrap();
+    lytk()
+        .args([
+            "transpose",
+            inp.to_str().unwrap(),
+            "-o",
+            "-",
+            "-f",
+            "ly",
+            "--interval",
+            "Q9",
+        ])
+        .assert()
+        .failure();
+}
+
+// ---------------------------------------------------------------------------
+// Automation outputs (Epic P10): info --json, diff
+// ---------------------------------------------------------------------------
+
+#[test]
+fn info_json_output() {
+    lytk()
+        .args([
+            "info",
+            "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"part_count\""))
+        .stdout(predicate::str::contains("\"note_count\""))
+        .stdout(predicate::str::contains("\"parts\""));
+}
+
+#[test]
+fn diff_equal_exits_zero() {
+    let f = "tests/fixtures/xml/01a-Pitches-Pitches.xml";
+    lytk()
+        .args(["diff", f, f])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("semantically equal"));
+}
+
+#[test]
+fn diff_differ_exits_nonzero() {
+    let tmp = TempDir::new().unwrap();
+    let f = "tests/fixtures/xml/01a-Pitches-Pitches.xml";
+    let transposed = tmp.path().join("t.xml");
+    lytk()
+        .args([
+            "transpose",
+            f,
+            "-o",
+            transposed.to_str().unwrap(),
+            "-s",
+            "2",
+        ])
+        .assert()
+        .success();
+    lytk()
+        .args(["diff", f, transposed.to_str().unwrap(), "--json"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"equal\": false"));
+}
+
+// ---------------------------------------------------------------------------
+// JSON batch-job API (Epic P11)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn batch_jobs_runs() {
+    let tmp = TempDir::new().unwrap();
+    let out1 = tmp.path().join("a.ly");
+    let out2 = tmp.path().join("b.ly");
+    let jobs = tmp.path().join("jobs.json");
+    let spec = format!(
+        r#"[
+            {{"in":"tests/fixtures/xml/01a-Pitches-Pitches.xml","out":"{}","format":"ly"}},
+            {{"in":"tests/fixtures/xml/01a-Pitches-Pitches.xml","out":"{}","format":"ly","interval":"M3"}}
+        ]"#,
+        out1.display(),
+        out2.display()
+    );
+    fs::write(&jobs, spec).unwrap();
+    lytk()
+        .args(["batch", jobs.to_str().unwrap(), "-j", "1"])
+        .assert()
+        .success();
+    assert!(out1.exists() && out2.exists());
+}
+
+#[test]
+fn batch_partial_failure_exits_nonzero_and_reports() {
+    let tmp = TempDir::new().unwrap();
+    let good = tmp.path().join("good.ly");
+    let bad = tmp.path().join("bad.ly");
+    let report = tmp.path().join("report.json");
+    let jobs = tmp.path().join("jobs.json");
+    let spec = format!(
+        r#"[
+            {{"in":"tests/fixtures/xml/01a-Pitches-Pitches.xml","out":"{}","format":"ly"}},
+            {{"in":"nonexistent.xml","out":"{}","format":"ly"}}
+        ]"#,
+        good.display(),
+        bad.display()
+    );
+    fs::write(&jobs, spec).unwrap();
+    lytk()
+        .args([
+            "batch",
+            jobs.to_str().unwrap(),
+            "-j",
+            "1",
+            "--report",
+            report.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed"));
+    // The valid job still produced its output.
+    assert!(good.exists());
+    let report_text = fs::read_to_string(&report).unwrap();
+    assert!(report_text.contains("\"ok\": false"));
+    assert!(report_text.contains("\"ok\": true"));
+}
+
+#[test]
+fn positions_json_output() {
+    lytk()
+        .args(["positions", "tests/fixtures/xml/01a-Pitches-Pitches.xml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"measures\""))
+        .stdout(predicate::str::contains("\"start\""))
+        .stdout(predicate::str::contains("\"unit\": \"quarter\""));
+}
+
+#[test]
+fn bundle_exports_parts() {
+    let tmp = TempDir::new().unwrap();
+    let out = tmp.path().join("parts");
+    lytk()
+        .args([
+            "bundle",
+            "tests/fixtures/xml/01a-Pitches-Pitches.xml",
+            "-o",
+            out.to_str().unwrap(),
+            "-f",
+            "ly",
+        ])
+        .assert()
+        .success();
+    let files: Vec<_> = fs::read_dir(&out)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |x| x == "ly"))
+        .collect();
+    assert!(
+        !files.is_empty(),
+        "bundle should write at least one part file"
+    );
+}

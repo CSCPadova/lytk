@@ -37,6 +37,7 @@ from lytk._core import (
     to_note_array,
     to_piano_roll,
     transpose,
+    transpose_interval,
 )
 
 __all__ = [
@@ -68,6 +69,7 @@ __all__ = [
     "flatten",
     # Transforms
     "transpose",
+    "transpose_interval",
     "change_language",
     "invert",
     "retrograde",

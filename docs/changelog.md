@@ -1,5 +1,126 @@
 # Changelog
 
+## 2026-06-18 (cont.) — Wave 1 / Epic P11: JSON batch-job API
+
+A `batch` subcommand driven by a JSON job file (`src/main.rs`):
+
+- **Schema:** an array of `{in/input, out/output, format?, from?, transpose?,
+  interval?}` (serde, with `in`/`out` aliases). Each job can convert between any
+  supported formats and optionally transpose (chromatic `transpose` or diatonic
+  `interval`, the latter winning if both are set).
+- **Executor:** reuses the existing rayon pool + per-job `catch_unwind` isolation
+  (one bad job fails only itself) and `-j` thread control; exits non-zero if any
+  job failed, so it gates automation.
+- **`--report <path>`** (`-` for stdout): a JSON array of per-job results
+  (`input`/`output`/`ok`/`error`) — the diagnostic sidecar.
+- **Deferred (T11.3 remainder):** visible-parts filtering and filename templates
+  inside batch jobs overlap excerpt-selection (P1/P8) and are deferred; the
+  `bundle` command already covers per-part splitting.
+- **Tests:** 2 new CLI tests (multi-job success incl. per-job interval transform;
+  partial-failure exit code + report contents). Full suite: **970 Rust tests, 0
+  failures**; 136 Python; fidelity baselines unchanged.
+
+## 2026-06-18 (cont.) — Wave 1 / Epic P10: machine-readable automation outputs
+
+Four non-notation CLI outputs for automation/CI (`src/main.rs`):
+
+- **`info --json`** — a curated metadata summary (title/composer/…, language,
+  per-part id/name/measures/staves/midi_program, total note count). Stable
+  human-meaningful subset, not the full serialized score.
+- **`positions`** — per-part measure positions (`start`/`duration` in quarter
+  notes) as JSON. *Temporal/structural* positions derived from notated durations
+  (measure length = longest voice), explicitly NOT graphical coordinates.
+- **`bundle -o <dir>`** — exports each part to its own single-part file
+  `<stem>_<part>.<ext>` (metadata/layout carried over); `--format` picks the
+  output format (default xml).
+- **`diff a b [--json]`** — semantic comparison on sounding content (part count,
+  note count, sorted MIDI pitch multiset). Exits non-zero when scores differ, so
+  it can gate CI; the comparison ignores source-text formatting.
+- **Tests:** 5 new CLI tests (info-json, positions, bundle, diff equal/differ).
+  Full suite green: **559 lib + 42 CLI + 208 fixture + … Rust; 136 Python**;
+  fidelity baselines unchanged.
+
+## 2026-06-18 (cont.) — Wave 1 / Epic P2: transpose modes & enharmonic spelling
+
+The highest-value backlog item: transposition is no longer semitone-only.
+
+- **`Interval` type** (`src/ir/interval.rs`): a signed `(diatonic, chromatic)` pair
+  with a name parser (`M3`, `m3`, `P5`, `A4`, `d5`, `-m2`, `P8`, `M10`, `AA4`,
+  `dd5`) and `Interval::between(a, b)`. Invalid qualities for a class (`P3`, `M5`)
+  are rejected.
+- **Spelling-correct transposition** (`Pitch::transpose_diatonic`): "up a major
+  third" (C→E) and "up a diminished fourth" (C→F♭) are now distinct, with correct
+  letters and accidentals; microtonal `alter` carries through. Chromatic
+  (semitone) transposition keeps its existing nearest-natural behavior.
+- **Key-aware enharmonic spelling** (`pitch::respell(pitch, fifths)`): chooses the
+  spelling that fits a key signature (F♯ in a sharp key, G♭ in a flat key),
+  preserving the sounding pitch. Mode-independent (depends only on `fifths`).
+- **`Transpose` now carries a `TransposeMode { Chromatic, Diatonic }`**;
+  back-compatible `Transpose::new(semitones)` and `transpose()` kept. New
+  `transpose_interval`, `transpose_interval_music`, and `transpose_to_key`
+  (nearest-direction, ≤ tritone; key signatures shift with the music).
+- **CLI:** `transpose` gains `--interval <name>` and `--to-key <tonic>` (e.g.
+  `--to-key Bb`/`F#`/`ef`), mutually exclusive with `--semitones` (exactly one
+  required). **Python:** `lytk.transpose_interval(score, "M3")` (+ `.pyi` stub and
+  `__init__` re-export).
+- **ABC (T2.5):** the emitter now respells pitches against the active `K:` so
+  output follows the key's enharmonic spelling (sounding pitch preserved, so
+  round-trip stays faithful). Remaining: omit key/within-bar-implied accidentals
+  (needs matching parser support) — tracked.
+- **Tests:** `interval` (3), `pitch` (5: diatonic transpose, octave carry,
+  respell, `major_tonic`), `transpose` (2: by-interval spelling + to-key), ABC
+  respelling (1), and 4 CLI tests. Full suite green: **559 lib + 37 CLI + 208
+  fixture + … Rust; 136 Python**; fidelity baselines unchanged.
+
+## 2026-06-18 (cont.) — Wave 1 / Epic P1: CLI & I/O ergonomics
+
+Expanded the CLI surface and added stream I/O (6 of 7 P1 tasks; `src/main.rs`):
+
+- **stdin/stdout streaming (T1.1):** `-` is now a valid input/output path. Reading
+  stdin requires `--from <ly|xml|midi|abc>` (no extension to infer from); writing
+  stdout requires `--format`. Wired through new `parse_source`/`parse_bytes`/
+  `render_output`/`write_bytes` helpers; `convert_ly_to_ly` is stdin/stdout-aware.
+  Multi-movement to stdout is a clear error. MXML-over-stdin uses the bounded
+  `convert_bytes` (handles plain XML and zipped MXL).
+- **New transform subcommands (T1.2–T1.4):** `invert` (`--axis c4`/`fs3`/`bf5`,
+  default middle C), `retrograde`, and `change-language` (`-l <lang>`) now expose
+  the existing `transforms::{invert,retrograde,change_language}` — previously
+  library/Python-only. All single-file subcommands gained `--from` for stdin.
+- **`abs2rel` / `rel2abs` (T1.5–T1.6):** LilyPond-only re-emission of pitch entry
+  in `\relative` vs absolute form, via the Score path (which honors
+  `metadata.pitch_mode` and wraps reliable single-staff/voice parts in `\relative`;
+  complex parts fall back to absolute, as documented). The IR is always
+  absolute internally, so both commands are parse → set mode → re-emit.
+- **Tests:** 12 new CLI integration tests in `tests/cli.rs` (streaming round-trip,
+  `--from`/`--format` requirement errors, each subcommand, bad-axis and
+  unknown-language errors, `abs2rel` emits `\relative`, `rel2abs` drops it,
+  non-LilyPond rejection). Full suite green (547 lib + 33 CLI + 208 fixture + …);
+  fidelity baselines unchanged.
+- **Deferred (T1.7):** LilyPond `indent`/`reformat` — needs a source-preserving
+  (whitespace-only, comment-preserving) reindenter over the tree-sitter parse;
+  a parse→emit shortcut would be lossy and is redundant with `convert in.ly -o out.ly`.
+
+## 2026-06-18 (cont.) — Pre-1.0.0 expansion roadmap landed
+
+A lytk-vs-MuseScore CLI/converter & import-export comparison (multi-agent review)
+produced a 24-item backlog of features where MuseScore leads inside lytk's own
+scope. The backlog is now organized into **12 epics (P1–P12)** of atomic tasks and
+added to [`docs/roadmap.md`](roadmap.md) as the **Pre-1.0.0 Expansion** section;
+full task detail + file anchors live in the plan file
+`~/.claude/plans/add-as-a-next-mighty-matsumoto.md`.
+
+- **Scope decisions:** lytk stays **GPL-2.0-only** (MuseScore read for approach,
+  not copied); "full geometry/style" scoped down to **sensible default positions /
+  placement hints** (no layout engine); the `tests/fidelity.rs` semantic scoreboard
+  stays a **hard, non-decreasing CI gate** (visual regression deferred — no rendered
+  output). All 12 epics gate the 1.0.0 release (owner decision).
+- **Build-order waves:** cheap/high-value first (CLI/IO, automation outputs, batch
+  API, transpose modes, XSD validation) → IR extensions (options, keys/time/
+  positions/measure-repeat, enum typing, harmony) → heavy modeling (beams/tuplets,
+  instruments/tab/perc/fretboard) → MIDI reconstruction (depends on tuplets +
+  percussion).
+- No code behavior changed in this landing — docs only.
+
 ## 2026-06-18 (cont.) — MIDI instrument preservation across formats
 
 Instrument identity now survives every conversion between LilyPond, MusicXML and

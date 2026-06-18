@@ -4,17 +4,22 @@
 //! followed by the note/rest/chord/barline body. The unit note length `L:` is
 //! fixed at `1/8`; every duration is rendered as a multiple of it.
 //!
-//! Limitation (v1): pitches are emitted with only their explicit accidentals —
-//! the key signature is not used to re-spell notes. This is self-consistent
-//! with [`abc_to_ir`](super::abc_to_ir) (parse → emit → parse is faithful on
-//! pitch and duration) but is not idiomatic key-aware ABC.
+//! Pitches are re-spelled against the active key signature before emission
+//! (e.g. the black key above F is `^F` in a sharp key but `_G` in a flat key),
+//! so output follows the key's enharmonic spelling. The sounding pitch is
+//! preserved, so parse → emit → parse stays faithful on pitch and duration.
+//!
+//! Remaining v1 limitation: every accidental is still printed explicitly rather
+//! than omitting those implied by the `K:` header (idiomatic ABC carries
+//! key/within-bar accidentals); doing so requires the parser to apply the same
+//! rules — tracked as a follow-up.
 
 use crate::ir::annotation::Annotation;
 use crate::ir::direction::{Barline, BarlineType};
 use crate::ir::duration::Frac;
 use crate::ir::measure::{KeyMode, KeySignature, TimeSignature};
 use crate::ir::music::{ContextType, Music, MusicDocument};
-use crate::ir::pitch::Pitch;
+use crate::ir::pitch::{respell, Pitch};
 
 use super::{FromMusicAdapter, Result};
 
@@ -67,6 +72,9 @@ fn emit_tune(doc: &MusicDocument) -> String {
             Music::KeySignature(k) => Some(*k),
             _ => None,
         });
+    // Active key (circle-of-fifths position) used to re-spell pitches; updated by
+    // any in-body key change.
+    let init_fifths = first_key.map(|k| k.fifths as i32).unwrap_or(0);
 
     let mut out = String::new();
     out.push_str("X:1\n");
@@ -93,7 +101,12 @@ fn emit_tune(doc: &MusicDocument) -> String {
             out.push('\n');
         }
         1 => {
-            let body = emit_body(&voices[0].events, first_time.is_some(), first_key.is_some());
+            let body = emit_body(
+                &voices[0].events,
+                first_time.is_some(),
+                first_key.is_some(),
+                init_fifths,
+            );
             out.push_str(&body);
             out.push('\n');
         }
@@ -106,7 +119,12 @@ fn emit_tune(doc: &MusicDocument) -> String {
                     Some(n) => out.push_str(&format!("V:{id} name=\"{n}\"\n")),
                     None => out.push_str(&format!("V:{id}\n")),
                 }
-                let body = emit_body(&v.events, first_time.is_some(), first_key.is_some());
+                let body = emit_body(
+                    &v.events,
+                    first_time.is_some(),
+                    first_key.is_some(),
+                    init_fifths,
+                );
                 out.push_str(&body);
                 out.push('\n');
             }
@@ -117,10 +135,13 @@ fn emit_tune(doc: &MusicDocument) -> String {
 
 /// Emit one voice's body as a space-joined token string. `skip_time`/`skip_key`
 /// drop the first time/key signature (already shown in the `M:`/`K:` header).
-fn emit_body(events: &[Music], skip_time: bool, skip_key: bool) -> String {
+/// `init_fifths` is the key in force at the start (from the `K:` header); pitches
+/// are re-spelled against the active key.
+fn emit_body(events: &[Music], skip_time: bool, skip_key: bool, init_fifths: i32) -> String {
     let mut tokens: Vec<String> = Vec::new();
     let mut time_used = !skip_time;
     let mut key_used = !skip_key;
+    let mut active_fifths = init_fifths;
     for ev in events {
         match ev {
             Music::TimeSignature(t) => {
@@ -131,6 +152,7 @@ fn emit_body(events: &[Music], skip_time: bool, skip_key: bool) -> String {
                 }
             }
             Music::KeySignature(k) => {
+                active_fifths = k.fifths as i32;
                 if key_used {
                     tokens.push(format!("[K:{}]", key_to_abc(k)));
                 } else {
@@ -144,7 +166,7 @@ fn emit_body(events: &[Music], skip_time: bool, skip_key: bool) -> String {
             } => {
                 let mut tok = format!(
                     "{}{}",
-                    pitch_to_abc(pitch),
+                    pitch_to_abc(&respell(*pitch, active_fifths)),
                     duration_suffix(duration.actual_duration())
                 );
                 if has_tie(annotations) {
@@ -157,7 +179,10 @@ fn emit_body(events: &[Music], skip_time: bool, skip_key: bool) -> String {
                 duration,
                 annotations,
             } => {
-                let inner: String = pitches.iter().map(|(p, _)| pitch_to_abc(p)).collect();
+                let inner: String = pitches
+                    .iter()
+                    .map(|(p, _)| pitch_to_abc(&respell(*p, active_fifths)))
+                    .collect();
                 let mut tok = format!("[{inner}]{}", duration_suffix(duration.actual_duration()));
                 if has_tie(annotations) {
                     tok.push('-');
@@ -421,6 +446,39 @@ mod tests {
             ]);
             assert!(emit(&doc).contains(expected), "expected {expected}");
         }
+    }
+
+    #[test]
+    fn test_key_aware_respelling() {
+        // The black key above F: spelled `^F` (F♯) in a sharp key, `_G` (G♭) in a
+        // flat key — the sounding pitch is identical, the spelling follows K:.
+        let fsharp = || Music::Note {
+            pitch: Pitch::with_alter(PitchStep::F, Alter::from_integer(1), 4),
+            duration: crate::ir::duration::Duration::new(Frac::new(1, 8)),
+            annotations: vec![],
+        };
+        let sharp_key = staff(vec![
+            Music::KeySignature(KeySignature {
+                fifths: 2,
+                mode: KeyMode::Major,
+            }),
+            fsharp(),
+        ]);
+        assert!(
+            emit(&sharp_key).contains("^F"),
+            "sharp key should keep F#: {}",
+            emit(&sharp_key)
+        );
+
+        let flat_key = staff(vec![
+            Music::KeySignature(KeySignature {
+                fifths: -5,
+                mode: KeyMode::Major,
+            }),
+            fsharp(),
+        ]);
+        let abc = emit(&flat_key);
+        assert!(abc.contains("_G"), "flat key should respell as Gb:\n{abc}");
     }
 
     #[test]

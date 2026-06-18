@@ -377,6 +377,144 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
 
 ---
 
+## Pre-1.0.0 Expansion — MuseScore-comparison backlog (planned ⬜)
+
+Sourced from a lytk-vs-MuseScore CLI/converter comparison (see the comparison
+report + `memory/musescore-comparison-backlog.md`). Full atomic-task detail,
+rationale, and file anchors live in the plan file
+`~/.claude/plans/add-as-a-next-mighty-matsumoto.md`. **These 12 epics gate the
+1.0.0 release** (single milestone, by owner decision).
+
+Three scoping decisions:
+- **Licensing:** lytk stays **GPL-2.0-only**; MuseScore (GPL-3.0) may be *read to
+  learn the approach* but not copied/transcribed — write lytk's own (ideally
+  better) implementation.
+- **Layout (PE-Epic 4 / item 12):** target is **sensible default positions /
+  placement hints**, NOT a layout/spacing engine.
+- **Testing:** the `tests/fidelity.rs` semantic scoreboard stays a **hard,
+  non-decreasing CI gate**; visual regression deferred (no rendered output).
+
+Epic labels are `P`-prefixed to avoid colliding with the historical Epic 1–3 /
+A–H above. Build order (waves): **P1, P10, P11, P2, P4.T4.1** → **P3, P4, P5,
+P7** → **P6, P8** → **P9**; **P12** enforced throughout.
+
+### PE-Epic P1 — CLI & I/O ergonomics *(items 1, 6)* 🟡
+| Task | Description | Status |
+|------|-------------|--------|
+| T1.1 | stdin/stdout streaming (`-`); `--from` for stdin input, `--format` for stdout output | ✅ |
+| T1.2 | CLI `invert` subcommand (`--axis c4`/`fs3`/`bf5`) | ✅ |
+| T1.3 | CLI `retrograde` subcommand | ✅ |
+| T1.4 | CLI `change-language` subcommand (`-l <lang>`) | ✅ |
+| T1.5 | `abs2rel` subcommand — re-emit LilyPond in `\relative` form (Score path) | ✅ |
+| T1.6 | `rel2abs` subcommand — re-emit LilyPond in absolute form | ✅ |
+| T1.7 | LilyPond `indent` + `reformat` CLI (source-preserving reindenter over tree-sitter) | ⬜ deferred — needs a whitespace-only, comment-preserving reindenter; a parse→emit shortcut would be lossy and redundant with `convert in.ly -o out.ly` |
+
+### PE-Epic P2 — Transpose modes & enharmonic spelling *(items 10, 11, 3)* ✅
+| Task | Description | Status |
+|------|-------------|--------|
+| T2.1 | `Interval` type (`src/ir/interval.rs`, `(diatonic, chromatic)` + name parser) + `TransposeMode { Chromatic, Diatonic }` | ✅ |
+| T2.2 | `Pitch::transpose_diatonic` — spelling-correct (distinct M3 vs d4 etc.), microtone-safe | ✅ |
+| T2.3 | `pitch::respell(pitch, fifths)` — key-aware enharmonic spelling | ✅ |
+| T2.4 | `transpose_interval`/`transpose_to_key` fns; CLI `--interval`/`--to-key` (mutually exclusive); Python `transpose_interval` + stub/re-export | ✅ |
+| T2.5 | ABC emitter respells against the active `K:` (enharmonic spelling follows the key; explicit accidentals still printed — see note) | ✅ |
+
+### PE-Epic P3 — Structured import/export option objects *(item 7)*
+| Task | Description | Status |
+|------|-------------|--------|
+| T3.1 | `MxmlExportOptions`/`ExportOptions` (divisions, layout, breaks, invisible, compat, text_inference) | ⬜ |
+| T3.2 | Thread via `with_options()`; mirror import options | ⬜ |
+| T3.3 | Honor layout/breaks/invisible booleans (replace hardcoded path) | ⬜ |
+| T3.4 | `CompatMode` (Generic/Finale/MuseScore/Dorico) + text-inference toggle | ⬜ |
+| T3.5 | Surface to CLI + Python | ⬜ |
+
+### PE-Epic P4 — MusicXML fidelity: validation, keys, time, positions, repeats *(items 2, 4/24, 23, 12, 20)*
+| Task | Description | Status |
+|------|-------------|--------|
+| T4.1 | Opt-in MusicXML XSD validation (`--validate`, off by default; XSD in `musicxml-std/schema/`) | ⬜ deferred — true XSD validation needs a native libxml2 dep (build + Python-wheel cost); revisit on demand. The `musicxml` crate already rejects malformed/wrong-structure XML on parse. |
+| T4.2 | Non-traditional key sigs — IR (`KeySignature::Custom`) | ⬜ |
+| T4.3 | Non-traditional key sigs — MusicXML parse (`part.rs:354`) + emit | ⬜ |
+| T4.4 | Non-traditional key sigs — LilyPond + ABC round-trip | ⬜ |
+| T4.5 | Time sigs — IR (interchangeable, single-number, senza-misura at ts level) | ⬜ |
+| T4.6 | Time sigs — adapter round-trip (mxml + ly) | ⬜ |
+| T4.7 | Default positions: `default-y`/`placement`, `<print>` breaks, `<staff-layout>` (no spacing engine) | ⬜ |
+| T4.8 | Measure-repeat — Layer-2 IR marker | ⬜ |
+| T4.9 | Measure-repeat — MusicXML + LilyPond round-trip | ⬜ |
+
+### PE-Epic P5 — Enumerated notation typing *(item 13)*
+| Task | Description | Status |
+|------|-------------|--------|
+| T5.1 | `ArticulationType` enum (+ `Other(String)`) | ⬜ |
+| T5.2 | `OrnamentType` enum | ⬜ |
+| T5.3 | `TechnicalType` enum | ⬜ |
+| T5.4 | `DynamicType` enum | ⬜ |
+| T5.5 | Migrate adapters + Python API; `str<->enum` map keeps fixtures green | ⬜ |
+
+### PE-Epic P6 — Beams & tuplets *(items 21, 22)*
+| Task | Description | Status |
+|------|-------------|--------|
+| T6.1 | Beam model: typed levels/hierarchy + fan-beam | ⬜ |
+| T6.2 | Beam round-trip (mxml `<beam>` + ly) | ⬜ |
+| T6.3 | Tuplet model: nesting (recursive) | ⬜ |
+| T6.4 | Tuplet state machine (open/continue/close across a voice) | ⬜ |
+| T6.5 | Tuplet round-trip (mxml `<time-modification>/<tuplet>` + ly `\tuplet`) | ⬜ |
+
+### PE-Epic P7 — Harmony & figured-bass analysis *(item 19)*
+| Task | Description | Status |
+|------|-------------|--------|
+| T7.1 | Optional `roman_numeral` + `function` on `Harmony` | ⬜ |
+| T7.2 | MusicXML round-trip for harmony function/numeral | ⬜ |
+| T7.3 | Figured-bass enhancements (typed accidentals, extension lines) | ⬜ |
+
+### PE-Epic P8 — Instruments, tablature, percussion, fretboard *(items 15, 16, 17, 18)*
+| Task | Description | Status |
+|------|-------------|--------|
+| T8.1 | Instruments: mid-part instrument changes as Part state; GM completeness | ⬜ |
+| T8.2 | Tablature — IR (string/fret) | ⬜ |
+| T8.3 | Tablature — MusicXML + LilyPond round-trip | ⬜ |
+| T8.4 | Percussion — IR unpitched/drum note variant | ⬜ |
+| T8.5 | Percussion — mxml/ly/midi round-trip + drum-name map | ⬜ |
+| T8.6 | Fretboard diagrams — IR + MusicXML `<frame>` + LilyPond `\fret-diagram` | ⬜ |
+
+### PE-Epic P9 — MIDI reconstruction (study-then-reimplement) *(item 14)*
+Depends on P6 (tuplets) + P8 (percussion). Study MuseScore `importmidi_*` for the
+approach; write lytk's own. Each sub-task is independently SMF-fixture-testable.
+| Task | Description | Status |
+|------|-------------|--------|
+| T9.1 | Configurable quantization grid | ⬜ |
+| T9.2 | Clef guessing (pitch centroid) | ⬜ |
+| T9.3 | Voice separation (≤4 voices) | ⬜ |
+| T9.4 | Tuplet detection (emits P6 tuplets) | ⬜ |
+| T9.5 | L/R hand split (piano) | ⬜ |
+| T9.6 | Drum mapping (ch-10 → P8 percussion) | ⬜ |
+| T9.7 | Swing detection/normalization | ⬜ |
+| T9.8 | Lyrics/karaoke extraction | ⬜ |
+| T9.9 | Articulation inference (gate-time → staccato) | ⬜ |
+
+### PE-Epic P10 — Machine-readable automation outputs *(item 8)* ✅
+| Task | Description | Status |
+|------|-------------|--------|
+| T10.1 | `info --json` — curated metadata + parts (id/name/measures/staves/program) + note count | ✅ |
+| T10.2 | `positions` — per-part measure start/duration in quarter notes (temporal, not graphical) | ✅ |
+| T10.3 | `bundle` — export each part to `<stem>_<part>.<ext>` in a dir | ✅ |
+| T10.4 | `diff a b [--json]` — semantic compare (parts/note-count/pitch-multiset), `diff`-style exit code | ✅ |
+
+### PE-Epic P11 — JSON batch-job API *(item 5b)* ✅
+| Task | Description | Status |
+|------|-------------|--------|
+| T11.1 | Batch-job JSON schema `{in/input, out/output, format?, from?, transpose?, interval?}` | ✅ |
+| T11.2 | `batch` executor (reuses rayon pool + per-job `catch_unwind` + non-zero exit on any failure) | ✅ |
+| T11.3 | Per-job transform options (transpose/interval) ✅; visible-parts filter + filename templates ⬜ (overlap excerpt-selection, deferred) | 🟡 |
+| T11.4 | Diagnostic sidecars: `--report <path>` JSON of per-job ok/error | ✅ |
+
+### PE-Epic P12 — Testing gate & CI *(item 9)* — ongoing
+| Task | Description | Status |
+|------|-------------|--------|
+| T12.1 | Formalize semantic scoreboard as hard CI gate (non-decreasing) | ⬜ |
+| T12.2 | Document visual-regression deferral (no rendered output → N/A) | ⬜ |
+| T12.3 | Convention: each epic adds fidelity fixtures + bumps baselines in-PR | ⬜ |
+
+---
+
 ## Implementation Sequence
 
 | Phase | Epics | Focus |
@@ -391,6 +529,7 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
 | 8 | E ✅ + F ✅ | ABC adapter + datasets & metrics (E done; F done bar the optional remote dataset) |
 | **9** | **G** | **Distribution: stubs, wheels, docs → tag v1.0.0** |
 | **10** | **H** | **Multi-voice/multi-staff bar-splitting rework (deferred bar-splitting; fixes chopin RH/LH drift + cadenza)** |
+| **11** | **P1–P12** | **Pre-1.0.0 expansion (MuseScore-comparison backlog): CLI/IO + transforms, MusicXML fidelity, IR modeling, MIDI reconstruction — see plan file** |
 
 ## Key Decisions
 

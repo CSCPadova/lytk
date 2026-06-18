@@ -201,6 +201,123 @@ impl Pitch {
             accidental: AccidentalDisplay::None,
         }
     }
+
+    /// Transpose by a generic interval, given as signed diatonic steps and
+    /// chromatic semitones (up = positive). Spelling follows the diatonic step,
+    /// so from C, `(2, 4)` yields E (major third) while `(2, 3)` yields E♭ (minor
+    /// third). Any microtonal `alter` is carried through unchanged.
+    pub fn transpose_diatonic(&self, diatonic_steps: i32, chromatic_semitones: i32) -> Self {
+        let new_step_abs = self.step.index() + diatonic_steps;
+        let new_step = PitchStep::from_index(new_step_abs);
+        let new_octave = self.octave + new_step_abs.div_euclid(7);
+
+        // Adjust `alter` so the result sounds exactly `chromatic_semitones` away.
+        let orig_natural = (self.octave + 1) * 12 + self.step.semitones();
+        let new_natural = (new_octave + 1) * 12 + new_step.semitones();
+        let int_adjust = orig_natural + chromatic_semitones - new_natural;
+
+        Self {
+            step: new_step,
+            alter: self.alter + Alter::from_integer(int_adjust),
+            octave: new_octave,
+            accidental: AccidentalDisplay::None,
+        }
+    }
+}
+
+/// Choose the enharmonic spelling of `pitch` that best fits a key signature with
+/// `fifths` accidentals (sharps positive, flats negative). Notes belonging to
+/// the key keep their diatonic letter; chromatic notes follow the key's
+/// sharp/flat tendency. The sounding pitch (MIDI number) is always preserved.
+///
+/// The key's *mode* is irrelevant — a key signature's accidentals depend only on
+/// its `fifths` position, so the same `fifths` respells identically for major,
+/// minor, or any church mode.
+pub fn respell(pitch: Pitch, fifths: i32) -> Pitch {
+    let midi = pitch.midi_number();
+    let target_chroma = midi.rem_euclid(12);
+
+    // The diatonic notes of the key occupy line-of-fifths positions
+    // `fifths−1 ..= fifths+5` (subdominant through leading tone).
+    for p in (fifths - 1)..=(fifths + 5) {
+        let (step, alter) = lof_to_pitch_class(p);
+        if (step.semitones() + alter).rem_euclid(12) == target_chroma {
+            return pitch_at(step, alter, midi);
+        }
+    }
+
+    // Chromatic (out-of-key) note: follow the key's sharp/flat tendency.
+    let (step, alter) = if fifths >= 0 {
+        sharp_spelling(target_chroma)
+    } else {
+        flat_spelling(target_chroma)
+    };
+    pitch_at(step, alter, midi)
+}
+
+/// The major-key tonic pitch (octave 4) for a circle-of-fifths position.
+pub fn major_tonic(fifths: i32) -> Pitch {
+    let (step, alter) = lof_to_pitch_class(fifths);
+    Pitch::with_alter(step, Alter::from_integer(alter), 4)
+}
+
+/// Build a pitch with the given step+alter whose octave makes it sound at `midi`.
+fn pitch_at(step: PitchStep, alter: i32, midi: i32) -> Pitch {
+    let octave = (midi - step.semitones() - alter).div_euclid(12) - 1;
+    Pitch::with_alter(step, Alter::from_integer(alter), octave)
+}
+
+/// Line-of-fifths position → `(step, integer alter)`. Position `0` = C, `+1` = G,
+/// …, `−1` = F, `+6` = F♯, `−2` = B♭.
+fn lof_to_pitch_class(p: i32) -> (PitchStep, i32) {
+    const LETTERS: [PitchStep; 7] = [
+        PitchStep::F,
+        PitchStep::C,
+        PitchStep::G,
+        PitchStep::D,
+        PitchStep::A,
+        PitchStep::E,
+        PitchStep::B,
+    ];
+    let alter = (p + 1).div_euclid(7);
+    let step = LETTERS[(p + 1).rem_euclid(7) as usize];
+    (step, alter)
+}
+
+/// Default sharp spelling of a pitch class (used for out-of-key notes in sharp keys).
+fn sharp_spelling(chroma: i32) -> (PitchStep, i32) {
+    match chroma.rem_euclid(12) {
+        0 => (PitchStep::C, 0),
+        1 => (PitchStep::C, 1),
+        2 => (PitchStep::D, 0),
+        3 => (PitchStep::D, 1),
+        4 => (PitchStep::E, 0),
+        5 => (PitchStep::F, 0),
+        6 => (PitchStep::F, 1),
+        7 => (PitchStep::G, 0),
+        8 => (PitchStep::G, 1),
+        9 => (PitchStep::A, 0),
+        10 => (PitchStep::A, 1),
+        _ => (PitchStep::B, 0),
+    }
+}
+
+/// Default flat spelling of a pitch class (used for out-of-key notes in flat keys).
+fn flat_spelling(chroma: i32) -> (PitchStep, i32) {
+    match chroma.rem_euclid(12) {
+        0 => (PitchStep::C, 0),
+        1 => (PitchStep::D, -1),
+        2 => (PitchStep::D, 0),
+        3 => (PitchStep::E, -1),
+        4 => (PitchStep::E, 0),
+        5 => (PitchStep::F, 0),
+        6 => (PitchStep::G, -1),
+        7 => (PitchStep::G, 0),
+        8 => (PitchStep::A, -1),
+        9 => (PitchStep::A, 0),
+        10 => (PitchStep::B, -1),
+        _ => (PitchStep::B, 0),
+    }
 }
 
 impl Default for Pitch {
@@ -277,5 +394,72 @@ mod tests {
 
         let fs = Pitch::with_alter(PitchStep::F, Alter::from_integer(1), 5);
         assert_eq!(format!("{fs}"), "F#5");
+    }
+
+    #[test]
+    fn test_transpose_diatonic_spelling() {
+        let c4 = Pitch::new(PitchStep::C, 4);
+        // Major third up → E natural; minor third up → E flat (same family, diff spelling).
+        let maj3 = c4.transpose_diatonic(2, 4);
+        assert_eq!(maj3.step, PitchStep::E);
+        assert_eq!(maj3.alter, Alter::from_integer(0));
+        assert_eq!(maj3.midi_number(), 64);
+
+        let min3 = c4.transpose_diatonic(2, 3);
+        assert_eq!(min3.step, PitchStep::E);
+        assert_eq!(min3.alter, Alter::from_integer(-1));
+        assert_eq!(min3.midi_number(), 63);
+
+        // Augmented unison: same letter, sharpened.
+        let aug1 = c4.transpose_diatonic(0, 1);
+        assert_eq!(aug1.step, PitchStep::C);
+        assert_eq!(aug1.alter, Alter::from_integer(1));
+    }
+
+    #[test]
+    fn test_transpose_diatonic_octave_carry() {
+        // B4 up a major second → C#5 (letter wraps, octave bumps).
+        let b4 = Pitch::new(PitchStep::B, 4);
+        let up = b4.transpose_diatonic(1, 2);
+        assert_eq!(up.step, PitchStep::C);
+        assert_eq!(up.octave, 5);
+        assert_eq!(up.midi_number(), b4.midi_number() + 2);
+    }
+
+    #[test]
+    fn test_respell_in_key() {
+        // The black key between F and G: F# in G major (1 sharp), G♭ in D♭ major (−5).
+        let fsharp = Pitch::with_alter(PitchStep::F, Alter::from_integer(1), 4);
+        let in_g = respell(fsharp, 1);
+        assert_eq!(in_g.step, PitchStep::F);
+        assert_eq!(in_g.alter, Alter::from_integer(1));
+
+        let in_dflat = respell(fsharp, -5);
+        assert_eq!(in_dflat.step, PitchStep::G);
+        assert_eq!(in_dflat.alter, Alter::from_integer(-1));
+        // Sounding pitch is preserved regardless of spelling.
+        assert_eq!(in_dflat.midi_number(), fsharp.midi_number());
+    }
+
+    #[test]
+    fn test_respell_diatonic_note_keeps_letter() {
+        // E natural is in C major — respelling must keep it as E, not F♭.
+        let e4 = Pitch::new(PitchStep::E, 4);
+        let r = respell(e4, 0);
+        assert_eq!(r.step, PitchStep::E);
+        assert_eq!(r.alter, Alter::from_integer(0));
+    }
+
+    #[test]
+    fn test_major_tonic() {
+        assert_eq!(major_tonic(0).step, PitchStep::C);
+        assert_eq!(major_tonic(1).step, PitchStep::G);
+        assert_eq!(major_tonic(2).step, PitchStep::D);
+        let fsharp = major_tonic(6);
+        assert_eq!(fsharp.step, PitchStep::F);
+        assert_eq!(fsharp.alter, Alter::from_integer(1));
+        let bflat = major_tonic(-2);
+        assert_eq!(bflat.step, PitchStep::B);
+        assert_eq!(bflat.alter, Alter::from_integer(-1));
     }
 }
