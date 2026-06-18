@@ -39,6 +39,7 @@ use pyo3::types::{PyBytes, PyModule};
 
 pub mod adapters;
 pub mod ir;
+mod navigation;
 pub mod parser;
 pub mod representations;
 pub mod transforms;
@@ -121,6 +122,18 @@ impl PyScore {
                     p.name.clone()
                 }
             })
+            .collect()
+    }
+
+    /// Structured note navigation: the score's parts as typed :class:`Part`
+    /// objects, walkable as ``part.measures → measure.voices → voice.elements``
+    /// (each element a :class:`Note` / :class:`Rest` / :class:`Chord`). A
+    /// structure-preserving complement to the flat :meth:`notes` tuples.
+    fn iter_parts(&self) -> Vec<navigation::PyPart> {
+        self.inner
+            .parts()
+            .iter()
+            .map(|p| navigation::PyPart::from_ir(p))
             .collect()
     }
 
@@ -809,6 +822,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Score class
     m.add_class::<PyScore>()?;
     m.add_class::<PyMusicDocument>()?;
+
+    // Structured note-navigation classes (Part / Measure / Voice / Note / …)
+    navigation::register(m)?;
 
     // Adapter functions
     m.add_function(wrap_pyfunction!(from_musicxml, m)?)?;

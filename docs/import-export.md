@@ -319,6 +319,8 @@ score internally.
 | Key signatures | ✅ | Tonic + mode → fifths (incl. church modes) |
 | Time signatures | ✅ | `M:` (incl. `C`/`C|`) |
 | Tempo | ✅ | `Q:` |
+| Multi-voice (`V:`) | ✅ | ABC 2.1 §4.1 — header/body `V:id`, inline `[V:id]`, `name=`; each voice → a Part |
+| MIDI instrument | 🔲 | ABC has **no standard** instrument field — the `%%MIDI program N` directive is a non-standard `abc2midi` stylesheet extension, so it is **not** parsed (see Export note) |
 | Chord symbols `"…"` | 🔲 | Skipped gracefully |
 | Decorations / grace / inline fields | 🔲 | Skipped gracefully |
 
@@ -334,6 +336,8 @@ score internally.
 | Ties | ✅ | |
 | Bar lines + repeats | ✅ | |
 | Key / meter | ✅ | |
+| Multi-voice (`V:`) | ✅ | ≥2 parts/staves emit `V:n name="…"` blocks (ABC 2.1 §4.1); polyphony is lossless |
+| MIDI instrument | 🔲 | **Deliberately not emitted.** ABC has no standard instrument field; the only convention, `%%MIDI program N`, is a non-standard `abc2midi` directive, not part of the ABC 2.1 standard. Emitting it would produce output other ABC tools ignore or reject, so instrument identity is dropped on `→ ABC` (a format limitation, not a bug). It is preserved across LilyPond ↔ MusicXML ↔ MIDI. |
 | Key-aware accidental re-spelling | 🔲 | v1 carries only explicit accidentals (self-consistent on round-trip) |
 
 ---

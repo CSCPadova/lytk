@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from lytk._core import (
+    Chord,
+    Measure,
     MusicDocument,
+    Note,
+    Part,
+    Pitch,
+    Rest,
     Score,
+    Voice,
     change_language,
     compute_metrics,
     flatten,
@@ -35,6 +42,14 @@ from lytk._core import (
 __all__ = [
     "MusicDocument",
     "Score",
+    # Structured note navigation (read-only Layer-2 tree)
+    "Part",
+    "Measure",
+    "Voice",
+    "Note",
+    "Rest",
+    "Chord",
+    "Pitch",
     # Adapters
     "from_musicxml",
     "from_musicxml_string",

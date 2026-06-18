@@ -65,13 +65,77 @@ struct TuneState {
     meter: Option<Frac>,
 }
 
+/// One ABC voice (`V:` field) — an independent music stream that plays
+/// simultaneously with the others. Maps to one Staff (→ Part on lowering).
+struct VoiceStream {
+    id: String,
+    name: Option<String>,
+    events: Vec<Music>,
+}
+
+/// Find the voice with `id`, creating it (recording `name` if given) when absent.
+/// Returns its index in `voices`.
+fn ensure_voice(voices: &mut Vec<VoiceStream>, id: &str, name: Option<String>) -> usize {
+    if let Some(i) = voices.iter().position(|v| v.id == id) {
+        // A later declaration may supply the name (e.g. header `V:1 name=…`).
+        if name.is_some() && voices[i].name.is_none() {
+            voices[i].name = name;
+        }
+        return i;
+    }
+    voices.push(VoiceStream {
+        id: id.to_string(),
+        name,
+        events: Vec::new(),
+    });
+    voices.len() - 1
+}
+
+/// Parse a `V:` field value into `(id, name)`. The id is the first whitespace-
+/// delimited token; `name="…"`/`nm="…"` (quoted or bare) supplies the name.
+fn parse_voice_header(value: &str) -> (String, Option<String>) {
+    let v = value.trim();
+    let id = v.split_whitespace().next().unwrap_or("1").to_string();
+    let name = extract_param(v, "name").or_else(|| extract_param(v, "nm"));
+    (id, name)
+}
+
+/// Pull `key=value` (or `key="quoted value"`) from an ABC field parameter list.
+fn extract_param(s: &str, key: &str) -> Option<String> {
+    let pat = format!("{key}=");
+    let start = s.find(&pat)? + pat.len();
+    let rest = &s[start..];
+    if let Some(stripped) = rest.strip_prefix('"') {
+        let end = stripped.find('"')?;
+        Some(stripped[..end].to_string())
+    } else {
+        Some(rest.split_whitespace().next().unwrap_or("").to_string())
+    }
+}
+
+/// If `line` begins with an inline `[V:id]` voice marker, return `(Some(id), rest)`.
+fn peel_inline_voice(line: &str) -> (Option<String>, &str) {
+    let t = line.trim_start();
+    if let Some(after) = t.strip_prefix("[V:") {
+        if let Some(end) = after.find(']') {
+            let id = after[..end].split_whitespace().next().unwrap_or("1");
+            return (Some(id.to_string()), &after[end + 1..]);
+        }
+    }
+    (None, line)
+}
+
 fn parse_tune(text: &str) -> Result<MusicDocument> {
     let mut metadata = ScoreMetadata::default();
     let mut state = TuneState {
         unit_length: Frac::new(1, 8),
         meter: None,
     };
-    let mut events: Vec<Music> = Vec::new();
+    // Shared header signatures (M:/K:), prepended to every voice so each lowers
+    // to a Part with the right attributes.
+    let mut header_events: Vec<Music> = Vec::new();
+    let mut voices: Vec<VoiceStream> = Vec::new();
+    let mut current: usize = 0;
     let mut in_body = false;
     let mut explicit_unit_length = false;
 
@@ -95,7 +159,7 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
                     let m = parse_meter(value);
                     state.meter = m.map(|(n, d)| Frac::new(n as i64, d as i64));
                     if let Some((n, d)) = m {
-                        events.push(Music::TimeSignature(TimeSignature {
+                        header_events.push(Music::TimeSignature(TimeSignature {
                             beats: n.to_string(),
                             beat_type: d,
                             symbol: meter_symbol(value),
@@ -108,9 +172,15 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
                         explicit_unit_length = true;
                     }
                 }
+                'V' => {
+                    // Voice declaration in the header (ABC 2.1 §4.1): set up the
+                    // voice (and its name) ahead of the body.
+                    let (id, name) = parse_voice_header(value);
+                    ensure_voice(&mut voices, &id, name);
+                }
                 'K' => {
                     if let Some(key_sig) = parse_key(value) {
-                        events.push(Music::KeySignature(key_sig));
+                        header_events.push(Music::KeySignature(key_sig));
                     }
                     // K: ends the header; the rest is the tune body.
                     in_body = true;
@@ -130,13 +200,30 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
         }
 
         if in_body {
-            // An inline `K:`/`M:`/`L:` field can also appear at line start.
+            // A `V:` info field on its own line switches the active voice.
             if is_header_line(line) {
                 let (key, value) = split_field(line);
-                apply_inline_field(key, value, &mut state, &mut events);
+                if key == 'V' {
+                    let (id, name) = parse_voice_header(value);
+                    current = ensure_voice(&mut voices, &id, name);
+                    continue;
+                }
+                // Other inline `K:`/`M:`/`L:` fields apply to the current voice.
+                if voices.is_empty() {
+                    current = ensure_voice(&mut voices, "1", None);
+                }
+                apply_inline_field(key, value, &mut state, &mut voices[current].events);
                 continue;
             }
-            parse_body_line(line, &state, &mut events);
+            // A line may begin with an inline `[V:id]` marker before its music.
+            let (switch, rest) = peel_inline_voice(line);
+            if let Some(id) = switch {
+                current = ensure_voice(&mut voices, &id, None);
+            }
+            if voices.is_empty() {
+                current = ensure_voice(&mut voices, "1", None);
+            }
+            parse_body_line(rest, &state, &mut voices[current].events);
         }
     }
 
@@ -146,8 +233,29 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
         ));
     }
 
-    let music = Music::Sequential(events).in_context(ContextType::Staff, None);
+    let music = build_music(header_events, voices);
     Ok(MusicDocument { metadata, music })
+}
+
+/// Assemble the parsed voices into a Music tree: a single Staff for one voice
+/// (back-compatible), or a `Simultaneous` of named Staves for multi-voice tunes.
+fn build_music(header_events: Vec<Music>, voices: Vec<VoiceStream>) -> Music {
+    if voices.len() <= 1 {
+        let mut events = header_events;
+        if let Some(v) = voices.into_iter().next() {
+            events.extend(v.events);
+        }
+        return Music::Sequential(events).in_context(ContextType::Staff, None);
+    }
+    let staves: Vec<Music> = voices
+        .into_iter()
+        .map(|v| {
+            let mut events = header_events.clone();
+            events.extend(v.events);
+            Music::Sequential(events).in_context(ContextType::Staff, v.name)
+        })
+        .collect();
+    Music::Simultaneous(staves)
 }
 
 fn is_header_line(line: &str) -> bool {
@@ -781,5 +889,102 @@ mod tests {
         // Chord symbols, decorations, grace notes, slurs must not break parsing.
         let doc = parse("X:1\nK:G\n\"G\"G2 !trill!A {ag}f (Bc)\n");
         assert!(notes(&doc).len() >= 4);
+    }
+
+    // ---- Multi-voice (ABC 2.1 V:) ----
+
+    /// Collect each top-level Staff voice's note MIDI numbers, in branch order.
+    fn voice_notes(doc: &MusicDocument) -> Vec<Vec<i32>> {
+        fn staff_notes(m: &Music) -> Vec<i32> {
+            let mut out = Vec::new();
+            fn walk(m: &Music, out: &mut Vec<i32>) {
+                match m {
+                    Music::Sequential(v) => v.iter().for_each(|x| walk(x, out)),
+                    Music::Context { content, .. } => walk(content, out),
+                    Music::Note { pitch, .. } => out.push(pitch.midi_number()),
+                    _ => {}
+                }
+            }
+            walk(m, &mut out);
+            out
+        }
+        match &doc.music {
+            Music::Simultaneous(branches) => branches.iter().map(staff_notes).collect(),
+            single => vec![staff_notes(single)],
+        }
+    }
+
+    #[test]
+    fn test_multivoice_two_voices() {
+        // Two voices declared in the header, bodies switched by line-start V:.
+        let doc = parse("X:1\nM:4/4\nL:1/4\nK:C\nV:1\nC D E F|\nV:2\nC, D, E, F,|\n");
+        let vs = voice_notes(&doc);
+        assert_eq!(vs.len(), 2, "expected two voices, got {}", vs.len());
+        assert_eq!(vs[0], vec![60, 62, 64, 65]); // C D E F
+        assert_eq!(vs[1], vec![48, 50, 52, 53]); // C, D, E, F,
+    }
+
+    #[test]
+    fn test_multivoice_interleaved_blocks() {
+        // Voice streams accumulate across multiple V: blocks (ABC 2.1 §4.1).
+        let doc = parse("X:1\nK:C\nV:1\nCD|\nV:2\nE,F,|\nV:1\nGA|\nV:2\nB,c,|\n");
+        let vs = voice_notes(&doc);
+        assert_eq!(vs.len(), 2);
+        assert_eq!(vs[0], vec![60, 62, 67, 69]); // C D G A
+        assert_eq!(vs[1], vec![52, 53, 59, 60]); // E, F, B, c,
+    }
+
+    #[test]
+    fn test_multivoice_names_become_staff_names() {
+        let doc = parse("X:1\nK:C\nV:1 name=\"Soprano\"\nV:2 name=\"Bass\"\nV:1\nC|\nV:2\nC,|\n");
+        let names: Vec<Option<String>> = match &doc.music {
+            Music::Simultaneous(b) => b
+                .iter()
+                .map(|m| match m {
+                    Music::Context { name, .. } => name.clone(),
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        };
+        assert_eq!(
+            names,
+            vec![Some("Soprano".to_string()), Some("Bass".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_multivoice_shared_header_in_each_voice() {
+        // The header M:/K: must appear in every voice so each lowers correctly.
+        let doc = parse("X:1\nM:3/4\nK:D\nV:1\nDEF|\nV:2\nA,B,C|\n");
+        for branch in match &doc.music {
+            Music::Simultaneous(b) => b.clone(),
+            _ => panic!("expected multi-voice"),
+        } {
+            let has_time = matches!(&branch, Music::Context { content, .. }
+                if matches!(content.as_ref(), Music::Sequential(v)
+                    if v.iter().any(|m| matches!(m, Music::TimeSignature(_)))));
+            let has_key = matches!(&branch, Music::Context { content, .. }
+                if matches!(content.as_ref(), Music::Sequential(v)
+                    if v.iter().any(|m| matches!(m, Music::KeySignature(_)))));
+            assert!(has_time && has_key, "voice missing shared M:/K:");
+        }
+    }
+
+    #[test]
+    fn test_multivoice_inline_marker() {
+        // `[V:id]` inline at line start switches the voice for that line.
+        let doc = parse("X:1\nK:C\n[V:1] CD|\n[V:2] E,F,|\n");
+        let vs = voice_notes(&doc);
+        assert_eq!(vs.len(), 2);
+        assert_eq!(vs[0], vec![60, 62]);
+        assert_eq!(vs[1], vec![52, 53]); // E, F,
+    }
+
+    #[test]
+    fn test_single_voice_unchanged() {
+        // A tune with no V: is still a single Staff (not a Simultaneous).
+        let doc = parse("X:1\nK:C\nCDEF|\n");
+        assert!(matches!(doc.music, Music::Context { .. }));
     }
 }

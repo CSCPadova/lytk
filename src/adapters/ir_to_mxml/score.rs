@@ -1,10 +1,26 @@
 //! Score-level musicxml element construction.
 
 use super::IrToMxmlAdapter;
+use crate::adapters::gm;
 use crate::ir::score::{PageLayout, Score, ScoreChild};
 
 use musicxml::datatypes as mdt;
 use musicxml::elements as mxml;
+
+/// Title-case a lowercase GM instrument name for the `<instrument-name>` display
+/// field, e.g. `"electric guitar (jazz)"` → `"Electric Guitar (Jazz)"`.
+fn title_case(s: &str) -> String {
+    s.split(' ')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 impl IrToMxmlAdapter {
     /// Build the top-level `ScorePartwise` element.
@@ -245,12 +261,44 @@ impl IrToMxmlAdapter {
             })
         };
 
-        // Score-instrument + MIDI instrument
-        let has_midi =
-            part.midi_channel > 0 || part.midi_program > 0 || !part.midi_instrument.is_empty();
+        // Score-instrument + MIDI instrument.
+        //
+        // Cross-fill the GM name and program via the shared table so the
+        // MusicXML carries BOTH `<midi-name>` and `<midi-program>` even when the
+        // source gave only one (LilyPond gives a name, MIDI gives a program).
+        let gm_name: Option<String> = if !part.midi_instrument.is_empty() {
+            Some(part.midi_instrument.clone())
+        } else if part.midi_program > 0 {
+            gm::gm_name_from_program(part.midi_program).map(|s| s.to_string())
+        } else {
+            None
+        };
+        // 0-indexed program: prefer one derived from the name; fall back to the
+        // stored program (also 0-indexed). `> 0` is the IR "unset" sentinel, so a
+        // bare program 0 with no name reads as unset.
+        let program_0: Option<u8> =
+            gm_name
+                .as_deref()
+                .and_then(gm::gm_program_from_name)
+                .or(if part.midi_program > 0 {
+                    Some(part.midi_program)
+                } else {
+                    None
+                });
+
+        let has_midi = part.midi_channel > 0 || gm_name.is_some() || program_0.is_some();
 
         let (score_instrument, midi_instrument) = if has_midi {
             let inst_id = format!("{}-I1", id);
+
+            // Display name: the part name, else a title-cased GM name, else generic.
+            let display_name = if !part.name.is_empty() {
+                part.name.clone()
+            } else if let Some(ref gm) = gm_name {
+                title_case(gm)
+            } else {
+                "Instrument".to_string()
+            };
 
             let si = mxml::ScoreInstrument {
                 attributes: mxml::ScoreInstrumentAttributes {
@@ -259,11 +307,7 @@ impl IrToMxmlAdapter {
                 content: mxml::ScoreInstrumentContents {
                     instrument_name: mxml::InstrumentName {
                         attributes: (),
-                        content: if part.name.is_empty() {
-                            "Instrument".to_string()
-                        } else {
-                            part.name.clone()
-                        },
+                        content: display_name,
                     },
                     instrument_abbreviation: None,
                     instrument_sound: None,
@@ -289,16 +333,17 @@ impl IrToMxmlAdapter {
                     content: mdt::Midi16(part.midi_channel),
                 });
             }
-            if !part.midi_instrument.is_empty() {
+            if let Some(ref gm) = gm_name {
                 mi_content.midi_name = Some(mxml::MidiName {
                     attributes: (),
-                    content: part.midi_instrument.clone(),
+                    content: gm.clone(),
                 });
             }
-            if part.midi_program > 0 {
+            if let Some(p0) = program_0 {
+                // MusicXML `<midi-program>` is 1-indexed (1–128).
                 mi_content.midi_program = Some(mxml::MidiProgram {
                     attributes: (),
-                    content: mdt::Midi128(part.midi_program),
+                    content: mdt::Midi128(p0 + 1),
                 });
             }
 

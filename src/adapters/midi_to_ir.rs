@@ -242,8 +242,7 @@ impl MidiToIrAdapter {
                 .program_changes
                 .iter()
                 .rev()
-                .find_map(|(_, c, p)| (*c == ch).then_some(*p))
-                .unwrap_or(0);
+                .find_map(|(_, c, p)| (*c == ch).then_some(*p));
 
             let part = build_part(
                 ch_notes,
@@ -292,8 +291,7 @@ impl MidiToIrAdapter {
                 .program_changes
                 .iter()
                 .map(|(_, _, p)| *p)
-                .next_back()
-                .unwrap_or(0);
+                .next_back();
 
             // Merge conductor meta with track-local meta
             let merged = merge_meta(&conductor_meta, &track_meta);
@@ -570,12 +568,21 @@ fn build_part(
     part_id: &str,
     name: &str,
     channel: u8,
-    program: u8,
+    program: Option<u8>,
 ) -> Part {
     let mut part = Part::new(part_id);
     part.name = name.to_string();
     part.midi_channel = channel;
-    part.midi_program = program;
+    // A MIDI Program Change carries only the (0-indexed) program number; recover
+    // the GM instrument name from it so the instrument survives to LilyPond /
+    // MusicXML (both of which carry a name). No program change → instrument left
+    // unset rather than defaulting to "acoustic grand".
+    if let Some(p) = program {
+        part.midi_program = p;
+        if let Some(gm) = super::gm::gm_name_from_program(p) {
+            part.midi_instrument = gm.to_string();
+        }
+    }
 
     // Determine measure boundaries from time signature events.
     let time_sigs = resolve_time_signatures(meta, divisions);
@@ -1008,7 +1015,15 @@ mod tests {
 
     fn build_test_part(notes: &[RawNote], divisions: u32) -> Part {
         let refs: Vec<&RawNote> = notes.iter().collect();
-        build_part(&refs, &TrackMeta::default(), divisions, "P1", "test", 0, 0)
+        build_part(
+            &refs,
+            &TrackMeta::default(),
+            divisions,
+            "P1",
+            "test",
+            0,
+            None,
+        )
     }
 
     #[test]

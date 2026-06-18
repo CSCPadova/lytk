@@ -2,6 +2,27 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
+## Latest status (2026-06-18)
+
+Four landings + a reconciliation (details in `docs/changelog.md`):
+- **MIDI instrument preservation** — instrument identity (GM name ↔ 0-indexed
+  program) now survives ly ↔ musicxml ↔ midi via a shared GM table
+  (`src/adapters/gm.rs`). Fixes ly→musicxml dropping the program and the
+  midi→musicxml off-by-one. (ABC has no standard instrument field — gap noted.)
+- **ABC multi-voice (`V:`)** — parser + emitter per ABC 2.1 §4.1; →ABC is now
+  lossless for polyphony. (Closes the last EBT7 follow-up.)
+- **Structured note navigation** — typed read-only `Part/Measure/Voice/Note/
+  Rest/Chord/Pitch` Python objects via `score.iter_parts()` (`src/navigation.rs`).
+  Was a known gap (only flat `notes()` existed); now done.
+- **MIDI round-trip carried-meter fix** — non-4/4 pieces no longer drift on
+  export; fidelity **2/2/2 → 3/3/2**. `example2_1` now stable on note-count +
+  pitch. `pedal` (budget cascade) and `chopin_n` (**inherent** — source MIDI's
+  meter changes are not bar-aligned) remain gated, documented limitations.
+- **EBT7 reconciliation** — four "open" bugs were already fixed on the hardening
+  branch (Phase 3a–3d); marked done below.
+
+Test counts: 936 Rust + 136 Python green; clippy (lib+bin) clean.
+
 ---
 
 ## Completed ✅
@@ -164,12 +185,13 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 | EBT6 | `\partial` in multi-movement contexts (reset per `\score` block — was leaking) | ✅ |
 | EBT7 | **E2E cross-format fidelity audit** (`tests/test_e2e_conversion.py` + note-array signature): fixed ly→ly relative octave (single-staff), ly→abc empty output, midi→midi tie multiplication | 🟡 follow-ups below |
 
-**EBT7 follow-up bugs (root-caused 2026-06-15, see changelog):**
-- ⬜ ly→ly relative octave shift for **multi-staff / multi-voice** (`<<\\>>` relative flow needs per-voice prev-threading in `ir_to_ly`)
-- ⬜ midi→ly **tuplet duration** loss (`ir_to_ly` ignores a bare note's tuplet ratio — emit `\tuplet`)
-- ⬜ xml→ly **repeat-from-the-top** note loss (backward repeat with no forward desyncs `\repeat volta` tracking in `ir_to_ly/emit.rs`)
-- ⬜ ly→midi **grace notes** steal metrical time (`ir_to_midi` grace-unaware)
-- ⬜ ABC **multi-voice (`V:`)** support — would make →ABC lossless for polyphony (currently v1 single-line, format-inherent)
+**EBT7 follow-up bugs — ALL RESOLVED (2026-06-18 reconciliation; the first four
+landed on the hardening branch, the fifth is the ABC multi-voice feature):**
+- ✅ ly→ly relative octave shift for **multi-staff / multi-voice** — **Phase 3a**: the Score-path emitter emits absolute octaves whenever relative threading is unreliable (`ir_to_ly/mod.rs` `relative_is_reliable`)
+- ✅ midi→ly **tuplet duration** loss — **Phase 3c**: `ir_to_ly/emit.rs` wraps duration-ratio tuplets (no `TupletDisplay`) in `\tuplet a/b { … }`
+- ✅ xml→ly **repeat-from-the-top** note loss — **Phase 3b**: `ir_to_ly/emit.rs` repeat-brace depth tracking (backward-only / forward-only repeats balanced)
+- ✅ ly→midi **grace notes** steal metrical time — **Phase 3d**: `ir_to_midi` emits a short grace at the current tick without advancing the voice clock
+- ✅ ABC **multi-voice (`V:`)** — **2026-06-18**: `V:` voices parsed/emitted per ABC 2.1 §4.1; →ABC is now lossless for polyphony (each voice a Staff/Part). See changelog.
 
 ### Epic C: Semantic Round-Trip Test Bar (quality gate)
 
@@ -211,7 +233,7 @@ not structural.
 | Task | Description | Status |
 |------|-------------|--------|
 | EET1 | `abc_to_ir.rs` parser (`ToMusicAdapter`) | ✅ Hand-written parser: `X/T/C/M/L/K/Q` headers, notes (explicit accidentals, octave marks, fractional durations), default-unit-length rule, key tonic+mode→fifths (incl. church modes), rests, bar lines + repeats, chords `[..]`, ties; graceful skip of chord symbols/decorations/grace/inline fields. Also `ToIrAdapter` via lower. 12 tests |
-| EET2 | `ir_to_abc.rs` emitter (`FromMusicAdapter`) | ✅ Emits header + body at `L:1/8`; pitch/duration/key/meter/barline/chord/tie rendering. v1 limitation: pitches carry only explicit accidentals (no key-aware re-spelling) — self-consistent on round-trip. 5 tests |
+| EET2 | `ir_to_abc.rs` emitter (`FromMusicAdapter`) | ✅ Emits header + body at `L:1/8`; pitch/duration/key/meter/barline/chord/tie rendering. **Multi-voice (`V:`) added 2026-06-18** — ≥2 top-level voices/staves emit `V:n name="…"` blocks (ABC 2.1 §4.1), so multi-part XML/MIDI → ABC is lossless for polyphony. v1 limitation remains: pitches carry only explicit accidentals (no key-aware re-spelling) — self-consistent on round-trip. 7 tests |
 | EET3 | CLI wiring + ABC fixtures + semantic round-trip test | ✅ `.abc` wired into `convert` (in + out, `-f abc`); 3 fixtures; `tests/abc_roundtrip.rs` (6 cases: parse→emit→parse pitch/duration identity, repeats, chords, pitch multiset, ABC→LY, ABC→XML) + 2 CLI tests |
 
 ### Epic F: Datasets & Metrics (ML pipeline)

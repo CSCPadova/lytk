@@ -494,11 +494,22 @@ fn parse_score_part(sp: &mxml::ScorePart) -> PartInfo {
         if let Some(ref ch) = midi.content.midi_channel {
             info.midi_channel = ch.content.0;
         }
-        if let Some(ref prog) = midi.content.midi_program {
-            info.midi_program = prog.content.0;
+        // MusicXML `<midi-program>` is 1-indexed (1–128); the IR stores the
+        // 0-indexed MIDI program (matching the MIDI Program Change value).
+        let program_0 = midi
+            .content
+            .midi_program
+            .as_ref()
+            .map(|p| p.content.0.saturating_sub(1));
+        if let Some(p) = program_0 {
+            info.midi_program = p;
         }
         if let Some(ref name) = midi.content.midi_name {
             info.midi_instrument = name.content.clone();
+        } else if let Some(gm) = program_0.and_then(crate::adapters::gm::gm_name_from_program) {
+            // No `<midi-name>`: recover the GM name from the program so the
+            // instrument still survives to LilyPond (which carries only a name).
+            info.midi_instrument = gm.to_string();
         }
     }
 

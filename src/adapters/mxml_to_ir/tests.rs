@@ -1882,7 +1882,38 @@ fn test_parse_midi_instrument_info() {
     assert_eq!(part.abbreviation, "Vln. I");
     assert_eq!(part.midi_instrument, "Violin");
     assert_eq!(part.midi_channel, 1);
-    assert_eq!(part.midi_program, 41);
+    // MusicXML `<midi-program>` is 1-indexed (41 = Violin); the IR stores the
+    // 0-indexed MIDI program (40) so it matches the MIDI Program Change value.
+    assert_eq!(part.midi_program, 40);
+}
+
+#[test]
+fn test_midi_program_recovers_name_when_no_midi_name() {
+    // A `<midi-program>` with no `<midi-name>` still yields the GM instrument
+    // name (recovered from the program) so it survives to LilyPond.
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list>
+    <score-part id="P1">
+      <part-name>Fl</part-name>
+      <midi-instrument id="P1-I1">
+        <midi-program>74</midi-program>
+      </midi-instrument>
+    </score-part>
+  </part-list>
+  <part id="P1">
+<measure number="1">
+  <attributes><divisions>4</divisions></attributes>
+  <note><pitch><step>C</step><octave>4</octave></pitch>
+    <duration>4</duration><voice>1</voice><type>quarter</type></note>
+</measure>
+  </part>
+</score-partwise>"#;
+    let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+    let part = &score.parts()[0];
+    // MusicXML program 74 (1-indexed) = 73 (0-indexed) = flute.
+    assert_eq!(part.midi_program, 73);
+    assert_eq!(part.midi_instrument, "flute");
 }
 
 #[test]

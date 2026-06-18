@@ -1,5 +1,125 @@
 # Changelog
 
+## 2026-06-18 (cont.) — MIDI instrument preservation across formats
+
+Instrument identity now survives every conversion between LilyPond, MusicXML and
+MIDI. Each format carries it differently — **LilyPond** a name
+(`\set Staff.midiInstrument = "violin"`), **MIDI** a program number (a 0-indexed
+Program Change), **MusicXML** both a `<midi-name>` and a (1-indexed)
+`<midi-program>` — and the IR previously bridged them inconsistently, so e.g.
+**ly → musicxml dropped the program entirely** (it emitted `<midi-name>` but no
+`<midi-program>`, and a generic `<instrument-name>Instrument</instrument-name>`)
+and **midi → musicxml was off by one** (it wrote the raw 0-indexed program as the
+1-indexed MusicXML value, turning a violin into a viola).
+
+- **New shared GM table** (`src/adapters/gm.rs`): the 128 General MIDI
+  instruments as the canonical bridge, with `gm_program_from_name` (name →
+  0-indexed program, canonical names + aliases) and `gm_name_from_program`
+  (program → canonical LilyPond name). `ir_to_midi`'s private table was folded
+  into it.
+- **Canonical convention:** `Part.midi_program` is now consistently the
+  **0-indexed MIDI program** (violin = 40) everywhere. The MusicXML adapters
+  convert at the boundary: the reader stores `<midi-program> − 1`, the writer
+  emits `program + 1`.
+- **Cross-fill at every boundary** so a one-sided source becomes two-sided:
+  - `ir_to_mxml` derives the program from the name (and vice-versa), emits a real
+    `<midi-program>` and a title-cased `<instrument-name>` (e.g. `Violin`).
+  - `mxml_to_ir` recovers the GM name from the program when `<midi-name>` is
+    absent.
+  - `midi_to_ir` recovers the GM name from the Program Change (threaded as
+    `Option<u8>` so a track with *no* program change stays unset rather than
+    defaulting to piano).
+  - `ir_to_ly` already emitted from the name, which is now always populated.
+- **Tests:** `src/adapters/gm.rs` unit tests (128-entry round-trip, aliases);
+  `tests/instrument_preservation.rs` (5 cross-format chains: ly→xml, ly→xml→ly,
+  ly→midi→ir, ly→midi→xml, xml-program-only→ly); a new `mxml_to_ir` test for
+  program-only → name recovery. The existing `test_parse_midi_instrument_info`
+  now asserts the 0-indexed value (40, not the raw 41).
+- **Known gap:** ABC has no standard instrument field (the `%%MIDI program`
+  directive is non-standard/abc2midi-specific), so →ABC still drops the
+  instrument — a format limitation, not a bug.
+
+Counts: **936 Rust tests** green; clippy (lib+bin) clean; **136 Python** green.
+
+## 2026-06-18 — ABC multi-voice, structured note navigation, MIDI carried-meter fix
+
+Three feature/fix landings plus a roadmap reconciliation (several items the
+roadmap still listed as open were already fixed on the hardening branch — see
+below).
+
+### ABC multi-voice (`V:`) — ABC 2.1 §4.1 (parser + emitter)
+
+ABC is no longer single-line-only: multi-voice tunes now round-trip.
+- **Parser** (`abc_to_ir.rs`): `V:id [name=…]` voice fields are recognised in
+  the header (declaration) and the body (a line-start `V:id` field, or an inline
+  `[V:id]` marker, switches the active voice). Voice streams accumulate across
+  interleaved `V:` blocks. The shared header `M:`/`K:` are prepended to every
+  voice so each lowers to a Part with correct attributes. A tune with **one**
+  voice still produces a single Staff (byte-compatible with v1). Multi-voice →
+  `Simultaneous` of named Staves → multiple Parts on lowering.
+- **Emitter** (`ir_to_abc.rs`): a score with ≥2 top-level voices/staves (a
+  `Simultaneous` of Staff/PianoStaff contexts, from the parser OR from lifting a
+  multi-part XML/MIDI score) now emits `V:1`/`V:2` blocks with `name="…"`; the
+  shared `M:`/`K:` stay in the header. Single-staff scores keep the original
+  single-line output. Grouping contexts (PianoStaff, …) are flattened so a piano
+  grand staff becomes two voices.
+- Tests: 6 parser + 2 emitter unit tests; `tests/fixtures/abc/multivoice.abc` +
+  `abc_multivoice_roundtrips` / `abc_multivoice_lowers_to_two_parts` integration
+  tests (voices, names and per-voice pitch/duration all survive). The fidelity
+  ABC baseline rises **3/3/3 → 4/4/4**.
+
+### Structured note navigation (typed Python objects)
+
+The long-standing gap (only the flat `Score.notes()` tuples existed; the typed
+Part/Measure tree was never exposed) is now closed. New read-only PyO3 wrappers
+in `src/navigation.rs`: **`Part`, `Measure`, `Voice`, `Note`, `Rest`, `Chord`,
+`Pitch`**, reachable via `score.iter_parts()` and walkable as
+`part.measures → measure.voices → voice.elements`. Each element exposes pitch
+(`step`/`alter`/`octave`/`midi`/`name`), duration (quarter-lengths +
+exact fraction), ties, articulations, lyrics; measures expose
+time/key signature and `senza_misura`; convenience `.notes` flatteners at every
+level (chord members included). Each wrapper owns a clone of its IR node, so the
+view is strictly read-only and outlives its parent. `.pyi` stubs +
+`__init__` re-exports + `tests/test_navigation.py` (7 cases incl. ABC
+multi-voice → two navigable parts). Complements `notes()` and `to_dict()`.
+
+### MIDI round-trip: export-side carried-meter fix
+
+`ir_to_midi::build_part_track` padded every bar that didn't itself re-declare
+`<time>` to the 4/4 default (`measure_ticks` returned 1536 ticks regardless of
+the running meter). For a piece that declares e.g. `\time 3/8` once and then
+relies on it, every later bar was over-sized, shifting every subsequent onset
+forward on export and breaking the MIDI round-trip for all non-4/4 fixtures. The
+loop now carries `current_ts` (mirroring the conductor track) and sizes each bar
+by the running meter via the new `ticks_for_ts`; senza-misura bars are never
+padded. Regression test `test_running_time_signature_sizes_later_bars` (three
+3/8 bars, meter declared once → onsets at 0/576/1152, not 0/1536/3072).
+- **Effect:** MIDI fidelity **2/2/2 → 3/3/2** (note-count + pitch). `example2_1`
+  now matches on note-count AND pitch multiset; `example.midi`/`example2_0.midi`
+  stay fully stable. New `tests/midi_roundtrip.rs` pins the per-fixture guarantee.
+- **Remaining (gated, documented limitations):** `example2_1` still drifts on
+  one note's *duration* (a tie re-fuses across a meter boundary on re-import);
+  `pedal` loses one note to a per-voice quantized-budget cascade; **`chopin_n`
+  is INHERENT** — its source MIDI places time-signature changes on non-bar-
+  aligned ticks (6/8→4/4 at tick 100416, not a 6/8-bar multiple), so notated
+  meter and actual bar lengths disagree and an exact round-trip would need
+  arbitrary mid-bar re-gridding that itself breaks fidelity. These were
+  investigated (a dedicated root-cause pass) and left gated rather than chased
+  with a fragile requantization that would risk the stable fixtures.
+
+### Roadmap reconciliation (stale "open" items already fixed)
+
+The roadmap's **EBT7 follow-up** list marked five bugs ⬜; four had already been
+fixed on the hardening branch and are now marked done in `roadmap.md`:
+ly→ly relative multi-staff octave (Phase 3a), midi→ly tuplet loss (Phase 3c),
+xml→ly repeat-from-top note loss (Phase 3b), ly→midi grace timing (Phase 3d).
+The fifth, **ABC multi-voice `V:`**, is the feature shipped above — so the whole
+EBT7 list is now resolved.
+
+Counts: **926 Rust tests** (542 lib + 384 integration) green; `cargo clippy
+-D warnings` (lib+bin) clean; **136 Python tests** green (3 skipped: optional
+torch/scipy deps).
+
 ## 2026-06-16 (cont.) — Generation-evaluation metrics (JS-similarity, FMD)
 
 New `lytk.metrics` (ported from `lilybench/`), behind the optional `lytk[eval]`

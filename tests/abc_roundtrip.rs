@@ -125,6 +125,52 @@ fn abc_converts_to_lilypond() {
     assert!(ly.contains('c'), "no notes in LY:\n{ly}");
 }
 
+/// Number of top-level voices (Simultaneous branches), or 1 for a single staff.
+fn voice_count(doc: &MusicDocument) -> usize {
+    match &doc.music {
+        Music::Simultaneous(b) => b.len(),
+        _ => 1,
+    }
+}
+
+#[test]
+fn abc_multivoice_roundtrips() {
+    let src = read_abc("multivoice.abc");
+    let before = parse(&src);
+    assert_eq!(voice_count(&before), 2, "fixture should parse to 2 voices");
+
+    let abc = emit(&before);
+    // Multi-voice ABC must emit `V:` blocks for both voices.
+    assert!(abc.contains("V:1"), "no V:1 in emitted ABC:\n{abc}");
+    assert!(abc.contains("V:2"), "no V:2 in emitted ABC:\n{abc}");
+
+    let after = parse(&abc);
+    assert_eq!(voice_count(&after), 2, "voices lost on round-trip:\n{abc}");
+    assert_eq!(
+        pitch_durations(&before),
+        pitch_durations(&after),
+        "pitch/duration changed on multi-voice round-trip:\n{abc}"
+    );
+    // Voice names survive (emitted on the V: line, re-read on parse).
+    assert!(
+        abc.contains("name=\"Right\""),
+        "right voice name lost:\n{abc}"
+    );
+    assert!(
+        abc.contains("name=\"Left\""),
+        "left voice name lost:\n{abc}"
+    );
+}
+
+#[test]
+fn abc_multivoice_lowers_to_two_parts() {
+    // A multi-voice ABC tune lowers to a Score with two parts.
+    let score = AbcToIrAdapter::new()
+        .convert_str(&read_abc("multivoice.abc"))
+        .expect("ABC → Score");
+    assert_eq!(score.parts().len(), 2, "expected 2 parts");
+}
+
 #[test]
 fn abc_converts_to_musicxml() {
     let score = AbcToIrAdapter::new()

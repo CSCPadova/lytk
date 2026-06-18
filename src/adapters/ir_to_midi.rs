@@ -57,128 +57,11 @@ fn beat_unit_to_quarters(beat_unit: Option<&str>, dots: u8) -> f64 {
     total
 }
 
-/// Map a LilyPond `\set Staff.midiInstrument` name to a General MIDI program number (0–127).
-/// Returns 0 (Acoustic Grand Piano) for unrecognised names.
+/// Map a LilyPond `\set Staff.midiInstrument` name to a General MIDI program
+/// number (0–127), falling back to 0 (Acoustic Grand Piano) for unknown names.
+/// Delegates to the shared [`gm`](super::gm) table.
 fn gm_program_from_name(name: &str) -> u8 {
-    match name.to_ascii_lowercase().trim() {
-        // Piano
-        "acoustic grand" | "acoustic grand piano" => 0,
-        "bright acoustic" | "bright acoustic piano" => 1,
-        "electric grand" | "electric grand piano" => 2,
-        "honky-tonk" | "honky-tonk piano" => 3,
-        "electric piano 1" | "rhodes piano" => 4,
-        "electric piano 2" | "chorused piano" => 5,
-        "harpsichord" => 6,
-        "clavinet" | "clav" => 7,
-        // Chromatic percussion
-        "celesta" => 8,
-        "glockenspiel" => 9,
-        "music box" => 10,
-        "vibraphone" => 11,
-        "marimba" => 12,
-        "xylophone" => 13,
-        "tubular bells" => 14,
-        "dulcimer" => 15,
-        // Organ
-        "drawbar organ" => 16,
-        "percussive organ" => 17,
-        "rock organ" => 18,
-        "church organ" | "church organ reed" => 19,
-        "reed organ" => 20,
-        "accordion" => 21,
-        "harmonica" => 22,
-        "concertina" => 23,
-        // Guitar
-        "acoustic guitar (nylon)" | "nylon string guitar" => 24,
-        "acoustic guitar (steel)" | "steel string guitar" => 25,
-        "electric guitar (jazz)" => 26,
-        "electric guitar (clean)" => 27,
-        "electric guitar (muted)" => 28,
-        "overdriven guitar" => 29,
-        "distorted guitar" => 30,
-        "guitar harmonics" => 31,
-        // Bass
-        "acoustic bass" => 32,
-        "electric bass (finger)" | "electric bass" => 33,
-        "electric bass (pick)" => 34,
-        "fretless bass" => 35,
-        "slap bass 1" => 36,
-        "slap bass 2" => 37,
-        "synth bass 1" => 38,
-        "synth bass 2" => 39,
-        // Strings
-        "violin" => 40,
-        "viola" => 41,
-        "cello" => 42,
-        "contrabass" | "double bass" => 43,
-        "tremolo strings" => 44,
-        "pizzicato strings" => 45,
-        "orchestral harp" | "harp" => 46,
-        "timpani" => 47,
-        // Ensemble
-        "string ensemble 1" | "string ensemble" => 48,
-        "string ensemble 2" => 49,
-        "synthstrings 1" | "synth strings 1" => 50,
-        "synthstrings 2" | "synth strings 2" => 51,
-        "choir aahs" => 52,
-        "voice oohs" => 53,
-        "synth voice" => 54,
-        "orchestra hit" => 55,
-        // Brass
-        "trumpet" => 56,
-        "trombone" => 57,
-        "tuba" => 58,
-        "muted trumpet" => 59,
-        "french horn" => 60,
-        "brass section" => 61,
-        "synthbrass 1" | "synth brass 1" => 62,
-        "synthbrass 2" | "synth brass 2" => 63,
-        // Reed
-        "soprano sax" => 64,
-        "alto sax" => 65,
-        "tenor sax" => 66,
-        "baritone sax" => 67,
-        "oboe" => 68,
-        "english horn" => 69,
-        "bassoon" => 70,
-        "clarinet" => 71,
-        // Pipe
-        "piccolo" => 72,
-        "flute" => 73,
-        "recorder" => 74,
-        "pan flute" => 75,
-        "blown bottle" | "bottle" => 76,
-        "shakuhachi" => 77,
-        "whistle" => 78,
-        "ocarina" => 79,
-        // Synth lead
-        "lead 1 (square)" | "square" => 80,
-        "lead 2 (sawtooth)" | "sawtooth" => 81,
-        "lead 3 (calliope)" => 82,
-        "lead 4 (chiff)" => 83,
-        "lead 5 (charang)" => 84,
-        "lead 6 (voice)" => 85,
-        "lead 7 (fifths)" => 86,
-        "lead 8 (bass+lead)" => 87,
-        // Synth pad
-        "pad 1 (new age)" => 88,
-        "pad 2 (warm)" => 89,
-        "pad 3 (polysynth)" => 90,
-        "pad 4 (choir)" => 91,
-        "pad 5 (bowed)" => 92,
-        "pad 6 (metallic)" => 93,
-        "pad 7 (halo)" => 94,
-        "pad 8 (sweep)" => 95,
-        // Ethnic / Percussive / Sound effects
-        "sitar" => 104,
-        "banjo" => 105,
-        "shamisen" => 106,
-        "koto" => 107,
-        "bagpipe" => 109,
-        "fiddle" => 110,
-        "shanai" => 111,
-        _ => 0,
-    }
+    super::gm::gm_program_from_name(name).unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -497,8 +380,19 @@ impl IrToMidiAdapter {
         // in time, and MIDI delta encoding requires chronological order.
         let mut timed: Vec<(u64, TrackEventKind<'a>)> = Vec::new();
 
+        // The running meter drives each bar's expected length even when the bar
+        // doesn't re-declare `<time>` (a `\time 3/8` piece declares it once, then
+        // every later 3/8 bar inherits it). Without this carry, un-declared bars
+        // were padded to the 4/4 default, shifting every later onset forward on
+        // export and breaking the MIDI round trip (pedal, example2_1). Mirrors
+        // the conductor track's `current_ts` carry.
+        let mut current_ts: Option<crate::ir::measure::TimeSignature> = None;
+
         for measure in &part.measures {
             let measure_start = abs_tick;
+            if let Some(ts) = measure.attributes.as_ref().and_then(|a| a.time.as_ref()) {
+                current_ts = Some(ts.clone());
+            }
 
             for voice in &measure.voices {
                 let mut voice_tick = measure_start;
@@ -625,9 +519,13 @@ impl IrToMidiAdapter {
             }
 
             // Ensure abs_tick advances by at least the measure's expected duration.
-            let expected_end = measure_start + self.measure_ticks(measure);
-            if abs_tick < expected_end {
-                abs_tick = expected_end;
+            // A senza-misura (free-time) bar has no fixed length, so its content
+            // alone sets the boundary — never pad it to a meter.
+            if !measure.senza_misura {
+                let expected_end = measure_start + self.ticks_for_ts(current_ts.as_ref());
+                if abs_tick < expected_end {
+                    abs_tick = expected_end;
+                }
             }
         }
 
@@ -668,19 +566,17 @@ impl IrToMidiAdapter {
         ticks.max(0) as u64
     }
 
-    /// Compute a measure's total duration in ticks based on its time signature.
-    fn measure_ticks(&self, measure: &crate::ir::measure::Measure) -> u64 {
-        if let Some(attrs) = &measure.attributes {
-            if let Some(ts) = &attrs.time {
+    /// Total ticks of a bar in the given (carried) time signature; 4/4 if none.
+    fn ticks_for_ts(&self, ts: Option<&crate::ir::measure::TimeSignature>) -> u64 {
+        match ts {
+            Some(ts) => {
                 let beats_frac = ts.beats_fraction();
-                // beats_fraction is already beats/beat_type
-                // ticks = beats_frac * 4 * divisions  (since quarter=1/4 of whole)
+                // ticks = beats_frac * 4 * divisions  (since quarter = 1/4 whole)
                 let ticks_frac = beats_frac * Ratio::from_integer(4 * self.divisions as i64);
-                return (*ticks_frac.numer() / *ticks_frac.denom()).max(0) as u64;
+                (*ticks_frac.numer() / *ticks_frac.denom()).max(0) as u64
             }
+            None => 4 * self.divisions as u64,
         }
-        // Default: 4/4
-        4 * self.divisions as u64
     }
 }
 
@@ -923,6 +819,78 @@ mod tests {
             onset_of(67),
             Some(3 * quarter),
             "bar overflowed past the grace"
+        );
+    }
+
+    #[test]
+    fn test_running_time_signature_sizes_later_bars() {
+        // Three 3/8 bars, time signature declared only on bar 1 (the common case
+        // — `\time 3/8` once, then bars inherit it). Each later bar must be 3/8
+        // long (576 ticks at 384/quarter), NOT padded to the 4/4 default; before
+        // the carried-meter fix, bar 1 padded to 1536 and every later onset
+        // shifted, breaking the MIDI round-trip for non-4/4 pieces (pedal).
+        let dotted_q = || Duration::dotted(Frac::new(1, 4), 1); // 3/8 of a whole
+        let note = |s, o| VoiceElement::Note(Box::new(Note::new(Pitch::new(s, o), dotted_q())));
+
+        let mut bars = Vec::new();
+        for (i, (s, o)) in [(PitchStep::C, 4), (PitchStep::D, 4), (PitchStep::E, 4)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut v = Voice::new(1);
+            v.elements.push(note(s, o));
+            let mut m = Measure::new(i as u32 + 1);
+            if i == 0 {
+                m.attributes = Some(MeasureAttributes {
+                    time: Some(TimeSignature {
+                        beats: "3".to_string(),
+                        beat_type: 8,
+                        symbol: None,
+                    }),
+                    ..MeasureAttributes::default()
+                });
+            }
+            m.voices.push(v);
+            bars.push(m);
+        }
+        let mut part = Part::new("P1");
+        part.measures = bars;
+        let score = Score {
+            metadata: ScoreMetadata::default(),
+            page_layout: None,
+            children: vec![ScoreChild::Part(part)],
+        };
+
+        let bytes = IrToMidiAdapter::new().convert_bytes(&score).unwrap(); // 384/quarter
+        let smf = Smf::parse(&bytes).unwrap();
+        let mut onsets: Vec<(u8, u32)> = Vec::new();
+        for track in &smf.tracks {
+            let mut t = 0u32;
+            for ev in track {
+                t += ev.delta.as_int();
+                if let TrackEventKind::Midi {
+                    message: MidiMessage::NoteOn { key, vel },
+                    ..
+                } = ev.kind
+                {
+                    if vel.as_int() > 0 {
+                        onsets.push((key.as_int(), t));
+                    }
+                }
+            }
+        }
+        let onset_of = |k: u8| onsets.iter().find(|(p, _)| *p == k).map(|(_, t)| *t);
+        let bar = 576u32; // 3/8 at 384 ticks/quarter
+        assert_eq!(onset_of(60), Some(0), "C4 (bar 1)");
+        assert_eq!(
+            onset_of(62),
+            Some(bar),
+            "D4 (bar 2) — bar 1 was padded to 4/4"
+        );
+        assert_eq!(
+            onset_of(64),
+            Some(2 * bar),
+            "E4 (bar 3) — drift accumulated"
         );
     }
 

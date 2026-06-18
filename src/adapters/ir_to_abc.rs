@@ -13,7 +13,7 @@ use crate::ir::annotation::Annotation;
 use crate::ir::direction::{Barline, BarlineType};
 use crate::ir::duration::Frac;
 use crate::ir::measure::{KeyMode, KeySignature, TimeSignature};
-use crate::ir::music::{Music, MusicDocument};
+use crate::ir::music::{ContextType, Music, MusicDocument};
 use crate::ir::pitch::Pitch;
 
 use super::{FromMusicAdapter, Result};
@@ -37,18 +37,36 @@ impl FromMusicAdapter for IrToAbcAdapter {
     }
 }
 
-fn emit_tune(doc: &MusicDocument) -> String {
-    let events = collect_events(&doc.music);
+/// One emitted ABC voice: an optional name and its flat event stream.
+struct OutVoice {
+    name: Option<String>,
+    events: Vec<Music>,
+}
 
-    // Header: pull the first time/key signature.
-    let first_time = events.iter().find_map(|m| match m {
-        Music::TimeSignature(t) => Some(t.clone()),
-        _ => None,
-    });
-    let first_key = events.iter().find_map(|m| match m {
-        Music::KeySignature(k) => Some(*k),
-        _ => None,
-    });
+fn emit_tune(doc: &MusicDocument) -> String {
+    // Split the tree into top-level voices (parts / staves). A single voice keeps
+    // the original single-line ABC; ≥2 voices emit `V:` blocks (ABC 2.1 §4.1).
+    let voices: Vec<OutVoice> = top_level_voices(&doc.music)
+        .into_iter()
+        .map(|(name, events)| OutVoice { name, events })
+        .filter(|v| has_audible(&v.events))
+        .collect();
+
+    // Header: pull the first time/key signature from any voice.
+    let first_time = voices
+        .iter()
+        .flat_map(|v| v.events.iter())
+        .find_map(|m| match m {
+            Music::TimeSignature(t) => Some(t.clone()),
+            _ => None,
+        });
+    let first_key = voices
+        .iter()
+        .flat_map(|v| v.events.iter())
+        .find_map(|m| match m {
+            Music::KeySignature(k) => Some(*k),
+            _ => None,
+        });
 
     let mut out = String::new();
     out.push_str("X:1\n");
@@ -70,11 +88,40 @@ fn emit_tune(doc: &MusicDocument) -> String {
             .unwrap_or_else(|| "C".to_string())
     ));
 
-    // Body: emit everything after the header signatures have been consumed.
+    match voices.len() {
+        0 => {
+            out.push('\n');
+        }
+        1 => {
+            let body = emit_body(&voices[0].events, first_time.is_some(), first_key.is_some());
+            out.push_str(&body);
+            out.push('\n');
+        }
+        _ => {
+            // Each voice is its own `V:n` block; the shared M:/K: live in the
+            // header, so each body suppresses its own leading time/key.
+            for (i, v) in voices.iter().enumerate() {
+                let id = i + 1;
+                match &v.name {
+                    Some(n) => out.push_str(&format!("V:{id} name=\"{n}\"\n")),
+                    None => out.push_str(&format!("V:{id}\n")),
+                }
+                let body = emit_body(&v.events, first_time.is_some(), first_key.is_some());
+                out.push_str(&body);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// Emit one voice's body as a space-joined token string. `skip_time`/`skip_key`
+/// drop the first time/key signature (already shown in the `M:`/`K:` header).
+fn emit_body(events: &[Music], skip_time: bool, skip_key: bool) -> String {
     let mut tokens: Vec<String> = Vec::new();
-    let mut time_used = first_time.is_none();
-    let mut key_used = first_key.is_none();
-    for ev in &events {
+    let mut time_used = !skip_time;
+    let mut key_used = !skip_key;
+    for ev in events {
         match ev {
             Music::TimeSignature(t) => {
                 if time_used {
@@ -124,17 +171,48 @@ fn emit_tune(doc: &MusicDocument) -> String {
             _ => {}
         }
     }
-
-    out.push_str(&tokens.join(" "));
-    out.push('\n');
-    out
+    tokens.join(" ")
 }
 
-/// Flatten a Music tree into its leaf event sequence (in order).
-fn collect_events(music: &Music) -> Vec<Music> {
-    let mut out = Vec::new();
-    walk(music, &mut out);
-    out
+/// Split the tree into top-level voices: each part / staff becomes one ABC
+/// voice. Grouping contexts (PianoStaff, StaffGroup, …) are descended into; a
+/// Staff/Voice context is a leaf voice whose events are flattened (inner
+/// per-measure polyphony collapses to its richest branch, as in v1).
+fn top_level_voices(music: &Music) -> Vec<(Option<String>, Vec<Music>)> {
+    match music {
+        Music::Context {
+            context_type,
+            name,
+            content,
+        } => match context_type {
+            ContextType::Staff
+            | ContextType::Voice
+            | ContextType::TabStaff
+            | ContextType::TabVoice => {
+                let mut events = Vec::new();
+                walk(content, &mut events);
+                vec![(name.clone(), events)]
+            }
+            // Grouping context: descend; the inner staves carry the voice names.
+            _ => top_level_voices(content),
+        },
+        Music::Simultaneous(branches) => branches.iter().flat_map(top_level_voices).collect(),
+        other => {
+            let mut events = Vec::new();
+            walk(other, &mut events);
+            vec![(None, events)]
+        }
+    }
+}
+
+/// True if a flat event stream contains any sounding event (note / chord / rest).
+fn has_audible(events: &[Music]) -> bool {
+    events.iter().any(|m| {
+        matches!(
+            m,
+            Music::Note { .. } | Music::Chord { .. } | Music::Rest { .. }
+        )
+    })
 }
 
 fn walk(music: &Music, out: &mut Vec<Music>) {
@@ -421,5 +499,65 @@ mod tests {
         ]);
         let abc = emit(&doc);
         assert!(abc.contains("|: [CEG]2 :|"), "body was: {abc}");
+    }
+
+    // ---- Multi-voice (ABC 2.1 V:) ----
+
+    fn named_staff(name: &str, events: Vec<Music>) -> Music {
+        Music::Sequential(events)
+            .in_context(crate::ir::music::ContextType::Staff, Some(name.to_string()))
+    }
+
+    #[test]
+    fn test_multivoice_emits_v_blocks() {
+        let soprano = named_staff(
+            "Soprano",
+            vec![
+                Music::KeySignature(KeySignature {
+                    fifths: 0,
+                    mode: KeyMode::Major,
+                }),
+                note(PitchStep::C, 5, Frac::new(1, 4)),
+                note(PitchStep::D, 5, Frac::new(1, 4)),
+            ],
+        );
+        let bass = named_staff(
+            "Bass",
+            vec![
+                Music::KeySignature(KeySignature {
+                    fifths: 0,
+                    mode: KeyMode::Major,
+                }),
+                note(PitchStep::C, 3, Frac::new(1, 4)),
+                note(PitchStep::D, 3, Frac::new(1, 4)),
+            ],
+        );
+        let doc = MusicDocument::new(Music::Simultaneous(vec![soprano, bass]));
+        let abc = emit(&doc);
+        // Two voice blocks with names; one shared K: in the header.
+        assert!(abc.contains("V:1 name=\"Soprano\""), "abc:\n{abc}");
+        assert!(abc.contains("V:2 name=\"Bass\""), "abc:\n{abc}");
+        assert_eq!(
+            abc.matches("K:").count(),
+            1,
+            "key should be header-only:\n{abc}"
+        );
+        // Soprano body c2 d2 (octave 5 = lowercase); bass C2 D2 (octave 3).
+        assert!(abc.contains("c2 d2"), "soprano body missing:\n{abc}");
+        assert!(
+            abc.contains("C, D,") || abc.contains("C,2 D,2"),
+            "bass body missing:\n{abc}"
+        );
+    }
+
+    #[test]
+    fn test_single_voice_no_v_marker() {
+        // A lone staff must not gain a V: block (back-compat single-line ABC).
+        let doc = staff(vec![note(PitchStep::C, 4, Frac::new(1, 8))]);
+        let abc = emit(&doc);
+        assert!(
+            !abc.contains("V:"),
+            "single voice should not emit V::\n{abc}"
+        );
     }
 }

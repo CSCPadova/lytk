@@ -12,6 +12,7 @@ use crate::ir::Score;
 
 pub mod abc_to_ir;
 pub mod dynamics_velocity;
+pub mod gm;
 pub mod ir_to_abc;
 pub mod ir_to_ly;
 pub mod ir_to_mxml;

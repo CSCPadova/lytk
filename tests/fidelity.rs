@@ -46,16 +46,27 @@ const LY_DUR_BASELINE: usize = 27;
 const XML_NOTES_BASELINE: usize = 152;
 const XML_PITCHES_BASELINE: usize = 152;
 const XML_DUR_BASELINE: usize = 152; // full onset+duration fidelity
-const ABC_NOTES_BASELINE: usize = 3;
-const ABC_PITCHES_BASELINE: usize = 3;
-const ABC_DUR_BASELINE: usize = 3;
-// MIDI round-trip after multi-voice reconstruction + per-voice quantized
-// budget: the simple fixtures are now fully stable (note-count, pitch AND
-// onset+duration). The 3 hardest multi-voice piano fixtures (example2_1,
-// chopin_n, pedal) still drift on cross-measure tie/tuplet interactions — gated
-// at the current floor so they can't regress.
-const MIDI_NOTES_BASELINE: usize = 2;
-const MIDI_PITCHES_BASELINE: usize = 2;
+                                     // ABC now includes a multi-voice fixture (multivoice.abc) that round-trips.
+const ABC_NOTES_BASELINE: usize = 4;
+const ABC_PITCHES_BASELINE: usize = 4;
+const ABC_DUR_BASELINE: usize = 4;
+// MIDI round-trip after the export-side carried-meter fix (`ir_to_midi`
+// `build_part_track` now sizes every bar by the running time signature instead
+// of padding un-declared bars to 4/4). This re-aligns the non-4/4 pieces:
+// `example2_1` now matches on note-count AND pitch-multiset (3/5 each), up from
+// 2/5. The two remaining drifters are documented limitations, gated so they
+// can't regress:
+//   - `example2_1`: one note's *duration* still drifts (960→1200 ticks) — a
+//     tie re-fuses across a meter boundary on re-import (onset+dur stays 2/5).
+//   - `pedal`: a per-voice quantized-budget cascade starves one A4 in a dense
+//     bar, swapping a 480-tick note for a 30-tick sliver (off by 1 note).
+//   - `chopin_n`: INHERENT — the source MIDI's time-signature changes sit on
+//     non-bar-aligned ticks (6/8→4/4 at tick 100416, not a 6/8-bar multiple),
+//     so its notated meter and actual bar lengths disagree. An exact
+//     onset/duration round-trip would need arbitrary mid-bar re-gridding, which
+//     itself breaks fidelity — not fixable without abandoning the exact metric.
+const MIDI_NOTES_BASELINE: usize = 3;
+const MIDI_PITCHES_BASELINE: usize = 3;
 const MIDI_DUR_BASELINE: usize = 2;
 
 #[derive(Default)]
