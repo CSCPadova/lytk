@@ -156,9 +156,11 @@ pub(super) fn emit_measures(
                 ));
             }
             if let Some(text) = &dir.da_capo {
+                let text = super::helpers::escape_ly_string(text);
                 lines.push(format!("{pad}\\mark \"{text}\""));
             }
             if let Some(text) = &dir.dal_segno {
+                let text = super::helpers::escape_ly_string(text);
                 lines.push(format!("{pad}\\mark \"{text}\""));
             }
             if let Some(lb) = &dir.layout_break {
@@ -197,7 +199,10 @@ pub(super) fn emit_measures(
                         crate::ir::articulation::Placement::Below => "_",
                         crate::ir::articulation::Placement::Unspecified => "^",
                     };
-                    parts.push(format!("{dir_char}\\markup {{ \"{}\" }}", text.text));
+                    parts.push(format!(
+                        "{dir_char}\\markup {{ \"{}\" }}",
+                        super::helpers::escape_ly_string(&text.text)
+                    ));
                 }
             }
             if let Some(pedal) = &dir.pedal {

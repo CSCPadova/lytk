@@ -65,9 +65,13 @@ const ABC_DUR_BASELINE: usize = 4;
 //     so its notated meter and actual bar lengths disagree. An exact
 //     onset/duration round-trip would need arbitrary mid-bar re-gridding, which
 //     itself breaks fidelity — not fixable without abandoning the exact metric.
-const MIDI_NOTES_BASELINE: usize = 3;
-const MIDI_PITCHES_BASELINE: usize = 3;
-const MIDI_DUR_BASELINE: usize = 2;
+// Review R5 (2026-07-10): the reader now FIFO-pairs overlapping same-pitch
+// notes per (key, channel) and the writer orders note-offs before note-ons at
+// equal ticks — cross-voice unisons no longer drop notes. Baselines raised
+// 3/3/2 → 4/4/3 (only chopin_n's inherent meter drift remains).
+const MIDI_NOTES_BASELINE: usize = 4;
+const MIDI_PITCHES_BASELINE: usize = 4;
+const MIDI_DUR_BASELINE: usize = 3;
 
 #[derive(Default)]
 struct Board {

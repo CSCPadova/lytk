@@ -135,8 +135,11 @@ struct TrackMeta {
 fn collect_track_events(events: &[midly::TrackEvent<'_>]) -> (Vec<RawNote>, TrackMeta) {
     let mut notes: Vec<RawNote> = Vec::new();
     let mut meta = TrackMeta::default();
-    // Pending note-ons: (key, channel) → (start_tick, velocity)
-    let mut pending: HashMap<(u8, u8), (u64, u8)> = HashMap::new();
+    // Pending note-ons: (key, channel) → open notes, oldest first. A Vec (not
+    // a single slot): overlapping same-pitch notes across voices are real
+    // (piano unisons) — a single slot lost the first note and orphaned the
+    // second note-off. FIFO pairing closes the oldest open note.
+    let mut pending: HashMap<(u8, u8), Vec<(u64, u8)>> = HashMap::new();
     let mut abs_tick: u64 = 0;
 
     for event in events {
@@ -151,7 +154,27 @@ fn collect_track_events(events: &[midly::TrackEvent<'_>]) -> (Vec<RawNote>, Trac
                         let v = vel.as_int();
                         if v == 0 {
                             // NoteOn with vel 0 = NoteOff
-                            if let Some((start, velocity)) = pending.remove(&(k, ch)) {
+                            if let Some(open) = pending.get_mut(&(k, ch)) {
+                                if !open.is_empty() {
+                                    let (start, velocity) = open.remove(0);
+                                    notes.push(RawNote {
+                                        start_tick: start,
+                                        end_tick: abs_tick,
+                                        midi_key: k,
+                                        velocity,
+                                        channel: ch,
+                                    });
+                                }
+                            }
+                        } else {
+                            pending.entry((k, ch)).or_default().push((abs_tick, v));
+                        }
+                    }
+                    MidiMessage::NoteOff { key, .. } => {
+                        let k = key.as_int();
+                        if let Some(open) = pending.get_mut(&(k, ch)) {
+                            if !open.is_empty() {
+                                let (start, velocity) = open.remove(0);
                                 notes.push(RawNote {
                                     start_tick: start,
                                     end_tick: abs_tick,
@@ -160,20 +183,6 @@ fn collect_track_events(events: &[midly::TrackEvent<'_>]) -> (Vec<RawNote>, Trac
                                     channel: ch,
                                 });
                             }
-                        } else {
-                            pending.insert((k, ch), (abs_tick, v));
-                        }
-                    }
-                    MidiMessage::NoteOff { key, .. } => {
-                        let k = key.as_int();
-                        if let Some((start, velocity)) = pending.remove(&(k, ch)) {
-                            notes.push(RawNote {
-                                start_tick: start,
-                                end_tick: abs_tick,
-                                midi_key: k,
-                                velocity,
-                                channel: ch,
-                            });
                         }
                     }
                     MidiMessage::ProgramChange { program } => {

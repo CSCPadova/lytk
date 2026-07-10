@@ -327,7 +327,8 @@ pub(super) fn figure_to_ly(fig: &Figure) -> String {
 pub(super) fn tempo_to_ly(tempo: &crate::ir::direction::TempoDirection) -> String {
     let dots = ".".repeat(tempo.dots as usize);
 
-    match (&tempo.text, &tempo.beat_unit, tempo.per_minute) {
+    let escaped = tempo.text.as_deref().map(super::helpers::escape_ly_string);
+    match (&escaped, &tempo.beat_unit, tempo.per_minute) {
         (Some(text), Some(unit), Some(bpm)) => {
             let ly_dur = beat_unit_to_ly(unit);
             format!("\\tempo \"{text}\" {ly_dur}{dots} = {bpm}")

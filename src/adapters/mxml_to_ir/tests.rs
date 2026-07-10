@@ -2422,3 +2422,96 @@ fn malformed_input_does_not_panic() {
     // divisions = 70000 used to silently wrap; now clamps
     let _ = adapter.convert_str(&note("", "70000"));
 }
+
+/// Regression (review R7): fractional `<alter>` (microtones) must survive —
+/// the `musicxml` crate types Semitones as i16, so 0.5 previously failed to
+/// parse inside the crate and the whole note was silently dropped
+/// (acid tests 01d/01f lost 100%/75% of notes).
+#[test]
+fn microtone_alter_survives_round_trip() {
+    use crate::adapters::ir_to_mxml::IrToMxmlAdapter;
+    use crate::adapters::FromIrAdapter;
+    use num::rational::Ratio;
+
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>4</divisions></attributes>
+    <note><pitch><step>C</step><alter>0.5</alter><octave>4</octave></pitch>
+      <duration>4</duration><voice>1</voice><type>quarter</type></note>
+    <note><pitch><step>D</step><alter>-1.5</alter><octave>4</octave></pitch>
+      <duration>4</duration><voice>1</voice><type>quarter</type></note>
+  </measure></part>
+</score-partwise>"#;
+    let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+    let elems = &score.parts()[0].measures[0].voices[0].elements;
+    assert_eq!(elems.len(), 2, "microtone notes must not be dropped");
+    let alter_of = |e: &VoiceElement| match e {
+        VoiceElement::Note(n) => n.pitch.alter,
+        _ => panic!("expected note"),
+    };
+    assert_eq!(alter_of(&elems[0]), Ratio::new(1, 2), "quarter-sharp");
+    assert_eq!(alter_of(&elems[1]), Ratio::new(-3, 2), "three-quarter-flat");
+
+    // And back out: the emitted XML carries the decimal alter again.
+    let out = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(out.contains("<alter>0.5</alter>"), "got:\n{out}");
+    assert!(out.contains("<alter>-1.5</alter>"), "got:\n{out}");
+}
+
+/// Regression (review R7): parts whose id is missing from `<part-list>` (or
+/// missing entirely) are still real music — previously dropped at assembly
+/// (acid tests 41g/41h).
+#[test]
+fn orphan_and_idless_parts_survive() {
+    // Two <part> elements, only one declared in the part-list.
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>A</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>4</divisions></attributes>
+    <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice></note>
+  </measure></part>
+  <part id="P9"><measure number="1">
+    <note><pitch><step>D</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice></note>
+  </measure></part>
+</score-partwise>"#;
+    let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+    assert_eq!(score.parts().len(), 2, "orphan part P9 must be kept");
+    assert_eq!(
+        score.parts()[1].part_id,
+        "P9",
+        "orphan keeps its document id"
+    );
+}
+
+/// Regression (review R7): single-quoted attributes on elements inside
+/// `<note>` (Sibelius style: dynamics='68', beam number='1') made the
+/// `musicxml` crate drop the note; the pre-pass normalizes them. Apostrophes
+/// in text content must stay untouched.
+#[test]
+fn single_quoted_attributes_are_normalized() {
+    let xml = r#"<?xml version='1.0'?>
+<score-partwise>
+  <part-list><score-part id='P1'><part-name>L'istesso</part-name></score-part></part-list>
+  <part id='P1'><measure number='1'>
+    <attributes><divisions>4</divisions></attributes>
+    <note dynamics='68'><pitch><step>C</step><octave>4</octave></pitch>
+      <duration>4</duration><voice>1</voice><type>quarter</type>
+      <beam number='1'>begin</beam></note>
+  </measure></part>
+</score-partwise>"#;
+    let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
+    let elems = &score.parts()[0].measures[0].voices[0].elements;
+    assert_eq!(
+        elems.len(),
+        1,
+        "single-quoted attributes must not drop notes"
+    );
+    assert_eq!(
+        score.parts()[0].name,
+        "L'istesso",
+        "text content apostrophes stay untouched"
+    );
+}

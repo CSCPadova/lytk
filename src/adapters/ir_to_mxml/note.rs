@@ -22,9 +22,17 @@ impl IrToMxmlAdapter {
         let step = ir_step_to_mxml(&note.pitch.step);
         let alter_val = *note.pitch.alter.numer() as f64 / *note.pitch.alter.denom() as f64;
         let alter = if alter_val != 0.0 {
+            // Fractional alters (microtones) can't pass the crate's i16 —
+            // encode them; `convert()` decodes the serialized string back to
+            // a decimal. See `adapters::encode_fractional_alters`.
+            let encoded = if alter_val.fract() != 0.0 {
+                crate::adapters::ALTER_ENC_BASE + (alter_val * 100.0).round() as i32
+            } else {
+                alter_val as i32
+            };
             Some(mxml::Alter {
                 attributes: (),
-                content: mdt::Semitones(alter_val as i16),
+                content: mdt::Semitones(encoded as i16),
             })
         } else {
             None

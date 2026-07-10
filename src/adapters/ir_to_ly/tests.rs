@@ -1913,3 +1913,36 @@ mod repeat_alternative_roundtrip {
         assert_eq!(note_count(&re), note_count(&score), "notes lost in:\n{ly}");
     }
 }
+
+/// Regression (review R7): a `<words>` text containing quotes previously
+/// emitted an unterminated LilyPond string, silently emptying the score on
+/// re-parse (acid test 31a lost 57/57 notes).
+#[test]
+fn direction_text_quotes_are_escaped() {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::{FromIrAdapter, ToIrAdapter};
+    use crate::ir::direction::{Direction, TextDirection};
+
+    let mut score = LyToIrAdapter::new()
+        .convert_str(r#"\score { \new Staff { c'1 d'1 } }"#)
+        .unwrap();
+    score.parts_mut()[0].measures[0].directions.push(Direction {
+        text: Some(TextDirection {
+            text: "say \"words\"".to_string(),
+            placement: crate::ir::articulation::Placement::Above,
+            font_style: None,
+            font_weight: None,
+        }),
+        ..Direction::default()
+    });
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    let re = LyToIrAdapter::new().convert_str(&ly).unwrap();
+    let notes: usize = re
+        .parts()
+        .iter()
+        .flat_map(|p| &p.measures)
+        .flat_map(|m| &m.voices)
+        .map(|v| v.elements.len())
+        .sum();
+    assert_eq!(notes, 2, "quoted words must not truncate the score:\n{ly}");
+}

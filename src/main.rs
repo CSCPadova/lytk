@@ -427,7 +427,10 @@ fn run_convert(
             scores.len()
         );
     } else {
-        // Multi-movement: write separate files with _01, _02, etc. suffixes
+        // Multi-movement: the FIRST movement goes to the requested path (so
+        // pipelines that use it keep working), the rest to _02, _03, …
+        // suffixed siblings. Previously nothing landed at the requested path
+        // (only _01/_02 files), silently breaking any downstream step.
         let stem = output
             .file_stem()
             .and_then(|s| s.to_str())
@@ -435,11 +438,18 @@ fn run_convert(
         let ext = output.extension().and_then(|s| s.to_str()).unwrap_or("xml");
         let parent = output.parent().unwrap_or(Path::new("."));
         for (idx, score) in scores.iter().enumerate() {
-            let filename = format!("{}_{:02}.{}", stem, idx + 1, ext);
-            let path = parent.join(&filename);
+            let path = if idx == 0 {
+                output.to_path_buf()
+            } else {
+                parent.join(format!("{}_{:02}.{}", stem, idx + 1, ext))
+            };
             write_output(score, &path, format)?;
             eprintln!("Wrote movement {} → {}", idx + 1, path.display());
         }
+        eprintln!(
+            "note: input contains {} movements; movements 2+ were written with _NN suffixes",
+            scores.len()
+        );
     }
     Ok(())
 }

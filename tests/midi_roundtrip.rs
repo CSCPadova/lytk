@@ -99,3 +99,29 @@ fn midi_drifters_do_not_panic_and_keep_notes() {
         assert!(nb > 0 && na > 0, "{name}: lost all measures on round-trip");
     }
 }
+
+/// Regression (review R5): overlapping same-pitch notes across voices must
+/// survive the MIDI round trip. The reader kept ONE pending note-on per
+/// (key, channel), so `<< { c1 } \\ { c2 c2 } >>` lost the whole note AND
+/// truncated the halves (piano fixtures lost up to 98 sounding notes).
+#[test]
+fn overlapping_unison_across_voices_survives() {
+    use _core::adapters::ly_to_ir::LyToIrAdapter;
+    use _core::adapters::ToIrAdapter;
+
+    let score = LyToIrAdapter::new()
+        .convert_str(r#"\score { \new Staff << { c'1 } \\ { c'2 c'2 } >> }"#)
+        .unwrap();
+    assert_eq!(
+        pitch_multiset(&score).len(),
+        3,
+        "sanity: 3 notes in the source"
+    );
+
+    let after = roundtrip(&score);
+    assert_eq!(
+        pitch_multiset(&after).len(),
+        3,
+        "unison overlap must not drop notes on MIDI round-trip"
+    );
+}

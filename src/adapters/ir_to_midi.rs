@@ -529,9 +529,28 @@ impl IrToMidiAdapter {
             }
         }
 
-        // Sort by absolute tick (stable sort preserves NoteOn-before-NoteOff
-        // for simultaneous events within the same voice).
-        timed.sort_by_key(|&(tick, _)| tick);
+        // Sort by absolute tick; at equal ticks, note-offs come before
+        // note-ons so a note ending exactly where another voice's same-pitch
+        // note begins releases the key first (readers otherwise mis-pair the
+        // events and truncate or drop notes).
+        fn same_tick_order(kind: &TrackEventKind<'_>) -> u8 {
+            match kind {
+                TrackEventKind::Midi {
+                    message: MidiMessage::NoteOff { .. },
+                    ..
+                } => 0,
+                TrackEventKind::Midi {
+                    message: MidiMessage::NoteOn { vel, .. },
+                    ..
+                } if vel.as_int() == 0 => 0,
+                TrackEventKind::Midi {
+                    message: MidiMessage::NoteOn { .. },
+                    ..
+                } => 2,
+                _ => 1,
+            }
+        }
+        timed.sort_by_key(|&(tick, ref kind)| (tick, same_tick_order(kind)));
 
         // Convert absolute ticks to delta encoding.
         let mut last_tick: u64 = 0;

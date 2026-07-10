@@ -953,3 +953,34 @@ fn bundle_exports_parts() {
         "bundle should write at least one part file"
     );
 }
+
+/// Regression (review R6): converting a multi-`\score` input must create the
+/// requested output path (first movement), not only `_01`/`_02` siblings —
+/// scripted pipelines read the path they asked for.
+#[test]
+fn multi_score_input_writes_requested_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("two.ly");
+    std::fs::write(
+        &src,
+        r#"\score { \new Staff { c'1 } } \score { \new Staff { d'1 } }"#,
+    )
+    .unwrap();
+    let out = dir.path().join("out.xml");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lytk"))
+        .args(["convert"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        out.exists(),
+        "requested path must contain the first movement"
+    );
+    assert!(
+        dir.path().join("out_02.xml").exists(),
+        "second movement goes to the _02 sibling"
+    );
+}

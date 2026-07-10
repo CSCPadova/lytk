@@ -150,6 +150,17 @@ fn read_partwise_bytes(bytes: Vec<u8>) -> Result<Score> {
         )));
     }
     let xml = xml_bytes_from_input(bytes)?;
+    // Bridge fractional <alter> values (microtones) past the crate's i16 —
+    // see `adapters::encode_fractional_alters`.
+    let xml = match String::from_utf8(xml) {
+        // Also give an id-less <part> a sentinel id: the crate requires the
+        // attribute and silently drops the whole part otherwise (spec allows
+        // omission when one score-part describes the one part).
+        Ok(text) => super::encode_fractional_alters(super::normalize_attribute_quotes(text))
+            .replace("<part>", "<part id=\"__lytk-noid\">")
+            .into_bytes(),
+        Err(e) => e.into_bytes(), // non-UTF-8: hand through unchanged
+    };
     // The firewall covers conversion too: panics there would otherwise escape
     // to the PyO3 boundary as aborts instead of AdapterError::Parse.
     catch_read(|| {
@@ -244,9 +255,13 @@ fn convert_mxml_score(score: &mxml::ScorePartwise) -> Result<Score> {
 
     // Parse each <part> element.
     let mut parsed_parts: HashMap<String, crate::ir::part::Part> = HashMap::new();
+    let mut doc_order: Vec<String> = Vec::new();
     for mxml_part in &score.content.part {
         // In partwise, part.content contains PartElement::Measure(...)
-        let id = mxml_part.attributes.id.0.clone();
+        let mut id = mxml_part.attributes.id.0.clone();
+        if id == "__lytk-noid" {
+            id.clear(); // sentinel injected in read_partwise_bytes
+        }
         let info = if id.is_empty() {
             if part_info.len() == 1 {
                 part_info.values().next().cloned().unwrap_or_default()
@@ -254,10 +269,14 @@ fn convert_mxml_score(score: &mxml::ScorePartwise) -> Result<Score> {
                 PartInfo::default()
             }
         } else {
-            part_info.get(&id).cloned().unwrap_or_default()
+            part_info.get(&id).cloned().unwrap_or_else(|| PartInfo {
+                id: id.clone(),
+                ..Default::default()
+            })
         };
         let resolved_id = if id.is_empty() { info.id.clone() } else { id };
         let part = convert_part(mxml_part, &info)?;
+        doc_order.push(resolved_id.clone());
         parsed_parts.insert(resolved_id, part);
     }
 
@@ -285,6 +304,14 @@ fn convert_mxml_score(score: &mxml::ScorePartwise) -> Result<Score> {
             if let Some(part) = parsed_parts.remove(id) {
                 ir_score.children.push(ScoreChild::Part(part));
             }
+        }
+    }
+
+    // Orphan parts (an id missing from <part-list>, or no id at all) are still
+    // real music — keep them, in document order, instead of dropping them.
+    for id in &doc_order {
+        if let Some(part) = parsed_parts.remove(id) {
+            ir_score.children.push(ScoreChild::Part(part));
         }
     }
 

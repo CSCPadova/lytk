@@ -72,7 +72,8 @@ impl FromIrAdapter for IrToMxmlAdapter {
         let bytes = musicxml::write_partwise_score_data(&mxml_score, false, false)
             .map_err(AdapterError::Parse)?;
 
-        Ok(String::from_utf8(bytes).expect("MusicXML output is valid UTF-8"))
+        let text = String::from_utf8(bytes).expect("MusicXML output is valid UTF-8");
+        Ok(crate::adapters::decode_fractional_alters(text))
     }
 
     fn write(&self, score: &Score, path: &Path) -> Result<()> {
@@ -89,8 +90,16 @@ impl FromIrAdapter for IrToMxmlAdapter {
             .map(|e| e.eq_ignore_ascii_case("mxl"))
             .unwrap_or(false);
 
-        musicxml::write_partwise_score(path_str, &mxml_score, compressed, false)
-            .map_err(AdapterError::Parse)?;
+        if compressed {
+            // ponytail: the crate zips internally, so encoded fractional
+            // alters stay encoded inside direct-MXL output; decode-on-write
+            // for MXL needs zipping ourselves — do it if microtone MXL matters.
+            musicxml::write_partwise_score(path_str, &mxml_score, compressed, false)
+                .map_err(AdapterError::Parse)?;
+        } else {
+            // Plain XML goes through convert() so fractional alters decode.
+            std::fs::write(path, self.convert(score)?)?;
+        }
 
         Ok(())
     }

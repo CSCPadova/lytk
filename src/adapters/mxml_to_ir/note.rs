@@ -226,10 +226,16 @@ fn extract_pitch(mxml_note: &mxml::Note) -> Option<Pitch> {
                 .alter
                 .as_ref()
                 .map(|a| {
-                    let semitones = a.content.0;
-                    // Semitones is i16, convert to Ratio for microtone support
-                    // Standard values: -2, -1, 0, 1, 2
-                    Alter::from_integer(semitones as i32)
+                    let semitones = a.content.0 as i32;
+                    // Encoded fractional alter (microtone) — see
+                    // `adapters::encode_fractional_alters`.
+                    if (crate::adapters::ALTER_ENC_MIN..=crate::adapters::ALTER_ENC_MAX)
+                        .contains(&semitones)
+                    {
+                        Alter::new(semitones - crate::adapters::ALTER_ENC_BASE, 100)
+                    } else {
+                        Alter::from_integer(semitones)
+                    }
                 })
                 .unwrap_or_else(|| Alter::from_integer(0));
             Some(Pitch::with_alter(step, alter, octave))

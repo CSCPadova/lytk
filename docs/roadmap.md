@@ -389,10 +389,10 @@ with evidence in `docs/changelog.md` (2026-07-10 entry). Priority order:
 | R1 | ir_to_ly | ~~`\repeat`/`\alternative` re-emission malformed~~ **✅ 2026-07-10** (producer barline placement + stateful emitter) | HIGH |
 | R2 | ly_to_ir | ~~`part_is_dynamics_only` collapses all-rest parts~~ **✅ 2026-07-10** (spacers-or-directions rule) | HIGH |
 | R3 | transforms | ~~transpose: no key-aware respelling; diatonic key-sig from semitones; harmonies not transposed~~ **✅ 2026-07-10** (respell to target key, line-of-fifths delta, harmony root/bass) | HIGH |
-| R4 | transforms | retrograde: attributes not moved, tuplet/tie/slur pairing not reversed, grace notes stranded | HIGH |
-| R5 | midi | cross-voice same-pitch overlap drops notes; grace notes exported with real duration | HIGH |
-| R6 | cli | multi-`\score` input silently writes `out_01.*` instead of the requested path | MED |
-| R7 | mxml_to_ir | microtone alters dropped; orphan/id-less parts dropped; untyped measure-rests lost on ly emit | MED |
+| R4 | transforms | ~~retrograde: attributes not moved, tie/slur/tuplet pairing not reversed, graces stranded~~ **✅ 2026-07-10** | HIGH |
+| R5 | midi | ~~cross-voice same-pitch overlap drops notes~~ **✅ 2026-07-10** (FIFO pairing + off-before-on; fidelity gate 4/4/3) | HIGH |
+| R6 | cli | ~~multi-`\score` input silently writes `out_01.*` instead of the requested path~~ **✅ 2026-07-10** | MED |
+| R7 | mxml_to_ir | ~~microtone alters, orphan/id-less parts, quote-tokenizer drops, words escaping~~ **✅ 2026-07-10** (xml fixtures 142/142, acid 158/159) | MED |
 | R8 | surfaces | compressed-MXL write unreachable (CLI/batch/Python); batch `"mxl"` writes plain XML | MED |
 | R9 | bindings | Layer-1 (`apply_music`) transforms + `transpose_to_key` unbound in Python; ly→ly transform subcommands flatten structure | MED |
 | R10 | perf | ir_to_mxml emission dominates; `resolve_variable` deep-clones; no PyO3 GIL release | MED |

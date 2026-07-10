@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-07-10 — Review fixes R4–R7: retrograde, MIDI pairing, output contract, ingestion gaps
+
+Second fix wave from the 2026-07-10 review backlog, all TDD with corpus
+verification. Round-trip scores vs the audit baseline: `tests/fixtures/xml`
+**131/142 → 142/142**, acid corpus **143/159 → 158/159** (only
+45i-Repeats-Nested remains, off by one note), LilyPond fixtures **31/35 →
+34/35** (only pedal.ly's known ~0.5% tie drift). MIDI fidelity gate raised
+3/3/2 → 4/4/3. Full suite: **998 Rust tests, 0 failures**; clippy clean.
+
+- **R4 — retrograde is structurally sound** (`transforms/retrograde.rs`):
+  positional properties (attributes, barlines, numbering) stay on their
+  measure shells — the reversed score declares key/meter up front; only
+  musical content travels. Tie/slur/tuplet Start↔Stop pairing is swapped so
+  every pair still opens before it closes; grace runs are re-anchored before
+  their principal (both layers, `Music::Grace` included); Music-layer
+  leading attribute events (`\key`/`\time`/clef/tempo) no longer migrate to
+  the end. Still self-inverse. 7 new tests. Known ceiling: content swapped
+  across unequal-length measures under mid-piece meter changes; in-measure
+  direction offsets keep forward time.
+- **R5 — MIDI unison collision** (`midi_to_ir.rs`, `ir_to_midi.rs`): the
+  reader now keeps a FIFO of open notes per (key, channel) instead of a
+  single slot — overlapping same-pitch notes across voices no longer vanish
+  (`<< { c'1 } \\ { c'2 c'2 } >>` keeps 3 notes; piano fixtures had lost up
+  to 98 sounding notes). The writer orders note-offs before note-ons at equal
+  ticks for other consumers. Grace-note timing was already fixed in Wave 1;
+  the residual note-count growth on re-import (grace → real note) is inherent
+  to MIDI. Fidelity baselines raised to lock the gain.
+- **R6 — multi-`\score` output contract** (`main.rs`): the first movement now
+  lands at the requested path (pipelines read what they asked for), movements
+  2+ at `_02`/`_03` siblings, with a stderr note. Fixed the example2 /
+  key-signature-left-edge round-trip failures.
+- **R7 — MusicXML ingestion gaps** (all worked around the `musicxml` crate's
+  strictness in the raw-XML pre-pass, `adapters/mod.rs`):
+  - *Microtones*: the crate types `<alter>` as i16, silently dropping any
+    note with a fractional alter (01d/01f lost 100%/75%). Fractional alters
+    are now bridged as encoded integers (`0.5 → 1050`) past the crate and
+    decoded to exact `Ratio` alters; symmetric on emission, so
+    `<alter>0.5</alter>` round-trips and `.ly` gets real quarter-tone names
+    (`cih`). Ceiling: direct compressed-`.mxl` writes keep the encoded form.
+  - *Orphan/id-less parts*: `<part>` elements missing from `<part-list>` (or
+    with no id — the crate requires one; a sentinel id is injected) are kept
+    in document order with distinct ids instead of dropped (41g/41h).
+  - *Single-quoted attributes*: the crate's tokenizer drops notes carrying
+    `dynamics='68'` / `beam number='1'` style attributes (Sibelius exports,
+    99a lost 6/6). A tag-aware normalizer rewrites attribute quotes without
+    touching text content.
+  - *`<words>` quoting*: direction text, `\mark`, and `\tempo` strings now
+    go through `escape_ly_string` — a quote in `<words>` no longer emits an
+    unterminated LilyPond string (31a lost 57/57).
+
+
 ## 2026-07-10 — Review fixes R1–R3: repeats round-trip, rest-only parts, transpose spelling
 
 The three top items from the 2026-07-10 review backlog, all TDD (failing test
