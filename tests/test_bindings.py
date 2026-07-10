@@ -344,3 +344,15 @@ def test_to_musicxml_writes_compressed_mxl(tmp_path):
     assert zipfile.is_zipfile(p), ".mxl must be a real ZIP, not plain XML"
     back = lytk.from_musicxml(str(p))
     assert len(back.parts) == len(score.parts)
+
+
+def test_humdrum_kern_round_trip(tmp_path):
+    kern = "**kern\n*clefG2\n*M4/4\n4c\n4e\n4g\n4cc\n*-\n"
+    score = lytk.from_humdrum_string(kern)
+    out = lytk.to_humdrum(score)
+    assert "**kern" in out and "4cc" in out
+    back = lytk.from_humdrum_string(out)
+    assert len(back.notes()) == len(score.notes()) == 4
+    p = tmp_path / "t.krn"
+    lytk.to_humdrum(score, str(p))
+    assert lytk.from_humdrum(str(p)).notes()

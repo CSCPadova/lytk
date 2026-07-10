@@ -8,7 +8,7 @@ Latest changes: look at the file docs/changelog.md to know about latest activity
 
 ## Project
 
-`lytk` — a Rust library (with Python bindings via PyO3/maturin) for music notation conversion and augmentation. Converts between LilyPond, MusicXML, MXL (compressed MusicXML), and MIDI through a shared Internal Representation (IR).
+`lytk` — a Rust library (with Python bindings via PyO3/maturin) for music notation conversion and augmentation. Converts between LilyPond, MusicXML, MXL (compressed MusicXML), MIDI, ABC, and Humdrum (`**kern`) through a shared Internal Representation (IR).
 
 ## Build & Test Commands
 
@@ -60,6 +60,8 @@ Six layers:
    - `ir_to_mxml/` — IR to MusicXML writer using `musicxml` crate (struct construction + serialization). Native MXL support.
    - `ly_flatten.rs` — `\include` expansion
    - `midi_to_ir.rs` / `ir_to_midi.rs` — MIDI I/O via `midly`
+   - `abc_to_ir.rs` / `ir_to_abc.rs` — ABC notation (Layer-1 Music tree)
+   - `humdrum_to_ir.rs` / `ir_to_humdrum.rs` — Humdrum `**kern` (Layer-1 Music tree; spine rearrangement `*^`/`*v` unsupported → clear error)
    - Traits: `ToIrAdapter` (parse → Score), `FromIrAdapter` (Score → emit), `ToMusicAdapter` (parse → MusicDocument), `FromMusicAdapter` (MusicDocument → emit)
 
 4. **Transforms** (`src/transforms/`) — idempotent, composable passes:

@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-07-10 — Humdrum (`**kern`) format support
+
+New adapter pair `humdrum_to_ir` / `ir_to_humdrum` (Layer-1 Music tree, same
+shape as the ABC adapter), wired into every surface. **1014 Rust + 135 Python
+tests, 0 failures**; clippy clean.
+
+- **Parser**: kern pitches (letter runs, `#`/`-`/`n`), recip durations (dots,
+  non-power-of-two recips decomposed into base + tuplet ratio, rational `N%M`),
+  rests, chords, ties (`[` `_` `]`), slurs, grace notes (`q`/`Q`), fermatas,
+  barlines incl. repeats, tandem interpretations (`*clef…`, `*k[…]`, `*X:`
+  mode, `*M`, `*MM`, `*I"`), `!!!COM`/`!!!OTL` metadata, Latin-1 fallback for
+  old corpora. Spines map to parts (reversed: kern is low→high). Anacrusis
+  detected from a short pre-barline lead-in → `metadata.partial_duration`.
+  Spine rearrangement (`*^`/`*v`/`*x`) is a clear error — no silent loss.
+  Non-kern spines (`**dynam`, `**text`) are skipped.
+- **Emitter**: one spine per (part, voice), time slices aligned with `.`
+  nulls, numbered barlines, headers/trailer, ties/slurs/graces, rational
+  recips for irregular durations.
+- **Lower-layer fix**: `lower_to_score` now honours
+  `metadata.partial_duration` — the first measure ends at the pickup length
+  and is marked implicit (previously the anacrusis shifted the whole bar
+  grid, tie-splitting notes; this also benefits future Layer-1 producers).
+- **Surfaces**: CLI `convert`/`transpose`/… accept and emit `.krn`/`.kern`
+  (`--format krn`), batch mode walks kern files; Python `from_humdrum`,
+  `from_humdrum_string`, `to_humdrum` (+ stubs, `lytk.cli`).
+- **Verification**: the full music21 kern corpus (1328 files: chorales,
+  Chopin, Palestrina, …) — **1325 convert + round-trip cleanly** (≤5% note
+  drift tolerance), 2 files rejected for spine ops, 1 known divergence
+  (Missa_Sine_nomine Kyrie, +5.8% from irregular mensural barring). Proptest
+  fuzz net extended (arbitrary text + kern-shaped soup).
+
+
 ## 2026-07-10 — Review fixes R8–R10: MXL output, Layer-1 Python transforms, GIL release
 
 Third fix wave from the review backlog. **1000 Rust + 134 Python tests, 0

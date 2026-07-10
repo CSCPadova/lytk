@@ -26,7 +26,9 @@ use _core::adapters::ir_to_midi::IrToMidiAdapter;
 use _core::adapters::midi_to_ir::MidiToIrAdapter;
 use _core::adapters::{
     abc_to_ir::AbcToIrAdapter,
+    humdrum_to_ir::HumdrumToIrAdapter,
     ir_to_abc::IrToAbcAdapter,
+    ir_to_humdrum::IrToHumdrumAdapter,
     ir_to_ly::IrToLyAdapter,
     ir_to_mxml::IrToMxmlAdapter,
     ly_flatten::{flatten, FlattenOpts},
@@ -315,6 +317,7 @@ enum OutputFormat {
     Mxl,
     Midi,
     Abc,
+    Krn,
 }
 
 fn main() {
@@ -730,6 +733,7 @@ fn parse_format_str(s: &str) -> anyhow::Result<OutputFormat> {
         "mxl" => Ok(OutputFormat::Mxl),
         "mid" | "midi" => Ok(OutputFormat::Midi),
         "abc" => Ok(OutputFormat::Abc),
+        "krn" | "kern" | "humdrum" => Ok(OutputFormat::Krn),
         _ => anyhow::bail!("unknown format `{s}`"),
     }
 }
@@ -885,6 +889,7 @@ fn run_bundle(
         OutputFormat::Mxl => "mxl",
         OutputFormat::Midi => "mid",
         OutputFormat::Abc => "abc",
+        OutputFormat::Krn => "krn",
     };
 
     for (i, part) in parts.iter().enumerate() {
@@ -1072,6 +1077,7 @@ fn process_one_file(
         Some(OutputFormat::Mxl) => "mxl",
         Some(OutputFormat::Midi) => "mid",
         Some(OutputFormat::Abc) => "abc",
+        Some(OutputFormat::Krn) => "krn",
         None => invert_ext(file),
     };
     let out_path = output_dir.join(relative).with_extension(out_ext);
@@ -1110,7 +1116,7 @@ fn is_supported_ext(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str());
     matches!(
         ext,
-        Some("ly" | "ily" | "xml" | "musicxml" | "mxl" | "mid" | "midi" | "abc")
+        Some("ly" | "ily" | "xml" | "musicxml" | "mxl" | "mid" | "midi" | "abc" | "krn" | "kern")
     )
 }
 
@@ -1121,6 +1127,7 @@ fn invert_ext(path: &Path) -> &'static str {
         Some("xml" | "musicxml" | "mxl") => "ly",
         Some("mid" | "midi") => "ly",
         Some("abc") => "ly",
+        Some("krn" | "kern") => "ly",
         _ => "ly",
     }
 }
@@ -1141,6 +1148,7 @@ fn detect_input_format(path: &Path) -> anyhow::Result<InputFormat> {
         "xml" | "musicxml" | "mxl" => Ok(InputFormat::MusicXml),
         "mid" | "midi" => Ok(InputFormat::Midi),
         "abc" => Ok(InputFormat::Abc),
+        "krn" | "kern" => Ok(InputFormat::Humdrum),
         _ => Err(anyhow::anyhow!("unsupported input format: .{ext}")),
     }
 }
@@ -1151,6 +1159,7 @@ enum InputFormat {
     MusicXml,
     Midi,
     Abc,
+    Humdrum,
 }
 
 fn to_input_format(f: OutputFormat) -> InputFormat {
@@ -1159,6 +1168,7 @@ fn to_input_format(f: OutputFormat) -> InputFormat {
         OutputFormat::Xml | OutputFormat::Mxl => InputFormat::MusicXml,
         OutputFormat::Midi => InputFormat::Midi,
         OutputFormat::Abc => InputFormat::Abc,
+        OutputFormat::Krn => InputFormat::Humdrum,
     }
 }
 
@@ -1200,6 +1210,7 @@ fn parse_file(path: &Path, fmt: InputFormat) -> anyhow::Result<Score> {
         InputFormat::MusicXml => MxmlToIrAdapter::new().convert_file(path)?,
         InputFormat::Midi => MidiToIrAdapter::new().convert_bytes(&std::fs::read(path)?)?,
         InputFormat::Abc => AbcToIrAdapter::new().convert_file(path)?,
+        InputFormat::Humdrum => HumdrumToIrAdapter::new().convert_file(path)?,
     };
     Ok(score)
 }
@@ -1211,6 +1222,9 @@ fn parse_bytes(bytes: &[u8], fmt: InputFormat) -> anyhow::Result<Score> {
         InputFormat::MusicXml => MxmlToIrAdapter::new().convert_bytes(bytes)?,
         InputFormat::Midi => MidiToIrAdapter::new().convert_bytes(bytes)?,
         InputFormat::Abc => AbcToIrAdapter::new().convert_str(std::str::from_utf8(bytes)?)?,
+        InputFormat::Humdrum => {
+            HumdrumToIrAdapter::new().convert_str(std::str::from_utf8(bytes)?)?
+        }
     };
     Ok(score)
 }
@@ -1240,6 +1254,7 @@ fn detect_output_format(path: &Path, forced: Option<OutputFormat>) -> anyhow::Re
         "mxl" => Ok(OutputFormat::Mxl),
         "mid" | "midi" => Ok(OutputFormat::Midi),
         "abc" => Ok(OutputFormat::Abc),
+        "krn" | "kern" => Ok(OutputFormat::Krn),
         _ => Err(anyhow::anyhow!(
             "cannot infer output format from .{ext}; use --format"
         )),
@@ -1257,6 +1272,7 @@ fn render_output(score: &Score, fmt: OutputFormat) -> anyhow::Result<Vec<u8>> {
             let doc = _core::ir::lift::lift_to_music(score);
             IrToAbcAdapter::new().convert_music(&doc)?.into_bytes()
         }
+        OutputFormat::Krn => IrToHumdrumAdapter::new().convert(score)?.into_bytes(),
     };
     Ok(bytes)
 }

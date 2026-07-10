@@ -27,7 +27,7 @@ import lytk
 # Helpers
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_EXTS: set[str] = {".ly", ".ily", ".xml", ".musicxml", ".mxl", ".abc"}
+_SUPPORTED_EXTS: set[str] = {".ly", ".ily", ".xml", ".musicxml", ".mxl", ".abc", ".krn", ".kern"}
 # MIDI is always built into the extension.
 _has_midi = True
 _SUPPORTED_EXTS |= {".mid", ".midi"}
@@ -41,6 +41,8 @@ def _parse_input(path: Path) -> lytk.Score:
         return lytk.from_musicxml(str(path))
     if ext == ".abc":
         return lytk.from_abc(str(path))
+    if ext in {".krn", ".kern"}:
+        return lytk.from_humdrum(str(path))
     if _has_midi and ext in {".mid", ".midi"}:
         return lytk.from_midi(str(path))
     print(f"error: unsupported input format: {ext}", file=sys.stderr)
@@ -72,6 +74,8 @@ def _write_output(
         lytk.to_musicxml(score, str(path))
     elif ext == ".abc":
         lytk.to_abc(score, str(path))
+    elif ext in {".krn", ".kern"}:
+        lytk.to_humdrum(score, str(path))
     elif _has_midi and ext in {".mid", ".midi"}:
         lytk.to_midi(score, str(path))
     else:

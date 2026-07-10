@@ -8,6 +8,7 @@
 use proptest::prelude::*;
 
 use _core::adapters::abc_to_ir::AbcToIrAdapter;
+use _core::adapters::humdrum_to_ir::HumdrumToIrAdapter;
 use _core::adapters::ly_to_ir::LyToIrAdapter;
 use _core::adapters::midi_to_ir::MidiToIrAdapter;
 use _core::adapters::mxml_to_ir::MxmlToIrAdapter;
@@ -26,6 +27,18 @@ proptest! {
     #[test]
     fn abc_parser_survives_arbitrary_text(s in "\\PC{0,2000}") {
         let _ = AbcToIrAdapter::new().convert_str(&s);
+    }
+
+    /// Arbitrary text must not crash the Humdrum parser.
+    #[test]
+    fn humdrum_parser_survives_arbitrary_text(s in "\\PC{0,2000}") {
+        let _ = HumdrumToIrAdapter::new().convert_str(&s);
+    }
+
+    /// kern-shaped fuzz: a **kern header with arbitrary token soup.
+    #[test]
+    fn humdrum_parser_survives_kern_shaped_text(s in "\\PC{0,1000}") {
+        let _ = HumdrumToIrAdapter::new().convert_str(&format!("**kern\n{s}\n*-\n"));
     }
 
     /// Arbitrary bytes must not crash the MusicXML/MXL reader (covers the zip

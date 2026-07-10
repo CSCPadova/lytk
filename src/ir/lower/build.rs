@@ -33,7 +33,17 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
             staff.name.clone()
         };
 
-        let measures = split_events_into_measures(&staff.events);
+        let partial = state
+            .metadata
+            .partial_duration
+            .as_ref()
+            .map(|d| d.actual_duration());
+        let mut measures = split_events_into_measures(&staff.events, partial);
+        if partial.is_some() {
+            if let Some(first) = measures.first_mut() {
+                first.implicit = true; // anacrusis
+            }
+        }
         part.measures = measures;
         parts.push((i, part));
     }
@@ -144,7 +154,10 @@ fn set_staff_number(elem: &mut VoiceElement, staff: u8) {
 }
 
 /// Split a flat list of timed events into measures based on time signatures.
-fn split_events_into_measures(events: &[(Frac, TimedEvent)]) -> Vec<Measure> {
+fn split_events_into_measures(
+    events: &[(Frac, TimedEvent)],
+    partial: Option<Frac>,
+) -> Vec<Measure> {
     if events.is_empty() {
         return Vec::new();
     }
@@ -165,7 +178,7 @@ fn split_events_into_measures(events: &[(Frac, TimedEvent)]) -> Vec<Measure> {
         .max()
         .unwrap_or(Frac::from_integer(0));
 
-    let boundaries = compute_measure_boundaries(&time_sig_changes, max_time);
+    let boundaries = compute_measure_boundaries(&time_sig_changes, max_time, partial);
 
     if boundaries.len() < 2 {
         // Not enough boundaries — put everything in one measure
@@ -220,6 +233,7 @@ type MeasureBoundary = (Frac, Option<TimeSignature>);
 pub(super) fn compute_measure_boundaries(
     time_sig_changes: &[(Frac, TimeSignature)],
     max_time: Frac,
+    partial: Option<Frac>,
 ) -> Vec<MeasureBoundary> {
     let zero = Frac::from_integer(0);
     if max_time <= zero {
@@ -248,6 +262,15 @@ pub(super) fn compute_measure_boundaries(
     ));
 
     let mut pos = zero;
+
+    // Anacrusis: the first (implicit) measure ends after the pickup, then the
+    // regular bar grid starts.
+    if let Some(p) = partial {
+        if p > zero && p < current_ts_frac {
+            boundaries.push((p, None));
+            pos = p;
+        }
+    }
 
     // Process time signature changes in order
     let mut ts_idx = 0;

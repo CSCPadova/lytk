@@ -525,6 +525,41 @@ fn to_abc(score: &PyScore, path: Option<&str>) -> PyResult<String> {
     Ok(output)
 }
 
+/// Parse a Humdrum (``**kern``) file into a :class:`Score`.
+#[pyfunction]
+fn from_humdrum(py: Python<'_>, path: &str) -> PyResult<PyScore> {
+    let adapter = adapters::humdrum_to_ir::HumdrumToIrAdapter::new();
+    let score = py
+        .allow_threads(|| adapter.convert_file(Path::new(path)))
+        .map_err(adapter_err)?;
+    Ok(PyScore { inner: score })
+}
+
+/// Parse a Humdrum (``**kern``) string into a :class:`Score`.
+#[pyfunction]
+fn from_humdrum_string(text: &str) -> PyResult<PyScore> {
+    let adapter = adapters::humdrum_to_ir::HumdrumToIrAdapter::new();
+    let score = adapter
+        .convert_str(text)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(PyScore { inner: score })
+}
+
+/// Emit a :class:`Score` as a Humdrum ``**kern`` string.  If *path* is given
+/// the result is also written to that file.
+#[pyfunction]
+#[pyo3(signature = (score, path=None))]
+fn to_humdrum(py: Python<'_>, score: &PyScore, path: Option<&str>) -> PyResult<String> {
+    let adapter = adapters::ir_to_humdrum::IrToHumdrumAdapter::new();
+    let output = py
+        .allow_threads(|| adapter.convert(&score.inner))
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    if let Some(p) = path {
+        std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    }
+    Ok(output)
+}
+
 /// Parse a Standard MIDI File into a :class:`Score`.
 #[pyfunction]
 fn from_midi(path: &str) -> PyResult<PyScore> {
@@ -936,6 +971,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(to_musicxml, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc_string, m)?)?;
+    m.add_function(wrap_pyfunction!(from_humdrum, m)?)?;
+    m.add_function(wrap_pyfunction!(from_humdrum_string, m)?)?;
+    m.add_function(wrap_pyfunction!(to_humdrum, m)?)?;
     m.add_function(wrap_pyfunction!(to_abc, m)?)?;
 
     m.add_function(wrap_pyfunction!(from_midi, m)?)?;

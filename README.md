@@ -16,7 +16,7 @@ for dataset creation and research.
 ```bash
 # Rust CLI
 cargo build --release
-./target/release/lytk convert input.xml -o output.ly      # ly · xml · mxl · abc · midi
+./target/release/lytk convert input.xml -o output.ly      # ly · xml · mxl · abc · midi · krn
 ./target/release/lytk flatten score.ly -o flat.ly
 ./target/release/lytk transpose input.ly --semitones 3 -o transposed.ly
 ./target/release/lytk info input.xml
@@ -64,9 +64,10 @@ Every format converts to every other through the shared IR:
             ┌─ LilyPond (.ly/.ily)
 MusicXML ──┤   MusicXML (.xml/.mxl)
 (.xml/.mxl) │
-LilyPond ──┼─→  IR (Score / Music tree)  ──→  LilyPond · MusicXML · MIDI · ABC
+LilyPond ──┼─→  IR (Score / Music tree)  ──→  LilyPond · MusicXML · MIDI · ABC · kern
 MIDI ──────┤
-ABC ───────┘
+ABC ───────┤
+Humdrum ───┘
 ```
 
 See [`docs/import-export.md`](docs/import-export.md) for the full per-format

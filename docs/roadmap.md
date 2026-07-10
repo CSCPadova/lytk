@@ -377,6 +377,16 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
 
 ---
 
+## Humdrum (`**kern`) support — 2026-07-10 ✅
+
+New `humdrum_to_ir`/`ir_to_humdrum` adapter pair (Layer-1, ABC-shaped), all
+surfaces wired (CLI `.krn`, Python `from_humdrum`/`to_humdrum`, batch, fuzz
+net). music21 kern corpus: 1325/1328 round-trip cleanly; spine rearrangement
+(`*^`/`*v`) is a documented clear error. `lower_to_score` now honours
+`metadata.partial_duration` (anacrusis). Details in the changelog.
+
+---
+
 ## Correctness backlog — 2026-07-10 full review (planned ⬜)
 
 A multi-agent audit + empirical round-trip sweep (313 MusicXML files incl. the

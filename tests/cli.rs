@@ -1041,3 +1041,42 @@ fn ly_transform_uses_music_path() {
         "Music-path emission must not invent Score-layer variables:\n{text}"
     );
 }
+
+/// Humdrum (**kern) is a first-class CLI format: .krn in and out.
+#[test]
+fn kern_conversion_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("t.krn");
+    std::fs::write(&src, "**kern\n*M4/4\n4c\n4e\n4g\n4cc\n*-\n").unwrap();
+    let ly = dir.path().join("t.ly");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lytk"))
+        .args(["convert"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&ly)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let back = dir.path().join("back.krn");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lytk"))
+        .args(["convert"])
+        .arg(&ly)
+        .arg("-o")
+        .arg(&back)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let text = std::fs::read_to_string(&back).unwrap();
+    assert!(text.contains("**kern") && text.contains("4cc"), "{text}");
+    // Transforms work on kern too.
+    let up = dir.path().join("up.krn");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lytk"))
+        .args(["transpose", "-s", "2"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&up)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(std::fs::read_to_string(&up).unwrap().contains("4d"));
+}

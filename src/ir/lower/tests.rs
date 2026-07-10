@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_compute_measure_boundaries_default() {
-        let boundaries = compute_measure_boundaries(&[], Frac::new(2, 1));
+        let boundaries = compute_measure_boundaries(&[], Frac::new(2, 1), None);
         // 2 whole notes in 4/4 = 2 measures
         // Expected boundaries: [(0, Some(4/4)), (1, None), (2, None)]
         assert!(
