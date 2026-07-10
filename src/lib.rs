@@ -317,9 +317,11 @@ fn adapter_err(e: adapters::AdapterError) -> PyErr {
 /// Parse a MusicXML (``.xml``, ``.musicxml``) or compressed MXL file into a
 /// :class:`Score`.
 #[pyfunction]
-fn from_musicxml(path: &str) -> PyResult<PyScore> {
+fn from_musicxml(py: Python<'_>, path: &str) -> PyResult<PyScore> {
     let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
-    let score = adapter.convert_file(Path::new(path)).map_err(adapter_err)?;
+    let score = py
+        .allow_threads(|| adapter.convert_file(Path::new(path)))
+        .map_err(adapter_err)?;
     Ok(PyScore { inner: score })
 }
 
@@ -342,12 +344,14 @@ fn parse_language(name: &str) -> PyResult<PitchLanguage> {
 /// Parse a LilyPond (``.ly``) file into a :class:`Score`.
 #[pyfunction]
 #[pyo3(signature = (path, *, language=None))]
-fn from_lilypond(path: &str, language: Option<&str>) -> PyResult<PyScore> {
+fn from_lilypond(py: Python<'_>, path: &str, language: Option<&str>) -> PyResult<PyScore> {
     let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
     if let Some(lang_str) = language {
         adapter = adapter.with_language(parse_language(lang_str)?);
     }
-    let score = adapter.convert_file(Path::new(path)).map_err(adapter_err)?;
+    let score = py
+        .allow_threads(|| adapter.convert_file(Path::new(path)))
+        .map_err(adapter_err)?;
     Ok(PyScore { inner: score })
 }
 
@@ -370,13 +374,17 @@ fn from_lilypond_string(text: &str, language: Option<&str>) -> PyResult<PyScore>
 /// This preserves structural information like contexts and simultaneous blocks.
 #[pyfunction]
 #[pyo3(signature = (path, *, language=None))]
-fn from_lilypond_music(path: &str, language: Option<&str>) -> PyResult<PyMusicDocument> {
+fn from_lilypond_music(
+    py: Python<'_>,
+    path: &str,
+    language: Option<&str>,
+) -> PyResult<PyMusicDocument> {
     let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
     if let Some(lang_str) = language {
         adapter = adapter.with_language(parse_language(lang_str)?);
     }
-    let doc = adapter
-        .convert_file_to_music(Path::new(path))
+    let doc = py
+        .allow_threads(|| adapter.convert_file_to_music(Path::new(path)))
         .map_err(adapter_err)?;
     Ok(PyMusicDocument { inner: doc })
 }
@@ -434,13 +442,20 @@ fn to_lilypond(score: &PyScore, path: Option<&str>, language: Option<&str>) -> P
 /// is also written to that file.
 #[pyfunction]
 #[pyo3(signature = (score, path=None))]
-fn to_musicxml(score: &PyScore, path: Option<&str>) -> PyResult<String> {
+fn to_musicxml(py: Python<'_>, score: &PyScore, path: Option<&str>) -> PyResult<String> {
     let adapter = adapters::ir_to_mxml::IrToMxmlAdapter::new();
-    let output = adapter
-        .convert(&score.inner)
+    let output = py
+        .allow_threads(|| adapter.convert(&score.inner))
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     if let Some(p) = path {
-        std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        if p.to_ascii_lowercase().ends_with(".mxl") {
+            // Compressed MXL, not plain XML in a misnamed file.
+            adapter
+                .write(&score.inner, Path::new(p))
+                .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        } else {
+            std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        }
     }
     Ok(output)
 }
@@ -560,34 +575,90 @@ fn to_midi_bytes<'py>(py: Python<'py>, score: &PyScore) -> PyResult<Bound<'py, P
 // Transform functions
 // ---------------------------------------------------------------------------
 
-/// Transpose all pitches by *semitones* (positive = up, negative = down).
-/// Returns a new :class:`Score`; the original is not modified.
-#[pyfunction]
-fn transpose(score: &PyScore, semitones: i32) -> PyScore {
-    PyScore {
-        inner: transforms::transpose::transpose(&score.inner, semitones),
+/// Dispatch a transform over either a :class:`Score` (Layer 2) or a
+/// :class:`MusicDocument` (Layer 1), returning the same type that came in —
+/// Layer-1 pipelines keep contexts/relative structure without a lossy
+/// round-trip through the measure-based Score.
+fn dispatch_transform(
+    py: Python<'_>,
+    music: &Bound<'_, PyAny>,
+    on_score: impl Fn(&Score) -> Score + Sync,
+    on_music: impl Fn(&MusicDocument) -> MusicDocument + Sync,
+) -> PyResult<PyObject> {
+    if let Ok(s) = music.extract::<PyRef<PyScore>>() {
+        let score: &Score = &s.inner;
+        let inner = py.allow_threads(|| on_score(score));
+        return Ok(PyScore { inner }.into_py(py));
     }
+    if let Ok(d) = music.extract::<PyRef<PyMusicDocument>>() {
+        let doc: &MusicDocument = &d.inner;
+        let inner = py.allow_threads(|| on_music(doc));
+        return Ok(PyMusicDocument { inner }.into_py(py));
+    }
+    Err(PyValueError::new_err(
+        "expected a Score or MusicDocument as first argument",
+    ))
+}
+
+/// Transpose all pitches by *semitones* (positive = up, negative = down).
+/// Accepts a :class:`Score` or :class:`MusicDocument` and returns a new value
+/// of the same type; the original is not modified.
+#[pyfunction]
+fn transpose(py: Python<'_>, music: &Bound<'_, PyAny>, semitones: i32) -> PyResult<PyObject> {
+    dispatch_transform(
+        py,
+        music,
+        |s| transforms::transpose::transpose(s, semitones),
+        |d| transforms::transpose::transpose_music(d, semitones),
+    )
 }
 
 /// Transpose all pitches by a named diatonic *interval* (e.g. ``"M3"``, ``"m3"``,
 /// ``"P5"``, ``"A4"``, ``"-m2"``), preserving correct enharmonic spelling.
-/// Returns a new :class:`Score`. Raises :class:`ValueError` on an invalid name.
+/// Accepts a :class:`Score` or :class:`MusicDocument`; returns the same type.
+/// Raises :class:`ValueError` on an invalid name.
 #[pyfunction]
-fn transpose_interval(score: &PyScore, interval: &str) -> PyResult<PyScore> {
+fn transpose_interval(
+    py: Python<'_>,
+    music: &Bound<'_, PyAny>,
+    interval: &str,
+) -> PyResult<PyObject> {
     let iv = Interval::from_name(interval).map_err(PyValueError::new_err)?;
-    Ok(PyScore {
-        inner: transforms::transpose::transpose_interval(&score.inner, iv),
-    })
+    dispatch_transform(
+        py,
+        music,
+        |s| transforms::transpose::transpose_interval(s, iv),
+        |d| transforms::transpose::transpose_interval_music(d, iv),
+    )
 }
 
-/// Change the LilyPond pitch language (e.g. ``"english"``, ``"deutsch"``).
-/// Returns a new :class:`Score`.
+/// Transpose so the piece's tonic becomes *key* (e.g. ``"D"``, ``"Bb"``,
+/// ``"F#"``), choosing the nearest direction. Accepts a :class:`Score` or
+/// :class:`MusicDocument`; returns the same type.
 #[pyfunction]
-fn change_language(score: &PyScore, language: &str) -> PyResult<PyScore> {
+fn transpose_to_key(py: Python<'_>, music: &Bound<'_, PyAny>, key: &str) -> PyResult<PyObject> {
+    let tonic = _core_parse_tonic(key).map_err(PyValueError::new_err)?;
+    dispatch_transform(
+        py,
+        music,
+        |s| transforms::transpose::transpose_to_key(s, tonic),
+        |d| transforms::transpose::transpose_to_key_music(d, tonic),
+    )
+}
+
+use crate::ir::pitch::parse_tonic as _core_parse_tonic;
+
+/// Change the LilyPond pitch language (e.g. ``"english"``, ``"deutsch"``).
+/// Accepts a :class:`Score` or :class:`MusicDocument`; returns the same type.
+#[pyfunction]
+fn change_language(py: Python<'_>, music: &Bound<'_, PyAny>, language: &str) -> PyResult<PyObject> {
     let lang = parse_language(language)?;
-    Ok(PyScore {
-        inner: transforms::language::change_language(&score.inner, lang),
-    })
+    dispatch_transform(
+        py,
+        music,
+        |s| transforms::language::change_language(s, lang),
+        |d| transforms::language::change_language_music(d, lang),
+    )
 }
 
 /// Invert intervals around an axis pitch.  Returns a new :class:`Score`.
@@ -601,22 +672,35 @@ fn change_language(score: &PyScore, language: &str) -> PyResult<PyScore> {
 /// octave : int
 ///     Octave number (middle C = 4).
 #[pyfunction]
-#[pyo3(signature = (score, *, step="C", alter=0, octave=4))]
-fn invert(score: &PyScore, step: &str, alter: i32, octave: i32) -> PyResult<PyScore> {
+#[pyo3(signature = (music, *, step="C", alter=0, octave=4))]
+fn invert(
+    py: Python<'_>,
+    music: &Bound<'_, PyAny>,
+    step: &str,
+    alter: i32,
+    octave: i32,
+) -> PyResult<PyObject> {
     let s = PitchStep::from_name(step)
         .ok_or_else(|| PyValueError::new_err(format!("invalid step: {step}")))?;
     let axis = Pitch::with_alter(s, Alter::from_integer(alter), octave);
-    Ok(PyScore {
-        inner: transforms::invert::invert(&score.inner, axis),
-    })
+    dispatch_transform(
+        py,
+        music,
+        |s| transforms::invert::invert(s, axis),
+        |d| transforms::invert::invert_music(d, axis),
+    )
 }
 
-/// Reverse note order within each voice.  Returns a new :class:`Score`.
+/// Reverse the music in time. Accepts a :class:`Score` or
+/// :class:`MusicDocument`; returns the same type.
 #[pyfunction]
-fn retrograde(score: &PyScore) -> PyScore {
-    PyScore {
-        inner: transforms::retrograde::retrograde(&score.inner),
-    }
+fn retrograde(py: Python<'_>, music: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    dispatch_transform(
+        py,
+        music,
+        transforms::retrograde::retrograde,
+        transforms::retrograde::retrograde_music,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -862,6 +946,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Transform functions
     m.add_function(wrap_pyfunction!(transpose, m)?)?;
     m.add_function(wrap_pyfunction!(transpose_interval, m)?)?;
+    m.add_function(wrap_pyfunction!(transpose_to_key, m)?)?;
     m.add_function(wrap_pyfunction!(change_language, m)?)?;
     m.add_function(wrap_pyfunction!(invert, m)?)?;
     m.add_function(wrap_pyfunction!(retrograde, m)?)?;

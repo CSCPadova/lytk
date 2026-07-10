@@ -309,3 +309,38 @@ class TestTypedErrors:
             lytk.from_musicxml_string("this is not valid musicxml <<<")
         with pytest.raises(ValueError):
             lytk.from_abc_string("\x00\x01 not abc")
+
+
+# -- Review R8/R9: Layer-1 transforms, transpose_to_key, compressed MXL -------
+
+
+LY_C_MAJOR = r"\score { \new Staff { \key c \major c'4 e' g' } }"
+
+
+def test_transforms_accept_music_document():
+    doc = lytk.from_lilypond_music_string(LY_C_MAJOR)
+    up = lytk.transpose(doc, 3)
+    assert type(up) is lytk.MusicDocument, "same type in, same type out"
+    out = lytk.to_lilypond_music(up)
+    assert "\\key ees" in out and "ees" in out
+    assert type(lytk.retrograde(doc)) is lytk.MusicDocument
+    assert type(lytk.invert(doc)) is lytk.MusicDocument
+    assert type(lytk.transpose_interval(doc, "M2")) is lytk.MusicDocument
+
+
+def test_transpose_to_key():
+    score = lytk.from_lilypond_string(LY_C_MAJOR)
+    moved = lytk.transpose_to_key(score, "Bb")
+    assert type(moved) is lytk.Score
+    assert "\\key bes" in lytk.to_lilypond(moved)
+
+
+def test_to_musicxml_writes_compressed_mxl(tmp_path):
+    import zipfile
+
+    score = lytk.from_lilypond_string(LY_C_MAJOR)
+    p = tmp_path / "t.mxl"
+    lytk.to_musicxml(score, str(p))
+    assert zipfile.is_zipfile(p), ".mxl must be a real ZIP, not plain XML"
+    back = lytk.from_musicxml(str(p))
+    assert len(back.parts) == len(score.parts)

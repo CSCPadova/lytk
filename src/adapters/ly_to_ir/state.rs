@@ -476,8 +476,8 @@ impl<'src> WalkState<'src> {
                                 // Spacer has authoritative time signatures (like \forma).
                                 // Resplit the existing real music to match the spacer's
                                 // measure boundaries, then copy over spacer attributes.
-                                part.measures =
-                                    resplit_measures_to_match(&part.measures.clone(), &measures);
+                                let own = std::mem::take(&mut part.measures);
+                                part.measures = resplit_measures_to_match(&own, &measures);
                             } else {
                                 // No authoritative time sig — merge directions by
                                 // cumulative duration, preserving note measure boundaries.

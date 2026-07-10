@@ -184,7 +184,7 @@ pub fn from_event_sequence(seq: &EventSequence) -> NoteArray {
     let mut time = 0u32;
     let mut velocity = DEFAULT_VELOCITY;
     // pitch → queue of (onset, velocity) for open note-ons.
-    let mut active: HashMap<u8, Vec<(u32, u8)>> = HashMap::new();
+    let mut active: HashMap<u8, std::collections::VecDeque<(u32, u8)>> = HashMap::new();
     let mut notes: Vec<NoteRow> = Vec::new();
 
     for &code in &seq.codes {
@@ -193,12 +193,12 @@ pub fn from_event_sequence(seq: &EventSequence) -> NoteArray {
         }
         if code < OFFSET_NOTE_OFF {
             let pitch = code as u8;
-            active.entry(pitch).or_default().push((time, velocity));
+            active.entry(pitch).or_default().push_back((time, velocity));
         } else if code < OFFSET_TIME_SHIFT {
             let pitch = (code - OFFSET_NOTE_OFF) as u8;
             if let Some(q) = active.get_mut(&pitch) {
                 if !q.is_empty() {
-                    let (onset, vel) = q.remove(0); // FIFO
+                    let (onset, vel) = q.pop_front().unwrap(); // FIFO
                     notes.push(NoteRow {
                         onset,
                         duration: time.saturating_sub(onset),

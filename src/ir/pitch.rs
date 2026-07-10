@@ -255,6 +255,28 @@ pub fn respell(pitch: Pitch, fifths: i32) -> Pitch {
     pitch_at(step, alter, midi)
 }
 
+/// Parse a key tonic like `D`, `Bb`, `F#`, `ef` (letter + optional accidentals;
+/// `s`/`#`/`+` raise, `f`/`b`/`-` lower, repeatable).
+pub fn parse_tonic(s: &str) -> Result<Pitch, String> {
+    let trimmed = s.trim();
+    let mut chars = trimmed.chars();
+    let step = chars
+        .next()
+        .and_then(|c| PitchStep::from_name(&c.to_ascii_uppercase().to_string()))
+        .ok_or_else(|| {
+            format!("invalid key tonic `{s}`: expected a note letter a-g (e.g. D, Bb, F#)")
+        })?;
+    let mut alter = 0i32;
+    for c in chars {
+        match c.to_ascii_lowercase() {
+            's' | '#' | '+' => alter += 1,
+            'f' | 'b' | '-' => alter -= 1,
+            _ => return Err(format!("invalid accidental in key tonic `{s}`")),
+        }
+    }
+    Ok(Pitch::with_alter(step, Alter::from_integer(alter), 4))
+}
+
 /// The major-key tonic pitch (octave 4) for a circle-of-fifths position.
 pub fn major_tonic(fifths: i32) -> Pitch {
     let (step, alter) = lof_to_pitch_class(fifths);

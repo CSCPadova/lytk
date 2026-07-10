@@ -38,6 +38,7 @@ from lytk._core import (
     to_piano_roll,
     transpose,
     transpose_interval,
+    transpose_to_key,
 )
 
 __all__ = [
@@ -70,6 +71,7 @@ __all__ = [
     # Transforms
     "transpose",
     "transpose_interval",
+    "transpose_to_key",
     "change_language",
     "invert",
     "retrograde",

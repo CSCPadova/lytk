@@ -984,3 +984,60 @@ fn multi_score_input_writes_requested_path() {
         "second movement goes to the _02 sibling"
     );
 }
+
+/// Regression (review R8): `.mxl` output is real compressed MXL (a ZIP), not
+/// plain XML in a misnamed file, and reads back losslessly.
+#[test]
+fn mxl_output_is_compressed_and_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("t.ly");
+    std::fs::write(&src, r#"\score { \new Staff { c'4 d' e' f' } }"#).unwrap();
+    let out = dir.path().join("t.mxl");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lytk"))
+        .args(["convert"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success(), "convert to .mxl must be supported");
+    let bytes = std::fs::read(&out).unwrap();
+    assert_eq!(&bytes[..4], b"PK\x03\x04", "must be a ZIP archive");
+    // And it reads back with the same note count.
+    let info = std::process::Command::new(env!("CARGO_BIN_EXE_lytk"))
+        .args(["diff"])
+        .arg(&src)
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(info.success(), "mxl must read back semantically equal");
+}
+
+/// Regression (review R9): LY→LY transforms go through the Music tree like
+/// `convert`, preserving the document's own context structure instead of
+/// flattening into invented `pB = { … }` variables via the Score layer.
+#[test]
+fn ly_transform_uses_music_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("m.ly");
+    std::fs::write(
+        &src,
+        r#"\score { \new Staff { \key c \major c'4 d' e' f' } }"#,
+    )
+    .unwrap();
+    let out = dir.path().join("up.ly");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lytk"))
+        .args(["transpose", "-s", "2"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(text.contains("\\key d \\major"), "{text}");
+    assert!(
+        !text.contains("pB ="),
+        "Music-path emission must not invent Score-layer variables:\n{text}"
+    );
+}

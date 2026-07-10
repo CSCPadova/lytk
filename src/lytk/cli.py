@@ -67,7 +67,8 @@ def _write_output(
     if ext in {".ly", ".ily"}:
         lang = score.language
         lytk.to_lilypond(score, str(path), language=lang)
-    elif ext in {".xml", ".musicxml"}:
+    elif ext in {".xml", ".musicxml", ".mxl"}:
+        # to_musicxml writes compressed MXL for .mxl paths
         lytk.to_musicxml(score, str(path))
     elif ext == ".abc":
         lytk.to_abc(score, str(path))

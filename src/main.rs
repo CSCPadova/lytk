@@ -312,6 +312,7 @@ enum Command {
 enum OutputFormat {
     Ly,
     Xml,
+    Mxl,
     Midi,
     Abc,
 }
@@ -454,6 +455,35 @@ fn run_convert(
     Ok(())
 }
 
+/// True when both ends of a transform are LilyPond — those runs go through the
+/// Music tree (Layer 1), like `convert`, so contexts/relative structure survive
+/// instead of being flattened through the measure-based Score.
+fn is_ly_to_ly(
+    input: &Path,
+    output: &Path,
+    format: Option<OutputFormat>,
+    from: Option<OutputFormat>,
+) -> bool {
+    matches!(resolve_input_format(input, from), Ok(InputFormat::LilyPond))
+        && matches!(detect_output_format(output, format), Ok(OutputFormat::Ly))
+}
+
+fn ly_music_transform(
+    input: &Path,
+    output: &Path,
+    apply: impl Fn(&_core::ir::music::MusicDocument) -> _core::ir::music::MusicDocument,
+) -> anyhow::Result<()> {
+    let parser = LyToIrAdapter::new();
+    let doc = if is_dash(input) {
+        let bytes = read_input_bytes(input)?;
+        parser.convert_str_to_music(std::str::from_utf8(&bytes)?)?
+    } else {
+        parser.convert_file_to_music(input)?
+    };
+    let ly = IrToLyAdapter::new().convert_music(&apply(&doc))?;
+    write_bytes(output, ly.as_bytes())
+}
+
 fn run_transpose(
     input: &Path,
     output: &Path,
@@ -466,6 +496,22 @@ fn run_transpose(
     let n_modes = semitones.is_some() as u8 + interval.is_some() as u8 + to_key.is_some() as u8;
     if n_modes != 1 {
         anyhow::bail!("specify exactly one of --semitones, --interval, --to-key");
+    }
+
+    if is_ly_to_ly(input, output, format, from) {
+        let iv = interval
+            .map(|iv| Interval::from_name(iv).map_err(|e| anyhow::anyhow!(e)))
+            .transpose()?;
+        let tonic = to_key.map(parse_tonic).transpose()?;
+        return ly_music_transform(input, output, |doc| {
+            if let Some(s) = semitones {
+                transpose::transpose_music(doc, s)
+            } else if let Some(iv) = iv {
+                transpose::transpose_interval_music(doc, iv)
+            } else {
+                transpose::transpose_to_key_music(doc, tonic.unwrap())
+            }
+        });
     }
 
     let score = parse_source(input, from)?;
@@ -490,6 +536,9 @@ fn run_invert(
     from: Option<OutputFormat>,
 ) -> anyhow::Result<()> {
     let pitch = parse_axis(axis)?;
+    if is_ly_to_ly(input, output, format, from) {
+        return ly_music_transform(input, output, |doc| invert::invert_music(doc, pitch));
+    }
     let score = parse_source(input, from)?;
     let inverted = invert::invert(&score, pitch);
     write_output(&inverted, output, format)?;
@@ -502,6 +551,9 @@ fn run_retrograde(
     format: Option<OutputFormat>,
     from: Option<OutputFormat>,
 ) -> anyhow::Result<()> {
+    if is_ly_to_ly(input, output, format, from) {
+        return ly_music_transform(input, output, retrograde::retrograde_music);
+    }
     let score = parse_source(input, from)?;
     let reversed = retrograde::retrograde(&score);
     write_output(&reversed, output, format)?;
@@ -517,6 +569,11 @@ fn run_change_language(
 ) -> anyhow::Result<()> {
     let target = PitchLanguage::from_str_loose(lang)
         .ok_or_else(|| anyhow::anyhow!("unknown pitch language: {lang}"))?;
+    if is_ly_to_ly(input, output, format, from) {
+        return ly_music_transform(input, output, |doc| {
+            language::change_language_music(doc, target)
+        });
+    }
     let score = parse_source(input, from)?;
     let changed = language::change_language(&score, target);
     write_output(&changed, output, format)?;
@@ -669,7 +726,8 @@ struct JobResult {
 fn parse_format_str(s: &str) -> anyhow::Result<OutputFormat> {
     match s.to_ascii_lowercase().as_str() {
         "ly" | "ily" | "lilypond" => Ok(OutputFormat::Ly),
-        "xml" | "musicxml" | "mxl" => Ok(OutputFormat::Xml),
+        "xml" | "musicxml" => Ok(OutputFormat::Xml),
+        "mxl" => Ok(OutputFormat::Mxl),
         "mid" | "midi" => Ok(OutputFormat::Midi),
         "abc" => Ok(OutputFormat::Abc),
         _ => anyhow::bail!("unknown format `{s}`"),
@@ -824,6 +882,7 @@ fn run_bundle(
     let ext = match format {
         OutputFormat::Ly => "ly",
         OutputFormat::Xml => "xml",
+        OutputFormat::Mxl => "mxl",
         OutputFormat::Midi => "mid",
         OutputFormat::Abc => "abc",
     };
@@ -1010,6 +1069,7 @@ fn process_one_file(
     let out_ext = match format {
         Some(OutputFormat::Ly) => "ly",
         Some(OutputFormat::Xml) => "xml",
+        Some(OutputFormat::Mxl) => "mxl",
         Some(OutputFormat::Midi) => "mid",
         Some(OutputFormat::Abc) => "abc",
         None => invert_ext(file),
@@ -1096,7 +1156,7 @@ enum InputFormat {
 fn to_input_format(f: OutputFormat) -> InputFormat {
     match f {
         OutputFormat::Ly => InputFormat::LilyPond,
-        OutputFormat::Xml => InputFormat::MusicXml,
+        OutputFormat::Xml | OutputFormat::Mxl => InputFormat::MusicXml,
         OutputFormat::Midi => InputFormat::Midi,
         OutputFormat::Abc => InputFormat::Abc,
     }
@@ -1177,6 +1237,7 @@ fn detect_output_format(path: &Path, forced: Option<OutputFormat>) -> anyhow::Re
     match ext {
         "ly" | "ily" => Ok(OutputFormat::Ly),
         "xml" | "musicxml" => Ok(OutputFormat::Xml),
+        "mxl" => Ok(OutputFormat::Mxl),
         "mid" | "midi" => Ok(OutputFormat::Midi),
         "abc" => Ok(OutputFormat::Abc),
         _ => Err(anyhow::anyhow!(
@@ -1190,6 +1251,7 @@ fn render_output(score: &Score, fmt: OutputFormat) -> anyhow::Result<Vec<u8>> {
     let bytes = match fmt {
         OutputFormat::Ly => build_ly_adapter(score).convert(score)?.into_bytes(),
         OutputFormat::Xml => IrToMxmlAdapter::new().convert(score)?.into_bytes(),
+        OutputFormat::Mxl => IrToMxmlAdapter::new().convert_mxl_bytes(score)?,
         OutputFormat::Midi => IrToMidiAdapter::new().convert_bytes(score)?,
         OutputFormat::Abc => {
             let doc = _core::ir::lift::lift_to_music(score);
@@ -1277,25 +1339,5 @@ fn parse_axis(s: &str) -> anyhow::Result<Pitch> {
 /// Parse a key tonic like `D`, `Bb`, `F#`, `ef`, `bf` into a pitch (octave 4).
 /// Accidentals after the letter: `#`/`s`/`+` sharpen, `b`/`f`/`-` flatten.
 fn parse_tonic(s: &str) -> anyhow::Result<Pitch> {
-    let trimmed = s.trim();
-    let mut chars = trimmed.chars();
-    let step = match chars.next().map(|c| c.to_ascii_uppercase()) {
-        Some('C') => PitchStep::C,
-        Some('D') => PitchStep::D,
-        Some('E') => PitchStep::E,
-        Some('F') => PitchStep::F,
-        Some('G') => PitchStep::G,
-        Some('A') => PitchStep::A,
-        Some('B') => PitchStep::B,
-        _ => anyhow::bail!("invalid key tonic `{s}`: expected a note letter a–g (e.g. D, Bb, F#)"),
-    };
-    let mut alter = 0i32;
-    for c in chars {
-        match c.to_ascii_lowercase() {
-            's' | '#' | '+' => alter += 1,
-            'f' | 'b' | '-' => alter -= 1,
-            _ => anyhow::bail!("invalid accidental in key tonic `{s}`"),
-        }
-    }
-    Ok(Pitch::with_alter(step, Alter::from_integer(alter), 4))
+    _core::ir::pitch::parse_tonic(s).map_err(|e| anyhow::anyhow!(e))
 }

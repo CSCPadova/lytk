@@ -65,6 +65,37 @@ impl Default for IrToMxmlAdapter {
     }
 }
 
+impl IrToMxmlAdapter {
+    /// Serialize to compressed MXL bytes: a ZIP with `META-INF/container.xml`
+    /// pointing at the score. Zipped from `convert()`'s string so fractional
+    /// alters (microtones) are decoded, unlike the crate's internal writer.
+    pub fn convert_mxl_bytes(&self, score: &Score) -> Result<Vec<u8>> {
+        let xml = FromIrAdapter::convert(self, score)?;
+        let container = r#"<?xml version="1.0" encoding="UTF-8"?>
+<container>
+  <rootfiles>
+    <rootfile full-path="score.xml" media-type="application/vnd.recordare.musicxml+xml"/>
+  </rootfiles>
+</container>
+"#;
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            let write = |zw: &mut zip::ZipWriter<_>, name: &str, data: &[u8]| -> Result<()> {
+                zw.start_file(name, opts)
+                    .and_then(|()| std::io::Write::write_all(zw, data).map_err(Into::into))
+                    .map_err(|e| AdapterError::Parse(format!("MXL write failed: {e}")))
+            };
+            write(&mut zw, "META-INF/container.xml", container.as_bytes())?;
+            write(&mut zw, "score.xml", xml.as_bytes())?;
+            zw.finish()
+                .map_err(|e| AdapterError::Parse(format!("MXL write failed: {e}")))?;
+        }
+        Ok(buf)
+    }
+}
+
 impl FromIrAdapter for IrToMxmlAdapter {
     fn convert(&self, score: &Score) -> Result<String> {
         let mxml_score = self.build(score);
@@ -77,12 +108,6 @@ impl FromIrAdapter for IrToMxmlAdapter {
     }
 
     fn write(&self, score: &Score, path: &Path) -> Result<()> {
-        let mxml_score = self.build(score);
-
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| AdapterError::Parse("Invalid path".into()))?;
-
         // Detect MXL (compressed) vs plain XML by extension
         let compressed = path
             .extension()
@@ -91,11 +116,7 @@ impl FromIrAdapter for IrToMxmlAdapter {
             .unwrap_or(false);
 
         if compressed {
-            // ponytail: the crate zips internally, so encoded fractional
-            // alters stay encoded inside direct-MXL output; decode-on-write
-            // for MXL needs zipping ourselves — do it if microtone MXL matters.
-            musicxml::write_partwise_score(path_str, &mxml_score, compressed, false)
-                .map_err(AdapterError::Parse)?;
+            std::fs::write(path, self.convert_mxl_bytes(score)?)?;
         } else {
             // Plain XML goes through convert() so fractional alters decode.
             std::fs::write(path, self.convert(score)?)?;

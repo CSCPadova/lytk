@@ -393,9 +393,9 @@ with evidence in `docs/changelog.md` (2026-07-10 entry). Priority order:
 | R5 | midi | ~~cross-voice same-pitch overlap drops notes~~ **✅ 2026-07-10** (FIFO pairing + off-before-on; fidelity gate 4/4/3) | HIGH |
 | R6 | cli | ~~multi-`\score` input silently writes `out_01.*` instead of the requested path~~ **✅ 2026-07-10** | MED |
 | R7 | mxml_to_ir | ~~microtone alters, orphan/id-less parts, quote-tokenizer drops, words escaping~~ **✅ 2026-07-10** (xml fixtures 142/142, acid 158/159) | MED |
-| R8 | surfaces | compressed-MXL write unreachable (CLI/batch/Python); batch `"mxl"` writes plain XML | MED |
-| R9 | bindings | Layer-1 (`apply_music`) transforms + `transpose_to_key` unbound in Python; ly→ly transform subcommands flatten structure | MED |
-| R10 | perf | ir_to_mxml emission dominates; `resolve_variable` deep-clones; no PyO3 GIL release | MED |
+| R8 | surfaces | ~~compressed-MXL write unreachable~~ **✅ 2026-07-10** (convert_mxl_bytes; CLI/batch/Python wired) | MED |
+| R9 | bindings | ~~Layer-1 transforms + `transpose_to_key` unbound; ly→ly transforms flatten structure~~ **✅ 2026-07-10** (Score-or-MusicDocument dispatch; CLI Music path) | MED |
+| R10 | perf | ir_to_mxml emission dominates; `resolve_variable` deep-clones (**GIL release + small clone/queue fixes ✅ 2026-07-10**; rest deferred, benchmark first) | MED |
 
 Done in the review pass itself: 4 malformed-input panic fixes (+ firewall
 widening), warning/clippy zero, CLAUDE.md/README doc corrections. ✅

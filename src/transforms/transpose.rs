@@ -273,7 +273,22 @@ pub fn transpose_interval_music(doc: &MusicDocument, interval: Interval) -> Musi
 /// key changes move by the same interval. Mode is preserved (a minor piece stays
 /// minor at the new tonic).
 pub fn transpose_to_key(score: &Score, target_tonic: Pitch) -> Score {
-    let source_fifths = first_key_fifths(score).unwrap_or(0);
+    let iv = to_key_interval(first_key_fifths(score).unwrap_or(0), target_tonic);
+    transpose_interval(score, iv)
+}
+
+/// Like [`transpose_to_key`] for a Layer-1 Music tree.
+pub fn transpose_to_key_music(doc: &MusicDocument, target_tonic: Pitch) -> MusicDocument {
+    let iv = to_key_interval(
+        first_key_fifths_music(&doc.music).unwrap_or(0),
+        target_tonic,
+    );
+    transpose_interval_music(doc, iv)
+}
+
+/// The nearest-direction (at most a tritone) interval from `source_fifths`'
+/// major tonic to `target_tonic`.
+fn to_key_interval(source_fifths: i32, target_tonic: Pitch) -> Interval {
     let from = major_tonic(source_fifths);
     let to = Pitch::with_alter(target_tonic.step, target_tonic.alter, 4);
     let mut iv = Interval::between(&from, &to);
@@ -284,7 +299,23 @@ pub fn transpose_to_key(score: &Score, target_tonic: Pitch) -> Score {
     while iv.chromatic < -6 {
         iv = Interval::new(iv.diatonic + 7, iv.chromatic + 12);
     }
-    transpose_interval(score, iv)
+    iv
+}
+
+/// First key signature in a Music tree, if any (document order).
+fn first_key_fifths_music(music: &Music) -> Option<i32> {
+    match music {
+        Music::KeySignature(k) => Some(k.fifths as i32),
+        Music::Sequential(children) | Music::Simultaneous(children) => {
+            children.iter().find_map(first_key_fifths_music)
+        }
+        Music::Context { content, .. }
+        | Music::Grace { content, .. }
+        | Music::Tuplet { content, .. }
+        | Music::Variable { content, .. } => first_key_fifths_music(content),
+        Music::Repeat { body, .. } => first_key_fifths_music(body),
+        _ => None,
+    }
 }
 
 /// The `fifths` of the first key signature found in the score, if any.

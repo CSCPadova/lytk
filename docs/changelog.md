@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-07-10 — Review fixes R8–R10: MXL output, Layer-1 Python transforms, GIL release
+
+Third fix wave from the review backlog. **1000 Rust + 134 Python tests, 0
+failures**; clippy clean.
+
+- **R8 — compressed MXL is a real output everywhere**: new
+  `IrToMxmlAdapter::convert_mxl_bytes` zips the *decoded* XML (microtones
+  intact — the direct-`.mxl` ceiling from the R7 note is gone) with a proper
+  `META-INF/container.xml`. Wired into: CLI (`convert x.ly -o y.mxl`,
+  `--format mxl`), batch jobs (`"format": "mxl"` no longer writes plain XML
+  into a `.mxl` name), Python (`to_musicxml(score, "out.mxl")` writes
+  compressed; `lytk.cli` accepts `.mxl` outputs).
+- **R9 — Layer-1 transforms are first-class on every surface**:
+  - Python: `transpose`/`transpose_interval`/`invert`/`retrograde`/
+    `change_language` now accept a `Score` *or* a `MusicDocument` and return
+    the same type — augmentation pipelines stay on the Music tree with no
+    lossy Score round-trip. New `transpose_to_key(music, "Bb")` binding
+    (Score and MusicDocument; new `transpose_to_key_music` in Rust). Stubs
+    updated with a `TypeVar`.
+  - CLI: LY→LY `transpose`/`invert`/`retrograde`/`change-language` now go
+    through the Music tree like `convert` — output keeps the document's own
+    context structure instead of flattened `pB = { … }` variables.
+  - `parse_tonic` moved to `ir::pitch` (shared by CLI and bindings).
+- **R10 — perf**: PyO3 bindings release the GIL around parse/convert/transform
+  calls (`py.allow_threads`) — Python threads can now overlap conversions;
+  dropped the borrow-appeasing deep clone in `resplit_measures_to_match`
+  call site; event-sequence decoding uses a `VecDeque` FIFO instead of
+  `Vec::remove(0)`. Deferred: `resolve_variable`/merge.rs clone reduction and
+  `ir_to_mxml` emission cost (architectural; benchmark first).
+
+
 ## 2026-07-10 — Review fixes R4–R7: retrograde, MIDI pairing, output contract, ingestion gaps
 
 Second fix wave from the 2026-07-10 review backlog, all TDD with corpus
