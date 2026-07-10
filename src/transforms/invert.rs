@@ -157,6 +157,7 @@ mod tests {
             figured_bass: vec![],
             print_object: true,
             multi_measure_rest: None,
+            measure_repeat: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");

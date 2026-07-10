@@ -655,17 +655,22 @@ fn parse_duration(
     state: &TuneState,
     measure_rest: bool,
 ) -> (Duration, usize) {
+    // A duration multiplier never legitimately exceeds a few digits; cap it so
+    // a malicious digit run can't overflow i64 (panic in debug, wrap in release)
+    // or blow up Frac arithmetic downstream.
+    const MAX_DUR: i64 = 1_000_000;
     let mut i = start;
     let mut num: i64 = 0;
     let mut saw_num = false;
     while i < chars.len() && chars[i].is_ascii_digit() {
-        num = num * 10 + chars[i].to_digit(10).unwrap() as i64;
+        num = (num.saturating_mul(10)).saturating_add(chars[i].to_digit(10).unwrap() as i64);
         saw_num = true;
         i += 1;
     }
     if !saw_num {
         num = 1;
     }
+    num = num.min(MAX_DUR);
     let mut den: i64 = 1;
     if i < chars.len() && chars[i] == '/' {
         let mut slashes = 0;
@@ -676,15 +681,17 @@ fn parse_duration(
         let mut den_num: i64 = 0;
         let mut saw_den = false;
         while i < chars.len() && chars[i].is_ascii_digit() {
-            den_num = den_num * 10 + chars[i].to_digit(10).unwrap() as i64;
+            den_num =
+                (den_num.saturating_mul(10)).saturating_add(chars[i].to_digit(10).unwrap() as i64);
             saw_den = true;
             i += 1;
         }
         den = if saw_den {
-            den_num.max(1)
+            den_num.clamp(1, MAX_DUR)
         } else {
-            // Each bare '/' halves: '/'=2, '//'=4.
-            1i64 << slashes
+            // Each bare '/' halves: '/'=2, '//'=4. Cap the shift: 63+ slashes
+            // would overflow the i64 shift and panic.
+            1i64 << slashes.min(20)
         };
     }
     let mult = Frac::new(num, den.max(1));
@@ -818,7 +825,7 @@ mod tests {
         for (k, fifths, mode) in cases {
             let doc = parse(&format!("X:1\nK:{k}\nC\n"));
             let ks = events(&doc).iter().find_map(|m| match m {
-                Music::KeySignature(k) => Some(k.clone()),
+                Music::KeySignature(k) => Some(*k),
                 _ => None,
             });
             let ks = ks.unwrap_or_else(|| panic!("no key for {k}"));
@@ -986,5 +993,20 @@ mod tests {
         // A tune with no V: is still a single Staff (not a Simultaneous).
         let doc = parse("X:1\nK:C\nCDEF|\n");
         assert!(matches!(doc.music, Music::Context { .. }));
+    }
+}
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+
+    /// Digit runs and slash runs in duration suffixes must not overflow/panic.
+    #[test]
+    fn malformed_duration_does_not_panic() {
+        let adapter = AbcToIrAdapter::new();
+        let long_digits = "9".repeat(30);
+        let _ = adapter.convert_str(&format!("X:1\nK:C\nC{long_digits}|\n"));
+        let _ = adapter.convert_str(&format!("X:1\nK:C\nC/{long_digits}|\n"));
+        let slashes = "/".repeat(80);
+        let _ = adapter.convert_str(&format!("X:1\nK:C\nC{slashes}|\n"));
     }
 }

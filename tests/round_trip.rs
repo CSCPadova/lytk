@@ -33,18 +33,6 @@ fn count_notes(score: &Score) -> usize {
         .count()
 }
 
-/// Count total rests across all parts/measures/voices.
-fn count_rests(score: &Score) -> usize {
-    score
-        .parts()
-        .iter()
-        .flat_map(|p| &p.measures)
-        .flat_map(|m| &m.voices)
-        .flat_map(|v| &v.elements)
-        .filter(|e| matches!(e, VoiceElement::Rest(_)))
-        .count()
-}
-
 /// Collect all (step, octave) pairs from all notes.
 fn collect_pitches(score: &Score) -> Vec<(PitchStep, i32)> {
     score
@@ -498,26 +486,6 @@ fn collect_midi_numbers(score: &Score) -> Vec<i32> {
         .filter_map(|e| match e {
             VoiceElement::Note(n) => Some(n.pitch.midi_number()),
             VoiceElement::Chord(_) => None,
-            _ => None,
-        })
-        .collect()
-}
-
-/// Collect MIDI numbers from chords too.
-fn collect_all_midi_numbers(score: &Score) -> Vec<Vec<i32>> {
-    score
-        .parts()
-        .iter()
-        .flat_map(|p| &p.measures)
-        .flat_map(|m| &m.voices)
-        .flat_map(|v| &v.elements)
-        .filter_map(|e| match e {
-            VoiceElement::Note(n) => Some(vec![n.pitch.midi_number()]),
-            VoiceElement::Chord(c) => {
-                let mut nums: Vec<i32> = c.notes.iter().map(|cn| cn.pitch.midi_number()).collect();
-                nums.sort();
-                Some(nums)
-            }
             _ => None,
         })
         .collect()

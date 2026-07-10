@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::ir::duration::{Duration, Frac};
     use crate::ir::lower::{lower_music_to_score, lower_to_score};

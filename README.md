@@ -50,7 +50,7 @@ CPython 3.10+) and full type stubs (`lytk/_core.pyi`).
 
 ```
 1. Parser        tree-sitter-lilypond grammar → parse tree
-2. IR            Score → Part(Group) → Voice → Measure → Note/Rest/…
+2. IR            Score → Part(Group) → Measure → Voice → Note/Rest/…
 3. Transforms    Idempotent, composable passes on the IR
 4. Adapters      from_ir / to_ir per format (ly, mxml, midi, …)
 5. CLI + lib     rayon-parallel batch CLI; Rust crate + PyO3 bindings
@@ -88,7 +88,7 @@ support matrix (what each reader/writer preserves).
 
 ### Implemented
 
-- **IR layer** — complete `Score → Part → Voice → Measure → Note/Rest/Chord` tree with `Pitch`,
+- **IR layer** — complete `Score → Part → Measure → Voice → Note/Rest/Chord` tree with `Pitch`,
   `Duration`, `Articulation`, `Direction`, `Barline`, `Clef`, `KeySignature`, `TimeSignature`,
   `Lyric`, and pitch language data for all 11 LilyPond languages
 - **MusicXML → IR** — parses all 143 MusicXML test suite fixtures; supports MusicXML 4.0

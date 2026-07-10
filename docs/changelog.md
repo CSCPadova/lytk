@@ -1,5 +1,181 @@
 # Changelog
 
+## 2026-07-10 — Review fixes R1–R3: repeats round-trip, rest-only parts, transpose spelling
+
+The three top items from the 2026-07-10 review backlog, all TDD (failing test
+first) with empirical corpus verification. Acid-corpus round-trip: **143/159 →
+153/159**; `tests/fixtures/xml`: **131/143 → 137/143**; LilyPond fixtures:
+**31/35 → 32/35** (repeats.ly went from 2030 → 0 notes to 2030 → 2030 exact).
+Full suite: **985 Rust tests, 0 failures**; clippy clean.
+
+- **R1 — `\repeat`/`\alternative` round-trip** (two coordinated fixes):
+  - *Producer* (`ly_to_ir/modifiers.rs`): the backward repeat now lands on the
+    right barline of every alternative except the last (MusicXML-correct:
+    `<ending type="stop"/>` + `<repeat direction="backward"/>` together),
+    instead of on a spurious empty measure after the alternatives.
+  - *Emitter* (`ir_to_ly/emit.rs`): tracks `\alternative`/ending state
+    explicitly — closes the block by lookahead (not on ending‑1's backward
+    repeat, which is implicit in LilyPond), retro-wraps `\repeat volta N {`
+    when endings appear with no forward repeat (acid 45b: repeat from score
+    start), supports multi-measure endings, `discontinue` stops, and the
+    redundant per-measure ending markers that merged multi-voice piano parts
+    carry. Tests: `repeat_alternative_roundtrip` (3 cases incl. the 45b
+    fixture).
+- **R2 — rest-only parts no longer deleted** (`ly_to_ir/merge.rs`):
+  `part_is_dynamics_only` now requires the part to be all spacers *or* to
+  carry directions; a part of real rests with no directions is a resting
+  instrument, not a Dynamics lane. Acid tests 41b/41f/41g‑NestingOrder/43g
+  (previously 100% content loss) all round-trip exactly. Tests:
+  `rest_only_parts` (2 cases).
+- **R3 — transpose is now key-aware** (`transforms/transpose.rs`):
+  - Chromatic mode respells results into the *target* key via the previously
+    unused `pitch::respell()` — C major +3 now yields `\key ees` with
+    `ees g bes`, not `dis/ais` under an E-flat signature. Threads the current
+    (transposed) key through measures (Score) and the Music tree (branch-local
+    across `Simultaneous`); microtonal pitches are exempt from respelling.
+  - Diatonic mode derives the key signature from the interval's
+    line-of-fifths delta (`7·semitones − 12·steps`): `--interval d5` from C
+    now gives G-flat (6♭), `A4` gives F-sharp (6♯); ±12-fifths results
+    normalize enharmonically. `--to-key` inherits the fix.
+  - Chord symbols (`Harmony` root + bass) transpose with the notes, in both
+    modes and both layers (`Music::Harmony` included).
+  - Tests: `spelling_tests` (4 cases). CLI verified end-to-end.
+- Remaining known ly-fixture failures are the R6 multi-`\score` output-path
+  contract (example2, key-signature-left-edge) and pedal.ly's small +8-note
+  drift; remaining corpus failures are R7 ingestion gaps (microtone alters,
+  orphan/id-less parts, 31a `<words>` quote escaping, 99a) and a 1-note drift
+  on 45i-Repeats-Nested. R4 (retrograde) and R5 (MIDI) untouched.
+
+
+## 2026-07-10 — Full-codebase review: panic fixes, lint zero, doc corrections
+
+A multi-agent audit (coherence, code quality, performance, transform semantics,
+Python surface + empirical round-trip testing of every fixture and the 159-file
+LilyPond MusicXML acid corpus). Fixes landed in this pass:
+
+- **Trust-boundary panic fixes** (malformed input files could abort the process,
+  reproduced via CLI; all now degrade gracefully, with regression tests):
+  - MusicXML `<actual-notes>0</actual-notes>` (or 256, wrapping through `as u8`)
+    panicked in `Frac::new` — invalid tuplet ratios are now ignored
+    (`src/adapters/mxml_to_ir/note.rs`).
+  - MusicXML `<divisions>65536</divisions>` truncated through `as u16` to 0 and
+    panicked; ≥65536 silently corrupted durations — now clamped to 1..=65535
+    (`src/adapters/mxml_to_ir/part.rs`).
+  - LilyPond `c4*1/0` duration scale panicked — zero denominators now ignored
+    (`src/adapters/ly_to_ir/consume.rs`).
+  - ABC duration digit-runs overflowed i64 (panic in debug, wrap in release) and
+    80 slashes overflowed the shift — now saturating + capped
+    (`src/adapters/abc_to_ir.rs`).
+  - The mxml panic firewall (`catch_read`) now also wraps `convert_mxml_score`,
+    so conversion panics surface as `AdapterError::Parse` at the PyO3 boundary.
+- **Lint zero:** fixed all 7 compiler warnings (dead test code, unused imports)
+  and all 26 clippy warnings (test-only); `cargo clippy --all-targets` is clean.
+- **Doc corrections:** CLAUDE.md no longer claims Python is "not yet fully
+  wired", lists all 13 CLI subcommands, documents the representations/navigation
+  layer, and drops the aspirational bumpalo/`Arc<Node>` guidance (neither was
+  ever used); README/roadmap IR hierarchy fixed to Score → Part → Measure →
+  Voice.
+- Full suite: **976 Rust tests, 0 failures**; clippy clean.
+
+### Review findings — prioritized backlog (not yet fixed)
+
+Empirical status: 939 CLI invocations over 313 MusicXML files — zero crashes;
+285/313 round-trip cleanly; 31/35 LilyPond fixtures round-trip with exact note
+counts; MIDI 42/52. Every remaining failure is *silent* data loss (exit 0).
+
+1. **Repeats/alternatives re-emission (HIGH):** `ir_to_ly` emits duplicated /
+   unbalanced `\alternative` blocks; re-parse silently drops nearly everything
+   (repeats.ly round-trip 2030 → 0 notes; 45b/45d acid tests).
+2. **Rest-only parts collapse (HIGH):** `part_is_dynamics_only`
+   (`ly_to_ir/merge.rs`) treats any all-rest part as a Dynamics lane — 8 acid
+   files lose 100% of content (41b, 41f, 41g-NestingOrder, 43g …).
+3. **Transpose spelling (HIGH):** chromatic mode spells all black keys as
+   sharps while correctly moving the key signature to flats (C→Eb yields d♯/a♯
+   under `\key ees`); diatonic mode computes the new key from semitones only
+   (F♯-major signature with G♭ notes); chord symbols/harmonies are not
+   transposed at all. `respell()` exists in `pitch.rs` but is never called.
+4. **Retrograde is structurally naive (HIGH):** measure attributes stay on the
+   (now-last) first measure; tuplets/ties/slurs/wedges keep forward-time
+   pairing (dangling ties, inside-out slurs); grace notes end up after their
+   principal; sounding durations change.
+5. **MIDI cross-voice unison collision (HIGH):** same-tick note-on ordered
+   before another voice's same-pitch note-off; reader mis-pairs and drops both
+   (piano fixtures lose 3-5% of sounding notes). Grace notes exported with real
+   duration shift all later onsets (+12.5% on tablature-grace-notes.ly).
+6. **Multi-`\score` output path (MEDIUM):** converting a multi-score .ly writes
+   `out_01.xml`/`out_02.xml` instead of the requested path, exit 0, no notice.
+7. **MusicXML ingestion gaps (MEDIUM):** microtone `<alter>0.5</alter>` notes
+   silently dropped (01d/01f); `<part>` without id or without a matching
+   `<score-part>` dropped; untyped whole-measure rests lost on ly emit (02e).
+8. **MXL output unreachable (MEDIUM):** the adapter can write compressed MXL
+   but no surface exposes it; `batch` with `"format": "mxl"` writes plain XML
+   into a `.mxl` file. CLI `--format` has no mxl; Python has no compressed
+   write.
+9. **Layer-1 transforms unbound (MEDIUM):** Python and the transform
+   subcommands use only Score-based transforms; `apply_music` exists but is
+   unreachable, so ly→ly augmentation flattens structure. `transpose_to_key`
+   has no Python binding.
+10. **Perf (MEDIUM, measured):** `ir_to_mxml` typed-struct emission dominates
+    time+memory; `resolve_variable` deep-clones every reference;
+    `ly_to_ir/merge.rs` is the clone hotspot (79 clones). No GIL release
+    around long conversions in PyO3. Piano-roll default resolution 480 → 11 MB
+    arrays per short piece.
+11. **Minor:** invert not self-inverse (doc claim); microtones destroyed by
+    chromatic transpose but preserved by diatonic; datasets are folder-only
+    (JSB Chorales remote loader still pending); Python CLI is a 4-subcommand
+    subset advertised as a mirror; `benches/bench_python.py` fixture paths are
+    dead; FolderDataset .npy cache never invalidates.
+
+
+## 2026-06-19 — Wave 2 / P4.8–P4.9: measure-repeat (the "%" sign)
+
+Closes a cited gap vs MuseScore: measure-repeat now survives MusicXML round-trip.
+
+- **IR:** `Measure.measure_repeat: Option<u8>` (`src/ir/measure.rs`) — repeat the
+  previous N measures; `#[serde(default, skip_serializing_if)]` keeps measure JSON
+  byte-for-byte unchanged.
+- **MusicXML round-trip:** `mxml_to_ir` reads `<measure-style><measure-repeat
+  type="start">N</measure-repeat>` (ignoring `type="stop"`); `ir_to_mxml` emits it
+  (and the attributes block is now emitted when a measure carries only a
+  measure-repeat). Test `measure_repeat_round_trips` (emit → re-parse → `Some(1)`).
+- **Deferred:** LilyPond `\repeat percent N` emit/parse (Score→LY path).
+- ~23 `Measure` struct literals across the codebase gained `measure_repeat: None`.
+  Full suite: **973 Rust tests, 0 failures**; clippy clean; fidelity unchanged.
+
+## 2026-06-19 — Wave 2 / P4.7: MusicXML default vertical positions
+
+MusicXML export now emits conservative `default-y` on directions so output
+renders cleanly in editors that honor it (`src/adapters/ir_to_mxml/direction.rs`):
+
+- A `placement_default_y` helper maps placement → tenths (below → −80, above →
+  +30, unspecified → none); applied to dynamics, hairpins (wedge), pedal, and
+  words/tempo. `placement` (above/below) and `<print>` page/system breaks were
+  already emitted — this fills in the vertical offset.
+- `default-x` is intentionally left unset (lytk has no layout engine; the
+  consuming app spaces horizontally). `<staff-layout>` staff-distance deferred —
+  editors default it and it needs multi-staff threading for marginal value.
+- Adjusted two assertions that matched bare `<dynamics>` to tolerate the new
+  attribute (`<dynamics default-y=…>`); output is unchanged semantically.
+- New test `direction_emits_default_y_by_placement`. Full suite: **972 Rust
+  tests, 0 failures**; clippy clean; fidelity baselines unchanged (positions are
+  not part of the semantic signature).
+
+## 2026-06-19 — Wave 2 / Epic P7 (partial): harmony functional Roman numerals
+
+`Harmony` can now carry a functional-harmony Roman numeral and round-trip it
+through MusicXML:
+
+- **`Harmony.function: Option<String>`** (`src/ir/harmony.rs`) — the MusicXML
+  `<function>` element (e.g. `"V"`, `"ii"`), supplementing the chord symbol.
+  `#[serde(default, skip_serializing_if = "Option::is_none")]` keeps existing
+  harmony JSON byte-for-byte unchanged.
+- **Round-trip:** `mxml_to_ir` reads `<function>` into the field; `ir_to_mxml`
+  emits it. Test `test_emit_harmony_with_function` asserts `<function>V</function>`.
+- **Deferred (T7.3 + scope):** figured-bass accidental typing / extension lines
+  (low value); the MusicXML 4.0 `<numeral>` element and root-optional functional
+  harmony (would ripple `Harmony.root` to `Option`).
+- Full suite: **971 Rust tests, 0 failures**; clippy clean; fidelity unchanged.
+
 ## 2026-06-18 (cont.) — Wave 1 / Epic P11: JSON batch-job API
 
 A `batch` subcommand driven by a JSON job file (`src/main.rs`):

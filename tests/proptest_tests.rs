@@ -180,7 +180,7 @@ proptest! {
     fn pitch_midi_number_reasonable(pitch in arb_pitch_microtonal()) {
         // Octaves 0..8, alters -2..2 → MIDI should be in a plausible range.
         let midi = pitch.midi_number();
-        prop_assert!(midi >= -15 && midi < 140,
+        prop_assert!((-15..140).contains(&midi),
             "MIDI {} out of expected range for {:?}", midi, pitch);
     }
 

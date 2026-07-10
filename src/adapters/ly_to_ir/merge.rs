@@ -43,9 +43,6 @@ pub(super) fn voice_element_duration(elem: &VoiceElement) -> Frac {
     }
 }
 
-/// Check if a part contains only rests/spacers and directions (no actual notes or chords).
-/// This identifies parts created from Dynamics contexts, which may have non-spacer rests
-/// (e.g. from unhandled \skip commands) but never have pitched content.
 /// Assign a multi-staff `<staff>` and placement to a direction by content,
 /// for piano grand staves: the sustain pedal goes below the bottom staff;
 /// dynamics and hairpins go below the top staff (between the staves); text,
@@ -63,18 +60,29 @@ pub(super) fn assign_piano_direction_staff(dir: &mut Direction, staff_count: u8)
     // so they render above, unattached to a specific staff.
 }
 
+/// Check if a part is a Dynamics lane rather than a real (possibly resting)
+/// instrument part. Dynamics contexts contain only spacers (`s`/`\skip`,
+/// sometimes parsed as non-spacer rests) and exist to carry directions.
+/// A part whose measures hold *real* rests and no directions is a genuine
+/// resting instrument — merging it away deletes score content.
 pub(super) fn part_is_dynamics_only(part: &Part) -> bool {
+    let mut has_direction = false;
+    let mut all_spacers = true;
     for m in &part.measures {
+        if !m.directions.is_empty() {
+            has_direction = true;
+        }
         for voice in &m.voices {
             for elem in &voice.elements {
                 match elem {
                     VoiceElement::Note(_) | VoiceElement::Chord(_) => return false,
-                    _ => {} // Rests (spacer or not), Forward, Backup are OK
+                    VoiceElement::Rest(r) if !r.is_spacer => all_spacers = false,
+                    _ => {} // spacers, Forward, Backup
                 }
             }
         }
     }
-    true
+    all_spacers || has_direction
 }
 
 pub(super) fn measures_are_spacer_only(measures: &[Measure]) -> bool {

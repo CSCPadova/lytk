@@ -14,13 +14,13 @@ Latest changes: look at the file docs/changelog.md to know about latest activity
 
 ```bash
 cargo build                          # build library + CLI
-cargo test                           # all tests (~450 unit + ~340 integration)
+cargo test                           # all tests (~980 Rust; plus ~136 Python via pytest)
 cargo test <test_name>               # run a single test by name
 cargo test --test cli                # CLI integration tests only
 cargo test -- --nocapture             # see stdout/eprintln during tests
-cargo fmt && cargo clippy -- -D warnings  # lint
+cargo fmt && cargo clippy --all-targets -- -D warnings  # lint
 
-# Python (not yet fully wired)
+# Python
 maturin develop                      # rebuild Rust extension for Python
 uv sync                              # install Python deps
 
@@ -41,7 +41,7 @@ Two-layer IR:
 - **Layer 2 (Score):** Measure-based tree (`Score → Part → Measure → Voice → Note/Rest/Chord/Forward/Backup`). Used for MusicXML/MIDI export.
 - **Bridging:** `lift_to_music()` converts Score → Music tree; `lower_to_score()` converts Music tree → Score.
 
-Five layers:
+Six layers:
 
 1. **Parser** (`src/parser.rs`, `src/tree-sitter/`) — tree-sitter-lilypond grammar, C sources committed in-repo. Never modify `tree-sitter-lilypond/` (read-only reference).
 
@@ -66,7 +66,9 @@ Five layers:
    - `transpose`, `invert`, `retrograde`, `language` (pitch language translation)
    - Each implements `Transform` trait (`apply(&self, &Score) -> Score`) and `MusicTransform` trait (`apply_music(&self, &MusicDocument) -> MusicDocument`)
 
-5. **CLI** (`src/main.rs`) — `clap` subcommands: `convert`, `transpose`, `info`, `flatten`. Batch mode uses `rayon` for parallelism.
+5. **ML representations** (`src/representations/`) — muspy-style encodings over the Layer-1 Music tree: `note_array` (onset/duration/pitch/velocity rows), `event_sequence` (Performance-RNN-style event codes), `piano_roll` (T × 128 matrix), `metrics`. All exposed to Python (`to_note_array`, `to_piano_roll`, `to_event_sequence` + inverses). Structured note navigation lives in `src/navigation.rs`.
+
+6. **CLI** (`src/main.rs`) — `clap` subcommands: `convert`, `transpose` (`-s`/`--interval`/`--to-key`), `invert`, `retrograde`, `change-language`, `abs2rel`, `rel2abs`, `info`, `positions`, `bundle`, `batch`, `diff`, `flatten`. Batch mode uses `rayon` for parallelism. The Python package `src/lytk/` ships datasets (`lytk.datasets`) and eval metrics (`lytk.metrics`) on top of the bindings, plus a subset CLI (`lytk.cli`).
 
 ## Key Design Patterns
 
@@ -81,8 +83,7 @@ Five layers:
 - **Performance baseline first** — profile `python-ly/` and record the baseline (time, memory). The Rust target must beat it.
 
 ### Rust specifics
-- Prefer arena/bump allocation (`bumpalo`) for AST nodes to reduce allocator pressure.
-- Use `Arc<Node>` for cheap shared ownership; avoid unnecessary `clone()` on large trees.
+- Avoid unnecessary `clone()` on large trees (known hotspots: `ly_to_ir/merge.rs`, variable resolution in `ly_to_ir/state.rs`).
 - `rayon` for data-parallel batch CLI operations.
 - Cross-language ABI: expose C-compatible types where needed; use `abi3` for Python.
 - Define `benches/` with `criterion` benchmarks for all hot paths.
@@ -100,7 +101,7 @@ Five layers:
 - `tests/fixtures/mxl/` — compressed MusicXML files (10 files covering single voice, chords, multi-part piano, fingering)
 - `tests/fixtures/musicxml/` — uncompressed MusicXML
 - `tests/fixtures/xml/` — additional XML fixtures
-- `musicxmlTestSuite/` — external MusicXML test corpus (read-only)
+- `lilypond/input/regression/musicxml/` — external MusicXML acid-test corpus (read-only)
 
 ## Reference Projects (read-only, do not modify)
 

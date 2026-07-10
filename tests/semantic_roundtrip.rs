@@ -844,7 +844,7 @@ fn repeats_pedal_below_lower_staff() {
                 "pedal not below staff 2:\n{block}"
             );
         }
-        if block.contains("<dynamics>") {
+        if block.contains("<dynamics") {
             saw_dyn = true;
             assert!(
                 block.contains("placement=\"below\"") && block.contains("<staff>1</staff>"),
@@ -1041,7 +1041,7 @@ fn chopin_bar72_multivoice_not_collapsed() {
         .voices
         .iter()
         .filter(|v| {
-            v.elements.iter().next().is_some_and(|e| match e {
+            v.elements.first().is_some_and(|e| match e {
                 _core::ir::note::VoiceElement::Note(n) => n.staff == 1,
                 _core::ir::note::VoiceElement::Rest(r) => r.staff == 1,
                 _core::ir::note::VoiceElement::Chord(c) => c.staff == 1,

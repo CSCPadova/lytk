@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use num::rational::Ratio;
 
@@ -508,26 +509,20 @@ pB = { g4 a b c' }
             }
         }
         // First element should have TupletDisplay::Start
-        match &elems[0] {
-            VoiceElement::Note(n) => {
-                let td = n
-                    .tuplet
-                    .as_ref()
-                    .expect("first note should have tuplet display");
-                assert_eq!(td.tuplet_type, StartStop::Start);
-            }
-            _ => {}
+        if let VoiceElement::Note(n) = &elems[0] {
+            let td = n
+                .tuplet
+                .as_ref()
+                .expect("first note should have tuplet display");
+            assert_eq!(td.tuplet_type, StartStop::Start);
         }
         // Last element should have TupletDisplay::Stop
-        match &elems[2] {
-            VoiceElement::Note(n) => {
-                let td = n
-                    .tuplet
-                    .as_ref()
-                    .expect("last note should have tuplet display");
-                assert_eq!(td.tuplet_type, StartStop::Stop);
-            }
-            _ => {}
+        if let VoiceElement::Note(n) = &elems[2] {
+            let td = n
+                .tuplet
+                .as_ref()
+                .expect("last note should have tuplet display");
+            assert_eq!(td.tuplet_type, StartStop::Stop);
         }
     }
 
@@ -1833,13 +1828,13 @@ melB = { g'4 a' b' c'' }
         let m1_dur: Frac = part.measures[0].voices[0]
             .elements
             .iter()
-            .map(|e| voice_element_duration(e))
+            .map(voice_element_duration)
             .sum();
         assert_eq!(m1_dur, Frac::new(1, 1), "m1 should be 1 whole");
         let m2_dur: Frac = part.measures[1].voices[0]
             .elements
             .iter()
-            .map(|e| voice_element_duration(e))
+            .map(voice_element_duration)
             .sum();
         assert_eq!(m2_dur, Frac::new(3, 4), "m2 should be 3/4");
     }
@@ -2178,13 +2173,13 @@ melB = { g'4 a' b' c'' }
         let alt1_start = measures.iter().position(|m| {
             m.left_barline
                 .as_ref()
-                .map_or(false, |bl| bl.ending_number == Some(1))
+                .is_some_and(|bl| bl.ending_number == Some(1))
         });
         assert!(alt1_start.is_some(), "should find ending 1 start");
         let alt2_start = measures.iter().position(|m| {
             m.left_barline
                 .as_ref()
-                .map_or(false, |bl| bl.ending_number == Some(2))
+                .is_some_and(|bl| bl.ending_number == Some(2))
         });
         assert!(alt2_start.is_some(), "should find ending 2 start");
     }
@@ -2210,7 +2205,7 @@ melB = { g'4 a' b' c'' }
         let has_backward = measures.iter().any(|m| {
             m.right_barline
                 .as_ref()
-                .map_or(false, |bl| bl.style == BarlineType::RepeatBackward)
+                .is_some_and(|bl| bl.style == BarlineType::RepeatBackward)
         });
         assert!(has_backward, "should have backward repeat barline");
     }
@@ -2254,7 +2249,7 @@ scoreAll = {
             .filter(|m| {
                 m.left_barline
                     .as_ref()
-                    .map_or(false, |bl| bl.style == BarlineType::RepeatForward)
+                    .is_some_and(|bl| bl.style == BarlineType::RepeatForward)
             })
             .count();
         assert!(fwd > 0, "should have forward repeat barlines");
@@ -2264,7 +2259,7 @@ scoreAll = {
             .filter(|m| {
                 m.left_barline
                     .as_ref()
-                    .map_or(false, |bl| bl.ending_number.is_some())
+                    .is_some_and(|bl| bl.ending_number.is_some())
             })
             .count();
         assert!(endings > 0, "should have ending markers");
@@ -2663,7 +2658,6 @@ middle = { \inner e' f' }
             .unwrap();
         let parts = score.parts();
         assert!(!parts.is_empty());
-        let elems = &parts[0].measures[0].voices[0].elements;
         // Should have at least 4 notes from the chain
         let note_count: usize = parts[0]
             .measures
@@ -3184,5 +3178,55 @@ lower = \relative c { \partial 8 c8 | d8 e f g a b | c8 b a g f e }
                 [PitchStep::C, PitchStep::D, PitchStep::E, PitchStep::F]
             );
         }
+    }
+}
+
+/// Trust boundary: malformed LilyPond must never panic the parser.
+#[cfg(test)]
+mod boundary_tests {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+
+    #[test]
+    fn zero_denominator_duration_scale_does_not_panic() {
+        let adapter = LyToIrAdapter::new();
+        // *N/0 used to panic in Frac::new (zero denominator)
+        let _ = adapter.convert_str("{ c4*1/0 }");
+        let _ = adapter.convert_str("{ c4*0/0 }");
+    }
+}
+
+/// Regression (review R2): parts containing only *real* rests are genuine
+/// (resting) instrument parts, not Dynamics lanes — they must not be merged
+/// away (acid tests 41b/41f/43g lost 100% of content).
+#[cfg(test)]
+mod rest_only_parts {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+
+    #[test]
+    fn all_rest_part_survives_next_to_pitched_part() {
+        let score = LyToIrAdapter::new()
+            .convert_str(r#"\score { << \new Staff { c'1 c'1 } \new Staff { r1 r1 } >> }"#)
+            .unwrap();
+        assert_eq!(
+            score.parts().len(),
+            2,
+            "resting part must not be merged away"
+        );
+    }
+
+    #[test]
+    fn score_of_only_rest_parts_survives() {
+        let score = LyToIrAdapter::new()
+            .convert_str(
+                r#"\score { << \new Staff { \time 4/4 r1 } \new Staff { \time 4/4 r1 } \new Staff { \time 4/4 r1 } >> }"#,
+            )
+            .unwrap();
+        assert_eq!(
+            score.parts().len(),
+            3,
+            "all-rest score must keep every part"
+        );
     }
 }

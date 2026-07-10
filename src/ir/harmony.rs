@@ -43,6 +43,11 @@ pub struct Harmony {
     pub degrees: Vec<ChordDegree>,
     /// Position in the measure (offset from measure start in divisions).
     pub offset: i32,
+    /// Optional functional-harmony Roman numeral (MusicXML `<function>`, e.g.
+    /// `"V"`, `"ii"`). Supplements the chord symbol; `None` for a plain chord
+    /// symbol. Omitted from serialization when absent for JSON back-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
 }
 
 /// A single figure in a figured bass indication.

@@ -148,6 +148,7 @@ fn parse_chord_token(token: &str, lang: PitchLanguage) -> Option<(Harmony, Optio
         bass,
         degrees: Vec::new(),
         offset: 0,
+        function: None,
     };
     Some((harmony, dur))
 }

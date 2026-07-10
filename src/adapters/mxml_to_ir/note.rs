@@ -63,14 +63,20 @@ pub(super) fn convert_note(mxml_note: &mxml::Note, divisions: i64) -> Option<Not
         }
     };
 
-    // Tuplet scaling
+    // Tuplet scaling. Ignore ratios outside 1..=255 rather than truncating
+    // through u8: actual-notes=0 (or 256, which wraps to 0) would panic in
+    // Frac::new (zero denominator) via Duration::actual_duration.
     let duration = if let Some(ref time_mod) = mxml_note.content.time_modification {
-        let actual = time_mod.content.actual_notes.content.0 as u8;
-        let normal = time_mod.content.normal_notes.content.0 as u8;
-        Duration {
-            tuplet_normal: normal,
-            tuplet_actual: actual,
-            ..duration
+        let actual = time_mod.content.actual_notes.content.0;
+        let normal = time_mod.content.normal_notes.content.0;
+        if (1..=u8::MAX as u32).contains(&actual) && (1..=u8::MAX as u32).contains(&normal) {
+            Duration {
+                tuplet_normal: normal as u8,
+                tuplet_actual: actual as u8,
+                ..duration
+            }
+        } else {
+            duration
         }
     } else {
         duration

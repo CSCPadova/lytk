@@ -81,6 +81,7 @@ fn convert_measure(
         figured_bass: Vec::new(),
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: Vec::new(),
     };
 
@@ -94,10 +95,22 @@ fn convert_measure(
                 let (ir_attrs, new_div) = convert_attributes(attrs, divisions);
                 divisions = new_div;
                 measure.attributes = Some(ir_attrs);
-                // <measure-style> for multiple-rest
+                // <measure-style> for multiple-rest and measure-repeat
                 for ms in &attrs.content.measure_style {
-                    if let mxml::MeasureStyleContents::MultipleRest(mr) = &ms.content {
-                        measure.multi_measure_rest = Some(mr.content.0 as u16);
+                    match &ms.content {
+                        mxml::MeasureStyleContents::MultipleRest(mr) => {
+                            measure.multi_measure_rest = Some(mr.content.0 as u16);
+                        }
+                        // Only the "start" carries the repeated-measure count
+                        // ("stop" marks the end and its content is ignored).
+                        mxml::MeasureStyleContents::MeasureRepeat(mrep)
+                            if mrep.attributes.r#type != Some(mdt::StartStop::Stop) =>
+                        {
+                            if let mdt::PositiveIntegerOrEmpty::Integer(n) = mrep.content {
+                                measure.measure_repeat = Some(n as u8);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -331,13 +344,16 @@ fn convert_attributes(
     attrs: &mxml::Attributes,
     current_divisions: i64,
 ) -> (MeasureAttributes, i64) {
-    let divisions = attrs
+    // Clamp instead of truncating through u16: divisions >= 65536 would wrap
+    // to 0 and panic in Frac::new (zero denominator) downstream.
+    let new_divisions = attrs
         .content
         .divisions
         .as_ref()
-        .map(|d| d.content.0 as u16)
-        .unwrap_or(current_divisions as u16);
-    let new_divisions = divisions as i64;
+        .map(|d| d.content.0 as i64)
+        .unwrap_or(current_divisions)
+        .clamp(1, u16::MAX as i64);
+    let divisions = new_divisions as u16;
 
     let key = attrs.content.key.first().and_then(|k| {
         match &k.content {

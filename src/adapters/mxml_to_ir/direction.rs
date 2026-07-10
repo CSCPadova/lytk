@@ -65,6 +65,10 @@ pub(super) fn convert_harmony_elem(harm: &mxml::Harmony) -> Option<Harmony> {
         .map(|o| o.content.0)
         .unwrap_or(0);
 
+    // Functional-harmony Roman numeral (deprecated <function> element, still
+    // common). Supplements the chord symbol.
+    let function = sub.function.as_ref().map(|f| f.content.clone());
+
     Some(Harmony {
         root: ChordPitch {
             step: root_step,
@@ -74,6 +78,7 @@ pub(super) fn convert_harmony_elem(harm: &mxml::Harmony) -> Option<Harmony> {
         bass,
         degrees,
         offset,
+        function,
     })
 }
 

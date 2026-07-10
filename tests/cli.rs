@@ -113,7 +113,7 @@ fn convert_ly_to_xml() {
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |e| e == "ly"))
+        .filter(|p| p.extension().is_some_and(|e| e == "ly"))
         .collect();
     assert!(!ly_fixtures.is_empty(), "need at least one .ly fixture");
     let ly_input = &ly_fixtures[0];
@@ -195,7 +195,7 @@ fn convert_batch_directory() {
     let ly_files: Vec<_> = fs::read_dir(&out_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "ly"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ly"))
         .collect();
     assert!(
         !ly_files.is_empty(),
@@ -946,7 +946,7 @@ fn bundle_exports_parts() {
     let files: Vec<_> = fs::read_dir(&out)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |x| x == "ly"))
+        .filter(|e| e.path().extension().is_some_and(|x| x == "ly"))
         .collect();
     assert!(
         !files.is_empty(),

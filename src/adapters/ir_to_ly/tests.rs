@@ -840,10 +840,14 @@ fn test_emit_after_grace() {
 #[test]
 fn test_emit_coda_segno() {
     use crate::ir::direction::Direction;
-    let mut dir = Direction::default();
-    dir.coda = true;
-    let mut dir2 = Direction::default();
-    dir2.segno = true;
+    let dir = Direction {
+        coda: true,
+        ..Direction::default()
+    };
+    let dir2 = Direction {
+        segno: true,
+        ..Direction::default()
+    };
     let mut measure = Measure::new(1);
     measure.directions.push(dir);
     measure.directions.push(dir2);
@@ -872,10 +876,14 @@ fn test_emit_coda_segno() {
 #[test]
 fn test_emit_da_capo_dal_segno() {
     use crate::ir::direction::Direction;
-    let mut dir = Direction::default();
-    dir.da_capo = Some("D.C.".to_string());
-    let mut dir2 = Direction::default();
-    dir2.dal_segno = Some("D.S. al Coda".to_string());
+    let dir = Direction {
+        da_capo: Some("D.C.".to_string()),
+        ..Direction::default()
+    };
+    let dir2 = Direction {
+        dal_segno: Some("D.S. al Coda".to_string()),
+        ..Direction::default()
+    };
     let mut measure = Measure::new(1);
     measure.directions.push(dir);
     measure.directions.push(dir2);
@@ -980,6 +988,7 @@ fn test_emit_harmony_chordnames() {
         bass: None,
         degrees: vec![],
         offset: 0,
+        function: None,
     });
     measure.voices.push(Voice {
         number: 1,
@@ -1023,6 +1032,7 @@ fn test_emit_harmony_minor_with_bass() {
         }),
         degrees: vec![],
         offset: 0,
+        function: None,
     });
     measure.voices.push(Voice {
         number: 1,
@@ -1818,4 +1828,88 @@ fn test_tremolo_emission() {
         ly.contains(":32"),
         "should emit :32 for 3 tremolo marks on quarter note: {ly}"
     );
+}
+
+/// Regression (review R1): `\repeat volta … \alternative` must survive the
+/// Score round-trip. Previously the backward repeat landed on an extra empty
+/// measure and the emitter left `\alternative {` unbalanced — the re-parsed
+/// score silently lost almost all content (repeats.ly: 2030 → 0 notes).
+#[cfg(test)]
+mod repeat_alternative_roundtrip {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::{FromIrAdapter, ToIrAdapter};
+    use crate::ir::direction::RepeatDirection;
+    use crate::ir::note::VoiceElement;
+    use crate::ir::Score;
+
+    const SRC: &str = r#"\score { \new Staff {
+        \repeat volta 2 { c'1 d'1 } \alternative { { e'1 } { f'1 } } g'1
+    } }"#;
+
+    fn note_count(score: &Score) -> usize {
+        score
+            .parts()
+            .iter()
+            .flat_map(|p| &p.measures)
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter(|e| matches!(e, VoiceElement::Note(_)))
+            .count()
+    }
+
+    #[test]
+    fn backward_repeat_sits_on_first_alternative_not_on_extra_measure() {
+        let score = LyToIrAdapter::new().convert_str(SRC).unwrap();
+        let measures = &score.parts()[0].measures;
+        // c d | e(alt1) | f(alt2) | g — no extra empty measure
+        assert_eq!(measures.len(), 5, "no empty backward-repeat measure");
+        let alt1 = &measures[2];
+        let bl = alt1.right_barline.as_ref().expect("alt1 right barline");
+        assert_eq!(bl.ending_number, Some(1));
+        assert_eq!(
+            bl.repeat_direction,
+            Some(RepeatDirection::Backward),
+            "backward repeat belongs at the end of ending 1"
+        );
+        let alt2 = &measures[3];
+        let bl2 = alt2.right_barline.as_ref().expect("alt2 right barline");
+        assert!(
+            bl2.repeat_direction.is_none(),
+            "no backward repeat on the last ending"
+        );
+    }
+
+    #[test]
+    fn score_emit_reparse_preserves_notes() {
+        let score = LyToIrAdapter::new().convert_str(SRC).unwrap();
+        let ly = super::IrToLyAdapter::new().convert(&score).unwrap();
+        assert_eq!(
+            ly.matches("\\repeat volta").count(),
+            1,
+            "exactly one repeat opener in:\n{ly}"
+        );
+        assert_eq!(
+            ly.matches('{').count(),
+            ly.matches('}').count(),
+            "unbalanced braces in:\n{ly}"
+        );
+        let re = LyToIrAdapter::new().convert_str(&ly).unwrap();
+        assert_eq!(note_count(&re), note_count(&score), "notes lost in:\n{ly}");
+    }
+
+    /// Foreign MusicXML shape (acid test 45b): the repeat starts at score
+    /// start with no forward barline; ending 1 carries the backward repeat.
+    #[test]
+    fn repeat_from_score_start_emits_balanced_ly() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/xml/45b-RepeatWithAlternatives.xml"
+        );
+        let score = crate::adapters::mxml_to_ir::MxmlToIrAdapter::new()
+            .convert_file(std::path::Path::new(path))
+            .unwrap();
+        let ly = super::IrToLyAdapter::new().convert(&score).unwrap();
+        let re = LyToIrAdapter::new().convert_str(&ly).unwrap();
+        assert_eq!(note_count(&re), note_count(&score), "notes lost in:\n{ly}");
+    }
 }

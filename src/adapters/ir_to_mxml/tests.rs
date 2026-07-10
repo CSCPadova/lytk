@@ -45,6 +45,7 @@ fn make_simple_score() -> Score {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![voice],
     };
 
@@ -136,6 +137,7 @@ fn rest_emission() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![voice],
     };
     let part = Part {
@@ -177,6 +179,7 @@ fn measure_rest() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![voice],
     };
     let mut part = Part::new("P1");
@@ -188,6 +191,40 @@ fn measure_rest() {
     let xml = adapter.convert(&score).unwrap();
 
     assert!(xml.contains("measure=\"yes\""));
+}
+
+#[test]
+fn measure_repeat_round_trips() {
+    use crate::adapters::mxml_to_ir::MxmlToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+
+    let mut measure = crate::ir::measure::Measure::new(2);
+    measure.measure_repeat = Some(1);
+    measure.voices.push(Voice {
+        number: 1,
+        elements: vec![VoiceElement::Note(Box::new(Note::new(
+            Pitch::new(PitchStep::C, 4),
+            Duration::whole(),
+        )))],
+    });
+    let mut part = Part::new("P1");
+    part.measures.push(measure);
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<measure-repeat"),
+        "expected <measure-repeat> in output: {xml}"
+    );
+
+    // Re-parse: the measure-repeat survives the round trip.
+    let reparsed = MxmlToIrAdapter::new().convert_str(&xml).unwrap();
+    assert_eq!(
+        reparsed.parts()[0].measures.last().unwrap().measure_repeat,
+        Some(1),
+        "measure-repeat should round-trip"
+    );
 }
 
 #[test]
@@ -214,6 +251,7 @@ fn chord_emission() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![voice],
     };
     let mut part = Part::new("P1");
@@ -259,6 +297,7 @@ fn note_with_tie() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![voice],
     };
     let mut part = Part::new("P1");
@@ -303,6 +342,7 @@ fn note_with_articulations() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![voice],
     };
     let mut part = Part::new("P1");
@@ -344,6 +384,7 @@ fn direction_with_dynamics() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![],
     };
     let mut part = Part::new("P1");
@@ -357,6 +398,49 @@ fn direction_with_dynamics() {
     assert!(xml.contains("<direction>"));
     assert!(xml.contains("<dynamics>"));
     assert!(xml.contains("<ff/>"));
+}
+
+#[test]
+fn direction_emits_default_y_by_placement() {
+    use crate::ir::articulation::DynamicMark;
+
+    // A below-placed dynamic gets a sensible negative default-y so editors that
+    // honor it render the dynamic under the staff.
+    let dir = Direction {
+        dynamic: Some(DynamicMark {
+            sign: "f".to_string(),
+            placement: Placement::Below,
+        }),
+        placement: Placement::Below,
+        ..Default::default()
+    };
+    let measure = crate::ir::measure::Measure {
+        number: 1,
+        number_label: None,
+        implicit: false,
+        senza_misura: false,
+        width: None,
+        attributes: None,
+        left_barline: None,
+        right_barline: None,
+        directions: vec![dir],
+        harmonies: vec![],
+        figured_bass: vec![],
+        print_object: true,
+        multi_measure_rest: None,
+        measure_repeat: None,
+        voices: vec![],
+    };
+    let mut part = Part::new("P1");
+    part.measures.push(measure);
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("default-y=\"-80"),
+        "below-placed dynamic should emit default-y=-80: {xml}"
+    );
 }
 
 #[test]
@@ -388,6 +472,7 @@ fn direction_emits_staff_and_placement() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![],
     };
     let mut part = Part::new("P1");
@@ -432,6 +517,7 @@ fn direction_with_tempo() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![],
     };
     let mut part = Part::new("P1");
@@ -472,6 +558,7 @@ fn fermata_on_note() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![voice],
     };
     let mut part = Part::new("P1");
@@ -511,6 +598,7 @@ fn multi_voice_backup() {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![v1, v2],
     };
     let mut part = Part::new("P1");
@@ -665,6 +753,7 @@ fn test_emit_harmony_basic() {
         kind: "major".to_string(),
         bass: None,
         degrees: vec![],
+        function: None,
         offset: 0,
     };
 
@@ -689,6 +778,7 @@ fn test_emit_harmony_with_bass() {
             alter: 0.0,
         }),
         degrees: vec![],
+        function: None,
         offset: 0,
     };
 
@@ -708,11 +798,35 @@ fn test_emit_harmony_with_offset() {
         kind: "minor".to_string(),
         bass: None,
         degrees: vec![],
+        function: None,
         offset: 4,
     };
 
     let xml = emit_measure_with_harmony(harmony);
     assert!(xml.contains("<offset>4</offset>"), "{xml}");
+}
+
+#[test]
+fn test_emit_harmony_with_function() {
+    use crate::ir::harmony::{ChordPitch, Harmony};
+
+    let harmony = Harmony {
+        root: ChordPitch {
+            step: "G".to_string(),
+            alter: 0.0,
+        },
+        kind: "major".to_string(),
+        bass: None,
+        degrees: vec![],
+        function: Some("V".to_string()),
+        offset: 0,
+    };
+
+    let xml = emit_measure_with_harmony(harmony);
+    assert!(
+        xml.contains("<function>V</function>"),
+        "function element missing: {xml}"
+    );
 }
 
 // ── figured bass tests ────────────────────────────────────────────────
@@ -782,8 +896,10 @@ fn test_emit_page_layout_defaults() {
 fn test_emit_coda_direction() {
     use crate::ir::direction::Direction;
 
-    let mut dir = Direction::default();
-    dir.coda = true;
+    let dir = Direction {
+        coda: true,
+        ..Direction::default()
+    };
 
     let xml = emit_direction(dir);
     assert!(xml.contains("<coda/>"), "{xml}");
@@ -793,8 +909,10 @@ fn test_emit_coda_direction() {
 fn test_emit_segno_direction() {
     use crate::ir::direction::Direction;
 
-    let mut dir = Direction::default();
-    dir.segno = true;
+    let dir = Direction {
+        segno: true,
+        ..Direction::default()
+    };
 
     let xml = emit_direction(dir);
     assert!(xml.contains("<segno/>"), "{xml}");
@@ -804,8 +922,10 @@ fn test_emit_segno_direction() {
 fn test_emit_da_capo_direction() {
     use crate::ir::direction::Direction;
 
-    let mut dir = Direction::default();
-    dir.da_capo = Some("D.C.".to_string());
+    let dir = Direction {
+        da_capo: Some("D.C.".to_string()),
+        ..Direction::default()
+    };
 
     let xml = emit_direction(dir);
     assert!(xml.contains("<words>D.C.</words>"), "{xml}");
@@ -816,8 +936,10 @@ fn test_emit_da_capo_direction() {
 fn test_emit_dal_segno_direction() {
     use crate::ir::direction::Direction;
 
-    let mut dir = Direction::default();
-    dir.dal_segno = Some("D.S.".to_string());
+    let dir = Direction {
+        dal_segno: Some("D.S.".to_string()),
+        ..Direction::default()
+    };
 
     let xml = emit_direction(dir);
     assert!(xml.contains("<words>D.S.</words>"), "{xml}");
@@ -836,7 +958,7 @@ fn note_level_dynamics_emitted_as_direction() {
     let xml = emit_single_note(note);
 
     assert!(
-        xml.contains("<dynamics>"),
+        xml.contains("<dynamics"),
         "note-level dynamics should emit <direction> with <dynamics>: {xml}"
     );
     assert!(xml.contains("<ff/>"), "expected <ff/> in output: {xml}");
@@ -955,6 +1077,7 @@ fn make_empty_measure() -> crate::ir::measure::Measure {
         figured_bass: vec![],
         print_object: true,
         multi_measure_rest: None,
+        measure_repeat: None,
         voices: vec![],
     }
 }
@@ -1416,7 +1539,6 @@ fn sound_element_merged() {
 #[test]
 fn test_music_to_mxml_round_trip() {
     use crate::adapters::FromMusicAdapter;
-    use crate::ir::annotation::Annotation;
     use crate::ir::music::{ContextType, Music, MusicDocument};
     use crate::ir::pitch::{Pitch, PitchStep};
 

@@ -11,7 +11,7 @@ use crate::ir::interval::Interval;
 use crate::ir::measure::KeySignature;
 use crate::ir::music::{Music, MusicDocument};
 use crate::ir::note::VoiceElement;
-use crate::ir::pitch::{major_tonic, Pitch};
+use crate::ir::pitch::{major_tonic, respell, Alter, Pitch};
 use crate::ir::score::Score;
 
 use super::{MusicTransform, Transform};
@@ -26,14 +26,6 @@ pub enum TransposeMode {
 }
 
 impl TransposeMode {
-    /// Equivalent semitone distance (used for key-signature transposition).
-    fn semitones(self) -> i32 {
-        match self {
-            TransposeMode::Chromatic(n) => n,
-            TransposeMode::Diatonic(iv) => iv.chromatic,
-        }
-    }
-
     fn is_identity(self) -> bool {
         match self {
             TransposeMode::Chromatic(n) => n == 0,
@@ -41,11 +33,59 @@ impl TransposeMode {
         }
     }
 
-    fn apply_pitch(self, p: Pitch) -> Pitch {
+    /// Transpose a pitch. `fifths` is the *target* key's circle-of-fifths
+    /// position, used to respell chromatic results (C major +3 must yield
+    /// e-flat under the E-flat signature, not d-sharp). Microtonal pitches
+    /// are exempt from respelling (it would round them to semitones).
+    fn apply_pitch(self, p: Pitch, fifths: i32) -> Pitch {
         match self {
-            TransposeMode::Chromatic(n) => p.transposed(n),
+            TransposeMode::Chromatic(n) => {
+                let t = p.transposed(n);
+                if p.alter.is_integer() {
+                    respell(t, fifths)
+                } else {
+                    t
+                }
+            }
             TransposeMode::Diatonic(iv) => p.transpose_diatonic(iv.diatonic, iv.chromatic),
         }
+    }
+
+    /// Transpose a key signature. Diatonic mode moves it by the interval's
+    /// line-of-fifths delta (so d5 lands on G-flat, A4 on F-sharp); chromatic
+    /// mode uses the fixed nearest-key table.
+    fn apply_key(self, key: KeySignature) -> KeySignature {
+        match self {
+            TransposeMode::Chromatic(n) => transpose_key(key, n),
+            TransposeMode::Diatonic(iv) => {
+                // An interval of d diatonic steps and s semitones sits at
+                // 7s − 12d on the line of fifths (M2 → +2, m3 → −3, P5 → +1).
+                let delta = 7 * iv.chromatic - 12 * iv.diatonic;
+                let mut fifths = key.fifths as i32 + delta;
+                // Normalize into a real signature; ±12 fifths is an
+                // enharmonic respelling (C-sharp major ↔ D-flat major).
+                while fifths > 7 {
+                    fifths -= 12;
+                }
+                while fifths < -7 {
+                    fifths += 12;
+                }
+                KeySignature {
+                    fifths: fifths as i8,
+                    mode: key.mode,
+                }
+            }
+        }
+    }
+
+    /// Target-key fifths when the source has no (or an implicit C major) key
+    /// signature — the reference for chromatic respelling.
+    fn default_target_fifths(self) -> i32 {
+        self.apply_key(KeySignature {
+            fifths: 0,
+            mode: crate::ir::measure::KeyMode::Major,
+        })
+        .fifths as i32
     }
 }
 
@@ -81,12 +121,20 @@ impl Transform for Transpose {
         let mut result = score.clone();
 
         for part in result.parts_mut() {
+            // Track the *transposed* key so chromatic results respell to it.
+            let mut cur_fifths = self.mode.default_target_fifths();
             for measure in &mut part.measures {
                 // Transpose key signature
                 if let Some(attrs) = &mut measure.attributes {
                     if let Some(key) = &mut attrs.key {
-                        *key = transpose_key(*key, self.mode.semitones());
+                        *key = self.mode.apply_key(*key);
+                        cur_fifths = key.fifths as i32;
                     }
+                }
+
+                // Transpose chord symbols alongside the notes they harmonize.
+                for harmony in &mut measure.harmonies {
+                    transpose_harmony(harmony, self.mode, cur_fifths);
                 }
 
                 // Transpose notes in all voices
@@ -94,11 +142,11 @@ impl Transform for Transpose {
                     for elem in &mut voice.elements {
                         match elem {
                             VoiceElement::Note(n) => {
-                                n.pitch = self.mode.apply_pitch(n.pitch);
+                                n.pitch = self.mode.apply_pitch(n.pitch, cur_fifths);
                             }
                             VoiceElement::Chord(c) => {
                                 for n in &mut c.notes {
-                                    n.pitch = self.mode.apply_pitch(n.pitch);
+                                    n.pitch = self.mode.apply_pitch(n.pitch, cur_fifths);
                                 }
                             }
                             VoiceElement::Rest(_) => {}
@@ -118,46 +166,85 @@ impl MusicTransform for Transpose {
             return doc.clone();
         }
         let mut result = doc.clone();
-        transpose_music_node(&mut result.music, self.mode);
+        let mut fifths = self.mode.default_target_fifths();
+        transpose_music_node(&mut result.music, self.mode, &mut fifths);
         result
     }
 }
 
-/// Recursively transpose all pitches and key signatures in a Music tree.
-fn transpose_music_node(music: &mut Music, mode: TransposeMode) {
+/// Recursively transpose all pitches, key signatures, and chord symbols in a
+/// Music tree. `fifths` tracks the current *transposed* key for respelling;
+/// a key change inside one branch of a Simultaneous stays local to it.
+fn transpose_music_node(music: &mut Music, mode: TransposeMode, fifths: &mut i32) {
     match music {
         Music::Note { pitch, .. } => {
-            *pitch = mode.apply_pitch(*pitch);
+            *pitch = mode.apply_pitch(*pitch, *fifths);
         }
         Music::Chord { pitches, .. } => {
             for (pitch, _) in pitches.iter_mut() {
-                *pitch = mode.apply_pitch(*pitch);
+                *pitch = mode.apply_pitch(*pitch, *fifths);
             }
         }
         Music::KeySignature(key) => {
-            *key = transpose_key(*key, mode.semitones());
+            *key = mode.apply_key(*key);
+            *fifths = key.fifths as i32;
         }
-        Music::Sequential(children) | Music::Simultaneous(children) => {
+        Music::Harmony(h) => {
+            transpose_harmony(h, mode, *fifths);
+        }
+        Music::Sequential(children) => {
             for child in children {
-                transpose_music_node(child, mode);
+                transpose_music_node(child, mode, fifths);
+            }
+        }
+        Music::Simultaneous(children) => {
+            for child in children {
+                let mut branch_fifths = *fifths;
+                transpose_music_node(child, mode, &mut branch_fifths);
             }
         }
         Music::Context { content, .. }
         | Music::Grace { content, .. }
         | Music::Tuplet { content, .. }
         | Music::Variable { content, .. } => {
-            transpose_music_node(content, mode);
+            transpose_music_node(content, mode, fifths);
         }
         Music::Repeat {
             body, alternatives, ..
         } => {
-            transpose_music_node(body, mode);
+            transpose_music_node(body, mode, fifths);
             for alt in alternatives {
-                transpose_music_node(alt, mode);
+                let mut alt_fifths = *fifths;
+                transpose_music_node(alt, mode, &mut alt_fifths);
             }
         }
         _ => {}
     }
+}
+
+/// Transpose a chord symbol's root and bass by the same rule as the notes.
+fn transpose_harmony(h: &mut crate::ir::harmony::Harmony, mode: TransposeMode, fifths: i32) {
+    transpose_chord_pitch(&mut h.root, mode, fifths);
+    if let Some(bass) = &mut h.bass {
+        transpose_chord_pitch(bass, mode, fifths);
+    }
+}
+
+fn transpose_chord_pitch(
+    cp: &mut crate::ir::harmony::ChordPitch,
+    mode: TransposeMode,
+    fifths: i32,
+) {
+    let Some(step) = crate::ir::pitch::PitchStep::from_name(&cp.step) else {
+        return;
+    };
+    if cp.alter.fract() != 0.0 {
+        return; // microtonal chord root — leave untouched
+    }
+    let p = Pitch::with_alter(step, Alter::from_integer(cp.alter as i32), 4);
+    let t = mode.apply_pitch(p, fifths);
+    cp.step = format!("{:?}", t.step);
+    cp.alter = *t.alter.numer() as f64 / *t.alter.denom() as f64;
 }
 
 /// Functional API: chromatic transposition by `semitones`.
@@ -288,6 +375,7 @@ mod tests {
             figured_bass: vec![],
             print_object: true,
             multi_measure_rest: None,
+            measure_repeat: None,
             voices: vec![voice],
         };
         let mut part = Part::new("P1");
@@ -487,6 +575,184 @@ mod tests {
                 _ => panic!("expected Notes"),
             },
             _ => panic!("expected Sequential"),
+        }
+    }
+}
+
+/// Regression tests (review R3): key-aware spelling, interval-derived key
+/// signatures, and chord-symbol transposition.
+#[cfg(test)]
+mod spelling_tests {
+    use super::*;
+    use crate::ir::duration::Duration;
+    use crate::ir::harmony::{ChordPitch, Harmony};
+    use crate::ir::interval::Interval;
+    use crate::ir::measure::{KeyMode, KeySignature, Measure, MeasureAttributes};
+    use crate::ir::note::{Note, VoiceElement};
+    use crate::ir::pitch::{Alter, Pitch, PitchStep};
+    use crate::ir::score::{Score, ScoreChild};
+    use crate::ir::voice::Voice;
+    use crate::ir::Part;
+
+    fn score_in_c(notes: &[(PitchStep, i32)]) -> Score {
+        let mut measure = Measure::new(1);
+        measure.attributes = Some(MeasureAttributes {
+            key: Some(KeySignature {
+                fifths: 0,
+                mode: KeyMode::Major,
+            }),
+            ..MeasureAttributes::default()
+        });
+        measure.voices.push(Voice {
+            number: 1,
+            elements: notes
+                .iter()
+                .map(|&(s, a)| {
+                    VoiceElement::Note(Box::new(Note::new(
+                        Pitch::with_alter(s, Alter::from_integer(a), 4),
+                        Duration::quarter(),
+                    )))
+                })
+                .collect(),
+        });
+        let mut part = Part::new("P1");
+        part.measures.push(measure);
+        let mut score = Score::new();
+        score.children.push(ScoreChild::Part(part));
+        score
+    }
+
+    fn pitches(score: &Score) -> Vec<(PitchStep, i32)> {
+        score.parts()[0].measures[0].voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some((n.pitch.step, n.pitch.alter.to_integer())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn chromatic_transpose_respells_for_flat_target_key() {
+        // C major + 3 semitones = E-flat major: c e g → ees g bes,
+        // NOT dis g ais (the canonical wrong-enharmonic case).
+        let score = score_in_c(&[(PitchStep::C, 0), (PitchStep::E, 0), (PitchStep::G, 0)]);
+        let result = transpose(&score, 3);
+        let key = result.parts()[0].measures[0]
+            .attributes
+            .as_ref()
+            .unwrap()
+            .key
+            .unwrap();
+        assert_eq!(key.fifths, -3, "E-flat major");
+        assert_eq!(
+            pitches(&result),
+            vec![(PitchStep::E, -1), (PitchStep::G, 0), (PitchStep::B, -1)],
+            "black keys must follow the target key's flats"
+        );
+    }
+
+    #[test]
+    fn diatonic_key_signature_follows_the_interval() {
+        // C major up a diminished fifth → G-flat major (6 flats), not F# (6 sharps).
+        let score = score_in_c(&[(PitchStep::C, 0)]);
+        let dim5 = Interval::from_name("d5").unwrap();
+        let result = transpose_interval(&score, dim5);
+        let key = result.parts()[0].measures[0]
+            .attributes
+            .as_ref()
+            .unwrap()
+            .key
+            .unwrap();
+        assert_eq!(key.fifths, -6, "d5 above C is G-flat, a flat key");
+        // And the note spelling agrees with the signature.
+        assert_eq!(pitches(&result), vec![(PitchStep::G, -1)]);
+
+        // Augmented fourth → F-sharp major (6 sharps).
+        let aug4 = Interval::from_name("A4").unwrap();
+        let result = transpose_interval(&score, aug4);
+        let key = result.parts()[0].measures[0]
+            .attributes
+            .as_ref()
+            .unwrap()
+            .key
+            .unwrap();
+        assert_eq!(key.fifths, 6, "A4 above C is F-sharp, a sharp key");
+        assert_eq!(pitches(&result), vec![(PitchStep::F, 1)]);
+    }
+
+    #[test]
+    fn transpose_moves_chord_symbols() {
+        let mut score = score_in_c(&[(PitchStep::C, 0)]);
+        if let ScoreChild::Part(part) = &mut score.children[0] {
+            part.measures[0].harmonies.push(Harmony {
+                root: ChordPitch {
+                    step: "C".to_string(),
+                    alter: 0.0,
+                },
+                kind: "major".to_string(),
+                bass: Some(ChordPitch {
+                    step: "E".to_string(),
+                    alter: 0.0,
+                }),
+                degrees: vec![],
+                offset: 0,
+                function: None,
+            });
+        }
+        // Chromatic +3 into E-flat major: C/E → Eb/G.
+        let result = transpose(&score, 3);
+        let h = &result.parts()[0].measures[0].harmonies[0];
+        assert_eq!(
+            (h.root.step.as_str(), h.root.alter),
+            ("E", -1.0),
+            "root C → Eb"
+        );
+        let bass = h.bass.as_ref().unwrap();
+        assert_eq!((bass.step.as_str(), bass.alter), ("G", 0.0), "bass E → G");
+
+        // Diatonic M2: C/E → D/F#.
+        let result = transpose_interval(&score, Interval::from_name("M2").unwrap());
+        let h = &result.parts()[0].measures[0].harmonies[0];
+        assert_eq!((h.root.step.as_str(), h.root.alter), ("D", 0.0));
+        let bass = h.bass.as_ref().unwrap();
+        assert_eq!((bass.step.as_str(), bass.alter), ("F", 1.0));
+    }
+
+    #[test]
+    fn music_layer_agrees_with_score_layer() {
+        use crate::ir::music::{Music, MusicDocument};
+        let doc = MusicDocument::new(Music::Sequential(vec![
+            Music::KeySignature(KeySignature {
+                fifths: 0,
+                mode: KeyMode::Major,
+            }),
+            Music::Note {
+                pitch: Pitch::new(PitchStep::E, 4),
+                duration: Duration::quarter(),
+                annotations: vec![],
+            },
+        ]));
+        let result = transpose_music(&doc, 3);
+        match &result.music {
+            Music::Sequential(children) => {
+                match &children[0] {
+                    Music::KeySignature(k) => assert_eq!(k.fifths, -3),
+                    other => panic!("expected key signature, got {other:?}"),
+                }
+                match &children[1] {
+                    Music::Note { pitch, .. } => {
+                        assert_eq!(
+                            (pitch.step, pitch.alter.to_integer()),
+                            (PitchStep::G, 0),
+                            "E + 3 in E-flat major is G"
+                        );
+                    }
+                    other => panic!("expected note, got {other:?}"),
+                }
+            }
+            other => panic!("expected Sequential, got {other:?}"),
         }
     }
 }

@@ -28,7 +28,7 @@ Test counts: 936 Rust + 136 Python green; clippy (lib+bin) clean.
 ## Completed ✅
 
 ### IR Layer
-Complete `Score → Part → Voice → Measure → Note/Rest/Chord` tree with `Pitch`, `Duration`,
+Complete `Score → Part → Measure → Voice → Note/Rest/Chord` tree with `Pitch`, `Duration`,
 `Articulation`, `Direction`, `Barline`, `Clef`, `KeySignature`, `TimeSignature`, `Lyric`,
 `PartGroup`, `PageLayout`, `Harmony`, `FiguredBass`. Pitch language data for all 11 LilyPond
 languages. Full serde serialisation.
@@ -377,6 +377,31 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
 
 ---
 
+## Correctness backlog — 2026-07-10 full review (planned ⬜)
+
+A multi-agent audit + empirical round-trip sweep (313 MusicXML files incl. the
+159-file LilyPond acid corpus, 35 .ly fixtures, 52 MIDI cases) found zero
+crashes but a set of **silent data-loss and correctness defects**. Full detail
+with evidence in `docs/changelog.md` (2026-07-10 entry). Priority order:
+
+| # | Area | Defect | Sev |
+|---|---|---|---|
+| R1 | ir_to_ly | ~~`\repeat`/`\alternative` re-emission malformed~~ **✅ 2026-07-10** (producer barline placement + stateful emitter) | HIGH |
+| R2 | ly_to_ir | ~~`part_is_dynamics_only` collapses all-rest parts~~ **✅ 2026-07-10** (spacers-or-directions rule) | HIGH |
+| R3 | transforms | ~~transpose: no key-aware respelling; diatonic key-sig from semitones; harmonies not transposed~~ **✅ 2026-07-10** (respell to target key, line-of-fifths delta, harmony root/bass) | HIGH |
+| R4 | transforms | retrograde: attributes not moved, tuplet/tie/slur pairing not reversed, grace notes stranded | HIGH |
+| R5 | midi | cross-voice same-pitch overlap drops notes; grace notes exported with real duration | HIGH |
+| R6 | cli | multi-`\score` input silently writes `out_01.*` instead of the requested path | MED |
+| R7 | mxml_to_ir | microtone alters dropped; orphan/id-less parts dropped; untyped measure-rests lost on ly emit | MED |
+| R8 | surfaces | compressed-MXL write unreachable (CLI/batch/Python); batch `"mxl"` writes plain XML | MED |
+| R9 | bindings | Layer-1 (`apply_music`) transforms + `transpose_to_key` unbound in Python; ly→ly transform subcommands flatten structure | MED |
+| R10 | perf | ir_to_mxml emission dominates; `resolve_variable` deep-clones; no PyO3 GIL release | MED |
+
+Done in the review pass itself: 4 malformed-input panic fixes (+ firewall
+widening), warning/clippy zero, CLAUDE.md/README doc corrections. ✅
+
+---
+
 ## Pre-1.0.0 Expansion — MuseScore-comparison backlog (planned ⬜)
 
 Sourced from a lytk-vs-MuseScore CLI/converter comparison (see the comparison
@@ -436,9 +461,9 @@ P7** → **P6, P8** → **P9**; **P12** enforced throughout.
 | T4.4 | Non-traditional key sigs — LilyPond + ABC round-trip | ⬜ |
 | T4.5 | Time sigs — IR (interchangeable, single-number, senza-misura at ts level) | ⬜ |
 | T4.6 | Time sigs — adapter round-trip (mxml + ly) | ⬜ |
-| T4.7 | Default positions: `default-y`/`placement`, `<print>` breaks, `<staff-layout>` (no spacing engine) | ⬜ |
-| T4.8 | Measure-repeat — Layer-2 IR marker | ⬜ |
-| T4.9 | Measure-repeat — MusicXML + LilyPond round-trip | ⬜ |
+| T4.7 | Default positions: conservative `default-y` on directions (dynamics/wedge/pedal/words) by placement ✅; `placement` + `<print>` breaks already emitted ✅; `<staff-layout>` staff-distance ⬜ deferred (editors default it; needs multi-staff threading for marginal value). `default-x` intentionally unset (no spacing engine). | 🟡 |
+| T4.8 | Measure-repeat — `Measure.measure_repeat: Option<u8>` (serde default/skip) | ✅ |
+| T4.9 | Measure-repeat — MusicXML `<measure-style><measure-repeat>` round-trip ✅; LilyPond `\repeat percent` ⬜ deferred (Score→LY path) | 🟡 |
 
 ### PE-Epic P5 — Enumerated notation typing *(item 13)*
 | Task | Description | Status |
@@ -458,12 +483,12 @@ P7** → **P6, P8** → **P9**; **P12** enforced throughout.
 | T6.4 | Tuplet state machine (open/continue/close across a voice) | ⬜ |
 | T6.5 | Tuplet round-trip (mxml `<time-modification>/<tuplet>` + ly `\tuplet`) | ⬜ |
 
-### PE-Epic P7 — Harmony & figured-bass analysis *(item 19)*
+### PE-Epic P7 — Harmony & figured-bass analysis *(item 19)* 🟡
 | Task | Description | Status |
 |------|-------------|--------|
-| T7.1 | Optional `roman_numeral` + `function` on `Harmony` | ⬜ |
-| T7.2 | MusicXML round-trip for harmony function/numeral | ⬜ |
-| T7.3 | Figured-bass enhancements (typed accidentals, extension lines) | ⬜ |
+| T7.1 | `Harmony.function: Option<String>` (MusicXML `<function>` Roman numeral; serde default/skip) | ✅ |
+| T7.2 | MusicXML round-trip: parse `<function>` on import, emit on export | ✅ |
+| T7.3 | Figured-bass enhancements (typed accidentals, extension lines) | ⬜ deferred — low value; `Figure` already has prefix/suffix. (Numeral element + root-optional functional harmony also deferred — would ripple `Harmony.root` to `Option`.) |
 
 ### PE-Epic P8 — Instruments, tablature, percussion, fretboard *(items 15, 16, 17, 18)*
 | Task | Description | Status |

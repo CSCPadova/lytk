@@ -257,6 +257,11 @@ pub struct Measure {
     pub print_object: bool,
     /// Multi-measure rest count (e.g. 4 = rest spanning 4 measures).
     pub multi_measure_rest: Option<u16>,
+    /// Measure-repeat: this measure repeats the previous N measures (the "%"
+    /// sign; MusicXML `<measure-style><measure-repeat>`). `None` for a normal
+    /// measure. Omitted from serialization when absent for JSON back-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measure_repeat: Option<u8>,
     /// Voices within this measure.
     pub voices: Vec<Voice>,
 }
@@ -277,6 +282,7 @@ impl Measure {
             figured_bass: Vec::new(),
             print_object: true,
             multi_measure_rest: None,
+            measure_repeat: None,
             voices: Vec::new(),
         }
     }

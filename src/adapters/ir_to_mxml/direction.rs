@@ -10,6 +10,21 @@ use crate::ir::note::Note;
 use musicxml::datatypes as mdt;
 use musicxml::elements as mxml;
 
+/// A conservative default vertical position (in tenths) for a direction, by
+/// placement: below the staff → negative, above → positive, unspecified → none.
+///
+/// These are just sensible starting offsets so editors that honor `default-y`
+/// place dynamics/pedals below and tempo/words above. Horizontal `default-x` is
+/// deliberately left unset — lytk has no layout engine, so the consuming
+/// application's spacer positions elements horizontally.
+fn placement_default_y(placement: Placement) -> Option<f64> {
+    match placement {
+        Placement::Below => Some(-80.0),
+        Placement::Above => Some(30.0),
+        Placement::Unspecified => None,
+    }
+}
+
 impl IrToMxmlAdapter {
     /// Build `Direction` elements for dynamics, wedges, and text directions
     /// attached directly to a [`Note`] (populated by the LY->IR path).
@@ -48,6 +63,9 @@ impl IrToMxmlAdapter {
             Placement::Below => Some(mdt::AboveBelow::Below),
             Placement::Unspecified => None,
         };
+        // Sensible default vertical placement so dynamics/pedals sit below the
+        // staff and tempo/words above in editors that honor `default-y`.
+        let default_y = placement_default_y(direction.placement);
 
         let mut direction_types: Vec<mxml::DirectionType> = Vec::new();
 
@@ -57,7 +75,10 @@ impl IrToMxmlAdapter {
             direction_types.push(mxml::DirectionType {
                 attributes: mxml::DirectionTypeAttributes::default(),
                 content: mxml::DirectionTypeContents::Dynamics(vec![mxml::Dynamics {
-                    attributes: mxml::DynamicsAttributes::default(),
+                    attributes: mxml::DynamicsAttributes {
+                        default_y: default_y.map(mdt::Tenths),
+                        ..Default::default()
+                    },
                     content: vec![dyn_type],
                 }]),
             });
@@ -79,7 +100,7 @@ impl IrToMxmlAdapter {
                         color: None,
                         dash_length: None,
                         default_x: None,
-                        default_y: None,
+                        default_y: default_y.map(mdt::Tenths),
                         id: None,
                         line_type: None,
                         niente: None,
@@ -111,6 +132,7 @@ impl IrToMxmlAdapter {
                     _ => None,
                 };
             }
+            words_attrs.default_y = default_y.map(mdt::Tenths);
             direction_types.push(mxml::DirectionType {
                 attributes: mxml::DirectionTypeAttributes::default(),
                 content: mxml::DirectionTypeContents::Words(vec![mxml::Words {
@@ -177,7 +199,7 @@ impl IrToMxmlAdapter {
                         abbreviated: None,
                         color: None,
                         default_x: None,
-                        default_y: None,
+                        default_y: default_y.map(mdt::Tenths),
                         font_family: None,
                         font_size: None,
                         font_style: None,
@@ -199,7 +221,10 @@ impl IrToMxmlAdapter {
                 direction_types.push(mxml::DirectionType {
                     attributes: mxml::DirectionTypeAttributes::default(),
                     content: mxml::DirectionTypeContents::Words(vec![mxml::Words {
-                        attributes: mxml::WordsAttributes::default(),
+                        attributes: mxml::WordsAttributes {
+                            default_y: default_y.map(mdt::Tenths),
+                            ..Default::default()
+                        },
                         content: label.clone(),
                     }]),
                 });
@@ -470,7 +495,10 @@ impl IrToMxmlAdapter {
                         },
                     }),
                     numeral: None,
-                    function: None,
+                    function: harmony.function.as_ref().map(|f| mxml::Function {
+                        attributes: mxml::FunctionAttributes::default(),
+                        content: f.clone(),
+                    }),
                     kind,
                     inversion: None,
                     bass,

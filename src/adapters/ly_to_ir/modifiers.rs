@@ -232,11 +232,15 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
     // Parse alternatives — each is either an expression_block or \relative <pitch> { }
     let mut ending_num: u8 = 1;
     let mut ci = 0;
+    // Last-measure index of each alternative, for backward-repeat placement.
+    let mut alt_last_measures: Vec<usize> = Vec::new();
     while ci < children.len() {
         let node = children[ci];
         match node.kind() {
             "expression_block" => {
-                walk_alternative_block(state, node, ending_num);
+                if let Some(last) = walk_alternative_block(state, node, ending_num) {
+                    alt_last_measures.push(last);
+                }
                 ending_num += 1;
                 ci += 1;
             }
@@ -258,7 +262,11 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
                             state.prev_pitch = Some(ref_pitch);
                             state.relative_ref = Some(ref_pitch);
                             if ci < children.len() && children[ci].kind() == "expression_block" {
-                                walk_alternative_block(state, children[ci], ending_num);
+                                if let Some(last) =
+                                    walk_alternative_block(state, children[ci], ending_num)
+                                {
+                                    alt_last_measures.push(last);
+                                }
                                 ending_num += 1;
                                 ci += 1;
                             }
@@ -275,8 +283,25 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
         }
     }
 
-    // After the last alternative, place a backward repeat barline
-    {
+    // The backward repeat belongs at the end of every alternative except the
+    // last (MusicXML: `<ending type="stop">` + `<repeat direction="backward">`
+    // on the same right barline). Putting it on a fresh measure after the
+    // alternatives created an empty measure and un-emittable structure.
+    if alt_last_measures.len() > 1 {
+        let part = state.ensure_part();
+        for &idx in &alt_last_measures[..alt_last_measures.len() - 1] {
+            if let Some(bl) = part
+                .measures
+                .get_mut(idx)
+                .and_then(|m| m.right_barline.as_mut())
+            {
+                bl.style = BarlineType::RepeatBackward;
+                bl.repeat_direction = Some(RepeatDirection::Backward);
+            }
+        }
+    } else if alt_last_measures.is_empty() {
+        // Degenerate `\alternative { }` — close the repeat like the
+        // no-alternative case.
         let measure = state.ensure_measure();
         measure.right_barline = Some(Barline {
             style: BarlineType::RepeatBackward,
@@ -288,8 +313,9 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
 }
 
 /// Walk one alternative block, marking the first measure with ending start
-/// and the last with ending stop.
-fn walk_alternative_block(state: &mut WalkState, block: Node, ending_num: u8) {
+/// and the last with ending stop. Returns the index of the alternative's last
+/// measure (None if the block produced no measures).
+fn walk_alternative_block(state: &mut WalkState, block: Node, ending_num: u8) -> Option<usize> {
     // Record how many measures existed before this alternative
     let measures_before = state.ensure_part().measures.len();
 
@@ -327,6 +353,9 @@ fn walk_alternative_block(state: &mut WalkState, block: Node, ending_num: u8) {
             bl.ending_number = Some(ending_num);
             bl.ending_type = Some("stop".to_string());
         }
+        Some(last_idx)
+    } else {
+        None
     }
 }
 

@@ -528,7 +528,7 @@ fn note_to_annotations(note: &Note) -> Vec<Annotation> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::duration::{Duration, Frac};
+    use crate::ir::duration::Duration;
     use crate::ir::measure::{KeyMode, Measure, MeasureAttributes};
     use crate::ir::note::Rest;
     use crate::ir::part::Part;

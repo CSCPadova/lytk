@@ -113,12 +113,17 @@ impl IrToMxmlAdapter {
 
         // Attributes. A senza-misura measure emits `<time><senza-misura/></time>`
         // even when it carries no other attribute change.
-        if measure.attributes.is_some() || measure.senza_misura {
+        if measure.attributes.is_some()
+            || measure.senza_misura
+            || measure.multi_measure_rest.is_some()
+            || measure.measure_repeat.is_some()
+        {
             let default_attrs = MeasureAttributes::default();
             let attrs = measure.attributes.as_ref().unwrap_or(&default_attrs);
             elements.push(mxml::MeasureElement::Attributes(self.build_attributes(
                 attrs,
                 measure.multi_measure_rest,
+                measure.measure_repeat,
                 measure.senza_misura,
             )));
         }
@@ -408,6 +413,7 @@ impl IrToMxmlAdapter {
         &self,
         attrs: &MeasureAttributes,
         multi_measure_rest: Option<u16>,
+        measure_repeat: Option<u8>,
         senza_misura: bool,
     ) -> mxml::Attributes {
         let divisions = Some(mxml::Divisions {
@@ -600,18 +606,29 @@ impl IrToMxmlAdapter {
             vec![]
         };
 
-        // Measure style (multi-measure rest)
-        let measure_style: Vec<mxml::MeasureStyle> = if let Some(count) = multi_measure_rest {
-            vec![mxml::MeasureStyle {
+        // Measure style (multi-measure rest and/or measure-repeat)
+        let mut measure_style: Vec<mxml::MeasureStyle> = Vec::new();
+        if let Some(count) = multi_measure_rest {
+            measure_style.push(mxml::MeasureStyle {
                 attributes: mxml::MeasureStyleAttributes::default(),
                 content: mxml::MeasureStyleContents::MultipleRest(mxml::MultipleRest {
                     attributes: mxml::MultipleRestAttributes::default(),
                     content: mdt::PositiveInteger(count as u32),
                 }),
-            }]
-        } else {
-            vec![]
-        };
+            });
+        }
+        if let Some(n) = measure_repeat {
+            measure_style.push(mxml::MeasureStyle {
+                attributes: mxml::MeasureStyleAttributes::default(),
+                content: mxml::MeasureStyleContents::MeasureRepeat(mxml::MeasureRepeat {
+                    attributes: mxml::MeasureRepeatAttributes {
+                        r#type: Some(mdt::StartStop::Start),
+                        slashes: None,
+                    },
+                    content: mdt::PositiveIntegerOrEmpty::Integer(n as u32),
+                }),
+            });
+        }
 
         mxml::Attributes {
             attributes: (),

@@ -51,14 +51,13 @@ fn assert_fully_stable(name: &str) {
 fn assert_pitch_stable(name: &str) {
     let before = import(name);
     let after = roundtrip(&before);
-    assert_eq!(
+    assert!(
         before
             .parts()
             .iter()
             .map(|p| p.measures.len())
             .sum::<usize>()
             > 0,
-        true,
         "{name}: imported empty"
     );
     assert_eq!(

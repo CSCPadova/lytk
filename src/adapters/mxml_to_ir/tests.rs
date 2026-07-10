@@ -1604,7 +1604,7 @@ fn test_parse_barline_styles() {
 
 #[test]
 fn test_parse_repeat_barline() {
-    use crate::ir::direction::{BarlineType, RepeatDirection};
+    use crate::ir::direction::RepeatDirection;
     let xml = r#"<?xml version="1.0"?>
 <score-partwise>
   <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
@@ -2131,9 +2131,6 @@ fn test_parse_notehead() {
   </part>
 </score-partwise>"#;
 
-    // Allow parse errors from the malformed closing tag — just test notehead parse path
-    let score = MxmlToIrAdapter::new().convert_str(xml);
-    // The XML has a typo (score-port vs score-part) so it may fail; test passing XML instead
     let xml2 = xml.replace("</score-port>", "</score-part>");
     let score = MxmlToIrAdapter::new().convert_str(&xml2).unwrap();
     match &score.parts()[0].measures[0].voices[0].elements[0] {
@@ -2383,4 +2380,45 @@ fn plain_xml_passes_through_unzipped() {
     let xml = b"<?xml version=\"1.0\"?><score-partwise></score-partwise>".to_vec();
     let out = super::xml_bytes_from_input(xml.clone()).unwrap();
     assert_eq!(out, xml, "non-zip input must pass through untouched");
+}
+
+/// Malformed inputs must come back as errors or degraded scores, never panics
+/// (the adapter is a trust boundary: arbitrary files cross it).
+#[test]
+fn malformed_input_does_not_panic() {
+    let note = |extra: &str, attrs: &str| {
+        format!(
+            r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>{attrs}</divisions></attributes>
+    <note><pitch><step>C</step><octave>4</octave></pitch>
+      <duration>4</duration><voice>1</voice>{extra}</note>
+  </measure></part>
+</score-partwise>"#
+        )
+    };
+    let adapter = MxmlToIrAdapter::new();
+
+    // tuplet actual-notes = 0 and = 256 (u8-wrap) used to panic in Frac::new
+    for actual in ["0", "256"] {
+        let xml = note(
+            &format!(
+                "<time-modification><actual-notes>{actual}</actual-notes><normal-notes>2</normal-notes></time-modification>"
+            ),
+            "4",
+        );
+        if let Ok(score) = adapter.convert_str(&xml) {
+            // invalid ratio ignored: base duration must survive intact
+            if let VoiceElement::Note(n) = &score.parts()[0].measures[0].voices[0].elements[0] {
+                assert!(*n.duration.actual_duration().denom() != 0);
+            }
+        }
+    }
+
+    // divisions = 65536 used to truncate to 0 through u16 and panic
+    let _ = adapter.convert_str(&note("", "65536"));
+    // divisions = 70000 used to silently wrap; now clamps
+    let _ = adapter.convert_str(&note("", "70000"));
 }

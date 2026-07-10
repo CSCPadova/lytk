@@ -145,6 +145,9 @@ pub(super) fn consume_duration_scale(
                 let frac_text = state.text(children[*i]);
                 *i += 1;
                 if let Some((num, den)) = parse_fraction(frac_text) {
+                    if den == 0 {
+                        return None; // *N/0 would panic in Frac::new
+                    }
                     return Some(Frac::new(num as i64, den as i64));
                 }
                 return None;
@@ -164,6 +167,9 @@ pub(super) fn consume_duration_scale(
                         let denom_text = state.text(children[*i]).to_string();
                         *i += 1;
                         let denom: i64 = denom_text.parse().unwrap_or(1);
+                        if denom == 0 {
+                            return None; // *N/0 would panic in Frac::new
+                        }
                         return Some(Frac::new(numer, denom));
                     }
                 }

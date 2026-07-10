@@ -78,8 +78,32 @@ pub(super) fn emit_measures(
     // unmatched `}` that truncates the variable and drops every later note.
     let mut repeat_depth: i32 = 0;
     let mut section_start = lines.len();
+    // True between `\alternative {` and its closing `}`. The block is closed
+    // when a measure arrives that neither starts another ending nor continues
+    // an open (multi-measure) ending — not by the backward repeat on ending 1,
+    // which is implicit in LilyPond's \alternative semantics.
+    let mut in_alternative = false;
+    // Number of the ending whose `{` (left "start" barline) is open, until its
+    // `}` (right "stop"/"discontinue" barline) — endings may span several
+    // measures, and merged multi-voice parts may carry redundant start/stop
+    // markers on every measure of an ending.
+    let mut open_ending: Option<u8> = None;
 
-    for measure in &part.measures {
+    // Ending-start marker of a measure's left barline, if any.
+    let ending_start_of = |m: &crate::ir::measure::Measure| -> Option<u8> {
+        m.left_barline
+            .as_ref()
+            .filter(|bl| bl.ending_type.as_deref() == Some("start"))
+            .and_then(|bl| bl.ending_number)
+    };
+
+    for (mi, measure) in part.measures.iter().enumerate() {
+        let starts_ending = ending_start_of(measure).is_some();
+        if in_alternative && open_ending.is_none() && !starts_ending {
+            lines.push(format!("{pad}}}"));
+            in_alternative = false;
+            section_start = lines.len();
+        }
         // Anacrusis: emit \partial before first measure
         if is_first_measure {
             if let Some(dur) = partial_dur {
@@ -212,16 +236,29 @@ pub(super) fn emit_measures(
                 lines.push(format!("{pad}\\repeat volta {times} {{"));
                 repeat_depth += 1;
             }
-            if let Some(ending_num) = bl.ending_number {
-                if bl.ending_type.as_deref() == Some("start") {
-                    if ending_num == 1 {
-                        // Close the repeat body and open \alternative
+            if bl.ending_number.is_some() && bl.ending_type.as_deref() == Some("start") {
+                if !in_alternative {
+                    // Close the repeat body and open \alternative. If no
+                    // forward `|:` was ever emitted (repeat from the top of
+                    // the section, e.g. MusicXML with endings but no forward
+                    // repeat), wrap the section retroactively instead of
+                    // pushing a stray unmatched `}`.
+                    if repeat_depth > 0 {
                         lines.push(format!("{pad}}}"));
-                        repeat_depth = (repeat_depth - 1).max(0);
-                        lines.push(format!("{pad}\\alternative {{"));
+                        repeat_depth -= 1;
+                    } else {
+                        let times = bl.repeat_times.unwrap_or(2);
+                        lines.insert(section_start, format!("{pad}\\repeat volta {times} {{"));
+                        lines.push(format!("{pad}}}"));
                     }
-                    // Open this alternative's block
+                    lines.push(format!("{pad}\\alternative {{"));
+                    in_alternative = true;
+                }
+                // Open this alternative's block — unless one is already open
+                // (a redundant re-start marker inside a multi-measure ending).
+                if open_ending.is_none() {
                     lines.push(format!("{pad}  {{"));
+                    open_ending = bl.ending_number;
                 }
             }
         }
@@ -280,15 +317,21 @@ pub(super) fn emit_measures(
 
         // Right barline
         if let Some(bl) = &measure.right_barline {
-            if let Some(_ending_num) = bl.ending_number {
-                if bl.ending_type.as_deref() == Some("stop") {
-                    // Close this alternative's block
+            if bl.ending_number.is_some() {
+                // Close this alternative's block — unless the next measure
+                // re-starts the same ending (redundant markers on every
+                // measure of a merged multi-voice ending). The backward
+                // repeat on ending 1 is implicit in \alternative.
+                let next_continues_same = open_ending.is_some()
+                    && part.measures.get(mi + 1).and_then(&ending_start_of) == open_ending;
+                if matches!(
+                    bl.ending_type.as_deref(),
+                    Some("stop") | Some("discontinue")
+                ) && open_ending.is_some()
+                    && !next_continues_same
+                {
                     lines.push(format!("{pad}  }}"));
-                }
-                // Check if this is the last alternative (has backward repeat)
-                if bl.repeat_direction.is_some() {
-                    // Close \alternative and \repeat
-                    lines.push(format!("{pad}}}"));
+                    open_ending = None;
                 }
             } else if bl.repeat_direction.is_some() {
                 if repeat_depth > 0 {
@@ -327,6 +370,13 @@ pub(super) fn emit_measures(
         }
     }
 
+    // Close a still-open ending and \alternative (part ends on the last ending).
+    if open_ending.is_some() {
+        lines.push(format!("{pad}  }}"));
+    }
+    if in_alternative {
+        lines.push(format!("{pad}}}"));
+    }
     // Close any forward `|:` that never got a matching backward repeat (e.g. a
     // MusicXML forward repeat with no end), so the variable's braces stay
     // balanced instead of leaving an unmatched `{`.
