@@ -16,12 +16,15 @@
 
 use crate::ir::annotation::Annotation;
 use crate::ir::direction::{Barline, BarlineType};
-use crate::ir::duration::Frac;
+use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{KeyMode, KeySignature, TimeSignature};
 use crate::ir::music::{ContextType, Music, MusicDocument};
 use crate::ir::pitch::{respell, Pitch};
 
 use super::{FromMusicAdapter, Result};
+
+/// Bars per output line — ABC convention, and it keeps lines readable.
+const BARS_PER_LINE: usize = 4;
 
 /// The unit note length used for emission (`L:1/8`).
 const UNIT_LENGTH: Frac = Frac::new_raw(1, 8);
@@ -75,6 +78,8 @@ fn emit_tune(doc: &MusicDocument) -> String {
     // Active key (circle-of-fifths position) used to re-spell pitches; updated by
     // any in-body key change.
     let init_fifths = first_key.map(|k| k.fifths as i32).unwrap_or(0);
+    // Bar length in whole notes, for deriving the regular bar lines.
+    let init_bar = first_time.as_ref().map(|t| t.beats_fraction());
 
     let mut out = String::new();
     out.push_str("X:1\n");
@@ -106,6 +111,7 @@ fn emit_tune(doc: &MusicDocument) -> String {
                 first_time.is_some(),
                 first_key.is_some(),
                 init_fifths,
+                init_bar,
             );
             out.push_str(&body);
             out.push('\n');
@@ -124,6 +130,7 @@ fn emit_tune(doc: &MusicDocument) -> String {
                     first_time.is_some(),
                     first_key.is_some(),
                     init_fifths,
+                    init_bar,
                 );
                 out.push_str(&body);
                 out.push('\n');
@@ -137,14 +144,47 @@ fn emit_tune(doc: &MusicDocument) -> String {
 /// drop the first time/key signature (already shown in the `M:`/`K:` header).
 /// `init_fifths` is the key in force at the start (from the `K:` header); pitches
 /// are re-spelled against the active key.
-fn emit_body(events: &[Music], skip_time: bool, skip_key: bool, init_fifths: i32) -> String {
+fn emit_body(
+    events: &[Music],
+    skip_time: bool,
+    skip_key: bool,
+    init_fifths: i32,
+    init_bar: Option<Frac>,
+) -> String {
     let mut tokens: Vec<String> = Vec::new();
     let mut time_used = !skip_time;
     let mut key_used = !skip_key;
     let mut active_fifths = init_fifths;
-    for ev in events {
+    // Bar accounting: the IR only carries explicit `Music::Barline` events for
+    // *non-default* barlines, so regular bar lines have to be derived from the
+    // running meter — without them the output is one giant ABC measure.
+    let mut bar_len = init_bar;
+    let mut filled = Frac::new(0, 1);
+    let mut bars_on_line = 0usize;
+    // Sounding events still inside the open tuplet run (0 = not in a tuplet).
+    let mut tuplet_left = 0usize;
+    for (idx, ev) in events.iter().enumerate() {
+        match tuplet_ratio(ev) {
+            Some(ratio) => {
+                if tuplet_left == 0 {
+                    // One group per `p` notes: always fits inside a bar, so a
+                    // run never straddles a barline or a wrapped line.
+                    let run = events[idx..]
+                        .iter()
+                        .take_while(|m| tuplet_ratio(m) == Some(ratio))
+                        .count()
+                        .min(ratio.0.max(1) as usize);
+                    tokens.push(format!("({}:{}:{}", ratio.0, ratio.1, run));
+                    tuplet_left = run;
+                }
+                tuplet_left -= 1;
+            }
+            None => tuplet_left = 0,
+        }
         match ev {
             Music::TimeSignature(t) => {
+                bar_len = Some(t.beats_fraction());
+                filled = Frac::new(0, 1);
                 if time_used {
                     tokens.push(format!("[M:{}]", meter_to_abc(t)));
                 } else {
@@ -159,44 +199,61 @@ fn emit_body(events: &[Music], skip_time: bool, skip_key: bool, init_fifths: i32
                     key_used = true;
                 }
             }
-            Music::Note {
-                pitch,
-                duration,
-                annotations,
-            } => {
-                let mut tok = format!(
-                    "{}{}",
-                    pitch_to_abc(&respell(*pitch, active_fifths)),
-                    duration_suffix(duration.actual_duration())
-                );
-                if has_tie(annotations) {
-                    tok.push('-');
+            Music::Note { .. } | Music::Chord { .. } | Music::Rest { .. } => {
+                if let Some(tok) = sounding_token(ev, active_fifths) {
+                    tokens.push(tok);
                 }
-                tokens.push(tok);
             }
-            Music::Chord {
-                pitches,
-                duration,
-                annotations,
-            } => {
-                let inner: String = pitches
+            // Grace group: `{ab}`, or `{/a}` for an acciaccatura (ABC 2.1 §4.10).
+            // Graces carry no metrical time, so they never move the bar clock.
+            Music::Grace { content, slash } => {
+                let mut inner = Vec::new();
+                walk(content, &mut inner);
+                let body: String = inner
                     .iter()
-                    .map(|(p, _)| pitch_to_abc(&respell(*p, active_fifths)))
-                    .collect();
-                let mut tok = format!("[{inner}]{}", duration_suffix(duration.actual_duration()));
-                if has_tie(annotations) {
-                    tok.push('-');
+                    .filter_map(|m| sounding_token(m, active_fifths))
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !body.is_empty() {
+                    tokens.push(format!("{{{}{}}}", if *slash { "/" } else { "" }, body));
                 }
-                tokens.push(tok);
             }
-            Music::Rest { duration, .. } => {
-                tokens.push(format!("z{}", duration_suffix(duration.actual_duration())));
+            Music::Barline(b) => {
+                tokens.push(barline_to_abc(b));
+                filled = Frac::new(0, 1);
+                bars_on_line += 1;
             }
-            Music::Barline(b) => tokens.push(barline_to_abc(b)),
             _ => {}
         }
+        // Regular bar line: close the bar as soon as the meter's worth of time
+        // has been emitted (explicit barlines above reset the count themselves).
+        if let (Some(len), Some(d)) = (bar_len, sounding_duration(ev)) {
+            if len > Frac::new(0, 1) {
+                filled += d;
+                if filled >= len {
+                    tokens.push("|".to_string());
+                    filled = Frac::new(0, 1);
+                    bars_on_line += 1;
+                }
+            }
+        }
+        if bars_on_line >= BARS_PER_LINE {
+            bars_on_line = 0;
+            tokens.push("\n".to_string());
+        }
     }
-    tokens.join(" ")
+    // Join on spaces, but keep the line breaks we inserted as real newlines.
+    tokens.join(" ").replace(" \n ", "\n").replace(" \n", "\n")
+}
+
+/// Sounding length of an event (notes/chords/rests advance the bar clock).
+fn sounding_duration(m: &Music) -> Option<Frac> {
+    match m {
+        Music::Note { duration, .. }
+        | Music::Chord { duration, .. }
+        | Music::Rest { duration, .. } => Some(duration.actual_duration()),
+        _ => None,
+    }
 }
 
 /// Split the tree into top-level voices: each part / staff becomes one ABC
@@ -291,6 +348,68 @@ fn pitch_to_abc(pitch: &Pitch) -> String {
         s.push_str(&",".repeat((4 - pitch.octave) as usize));
     }
     s
+}
+
+/// Render one note/chord/rest as its ABC token (with a trailing `-` for a tie).
+fn sounding_token(m: &Music, active_fifths: i32) -> Option<String> {
+    let (body, duration, annotations) = match m {
+        Music::Note {
+            pitch,
+            duration,
+            annotations,
+        } => (
+            pitch_to_abc(&respell(*pitch, active_fifths)),
+            duration,
+            Some(annotations),
+        ),
+        Music::Chord {
+            pitches,
+            duration,
+            annotations,
+        } => (
+            format!(
+                "[{}]",
+                pitches
+                    .iter()
+                    .map(|(p, _)| pitch_to_abc(&respell(*p, active_fifths)))
+                    .collect::<String>()
+            ),
+            duration,
+            Some(annotations),
+        ),
+        Music::Rest { duration, .. } => ("z".to_string(), duration, None),
+        _ => return None,
+    };
+    let mut tok = format!("{body}{}", duration_suffix(written_duration(duration)));
+    if annotations.is_some_and(|a| has_tie(a)) {
+        tok.push('-');
+    }
+    Some(tok)
+}
+
+/// The tuplet ratio (actual, normal) of a sounding event, if it is in one.
+fn tuplet_ratio(m: &Music) -> Option<(u8, u8)> {
+    let d = match m {
+        Music::Note { duration, .. }
+        | Music::Chord { duration, .. }
+        | Music::Rest { duration, .. } => duration,
+        _ => return None,
+    };
+    tuplet_ratio_of(d)
+}
+
+/// Duration as ABC writes it: inside a tuplet the *notated* value is printed
+/// and the `(p:q:r` prefix supplies the ratio, so undo the tuplet scaling.
+fn written_duration(d: &Duration) -> Frac {
+    match tuplet_ratio_of(d) {
+        Some((a, n)) => d.actual_duration() * Frac::new(a as i64, n as i64),
+        None => d.actual_duration(),
+    }
+}
+
+fn tuplet_ratio_of(d: &Duration) -> Option<(u8, u8)> {
+    (d.tuplet_actual != d.tuplet_normal && d.tuplet_actual > 0 && d.tuplet_normal > 0)
+        .then_some((d.tuplet_actual, d.tuplet_normal))
 }
 
 /// Render a duration as an ABC multiplier of the unit length.

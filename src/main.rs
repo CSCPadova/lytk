@@ -61,7 +61,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Convert files between LilyPond, MusicXML, MXL, MIDI and ABC formats.
+    /// Convert files between LilyPond, MusicXML, MXL, MIDI, ABC and Humdrum (`**kern`) formats.
     Convert {
         /// Input file or directory (`-` for stdin).
         input: PathBuf,

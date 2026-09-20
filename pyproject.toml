@@ -38,7 +38,10 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
     "Operating System :: OS Independent",
 ]
-dependencies = ["numpy>=1.21"]
+# 1.23 is the DLPack floor: `__dlpack__` landed in 1.22 and
+# `np.from_dlpack` in 1.23, and the representation arrays are
+# documented as DLPack-consumable (torch/JAX/CuPy, zero-copy).
+dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
 # Deep-learning adapters in `lytk.datasets`: `to_pytorch_dataset` /

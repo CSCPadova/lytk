@@ -424,9 +424,19 @@ fn clamp_fifths(f: i8) -> i8 {
 fn parse_body_line(line: &str, state: &TuneState, events: &mut Vec<Music>) {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
+    // Open tuplet: (actual, normal, sounding events still to collect, start index).
+    let mut tuplet: Option<(u8, u8, usize, usize)> = None;
     while i < chars.len() {
         let c = chars[i];
+        let before = events.len();
         match c {
+            '(' if chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()) => {
+                // Tuplet `(p`, `(p:q`, `(p:q:r`.
+                close_tuplet(&mut tuplet, events);
+                let ((p, q, r), next) = parse_tuplet_spec(&chars, i + 1);
+                tuplet = Some((p, q, r, events.len()));
+                i = next;
+            }
             ' ' | '\t' => i += 1,
             '%' => break, // rest of line is a comment
             '|' | ':' | '[' if is_barline_at(&chars, i) => {
@@ -451,11 +461,27 @@ fn parse_body_line(line: &str, state: &TuneState, events: &mut Vec<Music>) {
                 i += 1;
             }
             '{' => {
-                // Grace-note group — skip (not represented in v1).
-                while i < chars.len() && chars[i] != '}' {
-                    i += 1;
+                // Grace-note group `{ab}`; a leading `/` marks an acciaccatura.
+                let mut j = i + 1;
+                let slash = chars.get(j) == Some(&'/');
+                if slash {
+                    j += 1;
                 }
-                i += 1;
+                let end = chars[j..]
+                    .iter()
+                    .position(|c| *c == '}')
+                    .map(|k| j + k)
+                    .unwrap_or(chars.len());
+                let mut inner = Vec::new();
+                let body: String = chars[j..end].iter().collect();
+                parse_body_line(&body, state, &mut inner);
+                if !inner.is_empty() {
+                    events.push(Music::Grace {
+                        content: Box::new(Music::Sequential(inner)),
+                        slash,
+                    });
+                }
+                i = end + 1;
             }
             '[' => {
                 // Chord [CEG].
@@ -485,9 +511,88 @@ fn parse_body_line(line: &str, state: &TuneState, events: &mut Vec<Music>) {
                 attach_tie(events);
                 i += 1;
             }
-            _ => i += 1, // skip unsupported tokens (slurs, tuplets, etc.)
+            _ => i += 1, // skip unsupported tokens (slurs, decorations, …)
+        }
+        if let Some((_, _, rem, _)) = &mut tuplet {
+            let n = events[before..].iter().filter(|m| is_sounding(m)).count();
+            *rem = rem.saturating_sub(n);
+        }
+        if matches!(tuplet, Some((_, _, 0, _))) {
+            close_tuplet(&mut tuplet, events);
         }
     }
+    // ponytail: a tuplet left open at end of line is closed here; ABC allows a
+    // tuplet to span a line break, but that is vanishingly rare in real tunes.
+    close_tuplet(&mut tuplet, events);
+}
+
+/// True for events that consume a tuplet slot (ABC counts notes, not barlines).
+fn is_sounding(m: &Music) -> bool {
+    matches!(
+        m,
+        Music::Note { .. } | Music::Chord { .. } | Music::Rest { .. }
+    )
+}
+
+/// Parse a tuplet spec `p`, `p:q`, `p:q:r` starting at the first digit.
+/// Returns ((actual, normal, count), next index).
+fn parse_tuplet_spec(chars: &[char], start: usize) -> ((u8, u8, usize), usize) {
+    fn num(chars: &[char], i: &mut usize) -> Option<u8> {
+        let mut v: u32 = 0;
+        let mut saw = false;
+        while let Some(d) = chars.get(*i).and_then(|c| c.to_digit(10)) {
+            v = (v * 10 + d).min(255);
+            saw = true;
+            *i += 1;
+        }
+        saw.then_some(v.max(1) as u8)
+    }
+    let mut i = start;
+    let p = num(chars, &mut i).unwrap_or(3);
+    let mut q = None;
+    let mut r = None;
+    if chars.get(i) == Some(&':') {
+        i += 1;
+        q = num(chars, &mut i);
+        if chars.get(i) == Some(&':') {
+            i += 1;
+            r = num(chars, &mut i);
+        }
+    }
+    // ABC defaults for a bare `(p`. ponytail: 5/7/9 take q=2 (simple meter);
+    // the compound-meter q=3 case needs the un-reduced meter, which the IR
+    // time signature does not keep here.
+    let q = q.unwrap_or(match p {
+        2 | 4 | 8 => 3,
+        _ => 2,
+    });
+    ((p, q, r.unwrap_or(p) as usize), i)
+}
+
+/// Close an open tuplet: wrap the events it collected in `Music::Tuplet` and
+/// stamp the ratio onto their durations (the rest of the IR reads it there).
+fn close_tuplet(tuplet: &mut Option<(u8, u8, usize, usize)>, events: &mut Vec<Music>) {
+    let Some((actual, normal, _, start)) = tuplet.take() else {
+        return;
+    };
+    if start >= events.len() {
+        return;
+    }
+    let mut inner = events.split_off(start);
+    for m in &mut inner {
+        if let Music::Note { duration, .. }
+        | Music::Chord { duration, .. }
+        | Music::Rest { duration, .. } = m
+        {
+            duration.tuplet_actual = actual;
+            duration.tuplet_normal = normal;
+        }
+    }
+    events.push(Music::Tuplet {
+        actual,
+        normal,
+        content: Box::new(Music::Sequential(inner)),
+    });
 }
 
 fn is_barline_at(chars: &[char], i: usize) -> bool {

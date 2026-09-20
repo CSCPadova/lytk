@@ -16,12 +16,12 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 | Compressed MusicXML | `.mxl` | ✅ | ✅ | ZIP handled natively |
 | MIDI | `.mid` `.midi` | ✅ | ✅ | Lossy (no slurs/articulations/lyrics) |
 | ABC | `.abc` | ✅ | ✅ | Core subset (headers, notes, chords, ties, repeats) |
+| Humdrum (`**kern`) | `.krn` | ✅ | ✅ | Core `**kern`; spine rearrangement (`*^`/`*v`) unsupported |
 | MEI | `.mei` | 🔲 | 🔲 | Planned |
-| Humdrum | `.krn` | 🔲 | 🔲 | Planned |
 
-**Python:** `from_lilypond` · `from_musicxml` · `from_midi` · `from_abc`
-(+ `_string` variants) → `Score`; `to_lilypond` · `to_musicxml` · `to_midi` ·
-`to_abc` ← `Score`. ML representations (`to_note_array`, `to_piano_roll`,
+**Python:** `from_lilypond` · `from_musicxml` · `from_midi` · `from_abc` ·
+`from_humdrum` (+ `_string` variants) → `Score`; `to_lilypond` · `to_musicxml` ·
+`to_midi` · `to_abc` · `to_humdrum` ← `Score`. ML representations (`to_note_array`, `to_piano_roll`,
 `to_event_sequence`, `compute_metrics`) operate on a `MusicDocument`
 (`score.to_music_document()`).
 
@@ -321,8 +321,10 @@ score internally.
 | Tempo | ✅ | `Q:` |
 | Multi-voice (`V:`) | ✅ | ABC 2.1 §4.1 — header/body `V:id`, inline `[V:id]`, `name=`; each voice → a Part |
 | MIDI instrument | 🔲 | ABC has **no standard** instrument field — the `%%MIDI program N` directive is a non-standard `abc2midi` stylesheet extension, so it is **not** parsed (see Export note) |
+| Tuplets | ✅ | `(p`, `(p:q`, `(p:q:r`; bare `(p` uses the ABC default ratios |
+| Grace notes | ✅ | `{ab}`, `{/a}` (acciaccatura) |
 | Chord symbols `"…"` | 🔲 | Skipped gracefully |
-| Decorations / grace / inline fields | 🔲 | Skipped gracefully |
+| Decorations / inline fields | 🔲 | Skipped gracefully |
 
 ### Export (IR → ABC) — `src/adapters/ir_to_abc.rs`
 
@@ -334,7 +336,9 @@ score internally.
 | Rests | ✅ | |
 | Chords | ✅ | `[…]` |
 | Ties | ✅ | |
-| Bar lines + repeats | ✅ | |
+| Bar lines + repeats | ✅ | Regular bar lines are derived from the running meter (the IR only stores *explicit* barlines), and the body wraps every 4 bars |
+| Tuplets | ✅ | `(p:q:r`, one group per `p` notes so a run never crosses a bar |
+| Grace notes | ✅ | `{…}` / `{/…}`; carry no metrical time |
 | Key / meter | ✅ | |
 | Multi-voice (`V:`) | ✅ | ≥2 parts/staves emit `V:n name="…"` blocks (ABC 2.1 §4.1); polyphony is lossless |
 | MIDI instrument | 🔲 | **Deliberately not emitted.** ABC has no standard instrument field; the only convention, `%%MIDI program N`, is a non-standard `abc2midi` directive, not part of the ABC 2.1 standard. Emitting it would produce output other ABC tools ignore or reject, so instrument identity is dropped on `→ ABC` (a format limitation, not a bug). It is preserved across LilyPond ↔ MusicXML ↔ MIDI. |
@@ -342,11 +346,40 @@ score internally.
 
 ---
 
+## Humdrum (`**kern`)
+
+Core `**kern` in both directions, through the Layer-1 Music tree. One spine per
+part/voice, with `.` padding on the time slices a spine does not sound.
+
+### Import (kern → IR) — `src/adapters/humdrum_to_ir.rs`
+
+| Feature | Status | Notes |
+|---|---|---|
+| Pitch + octave | ✅ | `c`/`cc`/`C`/`CC`, `#`/`-`/`n` accidentals |
+| Durations (recip) | ✅ | `4`, `2.`, `12` (tuplets folded in), `0`/`00` (breve/longa), `N%M` |
+| Rests | ✅ | `r` |
+| Chords | ✅ | Space-separated subtokens |
+| Ties / slurs | ✅ | `[`, `_`, `]` and `(`/`)` |
+| Grace notes | ✅ | `q` (acciaccatura) / `Q` |
+| Barlines + repeats | ✅ | `=`, `=||`, `=:|!|:` |
+| Key / time / clef | ✅ | `*k[…]`, `*M4/4`, `*clefG2` |
+| Instrument name | ✅ | `*I"…` |
+| Reference records | ✅ | `!!!OTL`, `!!!COM` → title / composer |
+| Fermata | ✅ | `;` |
+| Spine rearrangement | 🔲 | `*^` / `*v` raise a clear error rather than mis-parsing |
+
+### Export (IR → kern) — `src/adapters/ir_to_humdrum.rs`
+
+| Feature | Status | Notes |
+|---|---|---|
+| Pitch / duration / rests / chords | ✅ | |
+| Tuplets | ✅ | Ratio folded into the recip (`12` = triplet eighth) |
+| Grace notes | ✅ | Each gets its own data record, `.` in the other spines |
+| Ties / slurs / fermata | ✅ | |
+| Barlines + repeats | ✅ | |
+| Key / time / clef / instrument | ✅ | Tandem interpretations |
+| Multi-voice | ✅ | One spine per voice |
+
 ## MEI (planned)
 
-Not yet implemented. Reference material available in `MEILER/` subproject.
-
-## Humdrum (planned)
-
-Not yet implemented. Reference material available in `hum2ly/` and
-`lilypond-export/` subprojects.
+Not yet implemented.

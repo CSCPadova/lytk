@@ -4,6 +4,34 @@ Items are grouped by status. Completed items are kept for reference.
 
 ## Latest status (2026-09-20)
 
+**Conversion/augmentation audit + DLPack** (details in `docs/changelog.md`).
+Exercised all 36 format pairs and every transform end to end.
+
+- **Three silent conversion bugs fixed**: ABC dropped tuplets on read *and*
+  write (wrong durations, no error); ABC emitted almost no bar lines (a
+  28-measure score came out as one ABC measure); Humdrum overwrote every grace
+  note because its per-measure map was keyed by onset alone. ABC grace notes
+  (`{…}`) implemented on both sides.
+- **The fidelity gate was vacuous for ABC and absent for Humdrum.** Added
+  `XML → ABC → XML` (124/152) and `XML → KRN → XML` (131/152) boards over the
+  full MusicXML corpus, committed as non-decreasing baselines, plus
+  `tests/humdrum_roundtrip.rs`.
+- **DLPack**: already works — the representations are NumPy arrays and NumPy
+  implements the protocol, so torch/JAX/CuPy consume them zero-copy. Bumped the
+  `numpy` floor to 1.23 (the `np.from_dlpack` floor), added tests, documented it.
+- **Verified correct, unchanged**: all 36 conversions run; the transforms are
+  semantically right (exact pitch shift, true mirror, exact reversal, duration
+  multiset preserved); all three ML representations are exact inverses.
+- **Open**: `français` is missing from the 11 pitch languages; remaining
+  cross-format drift is un-notatable durations and inner polyphony (one stream
+  per staff in both the ABC and kern writers).
+
+Test counts: 1025 Rust + 141 Python green; clippy clean.
+
+---
+
+## Previous status (2026-09-20)
+
 **PyPI release preparation + DL data loaders** (details in `docs/changelog.md`).
 lytk is distributed as a **Python package only** — the Rust crate is the
 implementation, not a published artifact, so the layout keeps the standard maturin

@@ -624,7 +624,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "numpy", specifier = ">=1.21" },
+    { name = "numpy", specifier = ">=1.23" },
     { name = "scipy", marker = "extra == 'eval'", specifier = ">=1.10" },
     { name = "tensorflow", marker = "extra == 'tensorflow'" },
     { name = "torch", marker = "extra == 'eval'" },

@@ -58,6 +58,17 @@ events = lytk.to_event_sequence(doc)            # 1-D Performance-RNN event code
 metrics = lytk.compute_metrics(doc)             # pitch-class entropy, polyphony, …
 ```
 
+Every encoder returns a real NumPy array, and NumPy implements
+[DLPack](https://dmlc.github.io/dlpack/latest/), so PyTorch, JAX, CuPy and
+TensorFlow consume lytk arrays **zero-copy** — no framework is a dependency of
+lytk and no conversion step is needed:
+
+```python
+import torch
+roll = lytk.to_piano_roll(doc)          # (T, 128) numpy, no copy so far
+tensor = torch.from_dlpack(roll)        # shares the same buffer
+```
+
 Full type stubs ship too (`lytk/_core.pyi`, plus `py.typed`).
 
 ### Datasets and data loaders
@@ -162,7 +173,11 @@ support matrix (what each reader/writer preserves).
   note-ons import as chords, notes crossing a barline are split and tied
 - **CLI** — `convert`, `transpose`, `info`, `flatten` subcommands; batch mode with rayon
 - **ABC notation adapter** — `from_abc` / `to_abc` reader and writer through the IR,
-  exposed in both the Rust CLI and the Python API
+  exposed in both the Rust CLI and the Python API; tuplets (`(p:q:r`), grace
+  groups (`{…}`), multi-voice `V:` blocks, and bar lines derived from the
+  running meter
+- **Humdrum (`**kern`) adapter** — `from_humdrum` / `to_humdrum`, one spine per
+  voice, with tuplets, grace notes, ties/slurs and tandem interpretations
 - **ML representations** — note-array `(N, 4)`, Performance-RNN event sequences, and
   piano-roll `(T, 128)` encoders, plus objective metrics (pitch-class entropy, polyphony,
   scale consistency, …), all NumPy in/out via the Layer-1 Music tree
@@ -179,10 +194,13 @@ support matrix (what each reader/writer preserves).
 - **Python CLI** — the shipped `lytk` console script mirrors the Rust binary
   (`convert`, `transpose`, `info`, `flatten`) with process-parallel batch conversion
   honoring `--jobs`; batch mode exits non-zero if any file fails
-- **1014 Rust tests** (unit + integration: CLI, fixture regression, property-based,
-  round-trip, semantic round-trip, fidelity scoreboard) + 139 Python tests, all passing
-- **Semantic fidelity gate** — committed non-decreasing baselines: LilyPond 35/35 and
-  MusicXML 152/152 fixtures preserve note counts and pitch multisets on round-trip
+- **1025 Rust tests** (unit + integration: CLI, fixture regression, property-based,
+  round-trip, semantic round-trip, fidelity scoreboard) + 141 Python tests, all passing
+- **Semantic fidelity gate** — committed non-decreasing baselines per conversion
+  direction: LilyPond 35/35 and MusicXML 152/152 fixtures preserve note counts and
+  pitch multisets on round-trip, plus cross-format boards (the MusicXML corpus
+  written out as ABC and as `**kern`, then read back) so a narrower format's
+  losses are measured instead of assumed
 - **Criterion benchmarks** — ~52× faster than python-ly for transpose; ~40× for language change
 
 ### Not yet implemented

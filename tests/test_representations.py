@@ -130,3 +130,33 @@ class TestMetrics:
         m = lytk.compute_metrics(_doc(), 480)
         hist = m["pitch_class_histogram"]
         assert abs(sum(hist) - 1.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# DLPack interop
+#
+# Every representation is returned as a real numpy array, and numpy implements
+# the DLPack protocol (`__dlpack__` since 1.22), so torch / JAX / CuPy /
+# TensorFlow consume lytk arrays zero-copy without lytk depending on any of
+# them. These tests pin that guarantee.
+# ---------------------------------------------------------------------------
+
+
+def test_representations_export_dlpack():
+    doc = _doc()
+    for arr in (
+        lytk.to_note_array(doc),
+        lytk.to_piano_roll(doc),
+        lytk.to_event_sequence(doc),
+    ):
+        assert hasattr(arr, "__dlpack__")
+        # kDLCPU == 1; the second element is the device id.
+        assert arr.__dlpack_device__()[0] == 1
+
+
+def test_dlpack_exchange_is_zero_copy():
+    arr = lytk.to_note_array(_doc())
+    view = np.from_dlpack(arr)
+    assert view.shape == arr.shape and view.dtype == arr.dtype
+    view[0, 0] = 12345
+    assert arr[0, 0] == 12345, "DLPack exchange copied instead of sharing memory"

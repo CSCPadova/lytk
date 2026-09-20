@@ -44,9 +44,12 @@ pub struct Duration {
     pub base: Frac,
     /// Number of augmentation dots.
     pub dots: u8,
-    /// Tuplet normal (e.g. 3 for a triplet "3 in the time of 2").
+    /// Tuplet *normal* notes — the time the group takes, MusicXML's
+    /// `<normal-notes>` (2 for a triplet, "3 in the time of 2").
     pub tuplet_normal: u8,
-    /// Tuplet actual (e.g. 2 for a triplet "3 in the time of 2").
+    /// Tuplet *actual* notes — how many are played, MusicXML's
+    /// `<actual-notes>` (3 for a triplet). The sounding length is scaled by
+    /// `tuplet_normal / tuplet_actual`.
     pub tuplet_actual: u8,
 }
 

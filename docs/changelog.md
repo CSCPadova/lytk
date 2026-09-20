@@ -1,5 +1,104 @@
 # Changelog
 
+## 2026-09-20 — Conversion/augmentation audit + DLPack
+
+A full audit of every conversion the library advertises (all 6×6 format pairs,
+driven through the CLI with `lytk diff` as the oracle) and every augmentation,
+plus the DLPack question. **1025 Rust + 141 Python tests, 0 failures**; clippy
+clean.
+
+### Conversion bugs found and fixed
+
+The three defects below were all **silent** — nothing errored, note counts often
+stayed plausible, and no test covered the path.
+
+- **ABC dropped tuplets in both directions.** The writer flattened
+  `Music::Tuplet` away and printed the *sounding* duration as a raw fraction
+  (`c4/3`); the reader's token loop sent `(` to the catch-all `_ => i += 1`, so
+  `(3cde` was read as four plain notes with **wrong durations** and no error.
+  The writer now emits `(p:q:r` (one group per `p` notes, so a run never crosses
+  a bar or a wrapped line) and prints the notated duration; the reader parses
+  `(p`, `(p:q` and `(p:q:r` with the ABC default ratios and stamps the ratio onto
+  both the `Music::Tuplet` wrapper and the note durations.
+- **ABC emitted almost no bar lines.** The IR only stores *explicit* barlines
+  (`||`, `|.`, repeats), so a 28-measure MusicXML score came out with **one** `|`
+  and a MIDI import with **zero** — one giant ABC measure that any external ABC
+  tool renders wrong. lytk's own readback hid it by re-barring from the meter.
+  `emit_body` now tracks the running meter and closes each bar, wrapping the body
+  every 4 bars (ABC convention).
+- **Humdrum silently dropped grace notes.** `ir_to_humdrum` collected a measure
+  into `BTreeMap<Frac, String>` keyed by onset; a grace note has zero duration,
+  so it shared an onset with the note it decorates and `insert` **overwrote** it.
+  `24a-GraceNotes` went 28 → 14 notes. The map is now `BTreeMap<Frac, Vec<String>>`
+  and each grace gets its own kern data record (`.` in the other spines), bottom-
+  aligned so the metrical event still shares one row across spines. Round-trips
+  28 → 28.
+- **ABC had no grace notes at all** — the writer ignored `Music::Grace`, the
+  reader skipped `{…}`. Both sides implemented (`{ab}`, `{/a}`), graces carry no
+  metrical time.
+
+### Fidelity gate extended to the cross-format directions
+
+The scoreboard measured `ABC → IR → ABC` over the four hand-written ABC fixtures
+and **nothing at all for Humdrum** — a vacuous gate: those tunes are written in
+the formats' own narrow idiom and never exercise what a real score throws at
+those writers. Added two boards over the full 152-fixture MusicXML corpus:
+
+| Direction | note-count | pitch | onset+dur |
+|---|---|---|---|
+| XML → IR → ABC → IR | 124/152 | 124/152 | 122/152 |
+| XML → IR → KRN → IR | 131/152 | 129/152 | 130/152 |
+
+(from 119/119/117 and 126/124/124 before the grace fixes), committed as
+non-decreasing baselines. The remaining drift is understood, not mysterious:
+un-notatable durations (a 31/8-bar note has no single spelling, so the Layer-1
+lowering splits it into tied notes) and inner polyphony (both writers emit one
+stream per staff). Also added `tests/humdrum_roundtrip.rs` — `.krn` previously
+had no round-trip file of its own — and 7 ABC regression tests.
+
+### DLPack
+
+**Already supported, transitively — no dependency needed.** Every representation
+is returned by `into_pyarray_bound` as a real NumPy array, and NumPy implements
+`__dlpack__`/`__dlpack_device__`, so `torch.from_dlpack(lytk.to_piano_roll(doc))`
+shares the buffer today (verified: writing through the DLPack view mutates the
+original, device reports `kDLCPU`). Adding a Rust `dlpack` crate and hand-rolling
+a `PyCapsule` would buy nothing. What was actually missing:
+
+- the `numpy>=1.21` floor sat below the protocol (`__dlpack__` landed in 1.22,
+  `np.from_dlpack` in 1.23) — bumped to `numpy>=1.23`;
+- no test pinned the guarantee — added two in `tests/test_representations.py`;
+- it was undocumented — now in the README.
+
+### Verified, no change needed
+
+- **All 36 format pairs convert** (ly · xml · mxl · mid · abc · krn, every
+  direction) without error.
+- **Augmentations are semantically correct**, not just involutive: `transpose`
+  shifts every pitch exactly and keeps onsets; `--interval M3` == +4 semitones;
+  `--to-key D` applies one uniform shift; `invert` keeps every pitch *sum*
+  constant (a true mirror); `retrograde` exactly reverses the pitch order; all
+  three preserve the duration multiset; transpose ∘ transpose⁻¹, invert², and
+  retrograde² are identities.
+- **All three ML representations are exact inverses** (`to_*` → `from_*` → `to_*`
+  is bit-identical for note-array, event-sequence and piano-roll).
+
+### Documentation drift corrected
+
+`docs/import-export.md` still listed Humdrum as *"planned — not yet implemented"*
+two commits after it shipped; it now has a full import/export table. The CLI's
+`convert` help omitted Humdrum. The `Duration` doc comment had `tuplet_normal`
+and `tuplet_actual` swapped in its example (the code follows MusicXML: actual=3,
+normal=2 for a triplet).
+
+### Known gap, not fixed
+
+`français` is absent from `PitchLanguage` (11 languages, LilyPond ships 12). The
+README's "all 11 languages" is self-consistent, so no promise is broken, but a
+French LilyPond source is rejected. Not added here: the reference projects the
+pitch tables were ported from are not present in this checkout, and guessing the
+accidental suffixes would risk silently mis-spelling pitches.
+
 ## 2026-09-20 — PyPI release preparation + DL data loaders
 
 lytk ships as a **Python package only**; the Rust crate is the implementation,

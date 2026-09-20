@@ -163,17 +163,21 @@ fn emit_kern(score: &Score) -> String {
         .max()
         .unwrap_or(0);
     for mi in 0..measure_count {
-        // Per spine: onset (in whole notes from measure start) → token.
-        let mut streams: Vec<BTreeMap<Frac, String>> = Vec::with_capacity(n);
+        // Per spine: onset (in whole notes from measure start) → tokens.
+        // Several events can share an onset — a grace note has zero duration,
+        // so it sits on the same onset as the note it decorates. Each gets its
+        // own kern data record (the Humdrum spelling), so the value is a Vec:
+        // keying by onset alone silently dropped every grace note.
+        let mut streams: Vec<BTreeMap<Frac, Vec<String>>> = Vec::with_capacity(n);
         for s in &spines {
-            let mut events = BTreeMap::new();
+            let mut events: BTreeMap<Frac, Vec<String>> = BTreeMap::new();
             if let Some(measure) = s.part.measures.get(mi) {
                 for voice in measure.voices.iter().filter(|v| v.number == s.voice) {
                     let mut onset = Frac::from_integer(0);
                     for elem in &voice.elements {
                         let (token, dur) = element_token(elem);
                         if let Some(tok) = token {
-                            events.insert(onset, tok);
+                            events.entry(onset).or_default().push(tok);
                         }
                         onset += dur;
                     }
@@ -185,10 +189,24 @@ fn emit_kern(score: &Score) -> String {
         onsets.sort();
         onsets.dedup();
         for onset in onsets {
-            out.push_str(&row(streams
+            let depth = streams
                 .iter()
-                .map(|m| m.get(&onset).cloned().unwrap_or_else(|| ".".to_string()))
-                .collect()));
+                .map(|m| m.get(&onset).map_or(0, |v| v.len()))
+                .max()
+                .unwrap_or(0);
+            // Bottom-align: the leading rows hold the graces, the last row holds
+            // the metrical event every spine shares.
+            for k in 0..depth {
+                out.push_str(&row(streams
+                    .iter()
+                    .map(|m| {
+                        m.get(&onset)
+                            .and_then(|v| k.checked_sub(depth - v.len()).and_then(|i| v.get(i)))
+                            .cloned()
+                            .unwrap_or_else(|| ".".to_string())
+                    })
+                    .collect()));
+            }
         }
         if mi + 1 < measure_count {
             out.push_str(&row(vec![format!("={}", mi + 2); n]));

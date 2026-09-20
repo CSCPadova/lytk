@@ -19,7 +19,9 @@ mod common;
 use common::{note_signature, pitch_multiset, signature};
 
 use _core::adapters::abc_to_ir::AbcToIrAdapter;
+use _core::adapters::humdrum_to_ir::HumdrumToIrAdapter;
 use _core::adapters::ir_to_abc::IrToAbcAdapter;
+use _core::adapters::ir_to_humdrum::IrToHumdrumAdapter;
 use _core::adapters::ir_to_ly::IrToLyAdapter;
 use _core::adapters::ir_to_midi::IrToMidiAdapter;
 use _core::adapters::ir_to_mxml::IrToMxmlAdapter;
@@ -46,7 +48,20 @@ const LY_DUR_BASELINE: usize = 27;
 const XML_NOTES_BASELINE: usize = 152;
 const XML_PITCHES_BASELINE: usize = 152;
 const XML_DUR_BASELINE: usize = 152; // full onset+duration fidelity
-                                     // ABC now includes a multi-voice fixture (multivoice.abc) that round-trips.
+                                     // Cross-format: the same MusicXML corpus written out as ABC / Humdrum and read
+                                     // back. Both formats are narrower than MusicXML (no grace notes in ABC, no
+                                     // inner polyphony in either writer), so these sit well below the XML numbers —
+                                     // the point is that they can only go up. Filled in from the measured run.
+                                     // The drifters that remain are the un-notatable-duration fixtures (a 31/8 bar
+                                     // note has no single spelling, so the Layer-1 lowering splits it into tied
+                                     // notes) and the inner-polyphony ones (both writers are one stream per staff).
+const XML_ABC_NOTES_BASELINE: usize = 124;
+const XML_ABC_PITCHES_BASELINE: usize = 124;
+const XML_ABC_DUR_BASELINE: usize = 122;
+const XML_KRN_NOTES_BASELINE: usize = 131;
+const XML_KRN_PITCHES_BASELINE: usize = 129;
+const XML_KRN_DUR_BASELINE: usize = 130;
+// ABC now includes a multi-voice fixture (multivoice.abc) that round-trips.
 const ABC_NOTES_BASELINE: usize = 4;
 const ABC_PITCHES_BASELINE: usize = 4;
 const ABC_DUR_BASELINE: usize = 4;
@@ -182,6 +197,7 @@ fn fidelity_scoreboard() {
 
     // ----- XML/MXL → IR → XML → IR -----
     let mut xml = Board::default();
+    let mut xml_scores: Vec<(String, Score)> = Vec::new();
     let mut xml_fixtures: Vec<(PathBuf, bool)> = Vec::new();
     for p in list("tests/fixtures/xml", &["xml"]) {
         xml_fixtures.push((p, false));
@@ -208,7 +224,28 @@ fn fidelity_scoreboard() {
             let out = IrToMxmlAdapter::new().convert(&before).ok()?;
             MxmlToIrAdapter::new().convert_str(&out).ok()
         });
+        // Keep the parsed score for the cross-format boards below.
+        xml_scores.push((name.clone(), before.clone()));
         record(&mut xml, &name, &before, after.as_ref());
+    }
+
+    // ----- XML → IR → ABC → IR, and XML → IR → KRN → IR -----
+    let mut xml_abc = Board::default();
+    let mut xml_krn = Board::default();
+    for (name, before) in &xml_scores {
+        let doc = _core::ir::lift::lift_to_music(before);
+        let d = doc.clone();
+        let after_abc = safe(move || {
+            let out = IrToAbcAdapter::new().convert_music(&d).ok()?;
+            AbcToIrAdapter::new().convert_str(&out).ok()
+        });
+        record(&mut xml_abc, name, before, after_abc.as_ref());
+        let d = doc.clone();
+        let after_krn = safe(move || {
+            let out = IrToHumdrumAdapter::new().convert_music(&d).ok()?;
+            HumdrumToIrAdapter::new().convert_str(&out).ok()
+        });
+        record(&mut xml_krn, name, before, after_krn.as_ref());
     }
 
     // ----- ABC → IR → ABC → IR -----
@@ -266,6 +303,24 @@ fn fidelity_scoreboard() {
         (ABC_NOTES_BASELINE, ABC_PITCHES_BASELINE, ABC_DUR_BASELINE),
     );
     report(
+        "XML → IR → ABC → IR",
+        &xml_abc,
+        (
+            XML_ABC_NOTES_BASELINE,
+            XML_ABC_PITCHES_BASELINE,
+            XML_ABC_DUR_BASELINE,
+        ),
+    );
+    report(
+        "XML → IR → KRN → IR",
+        &xml_krn,
+        (
+            XML_KRN_NOTES_BASELINE,
+            XML_KRN_PITCHES_BASELINE,
+            XML_KRN_DUR_BASELINE,
+        ),
+    );
+    report(
         "MIDI→ IR → MIDI→ IR",
         &midi,
         (
@@ -274,7 +329,14 @@ fn fidelity_scoreboard() {
             MIDI_DUR_BASELINE,
         ),
     );
-    for (label, b) in [("LY", &ly), ("XML", &xml), ("ABC", &abc), ("MIDI", &midi)] {
+    for (label, b) in [
+        ("LY", &ly),
+        ("XML", &xml),
+        ("ABC", &abc),
+        ("XML→ABC", &xml_abc),
+        ("XML→KRN", &xml_krn),
+        ("MIDI", &midi),
+    ] {
         if !b.fails.is_empty() {
             println!("\n{label} content changes (sample):");
             for f in &b.fails {
@@ -299,6 +361,24 @@ fn fidelity_scoreboard() {
         "ABC",
         &abc,
         (ABC_NOTES_BASELINE, ABC_PITCHES_BASELINE, ABC_DUR_BASELINE),
+    );
+    gate(
+        "XML→ABC",
+        &xml_abc,
+        (
+            XML_ABC_NOTES_BASELINE,
+            XML_ABC_PITCHES_BASELINE,
+            XML_ABC_DUR_BASELINE,
+        ),
+    );
+    gate(
+        "XML→KRN",
+        &xml_krn,
+        (
+            XML_KRN_NOTES_BASELINE,
+            XML_KRN_PITCHES_BASELINE,
+            XML_KRN_DUR_BASELINE,
+        ),
     );
     gate(
         "MIDI",
