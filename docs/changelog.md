@@ -1,5 +1,92 @@
 # Changelog
 
+## 2026-09-20 — PyPI release preparation + DL data loaders
+
+lytk ships as a **Python package only**; the Rust crate is the implementation,
+not a published artifact. **1014 Rust + 150 Python tests, 0 failures** (torch and
+TensorFlow both installed, so the framework adapters actually run); clippy clean.
+
+### Deep-learning integration
+
+- **Padded data loaders — `to_pytorch_dataloader()` / `to_tensorflow_dataloader()`.**
+  Previously `to_pytorch_dataset()` was the end of the road: every representation
+  is ragged along its first axis (note arrays `(n_notes, 4)`, event sequences
+  `(n_events,)`, piano rolls `(n_frames, 128)`) and no two scores agree, so the
+  obvious next line — `DataLoader(ds, batch_size=8)` — died with *"stack expects
+  each tensor to be equal size, but got [947] at entry 0 and [915] at entry 1"*.
+  Both loaders now pad the batch and return `(padded, lengths)`. The lengths are
+  explicit rather than inferred from the padding, because the pad value is not
+  reserved: `0` is a legitimate event code, pitch and velocity, so trailing zeros
+  are ambiguous. Verified on all three representations, that padded content
+  matches the unbatched items exactly, and that the torch and TensorFlow loaders
+  produce byte-identical batches.
+- **`pad_collate` is exported** for use as a `collate_fn` with a hand-rolled
+  `DataLoader`. `to_pytorch_dataloader` forwards `**kwargs` to the `DataLoader`
+  (`num_workers`, `pin_memory`, `drop_last`, …) with converter arguments in
+  `representation_kwargs`.
+- **Fixed: a TensorFlow-only dtype bug.** `pad_value` defaults to `0.0`, and every
+  representation is an integer dtype, so `padded_batch` raised *"Cannot convert
+  0.0 to EagerTensor of dtype int64"* — torch silently casts, TensorFlow does not.
+  The pad scalar is now cast through numpy. This class of bug could not have been
+  caught before: CI installed torch but never TensorFlow, so **every** tf test
+  silently skipped. CI now installs `tensorflow-cpu`.
+- **Fixed: `FolderDataset` could not see ABC or `**kern` files.** The CLI has read
+  both for some time, but `SUPPORTED_EXTENSIONS` in `datasets/base.py` listed only
+  LilyPond/MusicXML/MIDI, so a dataset over an ABC or kern corpus — including the
+  1328-file music21 kern corpus this project validates against — silently
+  discovered *zero* files and reported `len(ds) == 0` rather than an error.
+  `.abc`, `.krn` and `.kern` now load, and `test_extensions_match_the_cli` asserts
+  the CLI and dataset format lists agree so they cannot drift apart again.
+- **Install API**: `torch>=2.0` / `tensorflow>=2.12` / `eval` extras gained
+  version floors, plus a new `all` extra — `pip install "lytk[torch]"`,
+  `"lytk[tensorflow]"`, `"lytk[eval]"`, `"lytk[all]"`. Both frameworks stay
+  lazily imported, so `import lytk` needs neither.
+
+### Release readiness
+
+- **Licensing gap closed (MIT compliance).** `src/tree-sitter/` vendors the
+  generated tree-sitter-lilypond parser (~1.1 MB of `parser.c` and friends) and
+  was shipping inside the wheel with no licence text or attribution — MIT requires
+  the notice to travel with the code. Added the verbatim upstream notice at
+  `src/tree-sitter/LICENSE` (© Nathan Whetsell) plus a provenance `README.md`, and
+  listed it in `license-files`, so the wheel and sdist now carry it
+  (`dist-info/licenses/src/tree-sitter/LICENSE`).
+- **4 real clippy findings fixed.** The crate-level
+  `#![allow(clippy::useless_conversion)]` existed only for pyo3's macro expansion
+  but silenced the whole crate; scoping it to `mod python` exposed four genuine
+  `useless_conversion` hits on `ts.beats_fraction().into()` in
+  `ly_to_ir/chord_mode.rs` and `ly_to_ir/figured_bass.rs`. The bindings also moved
+  out of `src/lib.rs` (1002 lines → a 52-line root) into `src/python.rs`.
+- **Fixed a latent release-blocking bug**: the `test` gate in `release.yml` ran
+  `maturin develop` without the `pip install --upgrade pip` that the CI job
+  documents as required for PEP 735 dependency-groups, so a tagged release would
+  have failed before publishing anything.
+- **`rust-version = "1.85"`** declared (clap 4.6 is the floor) with a CI job
+  pinned to exactly that toolchain — it matters because the sdist is compiled on
+  the user's own machine.
+- **README/docs corrected for a public audience**: the reference table pointed at
+  a dozen vendored directories absent from the repo (replaced with an
+  acknowledgements list); Humdrum was still listed as unimplemented; test counts
+  were ~140 commits stale; `ruff` was documented but configured nowhere. Added
+  PyPI/Python/CI/licence badges, the extras matrix, a data-loader section,
+  `CONTRIBUTING.md` and `SECURITY.md` (parser threat model: untrusted input files,
+  `\include` following, MXL decompression caps). All three README Python examples
+  were executed verbatim as a check.
+- **Verified the artifacts, not just the build**: the wheel contains
+  `lytk/_core.abi3.so` and both licences, and the sdist was installed from source
+  into a clean venv (`--no-binary lytk`) where parsing, transposing,
+  note-array/piano-roll encoding, the `lytk` console script and CLI conversion all
+  work.
+
+### Still the maintainer's call
+- Version stays **1.0.0** and no tag was pushed.
+- PyPI Trusted Publishing must be configured for the repo before a `v*` tag will
+  publish.
+- `GPL-2.0-only` is restrictive for a library (it prevents use from non-GPL
+  projects). `Cargo.toml` and `pyproject.toml` agree, so only the intent needs
+  confirming — note Epic G's EGT4 row describes it as `GPL-2.0-or-later`, which
+  never matched the manifests.
+
 ## 2026-07-10 — Humdrum (`**kern`) format support
 
 New adapter pair `humdrum_to_ir` / `ir_to_humdrum` (Layer-1 Music tree, same

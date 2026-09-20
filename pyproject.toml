@@ -8,7 +8,9 @@ authors = [
 ]
 requires-python = ">=3.10"
 license = "GPL-2.0-only"
-license-files = ["LICENSE"]
+# The wheels embed the vendored tree-sitter grammar (MIT), whose notice must
+# ship with any copy of it.
+license-files = ["LICENSE", "src/tree-sitter/LICENSE"]
 keywords = [
     "music",
     "notation",
@@ -39,11 +41,16 @@ classifiers = [
 dependencies = ["numpy>=1.21"]
 
 [project.optional-dependencies]
-torch = ["torch"]
-tensorflow = ["tensorflow"]
+# Deep-learning adapters in `lytk.datasets`: `to_pytorch_dataset` /
+# `to_pytorch_dataloader` and the TensorFlow equivalents. Both frameworks are
+# imported lazily, so neither is needed unless those methods are called.
+torch = ["torch>=2.0"]
+tensorflow = ["tensorflow>=2.12"]
 # Generation-evaluation metrics (lytk.metrics): JS-similarity needs scipy;
 # Fréchet Music Distance also needs torch + transformers + a LilyBERT checkpoint.
-eval = ["scipy>=1.10", "torch", "transformers"]
+eval = ["scipy>=1.10", "torch>=2.0", "transformers>=4.30"]
+# Everything optional, for `pip install lytk[all]`.
+all = ["lytk[torch,tensorflow,eval]"]
 
 [project.urls]
 Homepage = "https://github.com/CSCPadova/lytk"

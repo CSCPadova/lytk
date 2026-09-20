@@ -7,7 +7,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lytk.datasets import Dataset, FolderDataset, load_document
+from lytk.datasets import (
+    SUPPORTED_EXTENSIONS,
+    Dataset,
+    FolderDataset,
+    load_document,
+)
 
 LY_DIR = Path("tests/fixtures/ly")
 MXL_DIR = Path("tests/fixtures/mxl")
@@ -235,3 +240,158 @@ class TestLazyConversion:
         collected = [x.numpy() for x in tfds]
         assert len(collected) == 2
         assert all(x.shape[-1] == 4 for x in collected)
+
+
+# ---------------------------------------------------------------------------
+# Format coverage
+# ---------------------------------------------------------------------------
+
+ABC_DIR = Path("tests/fixtures/abc")
+
+
+class TestFormatCoverage:
+    def test_loads_abc(self):
+        doc = load_document(sorted(ABC_DIR.glob("*.abc"))[0])
+        assert __import__("lytk").to_note_array(doc).shape[1] == 4
+
+    def test_loads_humdrum(self, tmp_path):
+        import lytk
+
+        krn = tmp_path / "gen.krn"
+        lytk.to_humdrum(lytk.from_lilypond_string(r"\relative c' { c4 d e f }"), str(krn))
+        assert lytk.to_note_array(load_document(krn)).shape == (4, 4)
+
+    def test_folder_dataset_discovers_abc_and_kern(self, tmp_path):
+        """A corpus of ABC/**kern files must not come back empty."""
+        import lytk
+
+        for src in sorted(ABC_DIR.glob("*.abc")):
+            (tmp_path / src.name).write_text(src.read_text())
+        lytk.to_humdrum(
+            lytk.from_lilypond_string(r"\relative c' { c4 d e f }"),
+            str(tmp_path / "gen.krn"),
+        )
+        ds = FolderDataset(tmp_path)
+        assert len(ds) == len(list(ABC_DIR.glob("*.abc"))) + 1
+        assert any(n.endswith(".krn") for n in ds.filenames)
+        assert any(n.endswith(".abc") for n in ds.filenames)
+
+    def test_extensions_match_the_cli(self):
+        """`lytk.cli` and the dataset loader must accept the same formats.
+
+        They keep separate lists (the CLI produces Scores, the loader produces
+        MusicDocuments); this catches one gaining a format without the other,
+        which is how ABC and **kern came to be silently undiscoverable.
+        """
+        from lytk.cli import _SUPPORTED_EXTS
+
+        assert SUPPORTED_EXTENSIONS == _SUPPORTED_EXTS
+
+
+# ---------------------------------------------------------------------------
+# Data loaders (padded batching)
+# ---------------------------------------------------------------------------
+
+
+class TestPytorchDataLoader:
+    def test_ragged_items_batch(self, tmp_path):
+        """The whole point: default torch collate cannot stack ragged scores."""
+        torch = pytest.importorskip("torch")
+        from torch.utils.data import DataLoader
+
+        ds = FolderDataset(_small_ly_folder(tmp_path, 4))
+        plain = ds.to_pytorch_dataset("event_sequence")
+        lengths = [plain[i].shape[0] for i in range(len(plain))]
+        assert len(set(lengths)) > 1, "fixtures must differ in length to be a test"
+        with pytest.raises(RuntimeError):
+            next(iter(DataLoader(plain, batch_size=len(plain))))
+
+        padded, lens = next(
+            iter(ds.to_pytorch_dataloader("event_sequence", batch_size=len(plain)))
+        )
+        assert lens.tolist() == lengths
+        assert padded.shape == (len(plain), max(lengths))
+
+    def test_content_and_padding_preserved(self, tmp_path):
+        pytest.importorskip("torch")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 3))
+        plain = ds.to_pytorch_dataset("note_array", resolution=24)
+        padded, lens = next(
+            iter(
+                ds.to_pytorch_dataloader(
+                    "note_array", batch_size=3, representation_kwargs={"resolution": 24}
+                )
+            )
+        )
+        for i in range(3):
+            assert (padded[i, : lens[i]] == plain[i]).all()
+            assert (padded[i, lens[i] :] == 0).all()
+
+    def test_pad_value_is_honoured(self, tmp_path):
+        pytest.importorskip("torch")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 3))
+        padded, lens = next(
+            iter(ds.to_pytorch_dataloader("event_sequence", batch_size=3, pad_value=-1))
+        )
+        assert (padded[lens.argmin(), lens.min() :] == -1).all()
+
+    def test_pad_collate_is_reusable(self, tmp_path):
+        """`pad_collate` must work with a hand-rolled DataLoader too."""
+        pytest.importorskip("torch")
+        from functools import partial
+
+        from torch.utils.data import DataLoader
+
+        from lytk.datasets import pad_collate
+
+        ds = FolderDataset(_small_ly_folder(tmp_path, 3))
+        loader = DataLoader(
+            ds.to_pytorch_dataset("event_sequence"),
+            batch_size=3,
+            collate_fn=partial(pad_collate, pad_value=0),
+        )
+        padded, lens = next(iter(loader))
+        assert padded.shape[0] == 3 and len(lens) == 3
+
+    def test_rejects_unknown_representation(self, tmp_path):
+        pytest.importorskip("torch")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 1))
+        with pytest.raises(ValueError):
+            ds.to_pytorch_dataloader("nope")
+
+
+class TestTensorflowDataLoader:
+    def test_ragged_items_batch(self, tmp_path):
+        pytest.importorskip("tensorflow")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 4))
+        padded, lens = next(iter(ds.to_tensorflow_dataloader("event_sequence", batch_size=4)))
+        expected = [a.shape[0] for a in ds.to_representation("event_sequence")]
+        assert lens.numpy().tolist() == expected
+        assert tuple(padded.shape) == (4, max(expected))
+
+    def test_integer_pad_value_on_integer_dtypes(self, tmp_path):
+        """The float default must not fail on TF's stricter dtype rules."""
+        pytest.importorskip("tensorflow")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 2))
+        for rep, kwargs in (
+            ("event_sequence", {}),
+            ("note_array", {"resolution": 24}),
+            ("piano_roll", {"resolution": 24}),
+        ):
+            padded, _ = next(
+                iter(
+                    ds.to_tensorflow_dataloader(
+                        rep, batch_size=2, representation_kwargs=kwargs
+                    )
+                )
+            )
+            assert padded.dtype.is_integer
+
+    def test_agrees_with_pytorch(self, tmp_path):
+        pytest.importorskip("tensorflow")
+        pytest.importorskip("torch")
+        ds = FolderDataset(_small_ly_folder(tmp_path, 3))
+        tp, tl = next(iter(ds.to_pytorch_dataloader("event_sequence", batch_size=3)))
+        fp, fl = next(iter(ds.to_tensorflow_dataloader("event_sequence", batch_size=3)))
+        assert fl.numpy().tolist() == tl.tolist()
+        assert np.array_equal(fp.numpy(), tp.numpy())

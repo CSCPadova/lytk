@@ -4,7 +4,7 @@
 
 | Tool | Version | Purpose |
 |---|---|---|
-| Rust + Cargo | ≥ 1.78 | Compile the Rust library and CLI |
+| Rust + Cargo | ≥ 1.85 | Compile the Rust library and CLI (`rust-version` in `Cargo.toml`) |
 | Python | ≥ 3.10 | Python bindings and tooling |
 | uv | latest | Python dependency management |
 | maturin | ≥ 1.0, < 2.0 | Build the PyO3 extension |
@@ -55,7 +55,9 @@ cargo check
 
 ### Python extension
 
-The Python package (`import lytk`) requires building the Rust `_core` extension with maturin.
+The Python package (`import lytk`) requires building the Rust `lytk._core`
+extension with maturin. The bindings themselves live in `src/python.rs` and
+`src/navigation.rs`; `src/lib.rs` stays a plain Rust root.
 
 Development install (rebuilds the `.so` on every `cargo` change):
 
@@ -147,7 +149,7 @@ pytest tests/ --cov=lytk --cov-report=term-missing
 ```bash
 # Rust
 cargo fmt                           # format
-cargo clippy -- -D warnings         # lint (treat warnings as errors)
+cargo clippy --all-targets -- -D warnings   # lint (treat warnings as errors)
 
 # Python
 ruff check .                        # lint

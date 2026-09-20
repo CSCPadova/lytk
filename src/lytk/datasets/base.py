@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import random
 from pathlib import Path
@@ -11,18 +12,21 @@ import numpy as np
 
 from lytk import _core
 
-# Recognised input extensions → loader producing a MusicDocument.
+# Recognised input extensions → loader producing a MusicDocument. Keep in step
+# with `_SUPPORTED_EXTS` in `lytk.cli`; `test_datasets.py` asserts they agree.
 _LY_EXTS = {".ly", ".ily"}
 _XML_EXTS = {".xml", ".musicxml", ".mxl"}
 _MIDI_EXTS = {".mid", ".midi"}
-SUPPORTED_EXTENSIONS = _LY_EXTS | _XML_EXTS | _MIDI_EXTS
+_ABC_EXTS = {".abc"}
+_KERN_EXTS = {".krn", ".kern"}
+SUPPORTED_EXTENSIONS = _LY_EXTS | _XML_EXTS | _MIDI_EXTS | _ABC_EXTS | _KERN_EXTS
 
 
 def load_document(path: str | Path):
     """Load any supported music file as a :class:`MusicDocument`.
 
-    LilyPond is parsed directly into the Layer-1 Music tree; MusicXML/MXL and
-    MIDI are parsed into a Score and lifted.
+    LilyPond is parsed directly into the Layer-1 Music tree; every other format
+    is parsed into a Score and lifted.
     """
     path = Path(path)
     ext = path.suffix.lower()
@@ -32,7 +36,14 @@ def load_document(path: str | Path):
         return _core.from_musicxml(str(path)).to_music_document()
     if ext in _MIDI_EXTS:
         return _core.from_midi(str(path)).to_music_document()
-    raise ValueError(f"unsupported file extension: {ext!r} ({path})")
+    if ext in _ABC_EXTS:
+        return _core.from_abc(str(path)).to_music_document()
+    if ext in _KERN_EXTS:
+        return _core.from_humdrum(str(path)).to_music_document()
+    raise ValueError(
+        f"unsupported file extension: {ext!r} ({path}); "
+        f"supported: {sorted(SUPPORTED_EXTENSIONS)}"
+    )
 
 
 # Representation converters: name → (function, default kwargs).
@@ -51,6 +62,41 @@ def _require_representation(representation: str) -> Callable[..., np.ndarray]:
             f"choose from {sorted(_REPRESENTATIONS)}"
         )
     return _REPRESENTATIONS[representation]
+
+
+def pad_collate(batch: Sequence[Any], pad_value: float = 0.0):
+    """Collate variable-length representation tensors into one padded batch.
+
+    Every representation is ragged along its first axis — note arrays are
+    ``(n_notes, 4)``, event sequences ``(n_events,)``, piano rolls
+    ``(n_frames, 128)`` — and the number of notes/events/frames differs per
+    score, so ``torch``'s default collate (which stacks) raises
+    ``RuntimeError: stack expects each tensor to be equal size``. This pads the
+    first axis to the longest item in the batch.
+
+    Returns ``(padded, lengths)``. The lengths are returned rather than left to
+    be inferred from ``pad_value``, because the padding value is not reserved:
+    ``0`` is a legitimate event code, pitch and velocity, so trailing zeros are
+    genuinely ambiguous. Use them to build a mask or to
+    ``pack_padded_sequence``.
+
+    Suitable as a ``collate_fn`` for any ``torch.utils.data.DataLoader``:
+
+    ```python
+    from functools import partial
+    DataLoader(ds, batch_size=8, collate_fn=partial(pad_collate, pad_value=-1))
+    ```
+    """
+    try:
+        import torch
+        from torch.nn.utils.rnn import pad_sequence
+    except ImportError as exc:  # pragma: no cover - optional dep
+        raise ImportError("PyTorch is required for pad_collate()") from exc
+
+    tensors = [torch.as_tensor(np.asarray(item)) for item in batch]
+    lengths = torch.tensor([t.shape[0] for t in tensors], dtype=torch.long)
+    padded = pad_sequence(tensors, batch_first=True, padding_value=pad_value)
+    return padded, lengths
 
 
 class Dataset:
@@ -204,6 +250,106 @@ class Dataset:
         else:  # pragma: no cover - empty dataset
             spec = tf.TensorSpec(shape=[None], dtype=tf.int32)
         return tf.data.Dataset.from_generator(_gen, output_signature=spec)
+
+    # -- ML framework data loaders (batching) --------------------------------
+
+    def to_pytorch_dataloader(
+        self,
+        representation: str = "note_array",
+        *,
+        batch_size: int = 1,
+        shuffle: bool = False,
+        pad_value: float = 0.0,
+        representation_kwargs: dict[str, Any] | None = None,
+        **loader_kwargs: Any,
+    ):
+        """Return a ready-to-train ``torch.utils.data.DataLoader``.
+
+        Like :meth:`to_pytorch_dataset` but batched, with :func:`pad_collate`
+        wired in so that ``batch_size > 1`` works on ragged scores. Each batch
+        is a ``(padded, lengths)`` tuple.
+
+        Unlike the other methods on this class, ``**kwargs`` here go to the
+        ``DataLoader`` (``num_workers``, ``pin_memory``, ``drop_last``, …);
+        arguments for the representation converter go in
+        ``representation_kwargs``. Pass your own ``collate_fn`` to override the
+        padding behaviour.
+
+        ```python
+        train, val, test = FolderDataset("corpus/").split()
+        loader = train.to_pytorch_dataloader(
+            "event_sequence", batch_size=32, shuffle=True, num_workers=4
+        )
+        for events, lengths in loader:
+            ...
+        ```
+        """
+        try:
+            from torch.utils.data import DataLoader
+        except ImportError as exc:  # pragma: no cover - optional dep
+            raise ImportError(
+                "PyTorch is required for to_pytorch_dataloader()"
+            ) from exc
+
+        dataset = self.to_pytorch_dataset(
+            representation, **(representation_kwargs or {})
+        )
+        loader_kwargs.setdefault(
+            "collate_fn", functools.partial(pad_collate, pad_value=pad_value)
+        )
+        return DataLoader(
+            dataset, batch_size=batch_size, shuffle=shuffle, **loader_kwargs
+        )
+
+    def to_tensorflow_dataloader(
+        self,
+        representation: str = "note_array",
+        *,
+        batch_size: int = 1,
+        shuffle: bool = False,
+        pad_value: float = 0.0,
+        representation_kwargs: dict[str, Any] | None = None,
+    ):
+        """Return a batched ``tf.data.Dataset`` of ``(padded, lengths)`` tuples.
+
+        The TensorFlow counterpart of :meth:`to_pytorch_dataloader`: pads each
+        batch along the ragged first axis with ``padded_batch`` and carries the
+        true lengths alongside, for the same reason as :func:`pad_collate`
+        (``0`` is a valid value, so padding is not self-identifying).
+
+        ```python
+        loader = train.to_tensorflow_dataloader("piano_roll", batch_size=16)
+        for rolls, lengths in loader:
+            ...
+        ```
+        """
+        try:
+            import tensorflow as tf
+        except ImportError as exc:  # pragma: no cover - optional dep
+            raise ImportError(
+                "TensorFlow is required for to_tensorflow_dataloader()"
+            ) from exc
+
+        base = self.to_tensorflow_dataset(
+            representation, **(representation_kwargs or {})
+        )
+        with_lengths = base.map(lambda item: (item, tf.shape(item)[0]))
+        if shuffle:
+            # Bounded by the dataset size: items are converted lazily, so the
+            # buffer holds arrays, not documents.
+            with_lengths = with_lengths.shuffle(buffer_size=max(len(self), 1))
+        # Cast through numpy: every representation is an integer dtype
+        # (int64 events, int32 note arrays, uint8 rolls) and TensorFlow refuses
+        # to build an int constant from the float default, unlike torch.
+        dtype = base.element_spec.dtype
+        pad_scalar = np.asarray(pad_value).astype(dtype.as_numpy_dtype)
+        return with_lengths.padded_batch(
+            batch_size,
+            padding_values=(
+                tf.constant(pad_scalar, dtype=dtype),
+                tf.constant(0, dtype=tf.int32),
+            ),
+        )
 
 
 class Subset(Dataset):

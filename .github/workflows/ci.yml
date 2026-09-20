@@ -33,7 +33,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -49,6 +49,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+
+  msrv:
+    name: MSRV (rust-version in Cargo.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: msrv
+        run: echo "v=$(sed -n 's/^rust-version = \"\(.*\)\"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.v }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets
 
   python:
     name: Python tests
@@ -73,5 +86,9 @@ jobs:
       # CPU-only torch so the torch dataset-adapter tests run instead of skipping
       # (scipy above enables the eval-metric tests too).
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      # TensorFlow too: its dtype rules are stricter than torch's, so the tf
+      # data-loader path fails on inputs the torch path accepts. Without this
+      # every tf test silently skips and that class of bug ships.
+      - run: pip install tensorflow-cpu
       - run: maturin develop
       - run: pytest tests/ -v

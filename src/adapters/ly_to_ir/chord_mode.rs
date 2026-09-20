@@ -227,7 +227,7 @@ pub(super) fn distribute_harmonies(measures: &mut [Measure], entries: &[HarmonyE
     for m in &measures[..=measure_idx] {
         if let Some(ref attrs) = m.attributes {
             if let Some(ref ts) = attrs.time {
-                measure_dur = ts.beats_fraction().into();
+                measure_dur = ts.beats_fraction();
             }
         }
     }
@@ -238,7 +238,7 @@ pub(super) fn distribute_harmonies(measures: &mut [Measure], entries: &[HarmonyE
             measure_idx += 1;
             if let Some(ref attrs) = measures[measure_idx].attributes {
                 if let Some(ref ts) = attrs.time {
-                    measure_dur = ts.beats_fraction().into();
+                    measure_dur = ts.beats_fraction();
                 }
             }
         }

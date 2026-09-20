@@ -2,7 +2,42 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-06-18)
+## Latest status (2026-09-20)
+
+**PyPI release preparation + DL data loaders** (details in `docs/changelog.md`).
+lytk is distributed as a **Python package only** — the Rust crate is the
+implementation, not a published artifact, so the layout keeps the standard maturin
+naming (`[lib] name = "_core"` → the `lytk._core` module).
+
+- **Data loaders for torch and TensorFlow.** `to_pytorch_dataset()` was as far as
+  the pipeline went: representations are ragged along their first axis, so
+  `DataLoader(ds, batch_size=8)` — the obvious next line — raised *"stack expects
+  each tensor to be equal size"*. Added `to_pytorch_dataloader()`,
+  `to_tensorflow_dataloader()` and an exported `pad_collate`, returning
+  `(padded, lengths)`; lengths are explicit because `0` is a valid event
+  code/pitch/velocity, so padding is not self-identifying. Both loaders verified
+  to produce byte-identical batches.
+- **`FolderDataset` was blind to ABC and `**kern`.** The CLI read both; the
+  dataset loader's extension set did not, so those corpora — the music21 kern
+  corpus included — came back as `len(ds) == 0` with no error. Fixed, with a test
+  asserting the CLI and dataset format lists agree.
+- **A TensorFlow-only dtype bug** in the new padding path (`0.0` pad value vs
+  integer representations) existed because CI installed torch but never
+  TensorFlow, so every tf test silently skipped. CI now installs `tensorflow-cpu`.
+- **Release hygiene**: the vendored tree-sitter grammar was shipping in the wheel
+  with no MIT notice (now included, as the licence requires); the crate-level
+  `allow(clippy::useless_conversion)` pyo3 needs had been hiding 4 real lint hits
+  in `ly_to_ir` (fixed, allow now scoped to `mod python`); the release workflow's
+  test gate would have failed on a missing `pip` upgrade; added
+  `rust-version = 1.85` + MSRV CI, `CONTRIBUTING.md`, `SECURITY.md`, extras with
+  version floors plus `lytk[all]`, and corrected a stale README.
+
+Test counts: 1014 Rust + 150 Python green (1 skipped: FMD needs a LilyBERT
+checkpoint); clippy clean. **Not tagged** — see Epic G EGT5.
+
+---
+
+## Previous status (2026-06-18)
 
 Four landings + a reconciliation (details in `docs/changelog.md`):
 - **MIDI instrument preservation** — instrument identity (GM name ↔ 0-indexed
@@ -245,7 +280,7 @@ not structural.
 | EFT3 | Objective metrics (`src/representations/metrics.rs` + Python): pitch-class histogram/entropy, n-PC rate, polyphony, empty-beat rate, scale & groove consistency | ✅ `src/representations/metrics.rs` (11 metrics + helpers): n_pitches/n_pitch_classes_used, pitch_range, pitch_class_histogram, pitch/pitch_class_entropy, polyphony, polyphony_rate, empty_beat_rate, pitch_in_scale_rate, scale_consistency, groove_consistency. PyO3 `compute_metrics` → dict + stub. 7 Rust + 3 pytest. Adversarially verified against muspy (6-group workflow, 0 discrepancies) |
 | EFT4 | Tests: folder → dataset → batch tensor shapes; metrics on hand-built fixtures | ✅ `tests/test_datasets.py` (14 cases: load .ly/.xml/.mxl/.mid, folder discovery, representation conversion, metrics, splits, caching) + metric tests (Rust + pytest, muspy-verified) |
 
-### Epic G: Python Distribution & Docs (release readiness) 🟡
+### Epic G: Python Distribution & Docs (release readiness) 🟡 *(all but the tag)*
 
 | Task | Description | Status |
 |------|-------------|--------|
@@ -254,6 +289,10 @@ not structural.
 | EGT3 | maturin GitHub Actions wheel matrix (Linux/macOS/Windows, abi3) | ✅ `.github/workflows/release.yml`: abi3 wheels (Linux x86_64+aarch64, macOS x86_64+arm64, Windows x64) + sdist via `PyO3/maturin-action`, publish-to-PyPI job (Trusted Publishing/OIDC) gated on a `v*` tag |
 | EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ✅ `pyproject.toml`: `license = "GPL-2.0-or-later"` (matches the repo LICENSE) + classifiers, keywords, URLs, `torch`/`tensorflow` extras (verified in the built wheel METADATA). README Python quickstart expanded (ABC, representations, MIDI, extras). `import-export.md`: top-level format matrix + real ABC section + `\cadenzaOn/Off` updated |
 | EGT5 | Tag **v1.0.0**; update roadmap (Completed) + changelog | ⬜ Deferred — the version tag is intentionally NOT created yet (per request). Everything else for release is in place; bump `version` in `pyproject.toml`/`Cargo.toml` + push a `v*` tag to trigger the wheel build/publish when ready |
+| EGT6 | Standard maturin layout retained | ✅ Distribution is PyPI-only, so the crate keeps the conventional maturin naming (`[lib] name = "_core"`, `module-name = "lytk._core"`) and pyo3/numpy stay unconditional — a feature toggling them would be a switch with one position. The bindings did move out of `src/lib.rs` (1002 → 52 lines) into `src/python.rs`, which scoped the pyo3 `useless_conversion` allow and exposed 4 real lint hits in `ly_to_ir` (fixed) |
+| EGT7 | Third-party licence compliance | ✅ The vendored tree-sitter-lilypond parser in `src/tree-sitter/` shipped inside the wheel with no licence text — MIT requires the notice to travel with it. Verbatim upstream notice added at `src/tree-sitter/LICENSE` (© Nathan Whetsell) + provenance `README.md`, and added to `license-files` (confirmed present in the built wheel and sdist) |
+| EGT8 | Public-repo hygiene | ✅ `CONTRIBUTING.md`, `SECURITY.md` (parser threat model), README badges + extras matrix + data-loader section; removed the reference table pointing at a dozen directories absent from the repo, the stale "Humdrum not implemented" claim, stale test counts, and `ruff` commands for tooling configured nowhere. `rust-version = "1.85"` + MSRV CI job (the sdist compiles on the user's toolchain). Fixed a latent `release.yml` failure: the test gate lacked the `pip` upgrade needed for PEP 735 groups |
+| EGT9 | Deep-learning data loaders + install API | ✅ `to_pytorch_dataloader` / `to_tensorflow_dataloader` / `pad_collate` return `(padded, lengths)` for ragged scores — the missing step between `to_*_dataset()` and training. `FolderDataset` now discovers `.abc`/`.krn`/`.kern` (silently invisible before). Extras carry version floors plus `lytk[all]`; both frameworks stay lazily imported. CI installs `tensorflow-cpu` so the tf path is actually exercised. Tests: `tests/test_datasets.py` (33) |
 
 ### Epic H: Multi-voice / multi-staff bar-splitting rework 🟢
 

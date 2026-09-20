@@ -266,7 +266,7 @@ pub(super) fn distribute_figured_bass(measures: &mut [Measure], entries: &[Figur
     for m in &measures[..=measure_idx] {
         if let Some(ref attrs) = m.attributes {
             if let Some(ref ts) = attrs.time {
-                measure_dur = ts.beats_fraction().into();
+                measure_dur = ts.beats_fraction();
             }
         }
     }
@@ -279,7 +279,7 @@ pub(super) fn distribute_figured_bass(measures: &mut [Measure], entries: &[Figur
             // Check if the new measure changes time signature
             if let Some(ref attrs) = measures[measure_idx].attributes {
                 if let Some(ref ts) = attrs.time {
-                    measure_dur = ts.beats_fraction().into();
+                    measure_dur = ts.beats_fraction();
                 }
             }
         }
