@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-09-24 — One command line, in Python
+
+There were two `lytk` commands: the Rust binary (13 subcommands) and the one
+`pip install` put on PATH, a four-command Python subset. The Rust one is gone
+and the Python one does everything it did. It's a Typer app now, in
+`src/lytk/cli.py`.
+
+- **Commands:** `convert`, `transpose` (`-s`, `--interval`, `--to-key`),
+  `invert`, `retrograde`, `change-language`, `abs2rel`, `rel2abs`, `info`
+  (`--json`), `positions`, `bundle`, `diff`, `batch` and `flatten`. They keep
+  the Rust behaviour:
+  - `-` for stdin/stdout, with `--from`/`--format`;
+  - the first movement of a multi-`\score` file at the requested path;
+  - LilyPond→LilyPond through the Music tree;
+  - parallel folder conversion and batch jobs, where a failing file fails
+    alone and the exit status is non-zero;
+  - `diff` exits 1 when the scores differ.
+- **Checked against the Rust binary** on 105 fixtures: `info` (text and JSON)
+  is identical everywhere. `positions` differs only where there are grace
+  notes. The Rust version added a grace note's written duration to its bar's
+  length; grace notes take no time, so the Python version leaves them out.
+- **Bindings added for it:** `from_lilypond_movements(path)`,
+  `to_lilypond(..., relative=True/False)`, `to_mxl_bytes(score)`,
+  `Score.lyricist` and `Part.midi_instrument`, with type stubs.
+- **Messages:** a missing input now says `error: no such file: PATH`. Before,
+  the text was `I/O error: No such file or directory (os error 2)`, with no
+  path.
+- **Removed:** `src/main.rs`, the `[[bin]]` target, `clap` and `anyhow`
+  (`rayon` remains only as a dependency of `midly`). The 48 Rust CLI tests are
+  now Python tests (`tests/test_cli.py`, 66 cases, in-process through Typer's
+  `CliRunner` plus two through the installed command); `assert_cmd` and
+  `predicates` are gone.
+- **Docs:** `docs/cli.md` was rewritten as the reference for all 13 commands;
+  it had covered 4 and described multi-movement output wrongly. Typer is a
+  new runtime dependency.
+
+998 Rust + 184 Python tests pass.
+
 ## 2026-09-24 — Positioned LilyPond reader, multi-staff repeats, `français`, MIT
 
 The pre-release items: the bar-splitter refactor (Epic H), multi-staff repeat

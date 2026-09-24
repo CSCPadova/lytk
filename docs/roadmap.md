@@ -2,7 +2,20 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-09-24, second pass)
+## Latest status (2026-09-24, third pass)
+
+**One CLI, in Python.** The Rust binary (`src/main.rs`, clap) is gone; the
+`lytk` command is a Typer app (`src/lytk/cli.py`) with all 13 subcommands of
+the Rust one, stdin/stdout streaming, multi-movement output and parallel
+folder/batch conversion (worker processes). Three bindings were added for it
+(`from_lilypond_movements`, `to_lilypond(relative=…)`, `to_mxl_bytes`) plus
+`Score.lyricist` and `Part.midi_instrument`. The 48 Rust CLI tests became
+Python tests (`tests/test_cli.py`, 66 cases). `clap`/`anyhow` dropped from the
+crate. Test counts: 998 Rust + 184 Python.
+
+---
+
+## Previous status (2026-09-24, second pass)
 
 **Pre-release work for 0.1.0** (details in `docs/changelog.md`):
 

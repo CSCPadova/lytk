@@ -13,7 +13,7 @@ import numpy as np
 from lytk import _core
 
 # Recognised input extensions → loader producing a MusicDocument. Keep in step
-# with `_SUPPORTED_EXTS` in `lytk.cli`; `test_datasets.py` asserts they agree.
+# with `_EXT_FORMAT` in `lytk.cli`; `test_datasets.py` asserts they agree.
 _LY_EXTS = {".ly", ".ily"}
 _XML_EXTS = {".xml", ".musicxml", ".mxl"}
 _MIDI_EXTS = {".mid", ".midi"}

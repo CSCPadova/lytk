@@ -237,7 +237,7 @@ Transforms borrow `&Score` and return a new owned `Score`. They never mutate in 
 
 - **Idempotency** — `T(T(x)) == T(x)` for well-behaved transforms.
 - **Composition** — `apply_all(&[&dyn Transform], &Score)` chains transforms left-to-right.
-- **Parallelism** — different `Score` objects can be transformed concurrently via rayon.
+- **Parallelism** — transforms share nothing, so different `Score`s can be transformed concurrently (the Python bindings release the GIL; the CLI converts folders in worker processes).
 
 The dual API convention (following torchaudio):
 - OOP: `Transpose::new(2).apply(&score) -> Score`

@@ -104,6 +104,10 @@ lytk flatten score.ly -o flat.ly              # inline every \include
 lytk info input.mxl
 ```
 
+It also inverts, reverses, changes note-name languages, compares scores
+(`lytk diff`) and runs JSON batch jobs; `lytk --help` lists every command and
+[docs/cli.md](docs/cli.md) describes them.
+
 ## Formats
 
 | Format | Extensions | Read | Write |

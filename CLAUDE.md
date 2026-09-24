@@ -24,12 +24,13 @@ cargo fmt && cargo clippy --all-targets -- -D warnings  # lint
 maturin develop                      # rebuild Rust extension for Python
 uv sync                              # install Python deps
 
-# CLI usage
-cargo run -- convert input.ly -o output.xml
-cargo run -- convert input.mxl -o output.ly
-cargo run -- info input.xml
-cargo run -- transpose input.ly -o output.ly -s 3
-cargo run -- flatten input.ly -o output.ly
+# CLI usage (the Python `lytk` command; after `maturin develop`)
+lytk convert input.ly -o output.xml
+lytk convert input.mxl -o output.ly
+lytk info input.xml
+lytk transpose input.ly -o output.ly -s 3
+lytk flatten input.ly -o output.ly
+pytest tests/test_cli.py             # CLI tests
 ```
 
 MIDI support is included by default.
@@ -70,7 +71,7 @@ Six layers:
 
 5. **ML representations** (`src/representations/`) — muspy-style encodings over the Layer-1 Music tree: `note_array` (onset/duration/pitch/velocity rows), `event_sequence` (Performance-RNN-style event codes), `piano_roll` (T × 128 matrix), `metrics`. All exposed to Python (`to_note_array`, `to_piano_roll`, `to_event_sequence` + inverses). Structured note navigation lives in `src/navigation.rs`.
 
-6. **CLI** (`src/main.rs`) — `clap` subcommands: `convert`, `transpose` (`-s`/`--interval`/`--to-key`), `invert`, `retrograde`, `change-language`, `abs2rel`, `rel2abs`, `info`, `positions`, `bundle`, `batch`, `diff`, `flatten`. Batch mode uses `rayon` for parallelism. The Python package `src/lytk/` ships datasets (`lytk.datasets`) and eval metrics (`lytk.metrics`) on top of the bindings, plus a subset CLI (`lytk.cli`).
+6. **CLI** (`src/lytk/cli.py`) — the one `lytk` command, a Typer app over the Python bindings: `convert`, `transpose` (`-s`/`--interval`/`--to-key`), `invert`, `retrograde`, `change-language`, `abs2rel`, `rel2abs`, `info`, `positions`, `bundle`, `batch`, `diff`, `flatten`. Folder conversion and `batch` run in worker processes (`ProcessPoolExecutor`). There is no Rust binary: the crate is a library only. The Python package `src/lytk/` also ships datasets (`lytk.datasets`) and eval metrics (`lytk.metrics`).
 
 ## Key Design Patterns
 
@@ -88,11 +89,11 @@ Six layers:
 
 ### Rust specifics
 - Avoid unnecessary `clone()` on large trees (known hotspots: variable splicing in `ly_to_ir/state.rs`, `Timeline::splice`).
-- `rayon` for data-parallel batch CLI operations.
 - Cross-language ABI: expose C-compatible types where needed; use `abi3` for Python.
 - Define `benches/` with `criterion` benchmarks for all hot paths.
 
 ### Python specifics
+- The CLI is Python (Typer). A new command-line feature needs whatever it calls exposed in `src/python.rs` first; don't add a Rust binary.
 - `pyproject.toml` uses `maturin` build backend; `uv` for env management.
 - `lytk._core` is the compiled Rust extension; the installable Python package lives in **`src/lytk/`** (`python-source = "src"` in `pyproject.toml`).
 - `.pyi` stub files alongside every `_core` sub-module.
