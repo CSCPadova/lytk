@@ -956,10 +956,10 @@ fn midi_roundtrip_wide_range() {
     assert_midi_roundtrip(&score);
 }
 
-// -- MIDI CLI round-trip --
+// -- MIDI → LilyPond through files --
 
 #[test]
-fn cli_midi_convert_roundtrip() {
+fn midi_file_to_lilypond_file() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mid_path = tmp.path().join("test.mid");
     let ly_path = tmp.path().join("output.ly");
@@ -985,20 +985,13 @@ fn cli_midi_convert_roundtrip() {
     let score = build_score_from_mxml(xml);
     IrToMidiAdapter::new().write(&score, &mid_path).unwrap();
 
-    // Use CLI to convert MIDI → LilyPond
-    assert_cmd::Command::cargo_bin("lytk")
-        .unwrap()
-        .arg("convert")
-        .arg(&mid_path)
-        .arg("-o")
-        .arg(&ly_path)
-        .assert()
-        .success();
+    // MIDI → LilyPond, the way `lytk convert` does it.
+    let from_midi = MidiToIrAdapter::new()
+        .convert_bytes(&std::fs::read(&mid_path).unwrap())
+        .unwrap();
+    std::fs::write(&ly_path, IrToLyAdapter::new().convert(&from_midi).unwrap()).unwrap();
 
-    assert!(
-        ly_path.exists(),
-        "CLI should produce LilyPond output from MIDI"
-    );
+    assert!(ly_path.exists(), "MIDI should convert to a LilyPond file");
     let ly_content = std::fs::read_to_string(&ly_path).unwrap();
     assert!(
         !ly_content.is_empty(),

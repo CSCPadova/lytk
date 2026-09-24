@@ -373,7 +373,7 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
                     ..Default::default()
                 }
             };
-            state.ensure_measure().directions.push(dir);
+            state.add_event(super::timeline::Event::direction(dir));
         }
     }
 }

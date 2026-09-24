@@ -501,6 +501,12 @@ impl PyPart {
         self.inner.midi_program
     }
 
+    /// MIDI instrument name (e.g. ``"violin"``; may be empty).
+    #[getter]
+    fn midi_instrument(&self) -> String {
+        self.inner.midi_instrument.clone()
+    }
+
     /// MIDI channel (0-based).
     #[getter]
     fn midi_channel(&self) -> u8 {

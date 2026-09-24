@@ -6,7 +6,8 @@
 //!
 //! # Algorithm
 //! 1. Wrap each Part in a `Context::Staff`.
-//! 2. Multi-staff parts (staves > 1) are wrapped in `Context::PianoStaff`.
+//! 2. Multi-staff parts (staves > 1) are wrapped in `Context::PianoStaff`, one
+//!    `Context::Staff` per staff, each lifted like a single-staff part.
 //! 3. Measures are flattened into `Sequential` with `TimeSignature`/`KeySignature` events at changes.
 //! 4. Multi-voice measures become `Simultaneous` blocks.
 //! 5. Forward/Backup elements are converted to skips.
@@ -14,6 +15,7 @@
 use super::annotation::Annotation;
 use super::articulation::*;
 use super::direction::{Barline, BarlineType, Direction, RepeatDirection};
+use super::duration::{Duration, Frac};
 use super::measure::{KeySignature, Measure, TimeSignature};
 use super::music::{ContextType, Music, MusicDocument, RepeatType};
 use super::note::{Note, VoiceElement};
@@ -87,100 +89,35 @@ fn lift_part_group(pg: &PartGroup) -> Music {
 /// Lift a single Part to a Music tree.
 fn lift_part(part: &super::part::Part) -> Music {
     if part.staves > 1 {
-        // Multi-staff: split voices by staff number
         lift_multi_staff_part(part)
     } else {
-        lift_single_staff_part(part)
+        Music::Context {
+            context_type: ContextType::Staff,
+            name: part_name(part),
+            content: Box::new(lift_measures(&part.measures, None)),
+        }
     }
 }
 
-/// Lift a single-staff Part.
-fn lift_single_staff_part(part: &super::part::Part) -> Music {
-    let content = lift_measures(&part.measures);
-    let name = if part.name.is_empty() {
-        None
-    } else {
-        Some(part.name.clone())
-    };
-
-    Music::Context {
-        context_type: ContextType::Staff,
-        name,
-        content: Box::new(content),
-    }
+fn part_name(part: &super::part::Part) -> Option<String> {
+    (!part.name.is_empty()).then(|| part.name.clone())
 }
 
-/// Lift a multi-staff Part into a PianoStaff context.
+/// Lift a multi-staff Part into a PianoStaff context: each staff is lifted by the
+/// same routine as a single-staff part, over only that staff's voices, clefs and
+/// directions — so repeats, multi-voice bars and attributes behave identically.
 fn lift_multi_staff_part(part: &super::part::Part) -> Music {
-    let mut staff_contents: Vec<Vec<Music>> = (0..part.staves).map(|_| Vec::new()).collect();
-
-    let mut prev_time: Option<TimeSignature> = None;
-    let mut prev_key: Option<KeySignature> = None;
-
-    for measure in &part.measures {
-        // Emit attribute changes (only on staff 1, others get them via sync)
-        if let Some(ref attrs) = measure.attributes {
-            if let Some(ref ts) = attrs.time {
-                if prev_time.as_ref() != Some(ts) {
-                    for staff_events in staff_contents.iter_mut() {
-                        staff_events.push(Music::TimeSignature(ts.clone()));
-                    }
-                    prev_time = Some(ts.clone());
-                }
-            }
-            if let Some(ref ks) = attrs.key {
-                if prev_key.as_ref() != Some(ks) {
-                    for staff_events in staff_contents.iter_mut() {
-                        staff_events.push(Music::KeySignature(*ks));
-                    }
-                    prev_key = Some(*ks);
-                }
-            }
-            for (staff_num, clef) in &attrs.clefs {
-                let idx = (*staff_num as usize).saturating_sub(1);
-                if idx < staff_contents.len() {
-                    staff_contents[idx].push(Music::Clef(*clef));
-                }
-            }
-        }
-
-        // Emit directions on the first staff
-        for dir in &measure.directions {
-            staff_contents[0].push(lift_direction(dir));
-        }
-
-        // Group voices by staff
-        for voice in &measure.voices {
-            let staff_num = voice_staff_number(voice);
-            let idx = (staff_num as usize)
-                .saturating_sub(1)
-                .min(staff_contents.len() - 1);
-            let voice_music = lift_voice_elements(&voice.elements);
-            staff_contents[idx].extend(voice_music);
-        }
-
-        // Add barlines
-        if let Some(ref barline) = measure.right_barline {
-            staff_contents[0].push(Music::Barline(barline.clone()));
-        }
-    }
-
-    let staves: Vec<Music> = staff_contents
-        .into_iter()
-        .map(|events| Music::Context {
+    let staves: Vec<Music> = (1..=part.staves)
+        .map(|staff| Music::Context {
             context_type: ContextType::Staff,
             name: None,
-            content: Box::new(Music::Sequential(events)),
+            content: Box::new(lift_measures(&part.measures, Some(staff))),
         })
         .collect();
 
     Music::Context {
         context_type: ContextType::PianoStaff,
-        name: if part.name.is_empty() {
-            None
-        } else {
-            Some(part.name.clone())
-        },
+        name: part_name(part),
         content: Box::new(Music::Simultaneous(staves)),
     }
 }
@@ -195,8 +132,16 @@ fn voice_staff_number(voice: &super::voice::Voice) -> u8 {
     }
 }
 
+/// Does `staff_num` belong to the staff being lifted? `None` lifts every staff.
+/// Staff `0` means "unassigned" and goes to the first staff.
+fn on_staff(staff: Option<u8>, staff_num: u8) -> bool {
+    staff.is_none_or(|s| staff_num.max(1) == s)
+}
+
 /// Lift a sequence of measures into a Music tree.
-fn lift_measures(measures: &[Measure]) -> Music {
+///
+/// `staff` restricts the lift to one staff of a multi-staff part.
+fn lift_measures(measures: &[Measure], staff: Option<u8>) -> Music {
     let mut events: Vec<Music> = Vec::new();
     let mut prev_time: Option<TimeSignature> = None;
     let mut prev_key: Option<KeySignature> = None;
@@ -205,13 +150,15 @@ fn lift_measures(measures: &[Measure]) -> Music {
     while i < measures.len() {
         // Reconstruct `\repeat volta` groups from repeat barlines + volta endings.
         if is_repeat_forward(&measures[i]) {
-            let (repeat, next) = lift_repeat_group(measures, i, &mut prev_time, &mut prev_key);
+            let (repeat, next) =
+                lift_repeat_group(measures, i, staff, &mut prev_time, &mut prev_key);
             events.push(repeat);
             i = next;
             continue;
         }
         lift_one_measure(
             &measures[i],
+            staff,
             &mut events,
             &mut prev_time,
             &mut prev_key,
@@ -281,6 +228,7 @@ fn is_empty_repeat_close(m: &Measure) -> bool {
 /// volta barlines are suppressed (the `Music::Repeat` wrapper represents them).
 fn lift_one_measure(
     measure: &Measure,
+    staff: Option<u8>,
     events: &mut Vec<Music>,
     prev_time: &mut Option<TimeSignature>,
     prev_key: &mut Option<KeySignature>,
@@ -299,24 +247,50 @@ fn lift_one_measure(
                 *prev_key = Some(*ks);
             }
         }
-        for clef in attrs.clefs.values() {
-            events.push(Music::Clef(*clef));
+        for (&staff_num, clef) in &attrs.clefs {
+            if on_staff(staff, staff_num) {
+                events.push(Music::Clef(*clef));
+            }
         }
     }
 
-    for dir in &measure.directions {
+    for dir in measure
+        .directions
+        .iter()
+        .filter(|d| on_staff(staff, d.staff))
+    {
         events.push(lift_direction(dir));
     }
 
-    if measure.voices.len() == 1 {
-        events.extend(lift_voice_elements(&measure.voices[0].elements));
-    } else if measure.voices.len() > 1 {
-        let voices: Vec<Music> = measure
-            .voices
-            .iter()
-            .map(|v| Music::Sequential(lift_voice_elements(&v.elements)))
-            .collect();
-        events.push(Music::Simultaneous(voices));
+    let voices: Vec<_> = measure
+        .voices
+        .iter()
+        .filter(|v| on_staff(staff, voice_staff_number(v)))
+        .collect();
+    match voices.as_slice() {
+        [] if staff.is_some() => {
+            // This staff has nothing in the bar: hold its place so it stays in
+            // step with the other staves.
+            let fill = measure
+                .voices
+                .iter()
+                .map(|v| v.elements.iter().map(VoiceElement::metric_duration).sum())
+                .max()
+                .unwrap_or_else(|| Frac::from_integer(0));
+            if fill > Frac::from_integer(0) {
+                events.push(Music::Skip {
+                    duration: Duration::new(fill),
+                });
+            }
+        }
+        [] => {}
+        [voice] => events.extend(lift_voice_elements(&voice.elements)),
+        _ => events.push(Music::Simultaneous(
+            voices
+                .iter()
+                .map(|v| Music::Sequential(lift_voice_elements(&v.elements)))
+                .collect(),
+        )),
     }
 
     if let Some(ref barline) = measure.right_barline {
@@ -332,6 +306,7 @@ fn lift_one_measure(
 fn lift_repeat_group(
     measures: &[Measure],
     start: usize,
+    staff: Option<u8>,
     prev_time: &mut Option<TimeSignature>,
     prev_key: &mut Option<KeySignature>,
 ) -> (Music, usize) {
@@ -354,7 +329,7 @@ fn lift_repeat_group(
         if i != start && is_alternative_start(m) {
             break;
         }
-        lift_one_measure(m, &mut body_events, prev_time, prev_key, true);
+        lift_one_measure(m, staff, &mut body_events, prev_time, prev_key, true);
         let closed = is_repeat_backward(m);
         i += 1;
         if closed {
@@ -379,7 +354,7 @@ fn lift_repeat_group(
         loop {
             let m = &measures[i];
             let stops = is_alternative_stop(m);
-            lift_one_measure(m, &mut alt_events, prev_time, prev_key, true);
+            lift_one_measure(m, staff, &mut alt_events, prev_time, prev_key, true);
             i += 1;
             if stops || i >= measures.len() || is_alternative_start(&measures[i]) {
                 break;

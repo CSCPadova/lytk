@@ -29,7 +29,7 @@ Latest changes: look at the file docs/changelog.md to know about latest activity
 2. IR            Score → Part(Group) → Voice → Measure → Note/Rest/…
 3. Transforms    Idempotent, composable passes on the IR
 4. Adapters      from_ir / to_ir per format (ly, mxl, midi, abc, …)
-5. CLI + lib     rayon-parallel batch CLI; clean public Rust crate + PyO3 bindings
+5. CLI + lib     Rust library + PyO3 bindings; the `lytk` CLI is Python (Typer)
 ```
 
 ### 1 — Parser layer (`src/tree-sitter/`)
@@ -66,9 +66,9 @@ Latest changes: look at the file docs/changelog.md to know about latest activity
 - Adapter modules are **optional Cargo features** to keep the binary lean.
 - Round-trip tests are required for every adapter (MusicXML test suite in `musicxmlTestSuite/`).
 
-### 5 — CLI + library (`src/lib.rs`, `src/main.rs`)
-- Rust CLI via `clap` in `src/main.rs` (stub — not yet implemented).
-- CLI will support streaming and multi-threaded batch processing via `rayon`.
+### 5 — CLI + library (`src/lib.rs`, `src/lytk/cli.py`)
+- The `lytk` command is a Typer app in `src/lytk/cli.py`, over the Python bindings; there is no Rust binary.
+- Folder conversion and batch jobs run in worker processes.
 - Public Rust crate exposes a clean API that PyO3 binds; use `abi3-py39` stable ABI.
 - Python bindings are not yet implemented beyond a stub `hello_from_bin()` function.
 
@@ -115,7 +115,6 @@ cp -r tree-sitter-lilypond/bindings/rust/      src/tree-sitter/bindings/rust/
 ### Rust specifics
 - Prefer arena/bump allocation (`bumpalo`) for AST nodes to reduce allocator pressure.
 - Use `Arc<Node>` for cheap shared ownership; avoid unnecessary `clone()` on large trees.
-- `rayon` for data-parallel batch CLI operations.
 - Cross-language ABI: expose C-compatible types where needed; use `abi3` for Python.
 - Define `benches/` with `criterion` benchmarks for all hot paths.
 

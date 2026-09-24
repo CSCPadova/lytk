@@ -11,7 +11,7 @@ use pyo3::types::{PyBytes, PyModule};
 
 use crate::adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
 use crate::ir::interval::Interval;
-use crate::ir::language::PitchLanguage;
+use crate::ir::language::{PitchLanguage, PitchMode};
 use crate::ir::music::MusicDocument;
 use crate::ir::pitch::{Alter, Pitch, PitchStep};
 use crate::ir::Score;
@@ -55,6 +55,12 @@ impl PyScore {
     #[getter]
     fn arranger(&self) -> Option<String> {
         self.inner.metadata.arranger.clone()
+    }
+
+    /// Lyricist (LilyPond ``poet``/``lyricist``, MusicXML ``lyricist`` creator).
+    #[getter]
+    fn lyricist(&self) -> Option<String> {
+        self.inner.metadata.lyricist.clone()
     }
 
     /// Active LilyPond pitch language (e.g. ``"nederlands"``), or *None*.
@@ -317,6 +323,25 @@ fn from_lilypond(py: Python<'_>, path: &str, language: Option<&str>) -> PyResult
     Ok(PyScore { inner: score })
 }
 
+/// Parse every movement of a LilyPond file: one :class:`Score` per ``\\score``
+/// block (a file without ``\\score`` blocks is a single movement).
+#[pyfunction]
+#[pyo3(signature = (path, *, language=None))]
+fn from_lilypond_movements(
+    py: Python<'_>,
+    path: &str,
+    language: Option<&str>,
+) -> PyResult<Vec<PyScore>> {
+    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+    if let Some(lang_str) = language {
+        adapter = adapter.with_language(parse_language(lang_str)?);
+    }
+    let scores = py
+        .allow_threads(|| adapter.convert_file_multi(Path::new(path)))
+        .map_err(adapter_err)?;
+    Ok(scores.into_iter().map(|inner| PyScore { inner }).collect())
+}
+
 /// Parse a LilyPond string into a :class:`Score`.
 #[pyfunction]
 #[pyo3(signature = (text, *, language=None))]
@@ -382,18 +407,36 @@ fn to_lilypond_music(doc: &PyMusicDocument, path: Option<&str>) -> PyResult<Stri
 
 /// Emit a :class:`Score` as a LilyPond string.  If *path* is given the result
 /// is also written to that file.
+///
+/// *relative* chooses the pitch entry: ``True`` for ``\\relative`` octave marks,
+/// ``False`` for absolute ones, ``None`` (default) for the score's own.
 #[pyfunction]
-#[pyo3(signature = (score, path=None, *, language=None))]
-fn to_lilypond(score: &PyScore, path: Option<&str>, language: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (score, path=None, *, language=None, relative=None))]
+fn to_lilypond(
+    score: &PyScore,
+    path: Option<&str>,
+    language: Option<&str>,
+    relative: Option<bool>,
+) -> PyResult<String> {
     let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
     if let Some(lang_str) = language {
         adapter = adapter.with_language(parse_language(lang_str)?);
     } else if let Some(lang) = score.inner.metadata.pitch_language {
         adapter = adapter.with_language(lang);
     }
-    let output = adapter
-        .convert(&score.inner)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let output = match relative {
+        None => adapter.convert(&score.inner),
+        Some(relative) => {
+            let mut score = score.inner.clone();
+            score.metadata.pitch_mode = if relative {
+                PitchMode::Relative
+            } else {
+                PitchMode::Absolute
+            };
+            adapter.convert(&score)
+        }
+    }
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
     if let Some(p) = path {
         std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
     }
@@ -557,6 +600,17 @@ fn to_midi(score: &PyScore, path: &str) -> PyResult<()> {
         .write(&score.inner, Path::new(path))
         .map_err(adapter_err)?;
     Ok(())
+}
+
+/// Serialize a :class:`Score` to compressed MusicXML (``.mxl``) ``bytes`` — a
+/// ZIP archive, the in-memory counterpart of ``to_musicxml(score, "x.mxl")``.
+#[pyfunction]
+fn to_mxl_bytes<'py>(py: Python<'py>, score: &PyScore) -> PyResult<Bound<'py, PyBytes>> {
+    let adapter = adapters::ir_to_mxml::IrToMxmlAdapter::new();
+    let bytes = py
+        .allow_threads(|| adapter.convert_mxl_bytes(&score.inner))
+        .map_err(adapter_err)?;
+    Ok(PyBytes::new_bound(py, &bytes))
 }
 
 /// Serialize a :class:`Score` to Standard MIDI File ``bytes`` (the in-memory
@@ -925,12 +979,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_musicxml_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_string, m)?)?;
+    m.add_function(wrap_pyfunction!(from_lilypond_movements, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(flatten, m)?)?;
     m.add_function(wrap_pyfunction!(to_musicxml, m)?)?;
+    m.add_function(wrap_pyfunction!(to_mxl_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_humdrum, m)?)?;

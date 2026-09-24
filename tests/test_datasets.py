@@ -283,9 +283,9 @@ class TestFormatCoverage:
         MusicDocuments); this catches one gaining a format without the other,
         which is how ABC and **kern came to be silently undiscoverable.
         """
-        from lytk.cli import _SUPPORTED_EXTS
+        from lytk.cli import _EXT_FORMAT
 
-        assert SUPPORTED_EXTENSIONS == _SUPPORTED_EXTS
+        assert SUPPORTED_EXTENSIONS == set(_EXT_FORMAT)
 
 
 # ---------------------------------------------------------------------------

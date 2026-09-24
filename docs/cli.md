@@ -1,336 +1,242 @@
-# CLI Reference
+# Command line
 
-lytk provides a command-line tool (`lytk`) and an equivalent Python API. Both are
-backed by the same Rust core — the CLI is the binary entry point, and the Python
-package exposes the same operations as callable functions.
+`pip install lytk` installs the `lytk` command (also runnable as
+`python -m lytk.cli`). `lytk --help` lists the commands and `lytk COMMAND --help`
+shows each one's options.
 
----
-
-## Installation
-
-### Rust CLI
-
-```bash
-git clone <repo>
-cd lytk
-cargo build --release
-# Binary at target/release/lytk
-# Optionally add to PATH:
-export PATH="$PATH:$(pwd)/target/release"
-```
-
-### Python package
-
-```bash
-# Development install (requires Rust toolchain)
-uv sync && maturin develop
-```
-
----
-
-## Subcommands
-
-### `lytk convert`
-
-Convert a file or directory between LilyPond, MusicXML, and MXL formats.
-
-```
-lytk convert <INPUT> -o <OUTPUT> [OPTIONS]
-```
-
-**Arguments:**
-
-| Argument | Description |
+| Command | What it does |
 |---|---|
-| `<INPUT>` | Input file (`.ly`, `.ily`, `.xml`, `.musicxml`, `.mxl`) or directory |
-| `-o`, `--output <OUTPUT>` | Output file or directory |
-| `-f`, `--format <FORMAT>` | Force output format: `ly`, `xml` |
-| `-j`, `--jobs <N>` | Parallel threads for batch mode (0 = auto, default) |
-
-**Examples:**
-
-```bash
-# Single file conversions
-lytk convert input.xml -o output.ly          # MusicXML → LilyPond
-lytk convert input.ly  -o output.xml         # LilyPond → MusicXML
-lytk convert input.mxl -o output.ly          # Compressed MXL → LilyPond
-
-# Force output format when extension is ambiguous
-lytk convert input.xml -o output.txt --format ly
-
-# Batch convert a directory (auto-detect format per file)
-lytk convert input_dir/ -o output_dir/
-
-# Batch with explicit thread count
-lytk convert input_dir/ -o output_dir/ -j 8
-```
-
-**Multi-movement output:**
-
-When a LilyPond file contains multiple `\score` blocks, the convert command writes
-separate files with `_01`, `_02`, … suffixes:
-
-```bash
-lytk convert multi_movement.ly -o out.xml
-# Writes: out_01.xml, out_02.xml, …
-```
-
-**Notes:**
-- Format is auto-detected from the file extension when `--format` is omitted.
-- In batch mode, files are processed in parallel using rayon. Errors on individual
-  files are reported to stderr without stopping the batch.
-- Supported input extensions: `.ly`, `.ily`, `.xml`, `.musicxml`, `.mxl`
-
----
-
-### `lytk flatten`
-
-Recursively expand all `\include` directives in a LilyPond file, producing a single
-self-contained flat file.
-
-```
-lytk flatten <INPUT> [OPTIONS]
-```
-
-**Arguments:**
-
-| Argument | Description |
-|---|---|
-| `<INPUT>` | Input LilyPond file |
-| `-o`, `--output <OUTPUT>` | Output file. Writes to stdout if omitted |
-| `-I`, `--include-path <DIR>` | Extra include search directory. May be repeated |
-| `--no-markers` | Suppress `% === BEGIN/END INCLUDE ===` comment markers |
-
-**Examples:**
-
-```bash
-# Flatten to stdout
-lytk flatten score.ly
-
-# Flatten to a file
-lytk flatten score.ly -o flat.ly
-
-# With extra search paths (like LilyPond's -I flag)
-lytk flatten score.ly -I ./lib -I /usr/share/lilypond/ly -o flat.ly
-
-# Clean output without markers
-lytk flatten score.ly --no-markers -o flat.ly
-```
-
-**Include resolution:**
-
-1. Path is looked up relative to the **including file's** directory (not the root file).
-2. If not found, tries appending `.ly`, then `.ily`.
-3. Then searches each `-I` path in order, with the same extension fallbacks.
-4. If still not found, exits with an error.
-
-**Normalization (post-processing):**
-
-After full expansion, the output is scanned for duplicate command lines:
-
-| Command | Behaviour |
-|---|---|
-| `\version "X.Y.Z"` | Last occurrence kept; earlier ones removed; warning on stderr |
-| `\language "X"` | Last occurrence kept; earlier ones removed; warning on stderr |
-| `\header { }` | Multiple blocks → error (exit 1) |
-
-**Comment markers:**
-
-By default, each inlined file is wrapped with:
-
-```lilypond
-% === BEGIN INCLUDE: path/to/file.ly ===
-…content…
-% === END INCLUDE: path/to/file.ly ===
-```
-
-Pass `--no-markers` to suppress these and get clean output.
-
-**Error conditions:**
-
-- **File not found** — exits with error showing the unresolved path
-- **Circular include** — exits with error showing the full ancestor chain
-  (e.g. `a.ly -> b.ly -> a.ly`)
-- **Multiple `\header` blocks** — exits with error
-
----
-
-### `lytk transpose`
-
-Transpose all pitches by a number of semitones.
-
-```
-lytk transpose <INPUT> -o <OUTPUT> --semitones <N> [OPTIONS]
-```
-
-**Arguments:**
-
-| Argument | Description |
-|---|---|
-| `<INPUT>` | Input file |
-| `-o`, `--output <OUTPUT>` | Output file |
-| `-s`, `--semitones <N>` | Semitones to transpose (positive = up, negative = down) |
-| `-f`, `--format <FORMAT>` | Force output format |
-
-**Examples:**
-
-```bash
-lytk transpose input.ly --semitones 3 -o transposed.ly    # up a minor third
-lytk transpose input.xml --semitones -5 -o transposed.xml  # down a perfect fourth
-lytk transpose input.ly --semitones 12 -o up_octave.ly     # up an octave
-```
-
-**Notes:**
-- Key signatures are updated to match the transposed tonic.
-- All formats supported by `convert` are accepted as input/output.
-
----
-
-### `lytk info`
-
-Print score metadata — title, composer, parts, and measure counts.
-
-```
-lytk info <INPUT>
-```
-
-**Examples:**
-
-```bash
-lytk info input.xml
-lytk info score.ly
-```
-
-**Sample output:**
-
-```
-Title:    Duetto for Cello and Bass
-Composer: G. Rossini
-Language: nederlands
-Parts:    2
-  - Cello (42 measures)
-  - Contrabasso (42 measures)
-```
-
----
-
-## Python API
-
-The Python package (`import lytk`) mirrors every CLI subcommand as a Python function.
-All functions are backed by the same Rust core — there is no performance difference
-between using the CLI and the Python API.
-
-### Installation
-
-```bash
-# Development
-uv sync && maturin develop
-```
-
-### Format conversion
-
-```python
-import lytk
-
-# MusicXML → Score → LilyPond
-score = lytk.from_musicxml("input.xml")
-lytk.to_lilypond(score, "output.ly")
-
-# LilyPond → Score → MusicXML
-score = lytk.from_lilypond("input.ly")
-lytk.to_musicxml(score, "output.xml")
-
-# Parse from string
-score = lytk.from_musicxml_string(xml_text)
-score = lytk.from_lilypond_string(ly_text)
-
-# Emit to string (without writing a file)
-ly_text  = lytk.to_lilypond(score)
-xml_text = lytk.to_musicxml(score)
-
-# Override pitch language on emit
-ly_text = lytk.to_lilypond(score, language="deutsch")
-```
-
-### MIDI
-
-```python
-score = lytk.from_midi("input.mid")
-lytk.to_midi(score, "output.mid")
-```
-
-### Transforms
-
-All transforms are pure functions — they return a new `Score` and do not modify
-the original.
-
-```python
-# Transpose
-score_up = lytk.transpose(score, semitones=3)
-score_down = lytk.transpose(score, semitones=-5)
-
-# Change pitch language
-score_de = lytk.change_language(score, "deutsch")
-score_en = lytk.change_language(score, "english")
-
-# Invert around an axis pitch
-score_inv = lytk.invert(score, step="C", alter=0, octave=4)
-
-# Retrograde (reverse note order)
-score_retro = lytk.retrograde(score)
-```
-
-### Score introspection
-
-```python
-score = lytk.from_musicxml("input.xml")
-
-print(score.title)       # "Symphony No. 5"
-print(score.composer)    # "Beethoven"
-print(score.num_parts)   # 4
-print(score.parts)       # ["Violin I", "Violin II", "Viola", "Cello"]
-print(score.language)    # "nederlands" or None
-
-# Serialise / deserialise
-json_str = score.to_json()
-score2   = lytk.Score.from_json(json_str)
-
-d      = score.to_dict()   # Python dict via serde_json
-score3 = lytk.Score.from_dict(d)
-```
-
-### Batch processing example
-
-```python
-import lytk
-from pathlib import Path
-
-input_dir  = Path("dataset/xml")
-output_dir = Path("dataset/ly")
-output_dir.mkdir(exist_ok=True)
-
-for xml_file in input_dir.glob("*.xml"):
-    try:
-        score = lytk.from_musicxml(str(xml_file))
-        score = lytk.transpose(score, semitones=2)
-        out   = output_dir / xml_file.with_suffix(".ly").name
-        lytk.to_lilypond(score, str(out))
-    except Exception as e:
-        print(f"Error processing {xml_file}: {e}")
-```
-
----
-
-## Comparison: CLI vs Python API
-
-| Operation | CLI | Python |
+| [`convert`](#convert) | Convert a file, or a whole folder, between formats |
+| [`transpose`](#transpose) | Transpose by semitones, by an interval, or to a key |
+| [`invert`](#invert) | Mirror every pitch around an axis |
+| [`retrograde`](#retrograde) | Play the music backwards |
+| [`change-language`](#change-language) | Change the LilyPond note-name language |
+| [`abs2rel`, `rel2abs`](#abs2rel-and-rel2abs) | Rewrite LilyPond with relative or absolute octaves |
+| [`info`](#info) | Show metadata and parts |
+| [`positions`](#positions) | Each bar's start and length, as JSON |
+| [`bundle`](#bundle) | Write each part to its own file |
+| [`diff`](#diff) | Compare two scores by what they sound |
+| [`batch`](#batch) | Run a JSON list of conversion jobs |
+| [`flatten`](#flatten) | Inline every `\include` of a LilyPond file |
+
+## Formats and streams
+
+Formats are taken from file extensions:
+
+| Format | Extensions | `--format` / `--from` |
 |---|---|---|
-| Convert file | `lytk convert in.xml -o out.ly` | `lytk.to_lilypond(lytk.from_musicxml("in.xml"), "out.ly")` |
-| Transpose | `lytk transpose in.ly -s 3 -o out.ly` | `lytk.to_lilypond(lytk.transpose(score, 3), "out.ly")` |
-| Flatten includes | `lytk flatten in.ly -o flat.ly` | *(not yet exposed in Python API)* |
-| Metadata | `lytk info in.xml` | `score.title`, `score.parts`, etc. |
-| Batch convert | `lytk convert dir/ -o out/ -j 8` | Custom loop with `concurrent.futures` |
+| LilyPond | `.ly` `.ily` | `ly` |
+| MusicXML | `.xml` `.musicxml` | `xml` |
+| Compressed MusicXML | `.mxl` | `mxl` |
+| MIDI | `.mid` `.midi` | `midi` |
+| ABC | `.abc` | `abc` |
+| Humdrum `**kern` | `.krn` `.kern` | `krn` |
 
-The CLI uses rayon for automatic parallel batch processing. In Python, parallelism
-requires the user to manage threads or processes (the GIL is released during Rust
-calls, so `ThreadPoolExecutor` works for I/O-bound batches).
+`--format`/`-f` overrides the output format and `--from` the input format.
+Every command reads stdin when the input is `-` and writes stdout when the
+output is `-`. There is no extension to go by then, so stdin needs `--from`
+and stdout needs `--format`:
+
+```bash
+cat score.ly | lytk convert - -o - --from ly -f xml > score.xml
+```
+
+Errors are one line on stderr (`error: …`) with exit status 1. Invalid
+arguments exit with status 2 and a usage message.
+
+When both the input and the output are LilyPond, `convert` and the transforms
+go through lytk's Music tree rather than its measure-based score. That keeps the
+source's structure (its contexts, and `\repeat` and `\alternative` blocks)
+instead of rebuilding it from measures.
+
+## convert
+
+```
+lytk convert INPUT -o OUTPUT [-f FORMAT] [--from FORMAT] [-j N]
+```
+
+```bash
+lytk convert score.xml -o score.ly
+lytk convert score.ly -o score.mxl          # compressed MusicXML (a ZIP)
+lytk convert score.mid -o score.xml
+lytk convert score.xml -o score.txt -f ly   # extension says nothing: force it
+```
+
+**A folder.** When `INPUT` is a directory, every score in it (recursively) is
+converted into the `OUTPUT` directory, keeping subfolders. Without `-f`,
+LilyPond files become MusicXML and everything else becomes LilyPond. Files are
+converted in parallel, `-j N` workers (default one per CPU); a file that fails
+is reported and skipped, and the exit status is 1 if any failed.
+
+```bash
+lytk convert corpus/ -o out/ -f midi -j 8
+```
+
+**Several movements.** A LilyPond file with several `\score` blocks writes the
+first movement to `OUTPUT` and the others next to it, as `NAME_02.EXT`,
+`NAME_03.EXT`, …. Several movements can't go to stdout.
+
+## transpose
+
+```
+lytk transpose INPUT -o OUTPUT (-s N | -i INTERVAL | --to-key KEY) [-f FORMAT] [--from FORMAT]
+```
+
+Give exactly one of:
+
+- `-s`/`--semitones N`: chromatic, by N semitones (negative is down).
+- `-i`/`--interval NAME`: diatonic, by a named interval, so spelling follows
+  the interval: `M3`, `m3`, `P5`, `A4`, `d5`, `P8`; a leading `-` goes down
+  (`-m2`).
+- `--to-key KEY`: so the tonic becomes `KEY` (`D`, `Bb`, `F#`), moving the
+  nearest way.
+
+Key signatures and chord symbols follow, and pitches are re-spelled for the new
+key.
+
+```bash
+lytk transpose song.ly -o up.ly -s 3
+lytk transpose song.xml -o song-in-d.xml --to-key D
+```
+
+## invert
+
+```
+lytk invert INPUT -o OUTPUT [-a AXIS] [-f FORMAT] [--from FORMAT]
+```
+
+Mirrors every pitch around `AXIS` (default `c4`, middle C). The axis is a note
+letter, optional accidentals (`s` or `#` sharp, `f` flat) and an octave:
+`c4`, `fs3`, `bf5`.
+
+## retrograde
+
+```
+lytk retrograde INPUT -o OUTPUT [-f FORMAT] [--from FORMAT]
+```
+
+Reverses the music in time; ties, slurs and tuplets are reversed with it.
+
+## change-language
+
+```
+lytk change-language INPUT -o OUTPUT -l LANGUAGE [-f FORMAT] [--from FORMAT]
+```
+
+Sets the note-name language of LilyPond output: `nederlands`, `english`,
+`deutsch`, `norsk`, `suomi`, `svenska`, `italiano`, `catalan`, `espanol`,
+`portugues`, `vlaams` or `français`. Names are written the way LilyPond spells
+them in that language.
+
+## abs2rel and rel2abs
+
+```
+lytk abs2rel INPUT.ly -o OUTPUT
+lytk rel2abs INPUT.ly -o OUTPUT
+```
+
+Rewrite a LilyPond file with `\relative` octave marks, or with absolute ones.
+Parts with several staves or voices keep absolute octaves where relative ones
+would be ambiguous.
+
+## info
+
+```
+lytk info INPUT [--json]
+```
+
+```
+Title:    Pitches and accidentals
+Parts:    1
+  - MusicXML Part (28 measures)
+```
+
+`--json` prints title, subtitle, composer, arranger, lyricist, language,
+`part_count`, `note_count`, and for each part its id, name, abbreviation,
+number of measures, staves, MIDI program and MIDI instrument.
+
+## positions
+
+```
+lytk positions INPUT [--from FORMAT]
+```
+
+Prints each part's bars as JSON, with offsets in quarter notes:
+
+```json
+{"unit": "quarter", "parts": [{"id": "P1", "measures": [{"number": 1, "start": 0.0, "duration": 4.0}]}]}
+```
+
+A bar lasts as long as its longest voice, so pickups and short bars count as
+written, and grace notes take no time. These are musical positions from the
+notated durations, not graphical ones.
+
+## bundle
+
+```
+lytk bundle INPUT -o DIR [-f FORMAT] [--from FORMAT]
+```
+
+Writes each part to its own file, `DIR/<input-name>_<part>.<ext>`, in `FORMAT`
+(default `xml`). Each file keeps the score's title and other metadata.
+
+## diff
+
+```
+lytk diff A B [--json] [--from FORMAT]
+```
+
+Compares two scores by what they sound: the number of parts, the number of
+notes and the multiset of pitches. It exits with status 0 when they match and
+1 when they differ, so it can gate a pipeline. `--json` prints `equal`,
+`parts`, `note_count` and `pitch_multiset_equal`.
+
+```bash
+lytk convert song.ly -o song.xml && lytk diff song.ly song.xml
+```
+
+## batch
+
+```
+lytk batch JOBS.json [-j N] [--report FILE]
+```
+
+Runs a JSON array of jobs:
+
+```json
+[
+  {"in": "a.xml", "out": "out/a.ly"},
+  {"in": "b.ly", "out": "out/b.mid", "transpose": -2},
+  {"in": "c.mid", "out": "out/c.xml", "interval": "M3"},
+  {"in": "d.dat", "out": "out/d.krn", "from": "xml"}
+]
+```
+
+`in` and `out` (or `input` and `output`) are required. `format` and `from`
+override the formats; `transpose` (semitones) or `interval` transposes first.
+Jobs run in parallel (`-j`, default one per CPU) and independently. A failing
+job doesn't stop the others, but the exit status is 1. `--report FILE` (or `-`)
+writes one `{"input", "output", "ok", "error"?}` entry per job.
+
+## flatten
+
+```
+lytk flatten INPUT.ly [-o OUTPUT] [-I DIR ...] [--no-markers]
+```
+
+Inlines every `\include`, recursively, into one self-contained file (stdout
+without `-o`). Includes are looked up next to the file that includes them, then
+with `.ly` and `.ily` appended, then in each `-I`/`--include-path` directory.
+A missing file and an include cycle are errors; the cycle is shown
+(`a.ly -> b.ly -> a.ly`).
+
+Repeated `\version` and `\language` lines are merged, keeping the last one and
+warning on stderr. More than one `\header` block is an error. Each inlined file
+is wrapped in `% === BEGIN INCLUDE: … ===` / `% === END INCLUDE: … ===`
+comments; `--no-markers` leaves them out.
+
+## From Python
+
+Everything above is also available as Python functions (`lytk.from_musicxml`,
+`lytk.transpose`, `lytk.to_lilypond`, …); see the README's quick start. The
+command itself is a Typer app, `lytk.cli.app`.

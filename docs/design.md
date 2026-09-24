@@ -200,8 +200,14 @@ then walks the CST with a stateful `WalkState`:
 - Pitch language from `\language` command
 - `tuplet_stack` for nested tuplet ratio propagation
 - `auto_beam_off` flag for `\autoBeamOff`/`\autoBeamOn`
-- Variable definitions resolved inline
-- Measure auto-splitting by time signature with elapsed time tracking
+- Variable definitions pre-parsed from position 0 and spliced in where used
+- Positioned reading: every note sits at its absolute onset in a voice lane,
+  every attribute/direction/barline is an event at a position
+  (`ly_to_ir/timeline.rs`); simultaneous music overlays by position
+- One bar-splitter at score assembly: a score-wide meter grid (anchored at the
+  start, `\partial` and each `\time`), explicit barlines as extra boundaries,
+  a `\cadenzaOn … \cadenzaOff` span as one free bar — LilyPond's model, where
+  bar checks only check
 - Post-processing: clef-aware auto-stem, tuplet-aware auto-beam grouping,
   lyrics attachment
 
@@ -231,7 +237,7 @@ Transforms borrow `&Score` and return a new owned `Score`. They never mutate in 
 
 - **Idempotency** — `T(T(x)) == T(x)` for well-behaved transforms.
 - **Composition** — `apply_all(&[&dyn Transform], &Score)` chains transforms left-to-right.
-- **Parallelism** — different `Score` objects can be transformed concurrently via rayon.
+- **Parallelism** — transforms share nothing, so different `Score`s can be transformed concurrently (the Python bindings release the GIL; the CLI converts folders in worker processes).
 
 The dual API convention (following torchaudio):
 - OOP: `Transpose::new(2).apply(&score) -> Score`

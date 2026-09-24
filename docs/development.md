@@ -40,12 +40,9 @@ Release build (optimised, slower compile):
 cargo build --release
 ```
 
-The compiled CLI binary is at:
-
-```
-target/debug/lytk          # debug
-target/release/lytk        # release
-```
+The crate is a library (the `lytk._core` extension); the `lytk` command is the
+Python CLI in `src/lytk/cli.py`. After `maturin develop`, run it as `lytk` or
+`python -m lytk.cli`.
 
 Check for errors without producing a binary (fastest feedback loop):
 

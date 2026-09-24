@@ -2,7 +2,74 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-09-20)
+## Latest status (2026-09-24, third pass)
+
+**One CLI, in Python.** The Rust binary (`src/main.rs`, clap) is gone; the
+`lytk` command is a Typer app (`src/lytk/cli.py`) with all 13 subcommands of
+the Rust one, stdin/stdout streaming, multi-movement output and parallel
+folder/batch conversion (worker processes). Three bindings were added for it
+(`from_lilypond_movements`, `to_lilypond(relative=…)`, `to_mxl_bytes`) plus
+`Score.lyricist` and `Part.midi_instrument`. The 48 Rust CLI tests became
+Python tests (`tests/test_cli.py`, 66 cases). `clap`/`anyhow` dropped from the
+crate. Test counts: 998 Rust + 184 Python.
+
+---
+
+## Previous status (2026-09-24, second pass)
+
+**Pre-release work for 0.1.0** (details in `docs/changelog.md`):
+
+- **Epic H done (EHT1–EHT3, EHT5).** The LilyPond reader no longer builds
+  measures while walking. Music is placed at absolute positions in voice lanes
+  (`ly_to_ir/timeline.rs`) and bars are cut once, at score assembly, on a
+  score-wide grid (meter anchored at the start/`\partial`/`\time`, explicit
+  barlines as extra boundaries, one free bar per cadenza). `merge.rs` went from
+  1,796 to ~250 lines: every index-based merge, resplit and sync pass is gone.
+  Reviewing the before/after output of 319 inputs turned up 20+ reading bugs it
+  fixes (off-by-one keys/clefs/tempos/breaks, misplaced repeats, lost or
+  phantom staves and notes, lyric blocks parsed as music). EHT5 regression bar:
+  `piano_fixtures_staves_stay_in_step`.
+- **Multi-staff repeats (EBT2 remainder) done.** The Music-tree lift for piano
+  parts reused none of the single-staff logic: it dropped `\repeat`/`\alternative`
+  and played a staff's voices one after the other. It now lifts each staff like
+  a single-staff part; the LilyPond writer separates voices with `\\`.
+- **`français`** added, and every pitch language checked against LilyPond's
+  `scm/define-note-names.scm`: German, Finnish, Swedish and Norwegian output
+  used spellings LilyPond rejects (`ees`, `aes`, `eess`, `heses`); fixed, and all
+  910 LilyPond spellings now read back.
+- **Relicensed to MIT** (owner decision). Test fixtures keep their own terms
+  (`tests/fixtures/README.md`) and are excluded from the sdist.
+- README rewritten as a project presentation.
+
+Test counts: 1046 Rust + 141 Python green; clippy clean on 1.90 and 1.98.
+
+---
+
+## Previous status (2026-09-24)
+
+**0.1.0 preview release prep** (details in `docs/changelog.md`). The first public
+release ships as **0.1.0**, before the P-epics below; `v1.0.0` stays gated on them.
+
+- **CI was red on master since 2026-06-18** (5 pushes), from three independent
+  causes: a new clippy 1.98 `question_mark` lint; two Windows-only CLI tests that
+  built batch-job JSON with `format!` + `Path::display()` (backslashes became
+  invalid JSON escapes); and `scipy.linalg.sqrtm(disp=…)` removed by SciPy 1.18,
+  which broke `frechet_music_distance` **for users**, not just in tests. All fixed.
+- **Release workflow had never run**, and its x86_64 macOS job targeted the retired
+  `macos-13` image → `macos-15-intel`.
+- Version `1.0.0` → `0.1.0`, classifier `Production/Stable` → `Beta`; README carries
+  a preview note and the full not-yet-implemented list.
+- **Remaining to tag** (manual): create the `pypi` environment + PyPI Trusted
+  Publisher, dry-run `release.yml` via `workflow_dispatch`, make the repo public,
+  push `v0.1.0`.
+- **After 0.1.0**: P5 first (the only API-breaking epic, cheapest while on 0.x),
+  then P3 → P4 → P6 → P8 → P9.
+
+Test counts: 1025 Rust + 141 Python green; clippy clean on 1.90 and 1.98.
+
+---
+
+## Previous status (2026-09-20)
 
 **Conversion/augmentation audit + DLPack** (details in `docs/changelog.md`).
 Exercised all 36 format pairs and every transform end to end.
@@ -22,7 +89,7 @@ Exercised all 36 format pairs and every transform end to end.
 - **Verified correct, unchanged**: all 36 conversions run; the transforms are
   semantically right (exact pitch shift, true mirror, exact reversal, duration
   multiset preserved); all three ML representations are exact inverses.
-- **Open**: `français` is missing from the 11 pitch languages; remaining
+- **Open**: ~~`français` is missing from the 11 pitch languages~~ (✅ 2026-09-24); remaining
   cross-format drift is un-notatable durations and inner polyphony (one stream
   per staff in both the ABC and kern writers).
 
@@ -241,7 +308,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 | Task | Description | Status |
 |------|-------------|--------|
 | EBT1 | Emit **lyrics** in IR→LY (Music path `\addlyrics` + parse `\addlyrics` on import) | ✅ |
-| EBT2 | **Repeat/volta** LY→IR→LY round-trip (`\repeat volta` + `\alternative`) | ✅ Music path: parser now flushes the repeat body before `\alternative` (was conflating body with alt 1); `lift.rs` reconstructs `Music::Repeat` from repeat barlines + volta endings. Single-staff; Score-path (ir_to_ly) emitter + multi-staff still TODO |
+| EBT2 | **Repeat/volta** LY→IR→LY round-trip (`\repeat volta` + `\alternative`) | ✅ Music path: parser now flushes the repeat body before `\alternative` (was conflating body with alt 1); `lift.rs` reconstructs `Music::Repeat` from repeat barlines + volta endings. Score path done in R1; **multi-staff done 2026-09-24** (piano parts lift each staff like a single-staff part) |
 | EBT3 | `\chordmode` import → `Harmony` IR (text-based parser, language-aware; distributed to melody part; round-trips) | ✅ |
 | EBT4 | `\figuremode` robustness (natural `!` + double accidentals `++`/`--`, round-trip via `figure_to_ly`) | ✅ |
 | EBT5 | MIDI **velocity ↔ dynamics** mapping both directions (shared `dynamics_velocity` map) | ✅ |
@@ -316,13 +383,17 @@ not structural.
 | EGT2 | Python wrappers for ABC + representations | ✅ Bound ABC in PyO3 (`from_abc`, `from_abc_string`, `to_abc` — emit lifts Score→Music internally); re-exported in `__init__.py`; `.abc` added to the Python CLI (read/write/info, `-f abc`). Representations already exposed + re-exported. 5 ABC pytests |
 | EGT3 | maturin GitHub Actions wheel matrix (Linux/macOS/Windows, abi3) | ✅ `.github/workflows/release.yml`: abi3 wheels (Linux x86_64+aarch64, macOS x86_64+arm64, Windows x64) + sdist via `PyO3/maturin-action`, publish-to-PyPI job (Trusted Publishing/OIDC) gated on a `v*` tag |
 | EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ✅ `pyproject.toml`: `license = "GPL-2.0-or-later"` (matches the repo LICENSE) + classifiers, keywords, URLs, `torch`/`tensorflow` extras (verified in the built wheel METADATA). README Python quickstart expanded (ABC, representations, MIDI, extras). `import-export.md`: top-level format matrix + real ABC section + `\cadenzaOn/Off` updated |
-| EGT5 | Tag **v1.0.0**; update roadmap (Completed) + changelog | ⬜ Deferred — the version tag is intentionally NOT created yet (per request). Everything else for release is in place; bump `version` in `pyproject.toml`/`Cargo.toml` + push a `v*` tag to trigger the wheel build/publish when ready |
+| EGT5 | Tag a release; update roadmap (Completed) + changelog | 🟡 First public release is **0.1.0** (preview, version set 2026-09-24); push `v0.1.0` once the PyPI Trusted Publisher + `pypi` environment exist. `v1.0.0` waits for the P-epics |
 | EGT6 | Standard maturin layout retained | ✅ Distribution is PyPI-only, so the crate keeps the conventional maturin naming (`[lib] name = "_core"`, `module-name = "lytk._core"`) and pyo3/numpy stay unconditional — a feature toggling them would be a switch with one position. The bindings did move out of `src/lib.rs` (1002 → 52 lines) into `src/python.rs`, which scoped the pyo3 `useless_conversion` allow and exposed 4 real lint hits in `ly_to_ir` (fixed) |
 | EGT7 | Third-party licence compliance | ✅ The vendored tree-sitter-lilypond parser in `src/tree-sitter/` shipped inside the wheel with no licence text — MIT requires the notice to travel with it. Verbatim upstream notice added at `src/tree-sitter/LICENSE` (© Nathan Whetsell) + provenance `README.md`, and added to `license-files` (confirmed present in the built wheel and sdist) |
 | EGT8 | Public-repo hygiene | ✅ `CONTRIBUTING.md`, `SECURITY.md` (parser threat model), README badges + extras matrix + data-loader section; removed the reference table pointing at a dozen directories absent from the repo, the stale "Humdrum not implemented" claim, stale test counts, and `ruff` commands for tooling configured nowhere. `rust-version = "1.85"` + MSRV CI job (the sdist compiles on the user's toolchain). Fixed a latent `release.yml` failure: the test gate lacked the `pip` upgrade needed for PEP 735 groups |
 | EGT9 | Deep-learning data loaders + install API | ✅ `to_pytorch_dataloader` / `to_tensorflow_dataloader` / `pad_collate` return `(padded, lengths)` for ragged scores — the missing step between `to_*_dataset()` and training. `FolderDataset` now discovers `.abc`/`.krn`/`.kern` (silently invisible before). Extras carry version floors plus `lytk[all]`; both frameworks stay lazily imported. CI installs `tensorflow-cpu` so the tf path is actually exercised. Tests: `tests/test_datasets.py` (33) |
 
-### Epic H: Multi-voice / multi-staff bar-splitting rework 🟢
+### Epic H: Multi-voice / multi-staff bar-splitting rework ✅
+
+**Done 2026-09-24:** EHT1–EHT3 and EHT5 landed as the positioned reader
+(`ly_to_ir/timeline.rs`) — see *Latest status*. The history below is kept for
+reference.
 
 **Status (2026-06-15):** the two error classes below are both resolved on `master`.
 (1) RH/LH drift fixed by `disambiguate_colliding_voice_numbers` (multi-voice collapse)
@@ -381,11 +452,11 @@ mechanisms above disappear rather than be patched.
 
 | Task | Description | Status |
 |------|-------------|--------|
-| EHT1 | **Defer bar-splitting.** Add a meter-agnostic `VarDef::Stream` (flat `Vec<VoiceEvent>` with positions + `|`/attribute/partial/cadenza markers) or make `VarDef::Measures` store the *active def-meter* and never auto-split (rely on `|`). Pre-parse stops calling the `state.rs:211` auto-flush; record `\time` as an event. | ⬜ |
-| EHT2 | **Position-based voice overlay.** Replace `merge_simultaneous_block` index-zip with a merge that lays each branch's events onto a shared timeline by absolute onset, so `<< { } \\ { } >>` and `<< { } \new Voice { } >>` overlay correctly regardless of per-branch bar counts. Reuse the `walk_parallel_music_voices`/`_staves` split detection but feed the new merge. | ⬜ |
-| EHT3 | **Single authoritative bar-splitter.** One function: given per-voice event streams + the unified timeline (meters, partial, cadenza spans) → measures. Subsumes `resplit_measures_for_time_sig`, `resplit_measures_with_time_changes`, the pickup/senza handling, and `synchronize_time_signatures`. Splits every voice at the same boundaries; voices in a bar align by position. | ⬜ |
+| EHT1 | **Defer bar-splitting.** Add a meter-agnostic `VarDef::Stream` (flat `Vec<VoiceEvent>` with positions + `|`/attribute/partial/cadenza markers) or make `VarDef::Measures` store the *active def-meter* and never auto-split (rely on `|`). Pre-parse stops calling the `state.rs:211` auto-flush; record `\time` as an event. | ✅ `VarDef::Music { tl, len, … }`: variables are positioned timelines spliced where used |
+| EHT2 | **Position-based voice overlay.** Replace `merge_simultaneous_block` index-zip with a merge that lays each branch's events onto a shared timeline by absolute onset, so `<< { } \\ { } >>` and `<< { } \new Voice { } >>` overlay correctly regardless of per-branch bar counts. Reuse the `walk_parallel_music_voices`/`_staves` split detection but feed the new merge. | ✅ every branch starts at the block's start; overlapping runs move to a free lane (`Timeline::place_run`) |
+| EHT3 | **Single authoritative bar-splitter.** One function: given per-voice event streams + the unified timeline (meters, partial, cadenza spans) → measures. Subsumes `resplit_measures_for_time_sig`, `resplit_measures_with_time_changes`, the pickup/senza handling, and `synchronize_time_signatures`. Splits every voice at the same boundaries; voices in a bar align by position. | ✅ `timeline::Grid` + `timeline::split`; all the listed passes deleted |
 | EHT4 | **Score-wide cadenza.** ✅ **DONE (2026-06-15).** The `\cadenzaOn/Off` end cadenza now collapses to ONE `senza_misura` bar holding both hands, then the strict-time coda — matching the LilyPond reference. Implemented *without* the planned span-union: per-measure `measure_has_cadenza` flag + `resolve_variable` senza-flagging keep the whole cadenza flagged; resplit/unify preserve `senza_misura`; `merge::collapse_cadenza_runs` collapses each ≥2 run to one bar (re-joining voices by number); and for a score-wide cadenza (every staff free) each staff is collapsed *before* the PianoStaff index-merge so the bass coda isn't folded in. pedal.ly (single-hand) stays aligned via the auto-split. Test: `chopin_cadenza_is_single_senza_bar_with_both_hands`. | ✅ |
-| EHT5 | **Regression bar.** Golden per-staff bar-fill + RH/LH total-duration equality for `chopin_n.ly`, `pedal.ly`, `repeats.ly`; the existing main-body-bar-perfect property must not regress; full `cargo test` + render diff vs the LilyPond reference. | ⬜ |
+| EHT5 | **Regression bar.** Golden per-staff bar-fill + RH/LH total-duration equality for `chopin_n.ly`, `pedal.ly`, `repeats.ly`; the existing main-body-bar-perfect property must not regress; full `cargo test` + render diff vs the LilyPond reference. | ✅ `piano_fixtures_staves_stay_in_step`; chopin bars 1–69 still bar-perfect. (Render diff not run: no LilyPond in CI.) |
 
 **Sequence & guardrails.** EHT1→EHT2→EHT3 are the spine (do together, behind the
 existing tests); EHT4 builds on EHT3's span model; EHT5 gates the whole thing.
@@ -485,12 +556,14 @@ Sourced from a lytk-vs-MuseScore CLI/converter comparison (see the comparison
 report + `memory/musescore-comparison-backlog.md`). Full atomic-task detail,
 rationale, and file anchors live in the plan file
 `~/.claude/plans/add-as-a-next-mighty-matsumoto.md`. **These 12 epics gate the
-1.0.0 release** (single milestone, by owner decision).
+1.0.0 release** (single milestone, by owner decision). A **0.1.0 preview** ships
+before them (2026-09-24 decision); P5 goes first afterwards because it is the only
+epic that breaks the Python API.
 
 Three scoping decisions:
-- **Licensing:** lytk stays **GPL-2.0-only**; MuseScore (GPL-3.0) may be *read to
-  learn the approach* but not copied/transcribed — write lytk's own (ideally
-  better) implementation.
+- **Licensing:** lytk is **MIT** (relicensed 2026-09-24; was GPL-2.0-only);
+  MuseScore (GPL-3.0) may be *read to learn the approach* but not
+  copied/transcribed — write lytk's own (ideally better) implementation.
 - **Layout (PE-Epic 4 / item 12):** target is **sensible default positions /
   placement hints**, NOT a layout/spacing engine.
 - **Testing:** the `tests/fidelity.rs` semantic scoreboard stays a **hard,
@@ -611,7 +684,7 @@ approach; write lytk's own. Each sub-task is independently SMF-fixture-testable.
 ### PE-Epic P12 — Testing gate & CI *(item 9)* — ongoing
 | Task | Description | Status |
 |------|-------------|--------|
-| T12.1 | Formalize semantic scoreboard as hard CI gate (non-decreasing) | ⬜ |
+| T12.1 | Formalize semantic scoreboard as hard CI gate (non-decreasing) | ✅ `tests/fidelity.rs` runs in `cargo test` on every CI OS against committed non-decreasing baselines |
 | T12.2 | Document visual-regression deferral (no rendered output → N/A) | ⬜ |
 | T12.3 | Convention: each epic adds fidelity fixtures + bumps baselines in-PR | ⬜ |
 
@@ -632,6 +705,7 @@ approach; write lytk's own. Each sub-task is independently SMF-fixture-testable.
 | **9** | **G** | **Distribution: stubs, wheels, docs → tag v1.0.0** |
 | **10** | **H** | **Multi-voice/multi-staff bar-splitting rework (deferred bar-splitting; fixes chopin RH/LH drift + cadenza)** |
 | **11** | **P1–P12** | **Pre-1.0.0 expansion (MuseScore-comparison backlog): CLI/IO + transforms, MusicXML fidelity, IR modeling, MIDI reconstruction — see plan file** |
+| **12** | **0.1.0** | **Preview release before the remaining P-epics; then P5 → P3 → P4 → P6 → P8 → P9** |
 
 ## Key Decisions
 
@@ -640,13 +714,13 @@ approach; write lytk's own. Each sub-task is independently SMF-fixture-testable.
 - **Fidelity before features:** v1.0.0 prioritizes making the existing three formats round-trip *semantically* (Epics B/C) before adding ML surface area. A real test bar prevents "parses-but-wrong" regressions.
 - **ML representations are in-scope for v1.0.0:** the stated goal is symbolic-music generation/understanding, so note-array/event/piano-roll + datasets + metrics ship in v1.0.0 (modeled on muspy), not deferred.
 - **Representations go through the Music tree**, not Score — format-agnostic, reuses `Frac` durations and `moment.rs` offsets.
-- **New formats priority:** ABC first (simplest, many folk datasets). MEI and Humdrum stay deferred past v1.0.0.
+- **New formats priority:** ABC first (simplest, many folk datasets). MEI stays deferred past v1.0.0 (Humdrum `**kern` shipped 2026-07-10).
 
 ## Deferred past v1.0.0
 
-### Epic 8 (remainder): MEI & Humdrum adapters
-MEI parser/emitter (`mei_to_ir.rs` / `ir_to_mei.rs`), Humdrum import (`hum_to_ir.rs`).
-Reference material in `MEILER/`, `hum2ly/`.
+### Epic 8 (remainder): MEI adapter
+MEI parser/emitter (`mei_to_ir.rs` / `ir_to_mei.rs`). Reference material in `MEILER/`.
+(Humdrum shipped 2026-07-10 — see above.)
 
 ### Generation-evaluation metrics: JS-similarity & Fréchet Music Distance ✅
 Implemented in `src/lytk/metrics.py` (ported from `lilybench/`), behind the
@@ -666,12 +740,9 @@ Listen-back via a synthesizer (reference muspy/symusic synth).
 ### music21 Feature Parity (v2)
 
 [music21](https://web.mit.edu/music21/) is the standard Python toolkit for Music
-Information Retrieval (MIR) but is slow, poorly designed, and frequently buggy. lytk
-aims to provide equivalent or superior analytical capabilities with a clean API and
-Rust performance. Planned for v2 or a separate package.
+Information Retrieval (MIR) but is slow, poorly designed, and frequently buggy. lytk aims to provide equivalent or superior analytical capabilities with a clean API and Rust performance. Planned for v2 or a separate package.
 
-Areas: Pitch & Interval Analysis, Score Analysis (key-finding, ambitus, histograms),
-Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Transforms.
+Areas: Pitch & Interval Analysis, Score Analysis (key-finding, ambitus, histograms), Rhythm & Meter, Harmony & Voice Leading, Melodic Analysis, Data Augmentation Transforms.
 
 ## Out of Scope (v1)
 

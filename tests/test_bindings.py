@@ -356,3 +356,44 @@ def test_humdrum_kern_round_trip(tmp_path):
     p = tmp_path / "t.krn"
     lytk.to_humdrum(score, str(p))
     assert lytk.from_humdrum(str(p)).notes()
+
+
+# ---------------------------------------------------------------------------
+# Bindings the CLI is built on
+# ---------------------------------------------------------------------------
+
+
+def test_from_lilypond_movements(tmp_path):
+    src = tmp_path / "two.ly"
+    src.write_text(r"\score { \new Staff { c'1 } } \score { \new Staff { d'1 e'1 } }")
+    movements = lytk.from_lilypond_movements(str(src))
+    assert [len(m.notes()) for m in movements] == [1, 2]
+    # A file without \score blocks is one movement.
+    single = tmp_path / "one.ly"
+    single.write_text("{ c'4 d' }")
+    assert len(lytk.from_lilypond_movements(str(single))) == 1
+
+
+def test_to_lilypond_relative_and_absolute():
+    score = lytk.from_lilypond_string(r"\relative c' { c4 d e }")
+    assert "\\relative" in lytk.to_lilypond(score, relative=True)
+    assert "\\relative" not in lytk.to_lilypond(score, relative=False)
+
+
+def test_to_mxl_bytes_is_a_zip_that_reads_back():
+    score = lytk.from_musicxml(str(FIXTURE_XML))
+    data = lytk.to_mxl_bytes(score)
+    assert data[:4] == b"PK\x03\x04"
+    back = lytk.from_musicxml_bytes(data)
+    assert back.notes() == score.notes()
+    # Same content as the plain-XML writer produces.
+    assert back == lytk.from_musicxml_string(lytk.to_musicxml(score))
+
+
+def test_score_lyricist_and_part_midi_instrument():
+    score = lytk.from_lilypond_string(
+        '\\header { poet = "Anon" }\n'
+        '\\new Staff \\with { midiInstrument = "violin" } { c\'4 }'
+    )
+    assert score.lyricist == "Anon"
+    assert score.iter_parts()[0].midi_instrument == "violin"

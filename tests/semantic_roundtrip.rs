@@ -328,6 +328,81 @@ fn ly_to_ly_music_preserves_simple_repeat() {
     }
 }
 
+// A piano (multi-staff) part used to go through its own lift routine, which
+// skipped the repeat reconstruction and concatenated a staff's voices.
+const PIANO_VOLTA_SRC: &str = r#"\version "2.24.0"
+upper = \relative c'' {
+  \time 4/4
+  c4 d e f |
+  \repeat volta 2 { g4 a b c | }
+  \alternative { { d2 c | } { b2 a | } }
+  g1 \bar "|."
+}
+lower = \relative c {
+  \clef bass
+  \time 4/4
+  c1 |
+  \repeat volta 2 { e1 | }
+  \alternative { { f1 | } { g1 | } }
+  c,1 \bar "|."
+}
+\score {
+  \new PianoStaff << \new Staff \upper \new Staff \lower >>
+  \layout { }
+}
+"#;
+
+#[test]
+fn ly_to_ly_music_piano_preserves_volta_on_every_staff() {
+    let ly = ly_to_ly_music(PIANO_VOLTA_SRC);
+    assert_eq!(
+        ly.matches("\\repeat volta 2").count(),
+        2,
+        "each staff needs its own \\repeat volta:\n{ly}"
+    );
+    assert_eq!(
+        ly.matches("\\alternative").count(),
+        2,
+        "each staff needs its own \\alternative:\n{ly}"
+    );
+    let score = LyToIrAdapter::new().convert_str(&ly).expect("re-parse");
+    assert_eq!(
+        score.parts()[0].measures.len(),
+        5,
+        "bar count changed:\n{ly}"
+    );
+}
+
+const PIANO_TWO_VOICE_SRC: &str = r#"
+upper = { \time 4/4 << { e''2 f'' } \\ { c''4 c'' c'' c'' } >> | g''1 }
+lower = { \clef bass \time 4/4 c1 | c1 }
+\score { \new PianoStaff << \new Staff \upper \new Staff \lower >> }
+"#;
+
+#[test]
+fn piano_voices_in_one_staff_stay_simultaneous() {
+    let score = LyToIrAdapter::new()
+        .convert_str(PIANO_TWO_VOICE_SRC)
+        .expect("LY → Score");
+    // (onset, duration, midi) at 480 per quarter: both voices start at 0.
+    let sig = common::note_signature(&score);
+    assert!(sig.contains(&(0, 960, 76)), "e''2 not at 0: {sig:?}");
+    assert!(sig.contains(&(0, 480, 72)), "c''4 not at 0: {sig:?}");
+    assert!(
+        sig.contains(&(1920, 1920, 79)),
+        "g''1 not in bar 2: {sig:?}"
+    );
+
+    let ly = ly_to_ly_music(PIANO_TWO_VOICE_SRC);
+    let back = LyToIrAdapter::new().convert_str(&ly).expect("re-parse");
+    assert_eq!(
+        back.parts()[0].measures.len(),
+        2,
+        "bar count changed:\n{ly}"
+    );
+    assert_eq!(common::note_signature(&back), sig, "onsets drifted:\n{ly}");
+}
+
 /// Re-parse the emitted LilyPond and confirm the repeat survives a second pass.
 #[test]
 fn volta_survives_double_roundtrip() {
@@ -707,6 +782,45 @@ lower = { \time 2/4 c4 d e4 f g a4 b c' }
                 expected[i]
             );
         }
+    }
+}
+
+// EHT5 regression bar for the bar-splitter: on the hardest piano fixtures every
+// staff runs the same length, and every bar (bar the free-time cadenza and the
+// last) is filled equally on every staff — the staves never drift apart.
+#[test]
+fn piano_fixtures_staves_stay_in_step() {
+    use _core::ir::duration::Frac;
+    for fixture in ["chopin_n.ly", "pedal.ly", "repeats.ly"] {
+        let score = LyToIrAdapter::new()
+            .convert_str(&read_ly(fixture))
+            .expect("LY → Score");
+        let part = score
+            .parts()
+            .into_iter()
+            .find(|p| p.staves > 1)
+            .unwrap_or_else(|| panic!("{fixture}: no piano part"));
+        let fills = staff_measure_fills(part);
+        let mut totals = std::collections::BTreeMap::<u8, Frac>::new();
+        for (i, (m, f)) in part.measures.iter().zip(&fills).enumerate() {
+            for (staff, fill) in f {
+                *totals.entry(*staff).or_default() += *fill;
+            }
+            let last = i + 1 == part.measures.len();
+            if !m.senza_misura && !last && f.len() > 1 {
+                let first = f.values().next().unwrap();
+                assert!(
+                    f.values().all(|v| v == first),
+                    "{fixture} bar {}: staves disagree: {f:?}",
+                    i + 1
+                );
+            }
+        }
+        let first = totals.values().next().unwrap();
+        assert!(
+            totals.values().all(|t| t == first),
+            "{fixture}: staff lengths differ: {totals:?}"
+        );
     }
 }
 

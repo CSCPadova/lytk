@@ -1,5 +1,218 @@
 # Changelog
 
+## 2026-09-24 — One command line, in Python
+
+There were two `lytk` commands: the Rust binary (13 subcommands) and the one
+`pip install` put on PATH, a four-command Python subset. The Rust one is gone
+and the Python one does everything it did. It's a Typer app now, in
+`src/lytk/cli.py`.
+
+- **Commands:** `convert`, `transpose` (`-s`, `--interval`, `--to-key`),
+  `invert`, `retrograde`, `change-language`, `abs2rel`, `rel2abs`, `info`
+  (`--json`), `positions`, `bundle`, `diff`, `batch` and `flatten`. They keep
+  the Rust behaviour:
+  - `-` for stdin/stdout, with `--from`/`--format`;
+  - the first movement of a multi-`\score` file at the requested path;
+  - LilyPond→LilyPond through the Music tree;
+  - parallel folder conversion and batch jobs, where a failing file fails
+    alone and the exit status is non-zero;
+  - `diff` exits 1 when the scores differ.
+- **Checked against the Rust binary** on 105 fixtures: `info` (text and JSON)
+  is identical everywhere. `positions` differs only where there are grace
+  notes. The Rust version added a grace note's written duration to its bar's
+  length; grace notes take no time, so the Python version leaves them out.
+- **Bindings added for it:** `from_lilypond_movements(path)`,
+  `to_lilypond(..., relative=True/False)`, `to_mxl_bytes(score)`,
+  `Score.lyricist` and `Part.midi_instrument`, with type stubs.
+- **Messages:** a missing input now says `error: no such file: PATH`. Before,
+  the text was `I/O error: No such file or directory (os error 2)`, with no
+  path.
+- **Removed:** `src/main.rs`, the `[[bin]]` target, `clap` and `anyhow`
+  (`rayon` remains only as a dependency of `midly`). The 48 Rust CLI tests are
+  now Python tests (`tests/test_cli.py`, 66 cases, in-process through Typer's
+  `CliRunner` plus two through the installed command); `assert_cmd` and
+  `predicates` are gone.
+- **Docs:** `docs/cli.md` was rewritten as the reference for all 13 commands;
+  it had covered 4 and described multi-movement output wrongly. Typer is a
+  new runtime dependency.
+
+998 Rust + 184 Python tests pass.
+
+## 2026-09-24 — Positioned LilyPond reader, multi-staff repeats, `français`, MIT
+
+The pre-release items: the bar-splitter refactor (Epic H), multi-staff repeat
+output, the `français` pitch language, and relicensing. **1046 Rust + 141
+Python tests, 0 failures**; clippy clean on 1.90 and 1.98.
+
+### The LilyPond reader no longer builds measures while it walks
+
+The old reader split bars as it went, using whatever time signature happened to
+be active (a variable was pre-parsed at the default 4/4, before `\global` set
+the real meter), then reconciled voices, staves and variables **by measure
+index**, patching the results with resplit/sync passes. The new reader:
+
+- places every note at its absolute onset in a voice *lane*, and every
+  `\time`, `\key`, `\clef`, direction, barline, chord name, figure, `\partial`
+  and `\cadenzaOn/Off` as an event at a position (`ly_to_ir/timeline.rs`);
+- overlays simultaneous music by position: each branch of `<< … \\ … >>` or
+  `<< {…} {…} >>`, each staff of a PianoStaff, and each parallel variable starts
+  where its block starts. A run that would overlap music already in its lane
+  moves to the next free lane;
+- splices a variable (a timeline positioned from 0) in where it is used;
+- cuts bars **once**, at score assembly, on a score-wide grid. This is
+  LilyPond's model, where `Timing` lives in the Score: bar lines fall on the
+  meter grid (anchored at the start, `\partial` and every `\time`), an explicit
+  barline adds a boundary without moving the grid, a cadenza span is one free
+  bar, and `|` is only a check.
+
+`merge.rs` went from 1,796 to ~250 lines; `merge_voice_measure_streams`,
+`merge_simultaneous_block`, the spacer merges, `resplit_*`,
+`synchronize_time_signatures`, `unify_staff_time_signatures`,
+`collapse_cadenza_runs` and `merge_leading_attribute_measures` are gone.
+
+**Checked against 319 inputs** (the 35 `.ly` fixtures plus the 142-file MusicXML
+corpus written out through both LilyPond writers), comparing structure and
+(onset, duration, pitch) before and after, file by file. Every change was
+reviewed; the ones that alter what a score *means* were all fixes:
+
+- keys, clefs, tempo marks and line/page breaks written at a bar line landed on
+  the bar **before** it (the old reader closed a full bar only when the next
+  note arrived);
+- a repeat starting after a full bar began one bar early, so that bar was
+  repeated as well;
+- in a piano score, music after a `<< … \\ … >>` bar lost its staff and slid
+  into an extra bar; volta endings were doubled a bar apart (`repeats.ly`);
+- `<< {…} {…} >>` branches of very different lengths were played one after the
+  other (a length-ratio heuristic); `\partCombine`-style input doubled its bars;
+- `\context Staff` inside a staff created a second, empty staff;
+- a `\new Voice \var` body was dropped (`cue-clef-begin-of-score.ly` read 0
+  notes);
+- `\addlyrics` at top level (how the Music-path writer emits lyrics) was parsed
+  as music: words like "a", "es", "f" became notes;
+- chord names from `\context ChordNames` and figures in `\figures` variables
+  were lost in some layouts;
+- pedal marks from a `\new Dynamics` lane landed a bar off (`pedal.ly`);
+- chopin's coda bar was over-full (23/16 against 15/8) followed by an empty bar.
+
+Bars that don't fill their meter fell from 260 to 233 (30 → 17 files); the rest
+are genuine: incomplete source bars, and `\set Score.measureLength`.
+
+Speed is at parity: repeats.ly 19 ms (was 20), chopin 17 ms (18), pedal 13 ms
+(12), the 556-bar six-part fixture 35 ms (30), release build. A first version
+was up to 9× slower on the large file because every run scanned its whole lane
+for overlaps; lanes never overlap, so only the run's own span needs checking.
+
+Tests: 10 reader regressions (each fails on the old reader), the EHT5 bar
+`piano_fixtures_staves_stay_in_step` (every staff the same length, every bar
+filled alike, on chopin/pedal/repeats), timeline unit tests.
+
+### Multi-staff repeats (and voices) through the Music path
+
+`lift_to_music` had a separate routine for multi-staff parts that skipped the
+repeat reconstruction and appended a staff's voices one after the other. So
+LY→LY on any piano score lost `\repeat volta`/`\alternative` and doubled the
+length of every two-voice bar. `lytk diff` and the fidelity board didn't notice,
+because they compare note counts and pitches. The lift now runs the single-staff
+routine per staff, and the LilyPond writer separates voices in a staff with
+`\\` (without it both streams share one voice and re-read wrongly).
+
+Fidelity board: LY onset 27 → 28, `**kern` 131/129 → 132/130. **XML→ABC pitch
+and onset went down by one (124/122 → 123/121)**, the first lowered baseline:
+`71d-ChordsFrets-Multistaff` only passed because the old lift turned a one-bar,
+two-voice score into two bars, which the ABC writer (one stream per staff) then
+kept whole. Documented in `tests/fidelity.rs`.
+
+### Pitch languages
+
+- **`français`** added (`do ré mi …`, `re` accepted for `ré`, `x` for
+  double-sharp). The reader used to treat `\language "français"` as Dutch.
+- Every language checked against LilyPond's `scm/define-note-names.scm`, both
+  ways. **The writer produced names LilyPond rejects**: German/Finnish E-flat
+  `ees` and A-flat `aes` (`es`, `as`), Swedish `eess`/`aess` (`ess`, `ass`),
+  Norwegian B double-flat `heses` (`bess`). Catalan was using the Italian
+  quarter-tone suffixes (`sb` for `qb`). Written names are now LilyPond's own;
+  Spanish and Flemish gained quarter tones; all 910 LilyPond spellings,
+  including English `c-sharp` and the Norwegian `is`/`es` forms, now read back.
+  Dutch output is unchanged.
+
+### Licence and packaging
+
+- **Relicensed from GPL-2.0-only to MIT** (LICENSE, Cargo/pyproject metadata,
+  CONTRIBUTING). All contributors and every runtime dependency (all
+  MIT/Apache/BSD/Unlicense) allow it; no GPL code was copied (the pitch tables
+  are LilyPond's note names, re-attributed in `language.rs`).
+- `tests/fixtures/README.md` records the fixtures' own terms (Mutopia CC BY-SA,
+  a CC BY-NC-ND score, LilyPond's GPL regression tests, …).
+- **The sdist no longer ships `tests/`, `.github/` or `CLAUDE.md`**: it was
+  about to publish those third-party scores to PyPI under an MIT label.
+  Verified the trimmed sdist builds and imports in a clean venv.
+- README rewritten as a project presentation; the reference list became a short
+  acknowledgement. It had `lytk batch in_dir/ …`, which the pip-installed CLI
+  doesn't have; the batch example now uses `lytk convert dir/ -o out/ -j N`.
+
+### Upstream issues seen, not fixed here
+
+The snapshot review also showed writer-side losses: the Music-path LilyPond
+writer drops tuplets that have no `Music::Tuplet` wrapper (`23f`), writes no
+`\time` when the MusicXML has none (`42b`), and got a pickup length wrong
+(`\partial 4` for three beats, `21e`); `\grace \parenthesize` isn't read as a
+grace (`tablature-grace-notes.ly`).
+
+## 2026-09-24 — 0.1.0 preview release prep
+
+The first public release ships as **0.1.0**, a preview before the remaining
+pre-1.0 epics (P3–P9). **1025 Rust + 141 Python tests, 0 failures**; clippy clean
+on both 1.90 and the 1.98 stable CI runs.
+
+### CI was red on master since 2026-06-18
+
+Five consecutive pushes failed, and nothing had been done about it. There were
+three independent causes:
+
+- **Clippy 1.98 `question_mark`** in `mxml_to_ir::parse_defaults`: the lint is new
+  on stable, so the code only started failing when the toolchain moved on. It now
+  uses `?`. Clippy stopped at this first lib error, so the bin and test targets had
+  never been linted on 1.98; a full `--all-targets` run on 1.98 is now clean.
+- **Two Windows-only CLI test failures** (`batch_jobs_runs`,
+  `batch_partial_failure_exits_nonzero_and_reports`). The tests built the
+  batch-job JSON with `format!` + `Path::display()`, and on Windows the
+  backslashes became invalid JSON escapes. The code under test was fine; the
+  tests now build the spec with `serde_json::json!`.
+- **`frechet_music_distance` crashed on SciPy ≥ 1.18**, which removed the `disp`
+  keyword from `scipy.linalg.sqrtm`. This one **affected users**, not just the
+  tests (`TypeError` with any current SciPy). The call is now plain
+  `sqrtm(A)`. Verified to give identical results on SciPy 1.10.1, 1.17.1 and
+  1.18.1.
+
+### Release
+
+- Version `1.0.0` → **`0.1.0`** (Cargo + pyproject); classifier
+  `5 - Production/Stable` → `4 - Beta`.
+- `release.yml` has never run. Its x86_64 macOS wheel job targeted `macos-13`,
+  which GitHub retired in December 2025, so the first tag would have failed.
+  Moved to `macos-15-intel` (supported until Aug 2027).
+- README: a preview note (the API may change before 1.0, e.g. notation names →
+  enums), and the not-yet-implemented / known-limitations lists completed
+  (tablature, percussion, MIDI reconstruction, custom key signatures, `français`,
+  ABC/kern inner polyphony).
+- Roadmap: 0.1.0 status, T12.1 marked done (the fidelity scoreboard already
+  gates CI), and the stale "Humdrum deferred past v1" entries corrected.
+
+### To tag (manual)
+
+1. Create the `pypi` environment in the GitHub repo settings.
+2. Register a pending Trusted Publisher on pypi.org: project `lytk`, repo
+   `CSCPadova/lytk`, workflow `release.yml`, environment `pypi`. The name `lytk`
+   is still free on PyPI.
+3. Dry-run `release.yml` with `workflow_dispatch` (builds only), then install a
+   wheel in a clean venv and smoke-test it.
+4. Make the repo public, then push `v0.1.0`.
+
+### Next
+
+P5 (enum notation typing) first, because it is the only epic that breaks the
+Python API and that is cheapest to do on 0.x. Then P3 → P4 → P6 → P8 → P9.
+
 ## 2026-09-20 — Conversion/augmentation audit + DLPack
 
 A full audit of every conversion the library advertises (all 6×6 format pairs,

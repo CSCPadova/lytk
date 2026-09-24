@@ -41,10 +41,11 @@ use std::path::PathBuf;
 // ---------------------------------------------------------------------------
 const LY_NOTES_BASELINE: usize = 35;
 const LY_PITCHES_BASELINE: usize = 35;
-// 8 complex multi-voice LY fixtures (chopin/example/pedal) still drift on
+// The complex multi-voice LY fixtures (chopin/example/pedal) still drift on
 // onset/duration through the Music-path round-trip — a known limitation, gated
-// at the current floor so it can't get worse.
-const LY_DUR_BASELINE: usize = 27;
+// at the current floor so it can't get worse. 27 → 28 when the multi-staff lift
+// stopped playing a staff's voices one after another (2026-09-24).
+const LY_DUR_BASELINE: usize = 28;
 const XML_NOTES_BASELINE: usize = 152;
 const XML_PITCHES_BASELINE: usize = 152;
 const XML_DUR_BASELINE: usize = 152; // full onset+duration fidelity
@@ -55,11 +56,17 @@ const XML_DUR_BASELINE: usize = 152; // full onset+duration fidelity
                                      // The drifters that remain are the un-notatable-duration fixtures (a 31/8 bar
                                      // note has no single spelling, so the Layer-1 lowering splits it into tied
                                      // notes) and the inner-polyphony ones (both writers are one stream per staff).
+                                     //
+                                     // The one exception to "never down" (2026-09-24): XML→ABC pitch/onset 124/122 →
+                                     // 123/121. `71d-ChordsFrets-Multistaff` only passed because the multi-staff lift
+                                     // concatenated a staff's two voices into one sequential stream (a one-bar score
+                                     // became two bars). With the lift fixed the voices are simultaneous, and the ABC
+                                     // writer's documented inner-polyphony limit keeps one of them.
 const XML_ABC_NOTES_BASELINE: usize = 124;
-const XML_ABC_PITCHES_BASELINE: usize = 124;
-const XML_ABC_DUR_BASELINE: usize = 122;
-const XML_KRN_NOTES_BASELINE: usize = 131;
-const XML_KRN_PITCHES_BASELINE: usize = 129;
+const XML_ABC_PITCHES_BASELINE: usize = 123;
+const XML_ABC_DUR_BASELINE: usize = 121;
+const XML_KRN_NOTES_BASELINE: usize = 132;
+const XML_KRN_PITCHES_BASELINE: usize = 130;
 const XML_KRN_DUR_BASELINE: usize = 130;
 // ABC now includes a multi-voice fixture (multivoice.abc) that round-trips.
 const ABC_NOTES_BASELINE: usize = 4;

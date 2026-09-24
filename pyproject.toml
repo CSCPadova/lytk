@@ -1,13 +1,13 @@
 [project]
 name = "lytk"
-version = "1.0.0"
+version = "0.1.0"
 description = "Fast music-notation conversion and augmentation: LilyPond, MusicXML/MXL, MIDI, and ABC through a shared IR, with ML representations."
 readme = "README.md"
 authors = [
     { name = "Matteo Spanio", email = "spanio@dei.unipd.it" }
 ]
 requires-python = ">=3.10"
-license = "GPL-2.0-only"
+license = "MIT"
 # The wheels embed the vendored tree-sitter grammar (MIT), whose notice must
 # ship with any copy of it.
 license-files = ["LICENSE", "src/tree-sitter/LICENSE"]
@@ -23,7 +23,7 @@ keywords = [
     "conversion",
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "Topic :: Multimedia :: Sound/Audio",
@@ -41,7 +41,10 @@ classifiers = [
 # 1.23 is the DLPack floor: `__dlpack__` landed in 1.22 and
 # `np.from_dlpack` in 1.23, and the representation arrays are
 # documented as DLPack-consumable (torch/JAX/CuPy, zero-copy).
-dependencies = ["numpy>=1.23"]
+dependencies = [
+    "numpy>=1.23",
+    "typer>=0.26.8",
+]
 
 [project.optional-dependencies]
 # Deep-learning adapters in `lytk.datasets`: `to_pytorch_dataset` /
@@ -74,6 +77,9 @@ testpaths = ["tests"]
 module-name = "lytk._core"
 python-packages = ["lytk"]
 python-source = "src"
+# The sdist only has to build the package. Test fixtures are third-party scores
+# under their own licences (tests/fixtures/README.md) and are not redistributed.
+exclude = ["tests/**/*", ".github/**/*", "CLAUDE.md"]
 
 [tool.uv]
 cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.rs" }, { file = "Cargo.toml" }, { file = "Cargo.lock" }]

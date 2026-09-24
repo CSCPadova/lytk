@@ -23,6 +23,8 @@ struct EmitCtx {
     mode: PitchMode,
     prev_pitch: Option<Pitch>,
     indent: usize,
+    /// Inside a single staff, where `<< >>` of sequential blocks means voices.
+    in_staff: bool,
 }
 
 impl EmitCtx {
@@ -32,6 +34,7 @@ impl EmitCtx {
             mode,
             prev_pitch: None,
             indent: 0,
+            in_staff: false,
         }
     }
 
@@ -309,9 +312,19 @@ fn emit_simultaneous(children: &[Music], ctx: &mut EmitCtx, lines: &mut Vec<Stri
         return;
     }
 
+    // Voices sharing a staff are separated with `\\`, which gives each its own
+    // Voice context (LilyPond's idiom, and what the reader splits voices on).
+    // Without it both streams land in one voice and re-parse mis-bars them.
+    let voices = ctx.in_staff
+        && children.len() > 1
+        && children.iter().all(|c| matches!(c, Music::Sequential(_)));
+
     lines.push(format!("{}<<", ctx.pad()));
     ctx.indent += 1;
-    for child in children {
+    for (i, child) in children.iter().enumerate() {
+        if voices && i > 0 {
+            lines.push(format!("{}\\\\", ctx.pad()));
+        }
         emit_music(child, ctx, lines);
     }
     ctx.indent -= 1;
@@ -332,6 +345,12 @@ fn emit_context(
         None => String::new(),
     };
 
+    let outer_in_staff = ctx.in_staff;
+    ctx.in_staff = matches!(
+        ctx_type,
+        ContextType::Staff | ContextType::Voice | ContextType::TabStaff | ContextType::TabVoice
+    );
+
     // Check if content is a simple sequential block
     match content {
         Music::Sequential(children) => {
@@ -350,6 +369,7 @@ fn emit_context(
             ctx.indent -= 1;
         }
     }
+    ctx.in_staff = outer_in_staff;
 
     // Emit lyrics that were attached to notes in this voice/staff. LilyPond's
     // `\addlyrics` block attaches to the immediately preceding context, so we

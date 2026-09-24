@@ -14,7 +14,7 @@ Latest changes: look at the file docs/changelog.md to know about latest activity
 
 ```bash
 cargo build                          # build library + CLI
-cargo test                           # all tests (~980 Rust; plus ~136 Python via pytest)
+cargo test                           # all tests (~1050 Rust; plus ~140 Python via pytest)
 cargo test <test_name>               # run a single test by name
 cargo test --test cli                # CLI integration tests only
 cargo test -- --nocapture             # see stdout/eprintln during tests
@@ -24,12 +24,13 @@ cargo fmt && cargo clippy --all-targets -- -D warnings  # lint
 maturin develop                      # rebuild Rust extension for Python
 uv sync                              # install Python deps
 
-# CLI usage
-cargo run -- convert input.ly -o output.xml
-cargo run -- convert input.mxl -o output.ly
-cargo run -- info input.xml
-cargo run -- transpose input.ly -o output.ly -s 3
-cargo run -- flatten input.ly -o output.ly
+# CLI usage (the Python `lytk` command; after `maturin develop`)
+lytk convert input.ly -o output.xml
+lytk convert input.mxl -o output.ly
+lytk info input.xml
+lytk transpose input.ly -o output.ly -s 3
+lytk flatten input.ly -o output.ly
+pytest tests/test_cli.py             # CLI tests
 ```
 
 MIDI support is included by default.
@@ -54,7 +55,7 @@ Six layers:
    - `TimeSignature.beats` is a `String` (supports compound like "3+2"), use `.beats_fraction()` for the `Frac` value
 
 3. **Adapters** (`src/adapters/`) — format converters, all go through IR:
-   - `ly_to_ir.rs` (~8000 lines) — LilyPond parser using tree-sitter AST walk. Handles `\relative`, variables, `<< \\ >>` multi-voice, `\include`, figured bass, lyrics
+   - `ly_to_ir/` — LilyPond parser using tree-sitter AST walk. Handles `\relative`, variables, `<< \\ >>` multi-voice, `\include`, figured bass, lyrics. The walk writes a positioned `Timeline` per part (`ly_to_ir/timeline.rs`); measures are made once, at score assembly
    - `mxml_to_ir/` — MusicXML reader using `musicxml` crate (typed struct traversal). Handles `.xml` and `.mxl` natively.
    - `ir_to_ly/` (~3400 lines) — IR to LilyPond emitter. Handles multi-staff piano scores, voice filtering, relative pitch mode
    - `ir_to_mxml/` — IR to MusicXML writer using `musicxml` crate (struct construction + serialization). Native MXL support.
@@ -70,14 +71,16 @@ Six layers:
 
 5. **ML representations** (`src/representations/`) — muspy-style encodings over the Layer-1 Music tree: `note_array` (onset/duration/pitch/velocity rows), `event_sequence` (Performance-RNN-style event codes), `piano_roll` (T × 128 matrix), `metrics`. All exposed to Python (`to_note_array`, `to_piano_roll`, `to_event_sequence` + inverses). Structured note navigation lives in `src/navigation.rs`.
 
-6. **CLI** (`src/main.rs`) — `clap` subcommands: `convert`, `transpose` (`-s`/`--interval`/`--to-key`), `invert`, `retrograde`, `change-language`, `abs2rel`, `rel2abs`, `info`, `positions`, `bundle`, `batch`, `diff`, `flatten`. Batch mode uses `rayon` for parallelism. The Python package `src/lytk/` ships datasets (`lytk.datasets`) and eval metrics (`lytk.metrics`) on top of the bindings, plus a subset CLI (`lytk.cli`).
+6. **CLI** (`src/lytk/cli.py`) — the one `lytk` command, a Typer app over the Python bindings: `convert`, `transpose` (`-s`/`--interval`/`--to-key`), `invert`, `retrograde`, `change-language`, `abs2rel`, `rel2abs`, `info`, `positions`, `bundle`, `batch`, `diff`, `flatten`. Folder conversion and `batch` run in worker processes (`ProcessPoolExecutor`). There is no Rust binary: the crate is a library only. The Python package `src/lytk/` also ships datasets (`lytk.datasets`) and eval metrics (`lytk.metrics`).
 
 ## Key Design Patterns
 
-- **Variable resolution** in `ly_to_ir`: variables are pre-parsed into `VarDef::Measures(Vec<Measure>, Frac)` storing the time signature at definition time. At resolution, if the current time sig differs, measures are re-split via `resplit_measures_for_time_sig`.
-- **Multi-voice** `<< { } \\ { } >>`: detected by `parallel_music_separator` nodes. Each voice branch is walked independently from saved state, then merged into unified measures.
+- **Positioned reading** in `ly_to_ir`: the walk never builds measures. Notes go into voice *lanes* at their absolute onset; `\time`, `\key`, `\clef`, directions, barlines, harmonies, figures, `\partial` and `\cadenzaOn/Off` are events at positions (`timeline::Event`). A run that would overlap music already in its lane moves to the next free lane (`Timeline::place_run`).
+- **One bar-splitter**: `assemble_score` builds a score-wide `Grid` (meter grid anchored at the start, `\partial` and each `\time`; explicit barlines add a boundary; a cadenza span is one free bar) and `timeline::split` cuts every part on it. Bar checks `|` only check. Never re-bar measures after the fact.
+- **Variable resolution**: a music variable is pre-parsed from position 0 into `VarDef::Music { tl, len, … }` and spliced at the current position; a `\new Staff` variable is `VarDef::Parts`.
+- **Multi-voice** `<< { } \\ { } >>` and `<< {…} {…} >>`: every branch starts at the block's start; branch *k* of a `\\` block writes lane *k*. Simultaneous music never needs merging.
 - **Multi-staff parts** (piano): `Part.staves` > 1, voices carry `staff` numbers. `ir_to_ly` filters voices by staff using `voice_matches_staff` + `voice_has_content`. `ir_to_mxml` threads `part_staves` to conditionally emit `<staff>` elements.
-- **Post-processing** in `ly_to_ir`: `merge_leading_attribute_measures` (merges key/time-only measures), `merge_dynamics_parts` (folds Dynamics-only parts), `post_process_beams_and_stems`.
+- **Assembly** (`ly_to_ir::assemble_score`): spacer-only lanes and `\new Dynamics` parts fold into directions; PianoStaff staves are unioned with staff numbers (`merge_piano_staff_parts`); lyrics attach after splitting; then `post_process_beams_and_stems`, ties, slurs, clefs.
 
 ### General
 - **TDD** — every feature must have tests before implementation.
@@ -85,12 +88,12 @@ Six layers:
 - **Performance baseline first** — profile `python-ly/` and record the baseline (time, memory). The Rust target must beat it.
 
 ### Rust specifics
-- Avoid unnecessary `clone()` on large trees (known hotspots: `ly_to_ir/merge.rs`, variable resolution in `ly_to_ir/state.rs`).
-- `rayon` for data-parallel batch CLI operations.
+- Avoid unnecessary `clone()` on large trees (known hotspots: variable splicing in `ly_to_ir/state.rs`, `Timeline::splice`).
 - Cross-language ABI: expose C-compatible types where needed; use `abi3` for Python.
 - Define `benches/` with `criterion` benchmarks for all hot paths.
 
 ### Python specifics
+- The CLI is Python (Typer). A new command-line feature needs whatever it calls exposed in `src/python.rs` first; don't add a Rust binary.
 - `pyproject.toml` uses `maturin` build backend; `uv` for env management.
 - `lytk._core` is the compiled Rust extension; the installable Python package lives in **`src/lytk/`** (`python-source = "src"` in `pyproject.toml`).
 - `.pyi` stub files alongside every `_core` sub-module.

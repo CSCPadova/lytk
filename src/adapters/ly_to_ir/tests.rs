@@ -13,8 +13,6 @@ mod tests {
     use crate::ir::note::{ArpeggioType, Chord, Note, VoiceElement};
     use crate::ir::pitch::PitchStep;
 
-    use super::super::merge::voice_element_duration;
-
     #[test]
     fn test_parse_simple_melody() {
         let adapter = LyToIrAdapter::new();
@@ -1302,6 +1300,182 @@ forma = { \time 4/4 \key c\major s1*3 }
         assert_eq!(parts[0].measures[2].figured_bass[0].figures.len(), 2);
     }
 
+    // -----------------------------------------------------------------------
+    // Positioned reading + one bar-splitter (Epic H). Each case below was
+    // mis-read by the old measure-by-index reader.
+    // -----------------------------------------------------------------------
+
+    fn part_notes(score: &crate::ir::score::Score, part: usize) -> Vec<Vec<(PitchStep, u8)>> {
+        score.parts()[part]
+            .measures
+            .iter()
+            .map(|m| {
+                m.voices
+                    .iter()
+                    .flat_map(|v| &v.elements)
+                    .filter_map(|e| match e {
+                        VoiceElement::Note(n) => Some((n.pitch.step, n.staff)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_music_after_multivoice_bar_keeps_its_staff() {
+        // The lower staff's second bar used to land in a third bar, on staff 1.
+        let src = r#"\new PianoStaff <<
+            \new Staff { << { e''2 f'' } \\ { c''4 c'' c'' c'' } >> g''1 }
+            \new Staff { \clef bass d1 d1 }
+        >>"#;
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let bars = part_notes(&score, 0);
+        assert_eq!(bars.len(), 2);
+        assert!(bars[1].contains(&(PitchStep::G, 1)) && bars[1].contains(&(PitchStep::D, 2)));
+    }
+
+    #[test]
+    fn test_simultaneous_blocks_in_one_staff_overlay() {
+        // `<< { … } { … } >>` without `\\` is simultaneous, whatever the
+        // branches' lengths (a short one used to be appended after the long).
+        let src = r"\new Staff << { c'1 d'1 e'1 f'1 } { g'1 } >>";
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let part = &score.parts()[0];
+        assert_eq!(part.measures.len(), 4);
+        assert_eq!(part.measures[0].voices.len(), 2);
+    }
+
+    #[test]
+    fn test_changes_at_a_bar_line_open_the_next_bar() {
+        // A full bar is only closed when the next element arrives; a `\key`,
+        // `\clef` or `\tempo` written at the bar line belongs to the new bar.
+        let src = r"{ c'1 \key g \major \clef bass \tempo 4 = 90 c1 }";
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let ms = &score.parts()[0].measures;
+        let attrs = ms[1].attributes.as_ref().expect("bar 2 attributes");
+        assert_eq!(attrs.key.map(|k| k.fifths), Some(1));
+        assert_eq!(attrs.clefs.get(&1).map(|c| c.sign), Some(ClefSign::F));
+        assert!(ms[1].directions.iter().any(|d| d.tempo.is_some()));
+        assert!(ms[0].directions.iter().all(|d| d.tempo.is_none()));
+    }
+
+    #[test]
+    fn test_repeat_after_a_full_bar_starts_at_the_next_bar() {
+        let src = r"{ c''1 \repeat volta 2 { d''1 } }";
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let ms = &score.parts()[0].measures;
+        assert!(ms[0].left_barline.is_none());
+        let left = ms[1]
+            .left_barline
+            .as_ref()
+            .expect("forward repeat on bar 2");
+        assert_eq!(left.style, BarlineType::RepeatForward);
+    }
+
+    #[test]
+    fn test_line_and_page_breaks_open_the_next_bar() {
+        // MusicXML's `<print new-system>` sits on the bar after the break.
+        let src = r"{ c''1 | \break c''1 | \pageBreak c''1 }";
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let ms = &score.parts()[0].measures;
+        let breaks: Vec<bool> = ms
+            .iter()
+            .map(|m| m.directions.iter().any(|d| d.layout_break.is_some()))
+            .collect();
+        assert_eq!(breaks, vec![false, true, true]);
+    }
+
+    #[test]
+    fn test_context_staff_reenters_the_enclosing_staff() {
+        let src = r#"\new Staff = "P1" << \context Staff << \context Voice = "v" { c'1 } >> >>"#;
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        assert_eq!(score.parts().len(), 1);
+        assert_eq!(score.parts()[0].name, "P1");
+        assert_eq!(score.parts()[0].measures.len(), 1);
+    }
+
+    #[test]
+    fn test_top_level_addlyrics_is_not_music() {
+        // Lyric words that are pitch names ("a", "es") used to become notes.
+        let src = r"\new Staff { c'4 d' e' f' } \addlyrics { a es de fa }";
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let notes: Vec<&Note> = score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes.len(), 4);
+        assert_eq!(notes[1].lyrics[0].text, "es");
+    }
+
+    #[test]
+    fn test_dynamic_after_a_bar_line_is_a_direction_there() {
+        let src = r#"{ c'2 r2 \bar "||" \p c'1 }"#;
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let ms = &score.parts()[0].measures;
+        assert!(ms[1].directions.iter().any(|d| d.dynamic.is_some()));
+    }
+
+    #[test]
+    fn test_mid_bar_voice_entry_keeps_its_onset() {
+        // A second voice entering half-way through a bar starts with a spacer.
+        let src = r"{ c'2 << { d'2 } \\ { e'4 f' } >> }";
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let ms = &score.parts()[0].measures;
+        assert_eq!(ms.len(), 1);
+        let v2 = &ms[0].voices[1];
+        assert!(matches!(&v2.elements[0], VoiceElement::Rest(r) if r.is_spacer));
+        assert_eq!(v2.elements.len(), 3);
+    }
+
+    #[test]
+    fn test_invisible_bar_line_makes_no_bar() {
+        let src = r#"{ \cadenzaOn c'8 d' e' \bar "" f' g' a' \cadenzaOff c'1 }"#;
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let ms = &score.parts()[0].measures;
+        assert_eq!(ms.len(), 2);
+        assert!(ms[0].senza_misura && !ms[1].senza_misura);
+    }
+
+    #[test]
+    fn test_language_francais() {
+        // Was silently read as Nederlands, so French note names failed to parse.
+        let adapter = LyToIrAdapter::new();
+        let src = "\\language \"français\"\n{ do'4 ré' mib' fad' | solx' re' lab' sibb' }";
+        let score = adapter.convert_str(src).unwrap();
+        let parts = score.parts();
+        let pitches: Vec<(PitchStep, Ratio<i32>)> = parts[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some((n.pitch.step, n.pitch.alter)),
+                _ => None,
+            })
+            .collect();
+        let r = |n| Ratio::from_integer(n);
+        assert_eq!(
+            pitches,
+            vec![
+                (PitchStep::C, r(0)),
+                (PitchStep::D, r(0)),
+                (PitchStep::E, r(-1)),
+                (PitchStep::F, r(1)),
+                (PitchStep::G, r(2)),
+                (PitchStep::D, r(0)),
+                (PitchStep::A, r(-1)),
+                (PitchStep::B, r(-2)),
+            ]
+        );
+    }
+
     #[test]
     fn test_cautionary_accidental_measure_split() {
         // Cautionary accidental `!` after pitch should not disrupt bar splitting
@@ -1317,7 +1491,7 @@ forma = { \time 4/4 \key c\major s1*3 }
                 .voices
                 .iter()
                 .flat_map(|v| &v.elements)
-                .map(voice_element_duration)
+                .map(VoiceElement::metric_duration)
                 .fold(Frac::from_integer(0), |a, b| a + b);
             assert_eq!(
                 total,
@@ -1828,13 +2002,13 @@ melB = { g'4 a' b' c'' }
         let m1_dur: Frac = part.measures[0].voices[0]
             .elements
             .iter()
-            .map(voice_element_duration)
+            .map(VoiceElement::metric_duration)
             .sum();
         assert_eq!(m1_dur, Frac::new(1, 1), "m1 should be 1 whole");
         let m2_dur: Frac = part.measures[1].voices[0]
             .elements
             .iter()
-            .map(voice_element_duration)
+            .map(VoiceElement::metric_duration)
             .sum();
         assert_eq!(m2_dur, Frac::new(3, 4), "m2 should be 3/4");
     }
@@ -2819,7 +2993,7 @@ middle = { \inner e' f' }
             .iter()
             .flat_map(|m| &m.voices)
             .flat_map(|v| &v.elements)
-            .map(voice_element_duration)
+            .map(VoiceElement::metric_duration)
             .collect();
         assert_eq!(
             notes,
@@ -2947,7 +3121,7 @@ middle = { \inner e' f' }
                     .map(|v| {
                         v.elements
                             .iter()
-                            .map(voice_element_duration)
+                            .map(VoiceElement::metric_duration)
                             .fold(Frac::from_integer(0), |a, d| a + d)
                     })
                     .max()
@@ -2976,7 +3150,7 @@ middle = { \inner e' f' }
             .voices
             .iter()
             .flat_map(|v| &v.elements)
-            .map(voice_element_duration)
+            .map(VoiceElement::metric_duration)
             .fold(Frac::from_integer(0), |a, d| a + d);
         assert_eq!(
             total,
@@ -2985,9 +3159,9 @@ middle = { \inner e' f' }
         );
         let first = part.measures[0].voices[0].elements.first().unwrap();
         let second = part.measures[0].voices[0].elements.get(1).unwrap();
-        assert_eq!(voice_element_duration(first), Frac::new(1, 28));
+        assert_eq!(VoiceElement::metric_duration(first), Frac::new(1, 28));
         assert_eq!(
-            voice_element_duration(second),
+            VoiceElement::metric_duration(second),
             Frac::new(1, 28),
             "the *8/7 factor must carry forward to durationless notes"
         );
@@ -3015,7 +3189,7 @@ middle = { \inner e' f' }
             assert_eq!(c.notes[0].pitch.step, PitchStep::C);
             assert_eq!(c.notes[1].pitch.step, PitchStep::E);
             assert_eq!(
-                voice_element_duration(&VoiceElement::Chord((*c).clone())),
+                VoiceElement::metric_duration(&VoiceElement::Chord((*c).clone())),
                 Frac::new(1, 4)
             );
         }
@@ -3136,13 +3310,14 @@ lower = \relative c { \partial 8 c8 | d8 e f g a b | c8 b a g f e }
             part.measures[0].implicit,
             "first measure must be the implicit pickup"
         );
-        let dur0 = voice_element_duration(part.measures[0].voices[0].elements.first().unwrap());
+        let dur0 =
+            VoiceElement::metric_duration(part.measures[0].voices[0].elements.first().unwrap());
         assert_eq!(dur0, Frac::new(1, 8), "pickup is one eighth");
         // The first full bar (measure 2) must contain a complete 6/8.
         let bar1: Frac = part.measures[1].voices[0]
             .elements
             .iter()
-            .map(voice_element_duration)
+            .map(VoiceElement::metric_duration)
             .sum();
         assert_eq!(
             bar1,

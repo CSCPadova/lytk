@@ -238,6 +238,18 @@ pub enum VoiceElement {
     Chord(Chord),
 }
 
+impl VoiceElement {
+    /// Time this element occupies in its measure. Grace notes take none.
+    pub fn metric_duration(&self) -> super::duration::Frac {
+        match self {
+            VoiceElement::Note(n) if n.is_grace => super::duration::Frac::from_integer(0),
+            VoiceElement::Note(n) => n.duration.actual_duration(),
+            VoiceElement::Rest(r) => r.duration.actual_duration(),
+            VoiceElement::Chord(c) => c.duration.actual_duration(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

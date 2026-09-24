@@ -268,8 +268,8 @@ fn test_emit_key_signature_matches_language() {
         ),
         "\\key fs \\major"
     );
-    // Canonical Deutsch spelling ("ees", same as note emission; LilyPond's
-    // deutsch.ly accepts it as an alias of "es").
+    // Deutsch E-flat is "es" (LilyPond's scm/define-note-names.scm has no
+    // "ees" in deutsch), same as note emission.
     assert_eq!(
         key_to_ly(
             &KeySignature {
@@ -278,7 +278,7 @@ fn test_emit_key_signature_matches_language() {
             },
             PitchLanguage::Deutsch
         ),
-        "\\key ees \\major"
+        "\\key es \\major"
     );
 }
 
