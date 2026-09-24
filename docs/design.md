@@ -200,8 +200,14 @@ then walks the CST with a stateful `WalkState`:
 - Pitch language from `\language` command
 - `tuplet_stack` for nested tuplet ratio propagation
 - `auto_beam_off` flag for `\autoBeamOff`/`\autoBeamOn`
-- Variable definitions resolved inline
-- Measure auto-splitting by time signature with elapsed time tracking
+- Variable definitions pre-parsed from position 0 and spliced in where used
+- Positioned reading: every note sits at its absolute onset in a voice lane,
+  every attribute/direction/barline is an event at a position
+  (`ly_to_ir/timeline.rs`); simultaneous music overlays by position
+- One bar-splitter at score assembly: a score-wide meter grid (anchored at the
+  start, `\partial` and each `\time`), explicit barlines as extra boundaries,
+  a `\cadenzaOn … \cadenzaOff` span as one free bar — LilyPond's model, where
+  bar checks only check
 - Post-processing: clef-aware auto-stem, tuplet-aware auto-beam grouping,
   lyrics attachment
 

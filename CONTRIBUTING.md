@@ -57,4 +57,4 @@ Trusted Publishing.
 
 ## Licence
 
-Contributions are accepted under the GPL-2.0-only licence of this project.
+Contributions are accepted under the MIT licence of this project.

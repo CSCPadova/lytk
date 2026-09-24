@@ -31,6 +31,7 @@ mod modifiers;
 mod music;
 mod postprocess;
 mod state;
+mod timeline;
 mod walk;
 
 #[cfg(test)]
@@ -40,11 +41,9 @@ use std::path::Path;
 
 use num::rational::Ratio;
 
-use crate::ir::direction::Barline;
-use crate::ir::duration::Frac;
 use crate::ir::harmony::FiguredBass;
 use crate::ir::language::PitchLanguage;
-use crate::ir::measure::{ClefSign, KeyMode, Measure, MeasureAttributes};
+use crate::ir::measure::{ClefSign, KeyMode};
 use crate::ir::music::MusicDocument;
 use crate::ir::pitch::{Pitch, PitchStep};
 use crate::ir::score::{Score, ScoreChild};
@@ -53,29 +52,13 @@ use crate::parser::LilyPondParser;
 
 use super::{AdapterError, Result, ToIrAdapter};
 
-use crate::ir::direction::Direction;
-use crate::ir::duration::Duration;
+use crate::ir::duration::{Duration, Frac};
 
 // Re-export items needed by sub-modules via `super::`
-use figured_bass::distribute_figured_bass;
-use merge::{
-    apply_tuplet_ratio, beam_level_for_duration, measure_voice_duration, measures_are_spacer_only,
-    merge_spacer_by_duration, merge_spacer_measures, resplit_measures_for_time_sig,
-    resplit_measures_to_match, voice_element_duration,
-};
+use merge::{apply_tuplet_ratio, beam_level_for_duration};
 use postprocess::{
     assign_slur_numbers, ensure_staff_clefs, post_process_beams_and_stems, resolve_ties,
 };
-
-/// Tuple of (cumulative position, attributes, directions, left barline, right barline)
-/// used when collecting per-measure metadata for re-splitting.
-type MeasureMeta = (
-    Frac,
-    Option<MeasureAttributes>,
-    Vec<Direction>,
-    Option<Barline>,
-    Option<Barline>,
-);
 
 // ---------------------------------------------------------------------------
 // Clef name → (sign, line)
@@ -169,19 +152,6 @@ enum FiguredBassEntry {
     Skip(Duration),
 }
 
-/// What a variable definition expands to.
-#[derive(Clone)]
-enum VarDef {
-    /// Variable contained `\new Staff { ... }` — stores the full part(s).
-    Parts(Vec<(String, Part)>),
-    /// Variable contained bare music — stores just the measures.
-    /// The `Frac` records the time signature active when the variable was pre-parsed,
-    /// so we can re-split if the time sig differs at resolution time.
-    Measures(Vec<Measure>, Frac),
-    /// Variable contained `\figuremode { ... }` — stores flat stream of entries.
-    FiguredBass(Vec<FiguredBassEntry>),
-}
-
 /// Find the octave that LilyPond would infer in relative mode
 /// (the closest octave of `step` to `prev`'s pitch).
 fn find_relative_octave(prev: &Pitch, step: PitchStep) -> i32 {
@@ -241,77 +211,15 @@ impl LyToIrAdapter {
 
         walk::walk_program(&mut state, root);
 
-        // If walk_program collected scores from \score blocks, return those
+        // `\score` blocks were assembled as they closed (one per movement).
         if !state.completed_scores.is_empty() {
-            for score in &mut state.completed_scores {
-                for part in score.parts_mut() {
-                    merge::merge_leading_attribute_measures(part);
-                    merge::renumber_measures(part);
-                }
-                merge::collapse_cadenza_runs(score);
-                merge::propagate_first_tempo(score);
-                post_process_beams_and_stems(score);
-                resolve_ties(score);
-                assign_slur_numbers(score);
-                ensure_staff_clefs(score);
-                // Mark first measure as implicit if partial_duration is set
-                if score.metadata.partial_duration.is_some() {
-                    for part in score.parts_mut() {
-                        if let Some(m) = part.measures.first_mut() {
-                            m.implicit = true;
-                        }
-                    }
-                }
-            }
             return Ok(state.completed_scores);
         }
 
-        // Otherwise, build a single score from remaining state (no \score blocks)
-        state.flush_measure();
-
-        // Attach pending lyrics to matching parts
-        for (voice_name, syllables) in &state.pending_lyrics {
-            if let Some(&part_idx) = state.voice_part_map.get(voice_name) {
-                if let Some((_, part)) = state.parts.get_mut(part_idx) {
-                    lyrics::attach_lyrics_to_part(part, syllables);
-                }
-            }
-        }
-
-        // Merge spacer-only parts (from \new Dynamics) into staff parts
-        merge::merge_dynamics_parts(&mut state.parts);
-
-        let mut score = Score::new();
-        score.metadata = state.metadata;
-        score.metadata.pitch_mode = state.mode;
-        score.metadata.pitch_language = Some(state.language);
-        score.page_layout = state.page_layout;
-        for (_, part) in state.parts {
-            score.children.push(ScoreChild::Part(part));
-        }
+        // Otherwise the file's top-level music is one implicit score.
+        let mut score = assemble_score(&mut state).unwrap_or_default();
         if score.children.is_empty() {
             score.children.push(ScoreChild::Part(Part::new("P1")));
-        }
-
-        for part in score.parts_mut() {
-            merge::merge_leading_attribute_measures(part);
-            merge::renumber_measures(part);
-        }
-        merge::synchronize_time_signatures(&mut score);
-        merge::collapse_cadenza_runs(&mut score);
-        merge::synchronize_barlines(&mut score);
-        merge::propagate_first_tempo(&mut score);
-        post_process_beams_and_stems(&mut score);
-        resolve_ties(&mut score);
-        assign_slur_numbers(&mut score);
-        ensure_staff_clefs(&mut score);
-        // Mark first measure as implicit if partial_duration is set
-        if score.metadata.partial_duration.is_some() {
-            for part in score.parts_mut() {
-                if let Some(m) = part.measures.first_mut() {
-                    m.implicit = true;
-                }
-            }
         }
         Ok(vec![score])
     }
@@ -337,6 +245,121 @@ impl LyToIrAdapter {
     pub fn convert_str_multi(&self, text: &str) -> Result<Vec<Score>> {
         self.parse_source_multi(text)
     }
+}
+
+/// Turn the parts walked so far into a [`Score`]: fold spacer lanes and
+/// Dynamics contexts into directions, place chord names, bar every part on one
+/// score-wide grid, attach lyrics, then run the measure-level passes.
+/// `None` when nothing was walked.
+fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
+    use timeline::{split, Grid};
+
+    state.flush_voice();
+    let mut parts = std::mem::take(&mut state.parts);
+    if parts.is_empty() {
+        return None;
+    }
+    for pb in &mut parts {
+        pb.tl.fold_spacer_lanes();
+    }
+
+    // Chord names attach to the first part with music, from its start.
+    let harmonies = std::mem::take(&mut state.pending_harmonies);
+    if !harmonies.is_empty() {
+        if let Some(pb) = parts.iter_mut().find(|pb| pb.tl.has_lane_content()) {
+            chord_mode::place_harmonies(&mut pb.tl, Frac::from_integer(0), &harmonies);
+        }
+    }
+
+    // A Dynamics context outside a PianoStaff folds into the nearest staff:
+    // the one before it, else the one after.
+    if parts.len() > 1 {
+        let mut i = 0;
+        while i < parts.len() {
+            let is_staff = |pb: &state::PartBuild| !merge::part_is_dynamics_only(pb);
+            // An empty `\new Staff` is an empty staff, not a Dynamics lane.
+            let has_content = parts[i].tl.has_lane_content() || !parts[i].tl.events.is_empty();
+            let target = if merge::part_is_dynamics_only(&parts[i]) && has_content {
+                (0..i)
+                    .rev()
+                    .find(|&j| is_staff(&parts[j]))
+                    .or_else(|| (i + 1..parts.len()).find(|&j| is_staff(&parts[j])))
+            } else {
+                None
+            };
+            match target {
+                Some(t) => {
+                    let dyn_part = parts.remove(i);
+                    let t = if t > i { t - 1 } else { t };
+                    state.part_alias.insert(dyn_part.uid, parts[t].uid);
+                    parts[t].tl.events.extend(dyn_part.tl.events);
+                }
+                None => i += 1,
+            }
+        }
+    }
+
+    let grid = Grid::build(parts.iter().map(|pb| &pb.tl));
+    let mut built: Vec<(u32, Part)> = parts
+        .into_iter()
+        .map(|pb| {
+            let mut part = pb.part;
+            part.measures = split(
+                pb.tl,
+                &grid,
+                chord_mode::HARMONY_DIVISIONS,
+                figured_bass::FIGURED_BASS_DIVISIONS,
+            );
+            if part.staves > 1 {
+                if let Some(m) = part.measures.first_mut() {
+                    m.attributes.get_or_insert_with(Default::default).staves = Some(part.staves);
+                }
+            }
+            (pb.uid, part)
+        })
+        .collect();
+
+    // Lyrics, now that every part has its notes in measures.
+    let lyrics_for_voices = std::mem::take(&mut state.pending_lyrics);
+    let mut lyric_jobs: Vec<(u32, Vec<crate::ir::articulation::LyricSyllable>)> =
+        std::mem::take(&mut state.added_lyrics);
+    for (voice, syllables) in lyrics_for_voices {
+        if let Some(&uid) = state.voice_part_map.get(&voice) {
+            lyric_jobs.push((uid, syllables));
+        }
+    }
+    for (uid, syllables) in lyric_jobs {
+        let uid = state.resolve_uid(uid);
+        if let Some((_, part)) = built.iter_mut().find(|(u, _)| *u == uid) {
+            lyrics::attach_lyrics_to_part(part, &syllables);
+        }
+    }
+
+    let mut score = Score::new();
+    score.metadata = state.metadata.clone();
+    score.metadata.pitch_mode = state.mode;
+    score.metadata.pitch_language = Some(state.language);
+    score.page_layout = state.page_layout.clone();
+    score.children = built
+        .into_iter()
+        .map(|(_, part)| ScoreChild::Part(part))
+        .collect();
+
+    merge::synchronize_barlines(&mut score);
+    merge::propagate_first_tempo(&mut score);
+    post_process_beams_and_stems(&mut score);
+    resolve_ties(&mut score);
+    assign_slur_numbers(&mut score);
+    ensure_staff_clefs(&mut score);
+    // Mark first measure as implicit if partial_duration is set
+    if score.metadata.partial_duration.is_some() {
+        for part in score.parts_mut() {
+            if let Some(m) = part.measures.first_mut() {
+                m.implicit = true;
+            }
+        }
+    }
+    Some(score)
 }
 
 impl Default for LyToIrAdapter {

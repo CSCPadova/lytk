@@ -2,7 +2,6 @@ use tree_sitter::Node;
 
 use crate::ir::duration::Duration;
 use crate::ir::harmony::{Figure, FiguredBass};
-use crate::ir::measure::Measure;
 
 use super::state::WalkState;
 use super::FiguredBassEntry;
@@ -229,80 +228,4 @@ fn consume_multiplier_stateless(state: &WalkState, children: &[Node], i: &mut us
         }
     }
     1
-}
-
-/// Distribute a flat stream of figured bass entries across measures.
-///
-/// Walks the entries and measures in parallel, tracking cumulative duration.
-/// When the accumulated duration fills a measure (based on the current time
-/// signature), advances to the next measure. Figures land in whichever
-/// measure their start time falls into.
-///
-/// Sets `FiguredBass.offset` to the figure's start position within its
-/// measure in divisions (using `FIGURED_BASS_DIVISIONS` per quarter note).
-/// This matches the MusicXML `<offset>` convention so round-trips preserve
-/// alignment.
-pub(super) fn distribute_figured_bass(measures: &mut [Measure], entries: &[FiguredBassEntry]) {
-    use crate::ir::duration::Frac;
-
-    if measures.is_empty() {
-        return;
-    }
-
-    // Skip leading attribute-only measures (no voice content).
-    // These will be merged into the first real-music measure by
-    // merge_leading_attribute_measures during post-processing.
-    let first_music = measures
-        .iter()
-        .position(|m| m.voices.iter().any(|v| !v.elements.is_empty()))
-        .unwrap_or(0);
-
-    // Track current time signature to know measure duration
-    let mut measure_dur = Frac::new(4, 4); // default 4/4
-    let mut measure_idx = first_music;
-    let mut elapsed_in_measure = Frac::from_integer(0);
-
-    // Update measure_dur from attributes up to and including the starting measure
-    for m in &measures[..=measure_idx] {
-        if let Some(ref attrs) = m.attributes {
-            if let Some(ref ts) = attrs.time {
-                measure_dur = ts.beats_fraction();
-            }
-        }
-    }
-
-    for entry in entries {
-        // Advance to correct measure if we've exceeded current measure duration
-        while elapsed_in_measure >= measure_dur && measure_idx + 1 < measures.len() {
-            elapsed_in_measure -= measure_dur;
-            measure_idx += 1;
-            // Check if the new measure changes time signature
-            if let Some(ref attrs) = measures[measure_idx].attributes {
-                if let Some(ref ts) = attrs.time {
-                    measure_dur = ts.beats_fraction();
-                }
-            }
-        }
-
-        match entry {
-            FiguredBassEntry::Figure(fb) => {
-                if measure_idx < measures.len() {
-                    // Compute offset within the measure in divisions.
-                    // actual_duration() is a fraction of a whole note;
-                    // multiply by 4 to get quarter notes, then by divisions/quarter.
-                    let offset_frac = elapsed_in_measure
-                        * Frac::from_integer(4)
-                        * Frac::from_integer(FIGURED_BASS_DIVISIONS);
-                    let offset_divs = *offset_frac.numer() / *offset_frac.denom();
-                    let mut fb_placed = fb.clone();
-                    fb_placed.offset = offset_divs as i32;
-                    measures[measure_idx].figured_bass.push(fb_placed);
-                }
-                elapsed_in_measure += fb.duration.actual_duration();
-            }
-            FiguredBassEntry::Skip(dur) => {
-                elapsed_in_measure += dur.actual_duration();
-            }
-        }
-    }
 }

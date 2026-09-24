@@ -10,6 +10,7 @@ use crate::ir::pitch::{AccidentalDisplay, Pitch};
 use crate::ir::score::PageLayout;
 
 use super::state::WalkState;
+use super::timeline::Event;
 
 /// Consume octave marks (' and ,) after a pitch symbol. Returns net marks.
 pub(super) fn consume_octave_marks(state: &WalkState, children: &[Node], i: &mut usize) -> i32 {
@@ -418,8 +419,7 @@ pub(super) fn consume_tempo(state: &mut WalkState, children: &[Node], mut i: usi
             tempo: Some(tempo_dir),
             ..Default::default()
         };
-        let measure = state.ensure_measure();
-        measure.directions.push(dir);
+        state.add_event(Event::direction(dir));
     }
     i
 }
@@ -548,8 +548,7 @@ pub(super) fn consume_mark(state: &mut WalkState, children: &[Node], mut i: usiz
             // Generic text mark — ignore for now
             return i;
         };
-        let measure = state.ensure_measure();
-        measure.directions.push(dir);
+        state.add_event(Event::direction(dir));
     } else if node.kind() == "escaped_word" && state.text(node) == "\\markup" {
         // \mark \markup { ... }
         i += 1;
@@ -571,8 +570,7 @@ pub(super) fn consume_mark(state: &mut WalkState, children: &[Node], mut i: usiz
                     None
                 };
                 if let Some(d) = dir {
-                    let measure = state.ensure_measure();
-                    measure.directions.push(d);
+                    state.add_event(Event::direction(d));
                 }
                 i += 1;
             }

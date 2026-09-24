@@ -14,7 +14,7 @@ Latest changes: look at the file docs/changelog.md to know about latest activity
 
 ```bash
 cargo build                          # build library + CLI
-cargo test                           # all tests (~980 Rust; plus ~136 Python via pytest)
+cargo test                           # all tests (~1050 Rust; plus ~140 Python via pytest)
 cargo test <test_name>               # run a single test by name
 cargo test --test cli                # CLI integration tests only
 cargo test -- --nocapture             # see stdout/eprintln during tests
@@ -54,7 +54,7 @@ Six layers:
    - `TimeSignature.beats` is a `String` (supports compound like "3+2"), use `.beats_fraction()` for the `Frac` value
 
 3. **Adapters** (`src/adapters/`) — format converters, all go through IR:
-   - `ly_to_ir.rs` (~8000 lines) — LilyPond parser using tree-sitter AST walk. Handles `\relative`, variables, `<< \\ >>` multi-voice, `\include`, figured bass, lyrics
+   - `ly_to_ir/` — LilyPond parser using tree-sitter AST walk. Handles `\relative`, variables, `<< \\ >>` multi-voice, `\include`, figured bass, lyrics. The walk writes a positioned `Timeline` per part (`ly_to_ir/timeline.rs`); measures are made once, at score assembly
    - `mxml_to_ir/` — MusicXML reader using `musicxml` crate (typed struct traversal). Handles `.xml` and `.mxl` natively.
    - `ir_to_ly/` (~3400 lines) — IR to LilyPond emitter. Handles multi-staff piano scores, voice filtering, relative pitch mode
    - `ir_to_mxml/` — IR to MusicXML writer using `musicxml` crate (struct construction + serialization). Native MXL support.
@@ -74,10 +74,12 @@ Six layers:
 
 ## Key Design Patterns
 
-- **Variable resolution** in `ly_to_ir`: variables are pre-parsed into `VarDef::Measures(Vec<Measure>, Frac)` storing the time signature at definition time. At resolution, if the current time sig differs, measures are re-split via `resplit_measures_for_time_sig`.
-- **Multi-voice** `<< { } \\ { } >>`: detected by `parallel_music_separator` nodes. Each voice branch is walked independently from saved state, then merged into unified measures.
+- **Positioned reading** in `ly_to_ir`: the walk never builds measures. Notes go into voice *lanes* at their absolute onset; `\time`, `\key`, `\clef`, directions, barlines, harmonies, figures, `\partial` and `\cadenzaOn/Off` are events at positions (`timeline::Event`). A run that would overlap music already in its lane moves to the next free lane (`Timeline::place_run`).
+- **One bar-splitter**: `assemble_score` builds a score-wide `Grid` (meter grid anchored at the start, `\partial` and each `\time`; explicit barlines add a boundary; a cadenza span is one free bar) and `timeline::split` cuts every part on it. Bar checks `|` only check. Never re-bar measures after the fact.
+- **Variable resolution**: a music variable is pre-parsed from position 0 into `VarDef::Music { tl, len, … }` and spliced at the current position; a `\new Staff` variable is `VarDef::Parts`.
+- **Multi-voice** `<< { } \\ { } >>` and `<< {…} {…} >>`: every branch starts at the block's start; branch *k* of a `\\` block writes lane *k*. Simultaneous music never needs merging.
 - **Multi-staff parts** (piano): `Part.staves` > 1, voices carry `staff` numbers. `ir_to_ly` filters voices by staff using `voice_matches_staff` + `voice_has_content`. `ir_to_mxml` threads `part_staves` to conditionally emit `<staff>` elements.
-- **Post-processing** in `ly_to_ir`: `merge_leading_attribute_measures` (merges key/time-only measures), `merge_dynamics_parts` (folds Dynamics-only parts), `post_process_beams_and_stems`.
+- **Assembly** (`ly_to_ir::assemble_score`): spacer-only lanes and `\new Dynamics` parts fold into directions; PianoStaff staves are unioned with staff numbers (`merge_piano_staff_parts`); lyrics attach after splitting; then `post_process_beams_and_stems`, ties, slurs, clefs.
 
 ### General
 - **TDD** — every feature must have tests before implementation.
@@ -85,7 +87,7 @@ Six layers:
 - **Performance baseline first** — profile `python-ly/` and record the baseline (time, memory). The Rust target must beat it.
 
 ### Rust specifics
-- Avoid unnecessary `clone()` on large trees (known hotspots: `ly_to_ir/merge.rs`, variable resolution in `ly_to_ir/state.rs`).
+- Avoid unnecessary `clone()` on large trees (known hotspots: variable splicing in `ly_to_ir/state.rs`, `Timeline::splice`).
 - `rayon` for data-parallel batch CLI operations.
 - Cross-language ABI: expose C-compatible types where needed; use `abi3` for Python.
 - Define `benches/` with `criterion` benchmarks for all hot paths.

@@ -11,7 +11,7 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 
 | Format | Extensions | Import | Export | Notes |
 |---|---|:---:|:---:|---|
-| LilyPond | `.ly` `.ily` | ✅ | ✅ | Score + Music-tree paths; 11 pitch languages |
+| LilyPond | `.ly` `.ily` | ✅ | ✅ | Score + Music-tree paths; all 12 LilyPond pitch languages |
 | MusicXML | `.xml` `.musicxml` | ✅ | ✅ | The most complete adapter |
 | Compressed MusicXML | `.mxl` | ✅ | ✅ | ZIP handled natively |
 | MIDI | `.mid` `.midi` | ✅ | ✅ | Lossy (no slurs/articulations/lyrics) |
@@ -153,7 +153,7 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 
 | Feature | Status | Notes |
 |---|---|---|
-| Notes with pitch | ✅ | 11 pitch languages supported |
+| Notes with pitch | ✅ | All 12 LilyPond pitch languages, every spelling LilyPond accepts |
 | Rests (r, R, s) | ✅ | Regular, measure, spacer |
 | Chords (`< >`) | ✅ | |
 | Durations (standard, dotted) | ✅ | LilyPond numeric durations |
@@ -201,7 +201,7 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 
 | Feature | Status | Notes |
 |---|---|---|
-| Notes with pitch | ✅ | All 11 languages, relative/absolute |
+| Notes with pitch | ✅ | All 12 languages, in the spelling LilyPond uses; relative/absolute |
 | Rests (r, R, s) | ✅ | |
 | Chords (`< >`) | ✅ | With arpeggio support |
 | Durations (standard, dotted) | ✅ | |

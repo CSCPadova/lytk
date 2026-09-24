@@ -866,15 +866,12 @@ fn batch_jobs_runs() {
     let out1 = tmp.path().join("a.ly");
     let out2 = tmp.path().join("b.ly");
     let jobs = tmp.path().join("jobs.json");
-    let spec = format!(
-        r#"[
-            {{"in":"tests/fixtures/xml/01a-Pitches-Pitches.xml","out":"{}","format":"ly"}},
-            {{"in":"tests/fixtures/xml/01a-Pitches-Pitches.xml","out":"{}","format":"ly","interval":"M3"}}
-        ]"#,
-        out1.display(),
-        out2.display()
-    );
-    fs::write(&jobs, spec).unwrap();
+    // serde_json escapes the paths — Windows backslashes are invalid JSON escapes.
+    let spec = serde_json::json!([
+        {"in": "tests/fixtures/xml/01a-Pitches-Pitches.xml", "out": out1, "format": "ly"},
+        {"in": "tests/fixtures/xml/01a-Pitches-Pitches.xml", "out": out2, "format": "ly", "interval": "M3"},
+    ]);
+    fs::write(&jobs, spec.to_string()).unwrap();
     lytk()
         .args(["batch", jobs.to_str().unwrap(), "-j", "1"])
         .assert()
@@ -889,15 +886,11 @@ fn batch_partial_failure_exits_nonzero_and_reports() {
     let bad = tmp.path().join("bad.ly");
     let report = tmp.path().join("report.json");
     let jobs = tmp.path().join("jobs.json");
-    let spec = format!(
-        r#"[
-            {{"in":"tests/fixtures/xml/01a-Pitches-Pitches.xml","out":"{}","format":"ly"}},
-            {{"in":"nonexistent.xml","out":"{}","format":"ly"}}
-        ]"#,
-        good.display(),
-        bad.display()
-    );
-    fs::write(&jobs, spec).unwrap();
+    let spec = serde_json::json!([
+        {"in": "tests/fixtures/xml/01a-Pitches-Pitches.xml", "out": good, "format": "ly"},
+        {"in": "nonexistent.xml", "out": bad, "format": "ly"},
+    ]);
+    fs::write(&jobs, spec.to_string()).unwrap();
     lytk()
         .args([
             "batch",

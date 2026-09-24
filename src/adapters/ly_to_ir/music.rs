@@ -2,12 +2,12 @@ use tree_sitter::Node;
 
 use crate::ir::articulation::{Placement, SlurEvent, StartStop, TieEvent};
 use crate::ir::direction::{
-    Barline, BarlineType, Direction, LayoutBreakType, OctaveShift, PedalEvent,
+    Barline, BarlineType, Direction, LayoutBreakType, OctaveShift, PedalEvent, RepeatDirection,
 };
 use crate::ir::duration::Frac;
 use crate::ir::language::parse_pitch_name;
 use crate::ir::language::PitchMode;
-use crate::ir::measure::{Clef, KeyMode, KeySignature, MeasureAttributes, TimeSignature};
+use crate::ir::measure::{Clef, KeyMode, KeySignature, TimeSignature};
 use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
 
 use super::apply::{
@@ -23,6 +23,7 @@ use super::consume::{
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
 use super::state::WalkState;
+use super::timeline::Event;
 
 /// If attachments contain `\rest`, convert the note to a pitched rest
 /// (display-step + display-octave) and return it as a VoiceElement::Rest.
@@ -183,7 +184,6 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                     apply_rest_attachments(&mut rest, &attachments);
                     state.push_voice_element(VoiceElement::Rest(rest));
                     for _ in 1..repeat_count {
-                        state.bar_check();
                         let rest = Rest::measure_rest(dur.clone());
                         state.push_voice_element(VoiceElement::Rest(rest));
                     }
@@ -195,7 +195,6 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                     apply_rest_attachments(&mut rest, &attachments);
                     state.push_voice_element(VoiceElement::Rest(rest));
                     for _ in 1..count {
-                        state.bar_check();
                         let rest = Rest::measure_rest(dur.clone());
                         state.push_voice_element(VoiceElement::Rest(rest));
                     }
@@ -235,9 +234,6 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                         rest.is_spacer = true;
                         apply_rest_attachments(&mut rest, &attachments);
                         state.push_voice_element(VoiceElement::Rest(rest));
-                        if repeat_count > 1 {
-                            state.bar_check();
-                        }
                     }
                 }
                 Some(frac) => {
@@ -369,11 +365,7 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         };
                         let fifths = pitch_to_fifths(step, alter, mode) as i8;
                         let ks = KeySignature { fifths, mode };
-                        let measure = state.ensure_measure();
-                        if measure.attributes.is_none() {
-                            measure.attributes = Some(MeasureAttributes::default());
-                        }
-                        measure.attributes.as_mut().unwrap().key = Some(ks);
+                        state.add_event(Event::Key(ks));
                     }
                 }
             }
@@ -396,11 +388,6 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                 if frac_node.kind() == "fraction" {
                     let frac_text = state.text(*frac_node);
                     if let Some((num, den)) = parse_fraction(frac_text) {
-                        // If current voice or measure already has notes/rests,
-                        // flush the measure first so \time starts a new bar
-                        if state.elapsed_in_measure > Frac::from_integer(0) {
-                            state.bar_check();
-                        }
                         let beats = if extra_beats.is_empty() {
                             num.to_string()
                         } else {
@@ -411,18 +398,12 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                                 .collect::<Vec<_>>()
                                 .join("+")
                         };
-                        let total: u32 = extra_beats.iter().sum::<u32>() + num;
                         let ts = TimeSignature {
                             beats,
                             beat_type: den as u8,
                             symbol: None,
                         };
-                        state.set_time_signature(total, den);
-                        let measure = state.ensure_measure();
-                        if measure.attributes.is_none() {
-                            measure.attributes = Some(MeasureAttributes::default());
-                        }
-                        measure.attributes.as_mut().unwrap().time = Some(ts);
+                        state.add_event(Event::Time(ts));
                     }
                     i += 1;
                 }
@@ -449,11 +430,7 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                             line,
                             octave_change: oct_change,
                         };
-                        let measure = state.ensure_measure();
-                        if measure.attributes.is_none() {
-                            measure.attributes = Some(MeasureAttributes::default());
-                        }
-                        measure.attributes.as_mut().unwrap().clefs.insert(1, clef);
+                        state.add_event(Event::Clef(1, clef));
                     }
                 }
             }
@@ -577,18 +554,16 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             // Pedal commands attach to the note they follow and occur at that
             // note's onset (LilyPond post-event semantics), not after its
             // duration has elapsed.
-            let offset_frac = state.last_element_onset;
             let dir = Direction {
                 pedal: Some(PedalEvent {
                     pedal_type: pedal_type.to_string(),
                     line: false,
                 }),
                 placement: Placement::Below,
-                offset_frac,
                 ..Default::default()
             };
-            let measure = state.ensure_measure();
-            measure.directions.push(dir);
+            let at = state.last_element_onset;
+            state.add_event_at(at, Event::direction(dir));
         }
         "\\ottava" => {
             // \ottava #1, \ottava #-1, \ottava #0
@@ -612,8 +587,7 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                             }),
                             ..Default::default()
                         };
-                        let measure = state.ensure_measure();
-                        measure.directions.push(dir);
+                        state.add_event(Event::direction(dir));
                     }
                     i += 1;
                 }
@@ -624,31 +598,14 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                 layout_break: Some(LayoutBreakType::System),
                 ..Default::default()
             };
-            // If no pending content, attach to last existing measure
-            if state.current_measure.is_none() && state.current_voice.is_empty() {
-                let part = state.ensure_part();
-                if let Some(last) = part.measures.last_mut() {
-                    last.directions.push(dir);
-                }
-            } else {
-                let measure = state.ensure_measure();
-                measure.directions.push(dir);
-            }
+            state.add_event(Event::direction(dir));
         }
         "\\pageBreak" => {
             let dir = Direction {
                 layout_break: Some(LayoutBreakType::Page),
                 ..Default::default()
             };
-            if state.current_measure.is_none() && state.current_voice.is_empty() {
-                let part = state.ensure_part();
-                if let Some(last) = part.measures.last_mut() {
-                    last.directions.push(dir);
-                }
-            } else {
-                let measure = state.ensure_measure();
-                measure.directions.push(dir);
-            }
+            state.add_event(Event::direction(dir));
         }
         "\\stemUp" => {
             state.stem_direction = "up".to_string();
@@ -687,6 +644,12 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             if let Some(bar_node) = children.get(i) {
                 if bar_node.kind() == "string" {
                     let bar_text = extract_string_value(state, *bar_node);
+                    i += 1;
+                    // `\bar ""` is an invisible bar line — only a place a line
+                    // may break (e.g. inside a cadenza). It makes no bar.
+                    if bar_text.is_empty() {
+                        return i;
+                    }
                     let bar_type = match bar_text.as_str() {
                         "|." => BarlineType::Final,
                         "||" => BarlineType::Double,
@@ -700,23 +663,17 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         style: bar_type,
                         ..Default::default()
                     };
-                    i += 1;
-                    // If no pending content (measure was just flushed by a preceding |),
-                    // attach the barline to the last existing measure rather than creating
-                    // a new empty measure. This prevents extra empty measures in variables
-                    // like `playSilent` that use `\barRest | \bar "||" \break`.
-                    if state.current_measure.is_none() && state.current_voice.is_empty() {
-                        let part = state.ensure_part();
-                        if let Some(last) = part.measures.last_mut() {
-                            if last.right_barline.is_none() {
-                                last.right_barline = Some(barline);
-                            }
-                        }
+                    // A start-repeat sign opens the bar after it; every other
+                    // bar line closes the bar before it. Post-events after it
+                    // belong here, not to the note before it.
+                    state.flush_voice();
+                    if barline.style == BarlineType::RepeatForward {
+                        state.add_event(Event::LeftBarline(Barline {
+                            repeat_direction: Some(RepeatDirection::Forward),
+                            ..barline
+                        }));
                     } else {
-                        let measure = state.ensure_measure();
-                        measure.right_barline = Some(barline);
-                        // \bar acts as a measure boundary
-                        state.bar_check();
+                        state.add_event(Event::RightBarline(barline));
                     }
                 }
             }
@@ -727,6 +684,7 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                 if next.kind() == "symbol" {
                     let context = state.text(*next).to_string();
                     i += 1;
+                    state.context_reentry.set(false);
                     i = walk_context_body(state, children, i, &context, "");
                 }
             }
@@ -742,7 +700,10 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
         "\\partial" => {
             // \partial <dur>  → anacrusis / pickup
             let dur = consume_duration(state, children, &mut i);
-            state.metadata.partial_duration = Some(dur);
+            state.add_event(Event::Partial(dur.actual_duration()));
+            if state.pos == Frac::from_integer(0) {
+                state.metadata.partial_duration = Some(dur);
+            }
         }
         "\\afterGrace" => {
             // \afterGrace { notes }  OR  \afterGrace note
@@ -831,7 +792,8 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                             let scheme_text = state.text(*val_node);
                             if prop_text.contains("measureLength") {
                                 if let Some((num, den)) = parse_ly_make_moment(scheme_text) {
-                                    state.set_time_signature(num, den);
+                                    let len = Frac::new(num as i64, den as i64);
+                                    state.add_event(Event::MeasureLength(len));
                                 }
                             } else if let Some(s) = extract_scheme_string(scheme_text) {
                                 apply_set_property(state, &prop_text, &s);
@@ -883,15 +845,9 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
         "\\melismaEnd" => {
             state.melisma_active = false;
         }
-        "\\cadenzaOn" => {
-            // Enter senza misura: flag flushed measures (bars still auto-split so
-            // they stay aligned with non-cadenza staves; the bridging pass at
-            // assembly collapses the flagged run into one free measure).
-            state.cadenza_active = true;
-        }
-        "\\cadenzaOff" => {
-            state.cadenza_active = false;
-        }
+        // Score-wide free time: the span becomes one senza-misura bar.
+        "\\cadenzaOn" => state.add_event(Event::CadenzaOn),
+        "\\cadenzaOff" => state.add_event(Event::CadenzaOff),
         "\\unset" | "\\dynamicUp" | "\\dynamicDown" | "\\dynamicNeutral" | "\\context"
         | "\\unfoldRepeats" => {
             // Skip these commands; some may consume the next token
@@ -934,9 +890,10 @@ pub(super) fn apply_set_property(state: &mut WalkState, property: &str, value: &
 /// Handle punctuation tokens: |, (, ), ~, ', ,
 pub(super) fn handle_punctuation(state: &mut WalkState, punc: &str) {
     match punc {
-        "|" => {
-            state.bar_check();
-        }
+        // A bar check only checks; bars come from the meter. It does end the
+        // run, so a following post-event (`| \p`) lands here rather than on
+        // the note before the bar line.
+        "|" => state.flush_voice(),
         "(" => {
             // Slur start: attach to most recent note or chord
             let target = match state.current_voice.last_mut() {

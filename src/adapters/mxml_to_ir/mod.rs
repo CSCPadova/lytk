@@ -451,13 +451,9 @@ fn parse_metadata(score: &mxml::ScorePartwise) -> ScoreMetadata {
 fn parse_defaults(score: &mxml::ScorePartwise) -> Option<PageLayout> {
     let defaults = score.content.defaults.as_ref()?;
 
-    let (mm, tenths_val) = if let Some(ref scaling) = defaults.content.scaling {
-        let mm_val: f64 = scaling.content.millimeters.content.0;
-        let tenths_v: f64 = scaling.content.tenths.content.0;
-        (mm_val, tenths_v)
-    } else {
-        return None;
-    };
+    let scaling = defaults.content.scaling.as_ref()?;
+    let mm: f64 = scaling.content.millimeters.content.0;
+    let tenths_val: f64 = scaling.content.tenths.content.0;
 
     let scale = mm / tenths_val;
     let to_cm = |val: f64| val * scale / 10.0;

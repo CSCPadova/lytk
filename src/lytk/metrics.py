@@ -185,7 +185,7 @@ def frechet_music_distance(x: np.ndarray, y: np.ndarray, *, eps: float = 1e-6) -
     sigma_x = np.cov(x, rowvar=False)
     sigma_y = np.cov(y, rowvar=False)
     diff = mu_x - mu_y
-    covmean, _ = linalg.sqrtm(sigma_x @ sigma_y, disp=False)
+    covmean = linalg.sqrtm(sigma_x @ sigma_y)
     if not np.isfinite(covmean).all():
         offset = np.eye(sigma_x.shape[0]) * eps
         covmean = linalg.sqrtm((sigma_x + offset) @ (sigma_y + offset))
