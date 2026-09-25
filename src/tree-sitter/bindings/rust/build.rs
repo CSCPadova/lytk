@@ -4,7 +4,9 @@ fn main() {
     let lilypond_scheme_dir = root_dir.join("lilypond-scheme").join("src");
 
     let mut c_config = cc::Build::new();
-    c_config.include(&lilypond_dir);
+    // Say which C: older compilers (the manylinux2014 aarch64 GCC) default to
+    // C89, which rejects the generated parser's `for (int i = …)` loops.
+    c_config.std("c11").include(&lilypond_dir);
     c_config
         .flag_if_supported("-Wno-unused-parameter")
         .flag_if_supported("-Wno-unused-but-set-variable")
