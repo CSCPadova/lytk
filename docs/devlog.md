@@ -3,6 +3,44 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-27 — Release plan 0.3.0 → 0.5.0 (planning, no code)
+
+The roadmap gains Epics J (0.3.0), K (0.4.0) and L (0.5.0), from
+lilycorpus's request list (`docs/lytk-wishlist.md` there) checked against
+0.2.0: nothing on it changed in 0.2.0, which touched MIDI and ABC only.
+
+**Grammar measurement** (the J0 baseline; no in-repo harness yet). The
+grammar was compiled on its own, `gcc -shared -fPIC -O1 -I
+src/tree-sitter/src src/tree-sitter/src/parser.c -o liblilypond.so` (ABI
+14, no external scanner), loaded through `ctypes` into py-tree-sitter 0.25
+(`Language(lib.tree_sitter_lilypond())`), and every file was checked for
+ERROR and MISSING nodes:
+- `lilypond/input/regression/*.ly` (v2.27.3): 1 of 2,155, `bom-mark.ly`: a
+  UTF-8 BOM that LilyPond treats as whitespace.
+- Its subdirectories: 1 of 162, `other/display-lily-tests.ly` (`##[ #]`).
+- `Documentation/snippets`: 0 of 389; `tests/fixtures/ly`: 0 of 35.
+- 0.34 s for the 2,155 files.
+
+Hand-made broken inputs:
+- ERROR/MISSING for an unclosed `{`, an extra `}`, an unclosed string,
+  chord (`MISSING >`) and `<< >>` (`MISSING >>`), Scheme (`MISSING )`),
+  block comment, `\score` brace.
+- Nothing for `\foobarbaz`, `c3`, `\time 0/0`, a stray `@` and plain words:
+  the grammar is token-level (`{ c4 @ d4 }` is `expression_block (symbol)
+  (unsigned_integer) (punctuation) (symbol) (unsigned_integer)`), so those
+  are for the walk to report (J3).
+
+**Found while planning** (details in the J tasks):
+- Six LilyPond inputs panic through the bindings.
+- `extract_string_value` keeps only a string's first fragment, in fifteen
+  places.
+- `\include "english.ly"` is ignored, so `cs4` is dropped.
+- The reader never follows `\include`, although CLAUDE.md,
+  `import-export.md` and SECURITY.md say it does.
+- Header metadata leaks from one `\score` into the next.
+- `FolderDataset`'s cache is keyed by path, never invalidated, and bypassed
+  by `Subset`.
+
 ## 2026-09-27 — Release 0.2.0
 
 Epic I (with P9, performed MIDI) ships as **0.2.0**: version bumped in

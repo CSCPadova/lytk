@@ -593,6 +593,95 @@ Follow-ups the oracles found outside IA1/IB (LilyPond writer and reader):
 
 ---
 
+## Release plan 0.3.0 → 0.5.0 — LilyPond input you can trust (planned ⬜)
+
+Planned 2026-09-27. Three releases that make lytk a dependable reader of
+LilyPond written by people and by models. They come out of
+[lilycorpus](https://github.com/matteospanio/lilycorpus), the LilyPond
+training corpus built on lytk (its `docs/lytk-wishlist.md` is the request
+list), and out of LLM evaluation, where the question "is this LilyPond
+well-formed, and where is it wrong?" needs an answer in milliseconds instead
+of a `lilypond` run.
+
+Today the reader never fails and never reports:
+- `""`, `"}}} INVALID {{{"` and `"{ c4 d e f"` all return a score;
+- every walker drops the nodes it does not recognise without a trace;
+- strings are cut at their first escape;
+- `\include "english.ly"` loses notes;
+- six input families panic.
+
+**Measured 2026-09-27** (lytk's grammar compiled from `src/tree-sitter/src/parser.c` and loaded with py-tree-sitter 0.25; LilyPond sources at `v2.27.3`, the reference checkout in `lilypond/`):
+
+| Corpus (valid LilyPond) | Files | With ERROR/MISSING nodes | Cause |
+|---|---|---|---|
+| `input/regression/*.ly` | 2,155 | 1 | a byte-order mark mid-file (`bom-mark.ly`) |
+| `input/regression/*/*.ly` | 162 | 1 | `other/display-lily-tests.ly` (`##[ #]`) |
+| `Documentation/snippets/*.ly` | 389 | 0 | |
+| `tests/fixtures/ly/*.ly` | 35 | 0 | |
+
+- Parsing all 2,155 top-level regression files takes 0.34 s, 0.16 ms a file.
+- **Caught by the tree:** unclosed braces, strings, chords (`MISSING >`), `<< >>` (`MISSING >>`), Scheme parentheses and block comments.
+- **Not caught:** unknown commands, `c3`, `\time 0/0`, stray tokens and plain words. The grammar is nearly token-level (`c4` is `symbol` + `unsigned_integer`), so these can only be found by the walk, where they are dropped today.
+
+So strict mode can rest on the tree for syntax, and the walk must report
+what it drops. Principles, as in Epic I:
+- measure first, gate on committed baselines that may only improve;
+- keep the Python API backward compatible within the series: new keywords
+  default to today's behaviour, and new exceptions subclass the ones raised
+  today.
+
+### Epic J — 0.3.0: trustworthy LilyPond reading
+
+| Task | Description | Acceptance | Size | Status |
+|------|-------------|------------|------|--------|
+| J0 | **Measure.** Add `tests/ly_corpus.rs`, marked `#[ignore]`, run by a new CI job that sparse-clones LilyPond at a pinned tag (`input/regression`, `Documentation/snippets`), like `lilypond-oracle`. It holds four boards: (a) error diagnostics on valid files, (b) detection of structural mutations of the fixtures (a brace, quote, `>`/`>>` or `)` deleted; truncation), (c) panics under LilyPond-shaped fuzz, (d) dropped-input counts per diagnostic code on valid files, to calibrate J3's warnings | Boards committed with the numbers above as baselines | M | ⬜ |
+| J1 | **No panic reaches Python.** (1) Fix the six known families at their source, each becoming a diagnostic: `\time N/0` (`consume.rs` `parse_fraction`); `\time 3/256` (`den as u8`, `music.rs:404`); `\tuplet 0/N` and `\times N/0` (`music.rs:503-509`); `ly:make-moment N 0` (`consume.rs:794-815`); figured-bass dot overflow (`figured_bass.rs:191`). (2) Make the shared sinks total: `TimeSignature::beats_fraction` (`measure.rs:122`) and `Duration::actual_duration` (`duration.rs:85`); reject `beat_type == 0` and `tuplet_actual == 0` in `Score.from_dict`/`from_json`. (3) Bound expansions: `s*N` and `\skip` loops, figured-bass `*N`, nested `\repeat unfold`, with a total-events limit like MIDI's 500,000 bars. (4) Firewall: one `guard()` helper around every `#[pyfunction]` that reads, writes or transforms, turning a panic into `lytk.InternalError` with its message; a panic hook installed at module init keeps guarded panics off stderr (pattern: `mxml_to_ir::catch_read`, `tests/common` `safe()`). (5) Fuzz: a LilyPond-shaped proptest strategy in `tests/fuzz_inputs.rs` (edge numbers 0/1/255/256/`u32::MAX` in `\time`, `\tuplet`, `\times`, `*N`, dots, nesting) over `convert_str`, `_multi`, `_to_music`, `with_language` | Six families return diagnostics; fuzz board 0 panics; no `PanicException` from the bindings (Python tests on the six inputs) | M | ⬜ |
+| J2 | **Exception hierarchy.** `lytk.LytkError(Exception)`; `ParseError(LytkError, ValueError)`; `LilyPondSyntaxError(ParseError)` carrying `.diagnostics`; `InternalError(LytkError)` for caught panics; I/O stays `OSError`. A non-UTF-8 `.ly` becomes a `ParseError` (today `OSError`: changelog *Changed*). Stubs list what each function raises | `except ValueError` code keeps working; `tests/test_bindings.py` covers each class | S | ⬜ |
+| J3 | **Diagnostics and strict mode.** New `src/diagnostics.rs`: `Diagnostic { severity, code, message, line, column, start, end }`, collected in `WalkState`. *Syntax:* ERROR and MISSING nodes, at the empty `has_error()` block in `ly_to_ir/mod.rs:203-205`, as `syntax-error` / `missing-token` ("missing `>>`"). *Semantic errors:* `invalid-duration` (`c3`), `invalid-ratio` (from J1), bare words at top level (`not-lilypond`). *Warnings, where the walk drops input today:* `unknown-command`, `unrecognized-token`, `ignored-include`, `unknown-language`, `dropped-music` (top-level music beside a `\score`, movements a single-score reader drops), `skipped-score` (`\midi` without `\layout`), `expansion-limit`. Ignored Scheme is normal LilyPond: no warning. The drop sites are the catch-all arms in `walk.rs` (135-137, 350, 515, 677, 836, 850, 1132, 1209, 1336, 1339) and `music.rs` (139-145, 875-888, 910). A UTF-8 BOM anywhere is whitespace, as in LilyPond. *Python:* `lytk.check_lilypond(text, *, semantic=False) -> list[Diagnostic]` (syntax only by default, no IR); `strict=False` on every `from_lilypond*` reader (`True` raises `LilyPondSyntaxError` on any error); `Score.diagnostics` and `MusicDocument.diagnostics` (kept out of `to_dict`/`to_json`); `Diagnostic.__str__` → `3:12: error: missing '}' [missing-token]`. *CLI:* `lytk check FILE… [--json] [--semantic]`, exit 1 on errors | Board (a) ≤ 1 error on the valid corpus after the BOM fix; board (b) ≥ 99 % of structural mutations detected; the semantic cases above detected; `check_lilypond` median ≤ 1 ms on the regression files; board (d) published in the devlog | L | ⬜ |
+| J4 | **Strings and headers.** `extract_string_value` (`consume.rs:442-451`) joins every `string_fragment` and decodes each `escape_sequence` as LilyPond's lexer does (`lily/lexer.ll`: `\n` `\t` `\\` `\'` `\"`; any other backslash is kept). One fix for all fifteen callers: headers, lyrics, `\tempo`, markup, `\with`, `\mark`, `\clef`, `\bar`, `\set`, `instrumentName`, `\lyricsto`, `\context = "…"`, `\language`. Header values given as `\markup` become their plain text, and `#"…"` becomes a string. Headers are scoped: a `\score`'s `\header` no longer leaks into the next movement, and a top-level `\header` applies to every movement. *Python:* `Score.header` / `MusicDocument.header` → `dict[str, str]` of every field, plus `MusicDocument.lyricist`; `lytk.header_fields(text) -> list[HeaderField]` (key, value, byte span, score index) from the tree, no IR, so a caller can read a field and cut it. *Writers:* the Score path writes `\header` whenever any field is set (today only for title/composer/arranger/lyricist, `ir_to_ly/mod.rs:156-159`); the Music path writes lyricist and `extra` (`music_emit.rs:129-151`); `extra` keys are written sorted, not in `HashMap` order | String round trip in every context with `\"`, `\\`, newline and non-ASCII; `texidoc` and `categories` of all 389 official snippets equal to an independent escape-aware decoder | M | ⬜ |
+| J5 | **Pitch language.** `\include "<file>.ly"` for LilyPond's language files sets the language as `\language` does: the 11 lytk supports; `arabic.ly` → italiano; `bagpipe`, `makam`, `persian`, `turkish-makam` → `unknown-language` warning. `\language` is honoured inside `\score` and music (today top level only, `walk.rs:36-46`). An unknown name keeps the current language and warns (today it resets to Dutch, `walk.rs:41-42`) | `\include "english.ly" { cs4 d4 }` reads C♯4 D4 (today D4 only) | S | ⬜ |
+| J6 | **Release hygiene.** `lytk.__version__` (`env!("CARGO_PKG_VERSION")` exported by `_core`); one version source (pyproject `dynamic = ["version"]`, or a test that `Cargo.toml` and `pyproject.toml` agree); Python CI on 3.10–3.13 (only 3.12 today; lilycorpus supports 3.10); the release workflow fails when the tag differs from the version. Docs that say the reader follows `\include` (CLAUDE.md, `docs/import-export.md:180`, changelog 0.1.0, SECURITY.md) are corrected; so are README's pre-0.2.0 MIDI limitations, `design.md` test counts, `development.md`'s Rust CLI, `python.rs`'s "python feature" and T11.2's batch `catch_unwind` (deleted with `src/main.rs`). The upstream commit of tree-sitter-lilypond is recorded in `src/tree-sitter/README.md` | CI green on four Pythons; `import lytk; lytk.__version__ == "0.3.0"` | S | ⬜ |
+
+Order: J0 → J1 + J2 → J3 → J4 + J5 → J6.
+
+### Epic K — 0.4.0: source-level API
+
+| Task | Description | Size | Status |
+|------|-------------|------|--------|
+| K1 | **`\version`.** Keep it in `ScoreMetadata` and expose it as `Score.lilypond_version`. `lytk.lilypond_version(text)` reads it from the tree (a commented-out one does not count). `set_lilypond_version(text, v)` and `strip_lilypond_version(text)` edit by span. A `LilyPondVersion` type compares numerically (`2.24` == `2.24.0`). `to_lilypond(…, version=)` and `to_lilypond_music(…, version=)` expose `IrToLyAdapter::with_version`: Python always gets `\version "2.24.0"` today (`python.rs:398, 421`). No convert-ly wrapper | S | ⬜ |
+| K2 | **Includes.** Bind `flatten_string(text, *, base_dir=None, include_paths=(), add_markers=True)` (Rust `flatten_str` exists, `ly_flatten.rs:100-107`). Add `include_paths=` on the readers: given, they flatten first and report unresolved includes as `ignored-include`; not given, includes stay unfollowed, as SECURITY.md should say. Find includes on the tree instead of line by line: this catches includes not at the start of a line and fixes the one-line `%{ %}` that leaves flatten "inside a comment" and the false `MultipleHeaders` for a top-level plus a per-score `\header` | M | ⬜ |
+| K3 | **Tokens.** `lytk.tokenize(text) -> list[Token]` (kind: comment, string, scheme, command, symbol, number, fraction, punctuation; text; byte span; line; column) from the tree's leaves; `lytk.strip_comments(text)`. Scheme can be sub-tokenized with the compiled but unused `LANGUAGE_LILYPOND_SCHEME` | S | ⬜ |
+| K4 | **Statistics.** `lytk.info(score) -> dict` becomes the library home of `lytk info --json` (moved from `cli.py:484-529`; the CLI calls it), plus voices, total bars, duration in quarters, lyrics, chord symbols and grace notes. `lytk.source_stats(text)` from tokens: comments, Scheme expressions, bytes, tokens | S | ⬜ |
+| K5 | **Movements.** Single-score readers report what they drop (`dropped-music`, from J3); add `from_lilypond_music_movements` for Layer-1 users (the datasets) | S | ⬜ |
+
+### Epic L — 0.5.0: datasets for curated corpora
+
+| Task | Description | Size | Status |
+|------|-------------|------|--------|
+| L1 | **`FolderDataset` robustness.** `on_error="raise" \| "skip" \| "warn"` with `dataset.errors` (today the first bad file ends every iteration). Cache keyed by file content + lytk version + normalized representation kwargs, written atomically (today keyed by path, never invalidated; `to_note_arrays()` and `iter_representation("note_array")` write different files). `Subset` delegates `_convert_item` to its parent: today it skips the cache, so the README's `split()` → dataloader example never uses it. `movements="first" \| "all"`. Pass-through of `language`, `include_paths`, `strict` and MIDI `quantize` | M | ⬜ |
+| L2 | **Records dataset.** `RecordsDataset.from_jsonl(path, *, text_field="text", id_field="id", format="lilypond", split_field=None)` and `from_records(iterable)`. Items keep their id and metadata; `split(field=…)` returns the records' own splits (a deterministic, decontaminated split must not be re-shuffled by ratio). `Dataset.split(…, groups=)` for group-aware ratio splits | M | ⬜ |
+| L3 | **Identity.** `FolderDataset.ids` (paths relative to the root); `return_ids=True` on the torch and tf adapters | S | ⬜ |
+| L4 | **Python API reference.** `docs/python-api.md` generated from or checked against the stubs: lytk has none today (README + `_core.pyi`). It states that `from_lilypond_string` and `from_lilypond_music_string` share one parse (the Music tree is lifted from the Score) | S | ⬜ |
+
+### After 0.5.0
+
+The pre-1.0 queue resumes: **P5** (enumerated notation types, the one
+epic that breaks the Python API) as 0.6.0, then P3 → P4 → P6 → P8 → 1.0.0.
+Decision for the owner: J–L go before P5 because they unblock lilycorpus
+and are backward compatible, whereas the 0.1.0 plan put P5 first. P3's
+import-options object should absorb J3/K2's keywords one to one:
+`LilyPondReadOptions(language, strict, include_paths)`.
+
+Not planned:
+- Semantic validation equal to LilyPond's. User-defined commands can come
+  from files lytk never reads, so compiling stays the authority. Strict
+  mode means "well-formed, and nothing lytk had to drop".
+- A convert-ly wrapper: callers already run convert-ly.
+- Making numpy and typer optional: `import lytk` imports neither already,
+  and moving typer to an extra would break `pip install lytk && lytk …`.
+
+---
+
 ## Humdrum (`**kern`) support — 2026-07-10 ✅
 
 New `humdrum_to_ir`/`ir_to_humdrum` adapter pair (Layer-1, ABC-shaped), all
@@ -787,6 +876,10 @@ notation-exported MIDI (IC).
 | **11** | **P1–P12** | **Pre-1.0.0 expansion (MuseScore-comparison backlog): CLI/IO + transforms, MusicXML fidelity, IR modeling, MIDI reconstruction — see plan file** |
 | **12** | **0.1.0** | **Preview release before the remaining P-epics; then P5 → P3 → P4 → P6 → P8 → P9** |
 | **13** | **I → 0.2.0** | **MIDI and ABC conversion repair (Epic I, with P9 performed MIDI): tagged `v0.2.0` 2026-09-27** |
+| 14 | J → 0.3.0 | Trustworthy LilyPond reading: no panics, diagnostics + strict mode, whole strings and headers, pitch-language files |
+| 15 | K → 0.4.0 | Source-level API: `\version`, includes from strings, tokens, statistics, movements |
+| 16 | L → 0.5.0 | Datasets for curated corpora: robust `FolderDataset`, records dataset, ids, Python API reference |
+| 17 | P5 → 0.6.0, then P3 → P4 → P6 → P8 → 1.0.0 | Pre-1.0 queue resumes (P5 breaks the Python API) |
 
 ## Key Decisions
 
