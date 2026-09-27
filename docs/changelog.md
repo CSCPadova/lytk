@@ -7,6 +7,15 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-27
+
+MIDI and ABC conversion rebuilt and checked against independent references
+instead of lytk's own writers: ABC against the ABC 2.1 standard, MIDI import
+against the LilyPond sources of its test files (following MuseScore's import
+pipeline), MIDI and LilyPond export against LilyPond itself. Performed
+(played-in) MIDI is read too: beat tracking, a Viterbi onset search, the
+hands of a one-track piano, swing and staccato.
+
 ### Added
 
 - MIDI export writes the sustain pedal (CC64), lyric events and instrument
@@ -282,5 +291,6 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/CSCPadova/lytk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/CSCPadova/lytk/releases/tag/v0.1.0

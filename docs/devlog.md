@@ -3,6 +3,16 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-27 — Release 0.2.0
+
+Epic I (with P9, performed MIDI) ships as **0.2.0**: version bumped in
+`Cargo.toml`, `pyproject.toml` and both lock files; `[Unreleased]` became
+`[0.2.0] - 2026-09-27` in the changelog. CI's clippy runs the latest stable
+(1.98 on this date), whose `unnecessary_sort_by` now flags
+`sort_by(|a, b| a.0.cmp(&b.0))`: check with `cargo +1.98.0 clippy
+--all-targets -- -D warnings` (or the current stable) before a release, the
+local toolchain being older.
+
 ## 2026-09-27 — Epic I, phase D: performed MIDI
 
 A read-only research workflow studied MuseScore's MIDI import (clean-room:

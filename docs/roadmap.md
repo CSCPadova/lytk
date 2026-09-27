@@ -515,7 +515,7 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
 
 ---
 
-## Epic I — MIDI and ABC conversion repair (2026-09-25, in progress 🟡)
+## Epic I — MIDI and ABC conversion repair (2026-09-25 – 2026-09-27, ✅ released in v0.2.0)
 
 The ABC and MIDI round trips passed while real conversions were wrong: every
 check compared lytk's reader with lytk's own writer, so shared mistakes
@@ -786,6 +786,7 @@ notation-exported MIDI (IC).
 | **10** | **H** | **Multi-voice/multi-staff bar-splitting rework (deferred bar-splitting; fixes chopin RH/LH drift + cadenza)** |
 | **11** | **P1–P12** | **Pre-1.0.0 expansion (MuseScore-comparison backlog): CLI/IO + transforms, MusicXML fidelity, IR modeling, MIDI reconstruction — see plan file** |
 | **12** | **0.1.0** | **Preview release before the remaining P-epics; then P5 → P3 → P4 → P6 → P8 → P9** |
+| **13** | **I → 0.2.0** | **MIDI and ABC conversion repair (Epic I, with P9 performed MIDI): tagged `v0.2.0` 2026-09-27** |
 
 ## Key Decisions
 
