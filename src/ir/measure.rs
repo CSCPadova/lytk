@@ -113,13 +113,16 @@ impl TimeSignature {
     /// Total beats as a rational, handling compound signatures like "3+2".
     ///
     /// From lytk-py's `TimeSignature.beats_fraction` property.
+    ///
+    /// Total for any value: no reader makes a 0 denominator, and one from a
+    /// hand-edited IR counts as 1 rather than dividing by 0; beats saturate.
     pub fn beats_fraction(&self) -> Ratio<i64> {
         let numerator: i64 = self
             .beats
             .split('+')
             .filter_map(|b| b.trim().parse::<i64>().ok())
-            .sum();
-        Ratio::new(numerator, self.beat_type as i64)
+            .fold(0, i64::saturating_add);
+        Ratio::new(numerator, i64::from(self.beat_type.max(1)))
     }
 }
 

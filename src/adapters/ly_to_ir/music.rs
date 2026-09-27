@@ -62,6 +62,15 @@ fn parse_skip_of_length(scheme_text: &str) -> Option<&str> {
 
 /// Walk an `expression_block` `{ ... }` containing music.
 pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
+    // Past a bound, re-walks (unfolds, variables) end here.
+    if state.stopped() || !state.enter_block() {
+        return;
+    }
+    walk_block_contents(state, block);
+    state.walk_depth -= 1;
+}
+
+fn walk_block_contents(state: &mut WalkState, block: Node) {
     let mut cursor = block.walk();
     let children: Vec<Node> = block.children(&mut cursor).collect();
     let mut i = 0;
@@ -231,6 +240,9 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                     // Fractional multiplier: scale the duration
                     dur.base *= frac;
                     for _ in 0..repeat_count {
+                        if state.stopped() {
+                            break;
+                        }
                         let mut rest = Rest::new(dur.clone());
                         rest.is_spacer = true;
                         apply_rest_attachments(&mut rest, &attachments);
@@ -241,6 +253,9 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                     // Integer multiplier: push N spacer rests
                     let count = *frac.numer() as u32;
                     for _ in 0..count {
+                        if state.stopped() {
+                            break;
+                        }
                         let mut rest = Rest::new(dur.clone());
                         rest.is_spacer = true;
                         state.push_voice_element(VoiceElement::Rest(rest));
@@ -388,7 +403,11 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             if let Some(frac_node) = children.get(i) {
                 if frac_node.kind() == "fraction" {
                     let frac_text = state.text(*frac_node);
-                    if let Some((num, den)) = parse_fraction(frac_text) {
+                    // A denominator the IR's `u8` cannot hold (`\time 3/256`)
+                    // is dropped: truncated, it would become 0.
+                    let parsed = parse_fraction(frac_text)
+                        .and_then(|(num, den)| Some((num, u8::try_from(den).ok()?)));
+                    if let Some((num, den)) = parsed {
                         let beats = if extra_beats.is_empty() {
                             num.to_string()
                         } else {
@@ -401,7 +420,7 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         };
                         let ts = TimeSignature {
                             beats,
-                            beat_type: den as u8,
+                            beat_type: den,
                             symbol: None,
                         };
                         state.add_event(Event::Time(ts));
@@ -500,12 +519,16 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                 if frac_node.kind() == "fraction" {
                     let frac_text = state.text(*frac_node);
                     if let Some((num, denom)) = frac_text.split_once('/') {
-                        let n: u8 = num.parse().unwrap_or(1);
-                        let d: u8 = denom.parse().unwrap_or(1);
-                        let (actual, normal) = if text == "\\tuplet" {
-                            (n, d)
-                        } else {
-                            (d, n) // \times has reversed fraction
+                        // A ratio with a 0 or a term beyond the IR's `u8`
+                        // (`\tuplet 0/2`, `\times 2/0`, `\tuplet 300/2`) scales
+                        // nothing: its music is read unscaled.
+                        let ratio = match (num.parse::<u8>(), denom.parse::<u8>()) {
+                            (Ok(n), Ok(d)) if n > 0 && d > 0 => Some(if text == "\\tuplet" {
+                                (n, d)
+                            } else {
+                                (d, n) // \times has reversed fraction
+                            }),
+                            _ => None,
                         };
                         i += 1;
                         // Optional group-duration argument, e.g. `\tuplet 3/2 4 { … }`
@@ -526,20 +549,24 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         }
                         if let Some(block) = children.get(i) {
                             if block.kind() == "expression_block" {
-                                // Push tuplet ratio so notes created inside get
-                                // the scaling applied immediately (for correct
-                                // measure duration tracking).
-                                state.tuplet_stack.push((actual, normal));
-                                let before = state.current_voice.len();
-                                walk_music_block(state, *block);
-                                let after = state.current_voice.len();
-                                state.tuplet_stack.pop();
-                                // Apply tuplet display markers (start/stop brackets)
-                                if after > before {
-                                    apply_tuplet_display(
-                                        &mut state.current_voice[before..after],
-                                        actual,
-                                    );
+                                if let Some((actual, normal)) = ratio {
+                                    // Push tuplet ratio so notes created inside get
+                                    // the scaling applied immediately (for correct
+                                    // measure duration tracking).
+                                    state.tuplet_stack.push((actual, normal));
+                                    let before = state.current_voice.len();
+                                    walk_music_block(state, *block);
+                                    let after = state.current_voice.len();
+                                    state.tuplet_stack.pop();
+                                    // Apply tuplet display markers (start/stop brackets)
+                                    if after > before {
+                                        apply_tuplet_display(
+                                            &mut state.current_voice[before..after],
+                                            actual,
+                                        );
+                                    }
+                                } else {
+                                    walk_music_block(state, *block);
                                 }
                                 i += 1;
                             }
@@ -845,6 +872,9 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                 Some(frac) => {
                     let count = *frac.numer() as u32;
                     for _ in 0..count {
+                        if state.stopped() {
+                            break;
+                        }
                         let mut rest = Rest::new(dur.clone());
                         rest.is_spacer = true;
                         state.push_voice_element(VoiceElement::Rest(rest));

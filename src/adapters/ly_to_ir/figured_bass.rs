@@ -3,7 +3,7 @@ use tree_sitter::Node;
 use crate::ir::duration::Duration;
 use crate::ir::harmony::{Figure, FiguredBass};
 
-use super::state::WalkState;
+use super::state::{WalkState, MAX_ELEMENTS};
 use super::FiguredBassEntry;
 
 /// Divisions per quarter note used when computing figured bass offsets.
@@ -57,8 +57,11 @@ pub(super) fn parse_figuremode_block(state: &WalkState, block: Node) -> Vec<Figu
                         &mut last_dur,
                         state.source.as_bytes(),
                     );
-                    let count = consume_multiplier_stateless(state, &children, &mut i);
-                    for _ in 0..count {
+                    // Capped at the reading's element bound; the caller counts
+                    // the entries against its budget, so a capped block fails.
+                    let room = MAX_ELEMENTS.saturating_sub(entries.len() as u64) + 1;
+                    let count = u64::from(consume_multiplier_stateless(state, &children, &mut i));
+                    for _ in 0..count.min(room) {
                         entries.push(FiguredBassEntry::Skip(dur.clone()));
                     }
                     continue;
@@ -188,7 +191,7 @@ fn consume_duration_stateless(
         if node.kind() == "punctuation" {
             if let Ok(text) = node.utf8_text(source) {
                 if text == "." {
-                    dots += 1;
+                    dots = dots.saturating_add(1);
                     *i += 1;
                     continue;
                 }

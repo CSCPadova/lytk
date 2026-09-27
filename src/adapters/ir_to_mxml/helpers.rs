@@ -57,10 +57,17 @@ pub(super) fn format_float(val: f64) -> String {
 // Division auto-computation
 // ---------------------------------------------------------------------------
 
+/// Divisions used when no `u16` value represents every duration exactly (the
+/// lcm of several coprime tuplets, 3·5·7·9·11·13 = 135135 already, does not
+/// fit): 10080 = 2^5·3^2·5·7 is exact for every tuplet up to 10 and for many
+/// beyond, and other durations are rounded.
+const FALLBACK_DIVISIONS: u16 = 10080;
+
 /// Compute divisions per quarter note that exactly represent all durations in
-/// the score (including tuplets and short durations).
+/// the score (including tuplets and short durations), or
+/// [`FALLBACK_DIVISIONS`] when that number does not fit MusicXML's `u16`.
 pub(super) fn compute_score_divisions(score: &Score, base: u16) -> u16 {
-    let mut result = base as u64;
+    let mut result = Some(u64::from(base.max(1)));
     for part in score.parts() {
         for measure in &part.measures {
             for voice in &measure.voices {
@@ -71,20 +78,22 @@ pub(super) fn compute_score_divisions(score: &Score, base: u16) -> u16 {
                         VoiceElement::Chord(c) => &c.duration,
                     };
                     if dur.tuplet_actual > 1 {
-                        result = lcm_u64(result, dur.tuplet_actual as u64);
+                        result = result.and_then(|r| lcm_u64(r, dur.tuplet_actual as u64));
                     }
                     let base_n = *dur.base.numer();
                     let base_d = *dur.base.denom();
                     let g = gcd_u64(base_d.unsigned_abs(), (4 * base_n).unsigned_abs());
-                    let needed = base_d.unsigned_abs() / g;
+                    let needed = base_d.unsigned_abs() / g.max(1);
                     if needed > 1 {
-                        result = lcm_u64(result, needed);
+                        result = result.and_then(|r| lcm_u64(r, needed));
                     }
                 }
             }
         }
     }
-    result as u16
+    result
+        .and_then(|r| u16::try_from(r).ok())
+        .unwrap_or(FALLBACK_DIVISIONS)
 }
 
 fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
@@ -96,6 +105,7 @@ fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
-fn lcm_u64(a: u64, b: u64) -> u64 {
-    a / gcd_u64(a, b) * b
+/// `None` when the lcm overflows `u64`.
+fn lcm_u64(a: u64, b: u64) -> Option<u64> {
+    (a / gcd_u64(a, b)).checked_mul(b)
 }

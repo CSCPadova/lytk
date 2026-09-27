@@ -311,6 +311,113 @@ class TestTypedErrors:
             lytk.from_abc_string("\x00\x01 not abc")
 
 
+
+class TestPanicFirewall:
+    """A Rust panic reaches Python as lytk.InternalError, never as pyo3's
+    PanicException (a BaseException), and prints nothing."""
+
+    def test_hierarchy(self):
+        assert issubclass(lytk.InternalError, lytk.LytkError)
+        assert issubclass(lytk.LytkError, Exception)
+
+    def test_panic_becomes_internal_error_silently(self, capfd):
+        with pytest.raises(lytk.InternalError, match=r"lytk panicked: boom \(at src/python\.rs:\d+\)"):
+            lytk._core._panic_for_tests("boom")
+        assert capfd.readouterr().err == ""
+
+    def test_except_exception_catches_it(self):
+        try:
+            lytk._core._panic_for_tests("caught")
+        except Exception as e:  # noqa: BLE001 - the point of the test
+            assert isinstance(e, lytk.InternalError)
+        else:
+            pytest.fail("no exception")
+
+    def test_library_still_works_after_a_panic(self):
+        for _ in range(3):
+            with pytest.raises(lytk.InternalError):
+                lytk._core._panic_for_tests("again")
+        assert lytk.from_lilypond_string("{ c'4 d' }").num_parts == 1
+
+
+
+def _set_first(node, key, value):
+    """Set the first occurrence of `key` in a nested JSON value; True if found."""
+    if isinstance(node, dict):
+        if key in node:
+            node[key] = value
+            return True
+        return any(_set_first(v, key, value) for v in node.values())
+    if isinstance(node, list):
+        return any(_set_first(v, key, value) for v in node)
+    return False
+
+
+class TestHandSuppliedIr:
+    """from_dict / from_json refuse the values the IR would divide by."""
+
+    LY = r"{ \time 3/4 \tuplet 3/2 { c8 d e } f4 }"
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("beat_type", 0), ("tuplet_actual", 0), ("tuplet_normal", 0), ("base", [-1, 8])],
+    )
+    def test_score_refuses_values_no_reader_makes(self, key, value):
+        d = lytk.from_lilypond_string(self.LY).to_dict()
+        assert _set_first(d, key, value)
+        with pytest.raises(ValueError, match="invalid IR"):
+            lytk.Score.from_dict(d)
+        with pytest.raises(ValueError, match="invalid IR"):
+            lytk.Score.from_json(json.dumps(d))
+
+    def test_music_document_refuses_a_zero_tuplet_term(self):
+        d = json.loads(lytk.from_lilypond_music_string(self.LY).to_json())
+        with pytest.raises(ValueError, match="invalid IR"):
+            e = json.loads(json.dumps(d))
+            assert _set_first(e, "tuplet_actual", 0)
+            lytk.MusicDocument.from_json(json.dumps(e))
+        # A Tuplet node of the Music tree, as the ABC and Humdrum readers make them.
+        d["music"] = {"Tuplet": {"normal": 2, "actual": 0, "content": d["music"]}}
+        with pytest.raises(ValueError, match="invalid IR"):
+            lytk.MusicDocument.from_json(json.dumps(d))
+
+    def test_valid_ir_round_trips(self):
+        score = lytk.from_lilypond_string(self.LY)
+        assert lytk.Score.from_dict(score.to_dict()) == score
+        assert lytk.Score.from_json(score.to_json()) == score
+
+
+
+class TestArgumentBounds:
+    """Extreme arguments are a ValueError, not an i32 overflow in Rust."""
+
+    LY = r"{ c'4 d' e' f' }"
+
+    def test_transpose(self):
+        score = lytk.from_lilypond_string(self.LY)
+        assert lytk.transpose(score, 127).num_parts == 1
+        with pytest.raises(ValueError, match="semitones"):
+            lytk.transpose(score, 2**31 - 1)
+
+    def test_invert_axis(self):
+        score = lytk.from_lilypond_string(self.LY)
+        with pytest.raises(ValueError, match="axis"):
+            lytk.invert(score, octave=2**31 - 1)
+        with pytest.raises(ValueError, match="axis"):
+            lytk.invert(score, alter=2**31 - 1)
+
+    def test_interval_number(self):
+        score = lytk.from_lilypond_string(self.LY)
+        with pytest.raises(ValueError, match="between 1 and 99"):
+            lytk.transpose_interval(score, "P2147483647")
+
+    def test_extreme_octave_in_hand_supplied_ir(self):
+        d = lytk.from_lilypond_string(self.LY).to_dict()
+        assert _set_first(d, "octave", 2**31 - 1)
+        with pytest.raises(ValueError, match="octave"):
+            lytk.Score.from_dict(d)
+
+
 # -- Review R8/R9: Layer-1 transforms, transpose_to_key, compressed MXL -------
 
 

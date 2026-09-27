@@ -1,7 +1,7 @@
 //! PyO3 bindings — the `lytk._core` extension module.
 //!
-//! Compiled only with the `python` feature (which maturin enables when building
-//! wheels). The Rust crate proper carries no pyo3/numpy dependency.
+//! Every function and method here that reads, writes or transforms music runs
+//! inside [`guard`], so a Rust panic reaches Python as `lytk.InternalError`.
 
 use std::path::Path;
 
@@ -16,6 +16,166 @@ use crate::ir::music::MusicDocument;
 use crate::ir::pitch::{Alter, Pitch, PitchStep};
 use crate::ir::Score;
 use crate::{adapters, ir, navigation, representations, transforms};
+
+// ---------------------------------------------------------------------------
+// Errors and the panic firewall
+// ---------------------------------------------------------------------------
+
+/// `create_exception!` in pyo3 0.22 checks a `gil-refs` feature that this
+/// crate does not declare.
+#[allow(unexpected_cfgs)]
+mod errors {
+    use pyo3::create_exception;
+
+    create_exception!(
+        lytk,
+        LytkError,
+        pyo3::exceptions::PyException,
+        "Base class of the errors lytk raises itself."
+    );
+    create_exception!(
+        lytk,
+        InternalError,
+        LytkError,
+        "A bug in lytk: the Rust code panicked. The input is not to blame; please \
+         report it at https://github.com/CSCPadova/lytk/issues."
+    );
+}
+use errors::{InternalError, LytkError};
+
+/// How many `guard` calls are active, on any thread: the LilyPond reader walks
+/// on a thread of its own, so a panic can happen away from the caller's.
+static GUARDED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The last guarded panic: message and source location.
+static LAST_PANIC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn last_panic() -> std::sync::MutexGuard<'static, Option<String>> {
+    LAST_PANIC
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
+}
+
+/// Install (once) a panic hook that records a panic raised inside [`guard`]
+/// instead of printing it to stderr; any other panic keeps the default hook.
+fn install_panic_hook() {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if GUARDED.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                default(info);
+                return;
+            }
+            let location = info
+                .location()
+                .map(|l| format!(" (at {}:{})", l.file(), l.line()))
+                .unwrap_or_default();
+            let message = format!("{}{location}", panic_message(info.payload()));
+            *last_panic() = Some(message);
+        }));
+    });
+}
+
+/// Run a binding's body so that a Rust panic becomes `lytk.InternalError`
+/// instead of reaching Python as a `PanicException` (a `BaseException` that
+/// `except Exception` does not catch) with its message on stderr.
+fn guard<T>(f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    use std::sync::atomic::Ordering::SeqCst;
+    GUARDED.fetch_add(1, SeqCst);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    GUARDED.fetch_sub(1, SeqCst);
+    result.unwrap_or_else(|payload| {
+        let detail = last_panic()
+            .take()
+            .unwrap_or_else(|| panic_message(&*payload));
+        Err(InternalError::new_err(format!(
+            "lytk panicked: {detail}. This is a bug in lytk, not in the input; please \
+             report it at https://github.com/CSCPadova/lytk/issues"
+        )))
+    })
+}
+
+/// Deserialize a hand-supplied IR (`from_json`, `from_dict`), refusing values
+/// no reader produces and the IR divides by: a 0 time-signature denominator
+/// or tuplet term, or a negative duration.
+fn ir_from_json<T: serde::de::DeserializeOwned>(json: &str) -> PyResult<T> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    check_ir_values(&value).map_err(PyValueError::new_err)?;
+    serde_json::from_value(value).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+fn check_ir_values(value: &serde_json::Value) -> Result<(), String> {
+    use serde_json::Value;
+    // A duration's `[numerator, denominator]`: the readers keep both far below
+    // 2^40 (multipliers are bounded at 2^24), and the arithmetic relies on it.
+    const DURATION_TERM_MAX: i64 = 1 << 40;
+    let ratio = |v: &Value| Some((v.get(0)?.as_i64()?, v.get(1)?.as_i64()?));
+    let bad = |what: String| Err(format!("invalid IR: {what}"));
+    match value {
+        Value::Object(map) => {
+            for (key, v) in map {
+                match key.as_str() {
+                    "beat_type" | "tuplet_actual" | "tuplet_normal" | "actual" | "normal"
+                        if v.as_u64() == Some(0) =>
+                    {
+                        return bad(format!("{key} is 0"));
+                    }
+                    "base" => match ratio(v) {
+                        Some((n, d))
+                            if (0..=DURATION_TERM_MAX).contains(&n)
+                                && (1..=DURATION_TERM_MAX).contains(&d) => {}
+                        Some(_) => return bad(format!("duration {v} out of range")),
+                        None => check_ir_values(v)?,
+                    },
+                    // The LilyPond reader's bound (its regression tests climb to 22).
+                    "octave" if v.as_i64().is_some_and(|o| !(-128..=127).contains(&o)) => {
+                        return bad(format!("octave {v} out of range -128..=127"));
+                    }
+                    // A pitch's alteration is a `[n, d]` ratio, a chord root's a number.
+                    "alter" => {
+                        let ok = match ratio(v) {
+                            Some((n, d)) => d > 0 && n.abs() <= 4 * d,
+                            None => v.as_f64().is_none_or(|x| x.abs() <= 4.0),
+                        };
+                        if !ok {
+                            return bad(format!("alteration {v} out of range"));
+                        }
+                    }
+                    "beats"
+                        if v.as_str().is_some_and(|b| {
+                            b.split('+').count() > 64
+                                || b.split('+')
+                                    .any(|n| n.trim().parse::<u32>().is_ok_and(|n| n > 10_000))
+                        }) =>
+                    {
+                        return bad(format!("time signature beats {v} out of range"));
+                    }
+                    _ => check_ir_values(v)?,
+                }
+            }
+            Ok(())
+        }
+        Value::Array(items) => items.iter().try_for_each(check_ir_values),
+        _ => Ok(()),
+    }
+}
+
+/// Panic on purpose, inside the firewall: lets the test suite check that a
+/// panic becomes `InternalError` without printing anything. Not public API.
+#[pyfunction]
+fn _panic_for_tests(message: &str) -> PyResult<()> {
+    guard(|| panic!("{message}"))
+}
+
 // ---------------------------------------------------------------------------
 // PyScore — opaque wrapper for the IR Score
 // ---------------------------------------------------------------------------
@@ -98,52 +258,69 @@ impl PyScore {
     /// objects, walkable as ``part.measures → measure.voices → voice.elements``
     /// (each element a :class:`Note` / :class:`Rest` / :class:`Chord`). A
     /// structure-preserving complement to the flat :meth:`notes` tuples.
-    fn iter_parts(&self) -> Vec<navigation::PyPart> {
-        self.inner
-            .parts()
-            .iter()
-            .map(|p| navigation::PyPart::from_ir(p))
-            .collect()
+    fn iter_parts(&self) -> PyResult<Vec<navigation::PyPart>> {
+        guard(|| {
+            Ok({
+                self.inner
+                    .parts()
+                    .iter()
+                    .map(|p| navigation::PyPart::from_ir(p))
+                    .collect()
+            })
+        })
     }
 
     /// Serialize the full score IR to a JSON string.
     fn to_json(&self) -> PyResult<String> {
-        serde_json::to_string_pretty(&self.inner).map_err(|e| PyValueError::new_err(e.to_string()))
+        guard(|| {
+            serde_json::to_string_pretty(&self.inner)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        })
     }
 
     /// Deserialize a score from a JSON string.
     #[staticmethod]
     fn from_json(json: &str) -> PyResult<Self> {
-        let score: Score =
-            serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyScore { inner: score })
+        guard(|| {
+            Ok(PyScore {
+                inner: ir_from_json(json)?,
+            })
+        })
     }
 
     /// Serialize the score IR to a Python dict.
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let json_str =
-            serde_json::to_string(&self.inner).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let json_mod = PyModule::import_bound(py, "json")?;
-        json_mod.call_method1("loads", (json_str,))
+        guard(|| {
+            let json_str = serde_json::to_string(&self.inner)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let json_mod = PyModule::import_bound(py, "json")?;
+            json_mod.call_method1("loads", (json_str,))
+        })
     }
 
     /// Deserialize a score from a Python dict.
     #[staticmethod]
     fn from_dict(dict: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let py = dict.py();
-        let json_mod = PyModule::import_bound(py, "json")?;
-        let json_str: String = json_mod.call_method1("dumps", (dict,))?.extract()?;
-        let score: Score =
-            serde_json::from_str(&json_str).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyScore { inner: score })
+        guard(|| {
+            let py = dict.py();
+            let json_mod = PyModule::import_bound(py, "json")?;
+            let json_str: String = json_mod.call_method1("dumps", (dict,))?.extract()?;
+            Ok(PyScore {
+                inner: ir_from_json(&json_str)?,
+            })
+        })
     }
 
     /// Lift this measure-based :class:`Score` to a Layer-1 :class:`MusicDocument`
     /// (the form the ML representations consume).
-    fn to_music_document(&self) -> PyMusicDocument {
-        PyMusicDocument {
-            inner: ir::lift::lift_to_music(&self.inner),
-        }
+    fn to_music_document(&self) -> PyResult<PyMusicDocument> {
+        guard(|| {
+            Ok({
+                PyMusicDocument {
+                    inner: ir::lift::lift_to_music(&self.inner),
+                }
+            })
+        })
     }
 
     /// The score's notes as ``(onset, duration, pitch, velocity)`` tuples in time
@@ -151,13 +328,17 @@ impl PyScore {
     /// way to iterate notes directly, without going through
     /// :func:`to_note_array` or hand-walking :meth:`to_dict`.
     #[pyo3(signature = (resolution = representations::note_array::DEFAULT_RESOLUTION))]
-    fn notes(&self, resolution: u16) -> Vec<(u32, u32, u8, u8)> {
-        let doc = ir::lift::lift_to_music(&self.inner);
-        representations::to_note_array(&doc, resolution)
-            .notes
-            .iter()
-            .map(|n| (n.onset, n.duration, n.pitch, n.velocity))
-            .collect()
+    fn notes(&self, resolution: u16) -> PyResult<Vec<(u32, u32, u8, u8)>> {
+        guard(|| {
+            Ok({
+                let doc = ir::lift::lift_to_music(&self.inner);
+                representations::to_note_array(&doc, resolution)
+                    .notes
+                    .iter()
+                    .map(|n| (n.onset, n.duration, n.pitch, n.velocity))
+                    .collect()
+            })
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -227,32 +408,45 @@ impl PyMusicDocument {
     /// time steps (``resolution`` = steps per quarter note) — a lightweight,
     /// numpy-free way to iterate notes directly.
     #[pyo3(signature = (resolution = representations::note_array::DEFAULT_RESOLUTION))]
-    fn notes(&self, resolution: u16) -> Vec<(u32, u32, u8, u8)> {
-        representations::to_note_array(&self.inner, resolution)
-            .notes
-            .iter()
-            .map(|n| (n.onset, n.duration, n.pitch, n.velocity))
-            .collect()
+    fn notes(&self, resolution: u16) -> PyResult<Vec<(u32, u32, u8, u8)>> {
+        guard(|| {
+            Ok({
+                representations::to_note_array(&self.inner, resolution)
+                    .notes
+                    .iter()
+                    .map(|n| (n.onset, n.duration, n.pitch, n.velocity))
+                    .collect()
+            })
+        })
     }
 
     /// Serialize the music document to a JSON string.
     fn to_json(&self) -> PyResult<String> {
-        serde_json::to_string_pretty(&self.inner).map_err(|e| PyValueError::new_err(e.to_string()))
+        guard(|| {
+            serde_json::to_string_pretty(&self.inner)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        })
     }
 
     /// Deserialize a music document from a JSON string.
     #[staticmethod]
     fn from_json(json: &str) -> PyResult<Self> {
-        let doc: MusicDocument =
-            serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyMusicDocument { inner: doc })
+        guard(|| {
+            Ok(PyMusicDocument {
+                inner: ir_from_json(json)?,
+            })
+        })
     }
 
     /// Convert this music document to a measure-based :class:`Score`.
-    fn to_score(&self) -> PyScore {
-        PyScore {
-            inner: ir::lower::lower_to_score(&self.inner),
-        }
+    fn to_score(&self) -> PyResult<PyScore> {
+        guard(|| {
+            Ok({
+                PyScore {
+                    inner: ir::lower::lower_to_score(&self.inner),
+                }
+            })
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -286,21 +480,25 @@ fn adapter_err(e: adapters::AdapterError) -> PyErr {
 /// :class:`Score`.
 #[pyfunction]
 fn from_musicxml(py: Python<'_>, path: &str) -> PyResult<PyScore> {
-    let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
-    let score = py
-        .allow_threads(|| adapter.convert_file(Path::new(path)))
-        .map_err(adapter_err)?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
+        let score = py
+            .allow_threads(|| adapter.convert_file(Path::new(path)))
+            .map_err(adapter_err)?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Parse a MusicXML string into a :class:`Score`.
 #[pyfunction]
 fn from_musicxml_string(xml: &str) -> PyResult<PyScore> {
-    let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
-    let score = adapter
-        .convert_str(xml)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
+        let score = adapter
+            .convert_str(xml)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Resolve a pitch-language name, raising a `ValueError` for unknown names.
@@ -313,14 +511,16 @@ fn parse_language(name: &str) -> PyResult<PitchLanguage> {
 #[pyfunction]
 #[pyo3(signature = (path, *, language=None))]
 fn from_lilypond(py: Python<'_>, path: &str, language: Option<&str>) -> PyResult<PyScore> {
-    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-    if let Some(lang_str) = language {
-        adapter = adapter.with_language(parse_language(lang_str)?);
-    }
-    let score = py
-        .allow_threads(|| adapter.convert_file(Path::new(path)))
-        .map_err(adapter_err)?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+        if let Some(lang_str) = language {
+            adapter = adapter.with_language(parse_language(lang_str)?);
+        }
+        let score = py
+            .allow_threads(|| adapter.convert_file(Path::new(path)))
+            .map_err(adapter_err)?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Parse every movement of a LilyPond file: one :class:`Score` per ``\\score``
@@ -332,28 +532,32 @@ fn from_lilypond_movements(
     path: &str,
     language: Option<&str>,
 ) -> PyResult<Vec<PyScore>> {
-    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-    if let Some(lang_str) = language {
-        adapter = adapter.with_language(parse_language(lang_str)?);
-    }
-    let scores = py
-        .allow_threads(|| adapter.convert_file_multi(Path::new(path)))
-        .map_err(adapter_err)?;
-    Ok(scores.into_iter().map(|inner| PyScore { inner }).collect())
+    guard(|| {
+        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+        if let Some(lang_str) = language {
+            adapter = adapter.with_language(parse_language(lang_str)?);
+        }
+        let scores = py
+            .allow_threads(|| adapter.convert_file_multi(Path::new(path)))
+            .map_err(adapter_err)?;
+        Ok(scores.into_iter().map(|inner| PyScore { inner }).collect())
+    })
 }
 
 /// Parse a LilyPond string into a :class:`Score`.
 #[pyfunction]
 #[pyo3(signature = (text, *, language=None))]
 fn from_lilypond_string(text: &str, language: Option<&str>) -> PyResult<PyScore> {
-    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-    if let Some(lang_str) = language {
-        adapter = adapter.with_language(parse_language(lang_str)?);
-    }
-    let score = adapter
-        .convert_str(text)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+        if let Some(lang_str) = language {
+            adapter = adapter.with_language(parse_language(lang_str)?);
+        }
+        let score = adapter
+            .convert_str(text)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Parse a LilyPond file into a :class:`MusicDocument` (Layer 1 Music tree).
@@ -366,28 +570,32 @@ fn from_lilypond_music(
     path: &str,
     language: Option<&str>,
 ) -> PyResult<PyMusicDocument> {
-    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-    if let Some(lang_str) = language {
-        adapter = adapter.with_language(parse_language(lang_str)?);
-    }
-    let doc = py
-        .allow_threads(|| adapter.convert_file_to_music(Path::new(path)))
-        .map_err(adapter_err)?;
-    Ok(PyMusicDocument { inner: doc })
+    guard(|| {
+        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+        if let Some(lang_str) = language {
+            adapter = adapter.with_language(parse_language(lang_str)?);
+        }
+        let doc = py
+            .allow_threads(|| adapter.convert_file_to_music(Path::new(path)))
+            .map_err(adapter_err)?;
+        Ok(PyMusicDocument { inner: doc })
+    })
 }
 
 /// Parse a LilyPond string into a :class:`MusicDocument` (Layer 1 Music tree).
 #[pyfunction]
 #[pyo3(signature = (text, *, language=None))]
 fn from_lilypond_music_string(text: &str, language: Option<&str>) -> PyResult<PyMusicDocument> {
-    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-    if let Some(lang_str) = language {
-        adapter = adapter.with_language(parse_language(lang_str)?);
-    }
-    let doc = adapter
-        .convert_str_to_music(text)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyMusicDocument { inner: doc })
+    guard(|| {
+        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+        if let Some(lang_str) = language {
+            adapter = adapter.with_language(parse_language(lang_str)?);
+        }
+        let doc = adapter
+            .convert_str_to_music(text)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyMusicDocument { inner: doc })
+    })
 }
 
 /// Emit a :class:`MusicDocument` as a LilyPond string.  If *path* is given the
@@ -395,14 +603,16 @@ fn from_lilypond_music_string(text: &str, language: Option<&str>) -> PyResult<Py
 #[pyfunction]
 #[pyo3(signature = (doc, path=None))]
 fn to_lilypond_music(doc: &PyMusicDocument, path: Option<&str>) -> PyResult<String> {
-    let adapter = adapters::ir_to_ly::IrToLyAdapter::new();
-    let output = adapter
-        .convert_music(&doc.inner)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    if let Some(p) = path {
-        std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    }
-    Ok(output)
+    guard(|| {
+        let adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+        let output = adapter
+            .convert_music(&doc.inner)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(p) = path {
+            std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        }
+        Ok(output)
+    })
 }
 
 /// Emit a :class:`Score` as a LilyPond string.  If *path* is given the result
@@ -418,29 +628,31 @@ fn to_lilypond(
     language: Option<&str>,
     relative: Option<bool>,
 ) -> PyResult<String> {
-    let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
-    if let Some(lang_str) = language {
-        adapter = adapter.with_language(parse_language(lang_str)?);
-    } else if let Some(lang) = score.inner.metadata.pitch_language {
-        adapter = adapter.with_language(lang);
-    }
-    let output = match relative {
-        None => adapter.convert(&score.inner),
-        Some(relative) => {
-            let mut score = score.inner.clone();
-            score.metadata.pitch_mode = if relative {
-                PitchMode::Relative
-            } else {
-                PitchMode::Absolute
-            };
-            adapter.convert(&score)
+    guard(|| {
+        let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+        if let Some(lang_str) = language {
+            adapter = adapter.with_language(parse_language(lang_str)?);
+        } else if let Some(lang) = score.inner.metadata.pitch_language {
+            adapter = adapter.with_language(lang);
         }
-    }
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    if let Some(p) = path {
-        std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    }
-    Ok(output)
+        let output = match relative {
+            None => adapter.convert(&score.inner),
+            Some(relative) => {
+                let mut score = score.inner.clone();
+                score.metadata.pitch_mode = if relative {
+                    PitchMode::Relative
+                } else {
+                    PitchMode::Absolute
+                };
+                adapter.convert(&score)
+            }
+        }
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(p) = path {
+            std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        }
+        Ok(output)
+    })
 }
 
 /// Emit a :class:`Score` as a MusicXML string.  If *path* is given the result
@@ -448,21 +660,23 @@ fn to_lilypond(
 #[pyfunction]
 #[pyo3(signature = (score, path=None))]
 fn to_musicxml(py: Python<'_>, score: &PyScore, path: Option<&str>) -> PyResult<String> {
-    let adapter = adapters::ir_to_mxml::IrToMxmlAdapter::new();
-    let output = py
-        .allow_threads(|| adapter.convert(&score.inner))
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    if let Some(p) = path {
-        if p.to_ascii_lowercase().ends_with(".mxl") {
-            // Compressed MXL, not plain XML in a misnamed file.
-            adapter
-                .write(&score.inner, Path::new(p))
-                .map_err(|e| PyIOError::new_err(e.to_string()))?;
-        } else {
-            std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    guard(|| {
+        let adapter = adapters::ir_to_mxml::IrToMxmlAdapter::new();
+        let output = py
+            .allow_threads(|| adapter.convert(&score.inner))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(p) = path {
+            if p.to_ascii_lowercase().ends_with(".mxl") {
+                // Compressed MXL, not plain XML in a misnamed file.
+                adapter
+                    .write(&score.inner, Path::new(p))
+                    .map_err(|e| PyIOError::new_err(e.to_string()))?;
+            } else {
+                std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+            }
         }
-    }
-    Ok(output)
+        Ok(output)
+    })
 }
 
 /// Recursively expand ``\include`` directives in a LilyPond file, returning the
@@ -479,49 +693,57 @@ fn flatten(
     include_paths: Option<Vec<String>>,
     add_markers: bool,
 ) -> PyResult<String> {
-    let opts = adapters::ly_flatten::FlattenOpts {
-        include_paths: include_paths
-            .unwrap_or_default()
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .collect(),
-        add_markers,
-    };
-    let text = adapters::ly_flatten::flatten(Path::new(input), opts)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    if let Some(p) = output {
-        std::fs::write(p, &text).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    }
-    Ok(text)
+    guard(|| {
+        let opts = adapters::ly_flatten::FlattenOpts {
+            include_paths: include_paths
+                .unwrap_or_default()
+                .into_iter()
+                .map(std::path::PathBuf::from)
+                .collect(),
+            add_markers,
+        };
+        let text = adapters::ly_flatten::flatten(Path::new(input), opts)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(p) = output {
+            std::fs::write(p, &text).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        }
+        Ok(text)
+    })
 }
 
 /// Parse an ABC notation (``.abc``) file into a :class:`Score`.
 #[pyfunction]
 fn from_abc(path: &str) -> PyResult<PyScore> {
-    let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
-    let score = adapter.convert_file(Path::new(path)).map_err(adapter_err)?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
+        let score = adapter.convert_file(Path::new(path)).map_err(adapter_err)?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Parse every tune of an ABC file: one :class:`Score` per ``X:`` tune (the
 /// text before the first ``X:`` applies to all of them).
 #[pyfunction]
 fn from_abc_tunes(py: Python<'_>, path: &str) -> PyResult<Vec<PyScore>> {
-    let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
-    let scores = py
-        .allow_threads(|| adapter.convert_file_tunes(Path::new(path)))
-        .map_err(adapter_err)?;
-    Ok(scores.into_iter().map(|inner| PyScore { inner }).collect())
+    guard(|| {
+        let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
+        let scores = py
+            .allow_threads(|| adapter.convert_file_tunes(Path::new(path)))
+            .map_err(adapter_err)?;
+        Ok(scores.into_iter().map(|inner| PyScore { inner }).collect())
+    })
 }
 
 /// Parse an ABC notation string into a :class:`Score`.
 #[pyfunction]
 fn from_abc_string(text: &str) -> PyResult<PyScore> {
-    let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
-    let score = adapter
-        .convert_str(text)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
+        let score = adapter
+            .convert_str(text)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Emit a :class:`Score` as an ABC notation string.  If *path* is given the
@@ -530,35 +752,41 @@ fn from_abc_string(text: &str) -> PyResult<PyScore> {
 #[pyfunction]
 #[pyo3(signature = (score, path=None))]
 fn to_abc(score: &PyScore, path: Option<&str>) -> PyResult<String> {
-    let doc = ir::lift::lift_to_music(&score.inner);
-    let adapter = adapters::ir_to_abc::IrToAbcAdapter::new();
-    let output = adapter
-        .convert_music(&doc)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    if let Some(p) = path {
-        std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    }
-    Ok(output)
+    guard(|| {
+        let doc = ir::lift::lift_to_music(&score.inner);
+        let adapter = adapters::ir_to_abc::IrToAbcAdapter::new();
+        let output = adapter
+            .convert_music(&doc)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(p) = path {
+            std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        }
+        Ok(output)
+    })
 }
 
 /// Parse a Humdrum (``**kern``) file into a :class:`Score`.
 #[pyfunction]
 fn from_humdrum(py: Python<'_>, path: &str) -> PyResult<PyScore> {
-    let adapter = adapters::humdrum_to_ir::HumdrumToIrAdapter::new();
-    let score = py
-        .allow_threads(|| adapter.convert_file(Path::new(path)))
-        .map_err(adapter_err)?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let adapter = adapters::humdrum_to_ir::HumdrumToIrAdapter::new();
+        let score = py
+            .allow_threads(|| adapter.convert_file(Path::new(path)))
+            .map_err(adapter_err)?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Parse a Humdrum (``**kern``) string into a :class:`Score`.
 #[pyfunction]
 fn from_humdrum_string(text: &str) -> PyResult<PyScore> {
-    let adapter = adapters::humdrum_to_ir::HumdrumToIrAdapter::new();
-    let score = adapter
-        .convert_str(text)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let adapter = adapters::humdrum_to_ir::HumdrumToIrAdapter::new();
+        let score = adapter
+            .convert_str(text)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Emit a :class:`Score` as a Humdrum ``**kern`` string.  If *path* is given
@@ -566,14 +794,16 @@ fn from_humdrum_string(text: &str) -> PyResult<PyScore> {
 #[pyfunction]
 #[pyo3(signature = (score, path=None))]
 fn to_humdrum(py: Python<'_>, score: &PyScore, path: Option<&str>) -> PyResult<String> {
-    let adapter = adapters::ir_to_humdrum::IrToHumdrumAdapter::new();
-    let output = py
-        .allow_threads(|| adapter.convert(&score.inner))
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    if let Some(p) = path {
-        std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    }
-    Ok(output)
+    guard(|| {
+        let adapter = adapters::ir_to_humdrum::IrToHumdrumAdapter::new();
+        let output = py
+            .allow_threads(|| adapter.convert(&score.inner))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(p) = path {
+            std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        }
+        Ok(output)
+    })
 }
 
 /// Parse a Standard MIDI File into a :class:`Score`. ``quantize`` (4, 8, 16
@@ -583,8 +813,10 @@ fn to_humdrum(py: Python<'_>, score: &PyScore, path: Option<&str>) -> PyResult<S
 #[pyfunction]
 #[pyo3(signature = (path, *, quantize=None, swing=None))]
 fn from_midi(path: &str, quantize: Option<u32>, swing: Option<bool>) -> PyResult<PyScore> {
-    let bytes = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    from_midi_bytes(&bytes, quantize, swing)
+    guard(|| {
+        let bytes = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        from_midi_bytes(&bytes, quantize, swing)
+    })
 }
 
 /// Parse a Standard MIDI File from in-memory ``bytes`` into a :class:`Score`
@@ -592,20 +824,24 @@ fn from_midi(path: &str, quantize: Option<u32>, swing: Option<bool>) -> PyResult
 #[pyfunction]
 #[pyo3(signature = (data, *, quantize=None, swing=None))]
 fn from_midi_bytes(data: &[u8], quantize: Option<u32>, swing: Option<bool>) -> PyResult<PyScore> {
-    let adapter = adapters::midi_to_ir::MidiToIrAdapter::new()
-        .with_quantize(quantize)
-        .with_swing(swing);
-    let score = adapter.convert_bytes(data).map_err(adapter_err)?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let adapter = adapters::midi_to_ir::MidiToIrAdapter::new()
+            .with_quantize(quantize)
+            .with_swing(swing);
+        let score = adapter.convert_bytes(data).map_err(adapter_err)?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Parse MusicXML or compressed MXL from in-memory ``bytes`` into a
 /// :class:`Score` (auto-detects `.mxl` vs plain XML; no temp file needed).
 #[pyfunction]
 fn from_musicxml_bytes(data: &[u8]) -> PyResult<PyScore> {
-    let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
-    let score = adapter.convert_bytes(data).map_err(adapter_err)?;
-    Ok(PyScore { inner: score })
+    guard(|| {
+        let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
+        let score = adapter.convert_bytes(data).map_err(adapter_err)?;
+        Ok(PyScore { inner: score })
+    })
 }
 
 /// Write a :class:`Score` to a Standard MIDI File. Repeats are played out
@@ -613,22 +849,27 @@ fn from_musicxml_bytes(data: &[u8]) -> PyResult<PyScore> {
 #[pyfunction]
 #[pyo3(signature = (score, path, *, unfold_repeats=true))]
 fn to_midi(score: &PyScore, path: &str, unfold_repeats: bool) -> PyResult<()> {
-    let adapter = adapters::ir_to_midi::IrToMidiAdapter::new().with_unfold_repeats(unfold_repeats);
-    adapter
-        .write(&score.inner, Path::new(path))
-        .map_err(adapter_err)?;
-    Ok(())
+    guard(|| {
+        let adapter =
+            adapters::ir_to_midi::IrToMidiAdapter::new().with_unfold_repeats(unfold_repeats);
+        adapter
+            .write(&score.inner, Path::new(path))
+            .map_err(adapter_err)?;
+        Ok(())
+    })
 }
 
 /// Serialize a :class:`Score` to compressed MusicXML (``.mxl``) ``bytes`` — a
 /// ZIP archive, the in-memory counterpart of ``to_musicxml(score, "x.mxl")``.
 #[pyfunction]
 fn to_mxl_bytes<'py>(py: Python<'py>, score: &PyScore) -> PyResult<Bound<'py, PyBytes>> {
-    let adapter = adapters::ir_to_mxml::IrToMxmlAdapter::new();
-    let bytes = py
-        .allow_threads(|| adapter.convert_mxl_bytes(&score.inner))
-        .map_err(adapter_err)?;
-    Ok(PyBytes::new_bound(py, &bytes))
+    guard(|| {
+        let adapter = adapters::ir_to_mxml::IrToMxmlAdapter::new();
+        let bytes = py
+            .allow_threads(|| adapter.convert_mxl_bytes(&score.inner))
+            .map_err(adapter_err)?;
+        Ok(PyBytes::new_bound(py, &bytes))
+    })
 }
 
 /// Serialize a :class:`Score` to Standard MIDI File ``bytes`` (the in-memory
@@ -640,9 +881,12 @@ fn to_midi_bytes<'py>(
     score: &PyScore,
     unfold_repeats: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let adapter = adapters::ir_to_midi::IrToMidiAdapter::new().with_unfold_repeats(unfold_repeats);
-    let bytes = adapter.convert_bytes(&score.inner).map_err(adapter_err)?;
-    Ok(PyBytes::new_bound(py, &bytes))
+    guard(|| {
+        let adapter =
+            adapters::ir_to_midi::IrToMidiAdapter::new().with_unfold_repeats(unfold_repeats);
+        let bytes = adapter.convert_bytes(&score.inner).map_err(adapter_err)?;
+        Ok(PyBytes::new_bound(py, &bytes))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -679,12 +923,19 @@ fn dispatch_transform(
 /// of the same type; the original is not modified.
 #[pyfunction]
 fn transpose(py: Python<'_>, music: &Bound<'_, PyAny>, semitones: i32) -> PyResult<PyObject> {
-    dispatch_transform(
-        py,
-        music,
-        |s| transforms::transpose::transpose(s, semitones),
-        |d| transforms::transpose::transpose_music(d, semitones),
-    )
+    guard(|| {
+        if !(-127..=127).contains(&semitones) {
+            return Err(PyValueError::new_err(format!(
+                "transpose by {semitones} semitones: at most 127 either way"
+            )));
+        }
+        dispatch_transform(
+            py,
+            music,
+            |s| transforms::transpose::transpose(s, semitones),
+            |d| transforms::transpose::transpose_music(d, semitones),
+        )
+    })
 }
 
 /// Transpose all pitches by a named diatonic *interval* (e.g. ``"M3"``, ``"m3"``,
@@ -697,13 +948,15 @@ fn transpose_interval(
     music: &Bound<'_, PyAny>,
     interval: &str,
 ) -> PyResult<PyObject> {
-    let iv = Interval::from_name(interval).map_err(PyValueError::new_err)?;
-    dispatch_transform(
-        py,
-        music,
-        |s| transforms::transpose::transpose_interval(s, iv),
-        |d| transforms::transpose::transpose_interval_music(d, iv),
-    )
+    guard(|| {
+        let iv = Interval::from_name(interval).map_err(PyValueError::new_err)?;
+        dispatch_transform(
+            py,
+            music,
+            |s| transforms::transpose::transpose_interval(s, iv),
+            |d| transforms::transpose::transpose_interval_music(d, iv),
+        )
+    })
 }
 
 /// Transpose so the piece's tonic becomes *key* (e.g. ``"D"``, ``"Bb"``,
@@ -711,13 +964,15 @@ fn transpose_interval(
 /// :class:`MusicDocument`; returns the same type.
 #[pyfunction]
 fn transpose_to_key(py: Python<'_>, music: &Bound<'_, PyAny>, key: &str) -> PyResult<PyObject> {
-    let tonic = _core_parse_tonic(key).map_err(PyValueError::new_err)?;
-    dispatch_transform(
-        py,
-        music,
-        |s| transforms::transpose::transpose_to_key(s, tonic),
-        |d| transforms::transpose::transpose_to_key_music(d, tonic),
-    )
+    guard(|| {
+        let tonic = _core_parse_tonic(key).map_err(PyValueError::new_err)?;
+        dispatch_transform(
+            py,
+            music,
+            |s| transforms::transpose::transpose_to_key(s, tonic),
+            |d| transforms::transpose::transpose_to_key_music(d, tonic),
+        )
+    })
 }
 
 use crate::ir::pitch::parse_tonic as _core_parse_tonic;
@@ -726,13 +981,15 @@ use crate::ir::pitch::parse_tonic as _core_parse_tonic;
 /// Accepts a :class:`Score` or :class:`MusicDocument`; returns the same type.
 #[pyfunction]
 fn change_language(py: Python<'_>, music: &Bound<'_, PyAny>, language: &str) -> PyResult<PyObject> {
-    let lang = parse_language(language)?;
-    dispatch_transform(
-        py,
-        music,
-        |s| transforms::language::change_language(s, lang),
-        |d| transforms::language::change_language_music(d, lang),
-    )
+    guard(|| {
+        let lang = parse_language(language)?;
+        dispatch_transform(
+            py,
+            music,
+            |s| transforms::language::change_language(s, lang),
+            |d| transforms::language::change_language_music(d, lang),
+        )
+    })
 }
 
 /// Invert intervals around an axis pitch.  Returns a new :class:`Score`.
@@ -754,27 +1011,36 @@ fn invert(
     alter: i32,
     octave: i32,
 ) -> PyResult<PyObject> {
-    let s = PitchStep::from_name(step)
-        .ok_or_else(|| PyValueError::new_err(format!("invalid step: {step}")))?;
-    let axis = Pitch::with_alter(s, Alter::from_integer(alter), octave);
-    dispatch_transform(
-        py,
-        music,
-        |s| transforms::invert::invert(s, axis),
-        |d| transforms::invert::invert_music(d, axis),
-    )
+    guard(|| {
+        let s = PitchStep::from_name(step)
+            .ok_or_else(|| PyValueError::new_err(format!("invalid step: {step}")))?;
+        if !(-128..=127).contains(&octave) || !(-4..=4).contains(&alter) {
+            return Err(PyValueError::new_err(format!(
+                "invert axis out of range: octave {octave} (-128..=127), alter {alter} (-4..=4)"
+            )));
+        }
+        let axis = Pitch::with_alter(s, Alter::from_integer(alter), octave);
+        dispatch_transform(
+            py,
+            music,
+            |s| transforms::invert::invert(s, axis),
+            |d| transforms::invert::invert_music(d, axis),
+        )
+    })
 }
 
 /// Reverse the music in time. Accepts a :class:`Score` or
 /// :class:`MusicDocument`; returns the same type.
 #[pyfunction]
 fn retrograde(py: Python<'_>, music: &Bound<'_, PyAny>) -> PyResult<PyObject> {
-    dispatch_transform(
-        py,
-        music,
-        transforms::retrograde::retrograde,
-        transforms::retrograde::retrograde_music,
-    )
+    guard(|| {
+        dispatch_transform(
+            py,
+            music,
+            transforms::retrograde::retrograde,
+            transforms::retrograde::retrograde_music,
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -796,17 +1062,21 @@ fn to_note_array<'py>(
     py: Python<'py>,
     doc: &PyMusicDocument,
     resolution: u16,
-) -> Bound<'py, PyArray2<i32>> {
-    let arr = representations::to_note_array(&doc.inner, resolution);
-    let n = arr.notes.len();
-    let mut data = Array2::<i32>::zeros((n, 4));
-    for (i, row) in arr.notes.iter().enumerate() {
-        data[[i, 0]] = row.onset as i32;
-        data[[i, 1]] = row.duration as i32;
-        data[[i, 2]] = row.pitch as i32;
-        data[[i, 3]] = row.velocity as i32;
-    }
-    data.into_pyarray_bound(py)
+) -> PyResult<Bound<'py, PyArray2<i32>>> {
+    guard(|| {
+        Ok({
+            let arr = representations::to_note_array(&doc.inner, resolution);
+            let n = arr.notes.len();
+            let mut data = Array2::<i32>::zeros((n, 4));
+            for (i, row) in arr.notes.iter().enumerate() {
+                data[[i, 0]] = row.onset as i32;
+                data[[i, 1]] = row.duration as i32;
+                data[[i, 2]] = row.pitch as i32;
+                data[[i, 3]] = row.velocity as i32;
+            }
+            data.into_pyarray_bound(py)
+        })
+    })
 }
 
 /// Decode a note-based array of shape ``(N, 4)`` back into a
@@ -814,25 +1084,27 @@ fn to_note_array<'py>(
 #[pyfunction]
 #[pyo3(signature = (array, resolution=representations::note_array::DEFAULT_RESOLUTION))]
 fn from_note_array(array: PyReadonlyArray2<i32>, resolution: u16) -> PyResult<PyMusicDocument> {
-    let view = array.as_array();
-    if view.ncols() != 4 {
-        return Err(PyValueError::new_err(
-            "note array must have shape (N, 4): (onset, duration, pitch, velocity)",
-        ));
-    }
-    let notes = view
-        .rows()
-        .into_iter()
-        .map(|r| NoteRow {
-            onset: r[0].max(0) as u32,
-            duration: r[1].max(0) as u32,
-            pitch: r[2].clamp(0, 127) as u8,
-            velocity: r[3].clamp(0, 127) as u8,
+    guard(|| {
+        let view = array.as_array();
+        if view.ncols() != 4 {
+            return Err(PyValueError::new_err(
+                "note array must have shape (N, 4): (onset, duration, pitch, velocity)",
+            ));
+        }
+        let notes = view
+            .rows()
+            .into_iter()
+            .map(|r| NoteRow {
+                onset: r[0].max(0) as u32,
+                duration: r[1].max(0) as u32,
+                pitch: r[2].clamp(0, 127) as u8,
+                velocity: r[3].clamp(0, 127) as u8,
+            })
+            .collect();
+        let na = NoteArray { resolution, notes };
+        Ok(PyMusicDocument {
+            inner: representations::from_note_array(&na),
         })
-        .collect();
-    let na = NoteArray { resolution, notes };
-    Ok(PyMusicDocument {
-        inner: representations::from_note_array(&na),
     })
 }
 
@@ -853,16 +1125,20 @@ fn to_event_sequence<'py>(
     max_time_shift: u32,
     velocity_bins: u8,
     encode_velocity: bool,
-) -> Bound<'py, PyArray1<i64>> {
-    let arr = representations::to_note_array(&doc.inner, resolution);
-    let opts = EventOptions {
-        max_time_shift,
-        velocity_bins,
-        encode_velocity,
-    };
-    let seq = representations::to_event_sequence(&arr, &opts);
-    let codes: Vec<i64> = seq.codes.iter().map(|&c| c as i64).collect();
-    Array1::from(codes).into_pyarray_bound(py)
+) -> PyResult<Bound<'py, PyArray1<i64>>> {
+    guard(|| {
+        Ok({
+            let arr = representations::to_note_array(&doc.inner, resolution);
+            let opts = EventOptions {
+                max_time_shift,
+                velocity_bins,
+                encode_velocity,
+            };
+            let seq = representations::to_event_sequence(&arr, &opts);
+            let codes: Vec<i64> = seq.codes.iter().map(|&c| c as i64).collect();
+            Array1::from(codes).into_pyarray_bound(py)
+        })
+    })
 }
 
 /// Decode an event-sequence array back into a :class:`MusicDocument`.
@@ -880,19 +1156,23 @@ fn from_event_sequence(
     max_time_shift: u32,
     velocity_bins: u8,
     encode_velocity: bool,
-) -> PyMusicDocument {
-    let codes: Vec<u32> = array.as_array().iter().map(|&c| c.max(0) as u32).collect();
-    let seq = EventSequence {
-        codes,
-        resolution,
-        max_time_shift,
-        velocity_bins,
-        encode_velocity,
-    };
-    let na = representations::from_event_sequence(&seq);
-    PyMusicDocument {
-        inner: representations::from_note_array(&na),
-    }
+) -> PyResult<PyMusicDocument> {
+    guard(|| {
+        Ok({
+            let codes: Vec<u32> = array.as_array().iter().map(|&c| c.max(0) as u32).collect();
+            let seq = EventSequence {
+                codes,
+                resolution,
+                max_time_shift,
+                velocity_bins,
+                encode_velocity,
+            };
+            let na = representations::from_event_sequence(&seq);
+            PyMusicDocument {
+                inner: representations::from_note_array(&na),
+            }
+        })
+    })
 }
 
 /// Encode a :class:`MusicDocument` as a piano-roll matrix of shape
@@ -905,14 +1185,18 @@ fn to_piano_roll<'py>(
     doc: &PyMusicDocument,
     resolution: u16,
     encode_velocity: bool,
-) -> Bound<'py, PyArray2<u8>> {
-    let arr = representations::to_note_array(&doc.inner, resolution);
-    let pr = representations::to_piano_roll(&arr, encode_velocity);
-    let t = pr.num_steps as usize;
-    // pr.data is already row-major (t, 128).
-    let data = Array2::from_shape_vec((t, PITCH_COUNT), pr.data)
-        .expect("piano-roll data length matches T*128");
-    data.into_pyarray_bound(py)
+) -> PyResult<Bound<'py, PyArray2<u8>>> {
+    guard(|| {
+        Ok({
+            let arr = representations::to_note_array(&doc.inner, resolution);
+            let pr = representations::to_piano_roll(&arr, encode_velocity);
+            let t = pr.num_steps as usize;
+            // pr.data is already row-major (t, 128).
+            let data = Array2::from_shape_vec((t, PITCH_COUNT), pr.data)
+                .expect("piano-roll data length matches T*128");
+            data.into_pyarray_bound(py)
+        })
+    })
 }
 
 /// Decode a piano-roll matrix of shape ``(T, 128)`` back into a
@@ -924,21 +1208,23 @@ fn from_piano_roll(
     resolution: u16,
     encode_velocity: bool,
 ) -> PyResult<PyMusicDocument> {
-    let view = array.as_array();
-    if view.ncols() != PITCH_COUNT {
-        return Err(PyValueError::new_err("piano roll must have shape (T, 128)"));
-    }
-    let num_steps = view.nrows() as u32;
-    let data: Vec<u8> = view.iter().copied().collect();
-    let pr = PianoRoll {
-        resolution,
-        num_steps,
-        encode_velocity,
-        data,
-    };
-    let na = representations::from_piano_roll(&pr);
-    Ok(PyMusicDocument {
-        inner: representations::from_note_array(&na),
+    guard(|| {
+        let view = array.as_array();
+        if view.ncols() != PITCH_COUNT {
+            return Err(PyValueError::new_err("piano roll must have shape (T, 128)"));
+        }
+        let num_steps = view.nrows() as u32;
+        let data: Vec<u8> = view.iter().copied().collect();
+        let pr = PianoRoll {
+            resolution,
+            num_steps,
+            encode_velocity,
+            data,
+        };
+        let na = representations::from_piano_roll(&pr);
+        Ok(PyMusicDocument {
+            inner: representations::from_note_array(&na),
+        })
     })
 }
 
@@ -960,26 +1246,28 @@ fn compute_metrics<'py>(
     resolution: u16,
     measure_resolution: Option<u32>,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-    use representations::metrics as mx;
-    let arr = representations::to_note_array(&doc.inner, resolution);
-    let mr = measure_resolution.unwrap_or(4 * resolution as u32).max(1);
+    guard(|| {
+        use representations::metrics as mx;
+        let arr = representations::to_note_array(&doc.inner, resolution);
+        let mr = measure_resolution.unwrap_or(4 * resolution as u32).max(1);
 
-    let dict = pyo3::types::PyDict::new_bound(py);
-    dict.set_item("n_pitches_used", mx::n_pitches_used(&arr))?;
-    dict.set_item("n_pitch_classes_used", mx::n_pitch_classes_used(&arr))?;
-    dict.set_item("pitch_range", mx::pitch_range(&arr))?;
-    dict.set_item(
-        "pitch_class_histogram",
-        mx::pitch_class_histogram(&arr).to_vec(),
-    )?;
-    dict.set_item("pitch_entropy", mx::pitch_entropy(&arr))?;
-    dict.set_item("pitch_class_entropy", mx::pitch_class_entropy(&arr))?;
-    dict.set_item("polyphony", mx::polyphony(&arr))?;
-    dict.set_item("polyphony_rate", mx::polyphony_rate(&arr, 2))?;
-    dict.set_item("empty_beat_rate", mx::empty_beat_rate(&arr))?;
-    dict.set_item("scale_consistency", mx::scale_consistency(&arr))?;
-    dict.set_item("groove_consistency", mx::groove_consistency(&arr, mr))?;
-    Ok(dict)
+        let dict = pyo3::types::PyDict::new_bound(py);
+        dict.set_item("n_pitches_used", mx::n_pitches_used(&arr))?;
+        dict.set_item("n_pitch_classes_used", mx::n_pitch_classes_used(&arr))?;
+        dict.set_item("pitch_range", mx::pitch_range(&arr))?;
+        dict.set_item(
+            "pitch_class_histogram",
+            mx::pitch_class_histogram(&arr).to_vec(),
+        )?;
+        dict.set_item("pitch_entropy", mx::pitch_entropy(&arr))?;
+        dict.set_item("pitch_class_entropy", mx::pitch_class_entropy(&arr))?;
+        dict.set_item("polyphony", mx::polyphony(&arr))?;
+        dict.set_item("polyphony_rate", mx::polyphony_rate(&arr, 2))?;
+        dict.set_item("empty_beat_rate", mx::empty_beat_rate(&arr))?;
+        dict.set_item("scale_consistency", mx::scale_consistency(&arr))?;
+        dict.set_item("groove_consistency", mx::groove_consistency(&arr, mr))?;
+        Ok(dict)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -989,6 +1277,11 @@ fn compute_metrics<'py>(
 /// The compiled Rust extension module (``lytk._core``).
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    install_panic_hook();
+    m.add("LytkError", m.py().get_type_bound::<LytkError>())?;
+    m.add("InternalError", m.py().get_type_bound::<InternalError>())?;
+    m.add_function(wrap_pyfunction!(_panic_for_tests, m)?)?;
+
     // Score class
     m.add_class::<PyScore>()?;
     m.add_class::<PyMusicDocument>()?;

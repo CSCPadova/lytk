@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from typing import Any, TypeVar
 
+class LytkError(Exception):
+    """Base class of the errors lytk raises itself."""
+
+class InternalError(LytkError):
+    """A bug in lytk: the Rust code panicked. Every function and method that
+    reads, writes or transforms music raises this instead of letting a Rust
+    panic through; the message names the panic and where it happened."""
+
 class Score:
     """Opaque handle to a parsed music score."""
 

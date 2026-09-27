@@ -3,6 +3,104 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-27 — Epic J: J0 (corpus boards) and J1 (no panic reaches Python)
+
+**J0.** `tests/ly_corpus.rs` holds three boards:
+- `syntax_board` (ignored; CI job `lilypond-corpus` sparse-clones LilyPond
+  v2.26.0): 2 of 2,626 valid files come out with ERROR nodes (`bom-mark.ly`,
+  `other/display-lily-tests.ly`), 0.3–0.5 ms a file in a debug build.
+- `reader_board` (same job): every valid file read, none refused by J1's
+  bounds. Its first run caught a real bug (below): 16 regression tests were
+  refused for climbing past octave 20, then 4 past 127.
+- `mutation_board` (every `cargo test`): one token deleted from each
+  committed fixture. Braces, string quotes, chord `>` and `>>` are flagged
+  100 %. Deleting `<<` (4/46) or a Scheme `(` (4/47) almost never is: the
+  lone `>>` or `)` left behind parses as `punctuation`, and a lone `)` or
+  `>` is legal LilyPond (a slur end, the `->` accent). Only the reader's
+  context can tell (J3).
+
+Board (d), dropped input per diagnostic code, waits for J3's diagnostics.
+
+**J1, the hunt.** A read-only multi-agent workflow probed the built
+extension, one subprocess per input under `ulimit -v`. It ran two hunters to
+the end (IR assembly and downstream, structure) before it was stopped. The
+five unfinished ones (commands, values, modes, resources, other readers)
+are follow-ups. With six hunters probing in parallel at up to 6 GB each,
+plus an unbounded fuzz run, the machine ran out of memory. Probes and heavy
+tests now run one at a time under `ulimit -v 4000000`.
+
+**J1, the fixes.**
+- *Firewall* (`src/python.rs`): every binding that reads, writes or
+  transforms runs in `guard()`, which catches the unwind and raises
+  `lytk.InternalError` (base `lytk.LytkError`, both in module `lytk`, so they
+  pickle). A panic hook installed at module init records the message and
+  location instead of printing them while any guard is active. The counter
+  is global, not per thread, because the LilyPond reader walks on a thread
+  of its own. `_panic_for_tests` checks the firewall from Python.
+- *Root causes*:
+  - `parse_fraction` and `parse_ly_make_moment` refuse 0 denominators.
+  - `\time` drops denominators past `u8`.
+  - `\tuplet`/`\times` read their music unscaled when a term is 0 or past `u8`.
+  - Figured-bass dots saturate.
+  - `beats_fraction` and `actual_duration` are total.
+  - `lilypond_log` handles zero-length notes.
+  - Staff groups of 256+ staves are refused; the lowering's staff and voice
+    numbers saturate.
+- *Bounds* (`ly_to_ir/state.rs`); past one the reading stops with a
+  `ValueError`:
+  - 500,000 generated elements, spent on every push, unfold pass and
+    variable splice;
+  - 100,000 whole notes, checked with `checked_add`, so coprime
+    denominators refuse instead of overflowing;
+  - multiplier terms of at most 2^24;
+  - durations that are powers of two up to 1024;
+  - octaves -128..127;
+  - walk depth 2,000, re-walks of variables included.
+- *Grid* (`src/ir/timeline.rs`):
+  - `MAX_BARS` = 100,000, and the reader refuses a grid that reaches it.
+  - Unless notes are tied on, bar lines stop at the bar holding the last
+    start; `c'1*1000000000` used to cut a billion bars and then drop them.
+- *Stack*: the reader runs on a 64 MB thread. Nested `\tuplet` overflowed
+  8 MB at about 400 levels, because `handle_escaped_word`'s frame is about
+  20 KB in debug builds.
+- *Variables*:
+  - Inside `\relative`, a variable being read again is not read again
+    inside itself, and a block that names its own variable uses its
+    captured music. `a = { c4 } a = { \a \a \a }` then
+    `\relative { \a }` was 3^16 notes and is now 3.
+  - Splices count against the budget, so twenty-two doubling definitions
+    are refused in under a second.
+- *Semantics fix*: `\repeat unfold` inside `\relative` restores the
+  reference pitch at every pass. LilyPond relativizes the written body once
+  and copies it; lytk read each pass relative to the last, and LilyPond's
+  page-layout tests climbed to octave 128.
+- *Hand-supplied IR*: `from_dict` and `from_json` check divisors,
+  durations, octaves, alterations and beats before deserializing.
+- *Arguments*: `transpose` ±127, `invert` axis bounds, interval numbers
+  1..99.
+- *Writers*: MusicXML `divisions` use a checked lcm and fall back to 10080
+  when the value exceeds `u16`. `frac_to_steps` computes in `i128`.
+
+**Memory.** The fuzz properties were the out-of-memory trigger:
+- `to_piano_roll` caps at 16M steps, which is 2 GiB.
+- The downstream property now builds rolls at resolution 4 and skips scores
+  over 5,000 bars.
+- Refused inputs peak at about 310 MB in a debug build, at the
+  500,000-element bound.
+- `cargo test` peaks at 560 MB.
+- `LYTK_FUZZ_CASES` sets the case count: 32/16 locally, 1,024 in the CI job
+  (release build). The reader property takes about 180 s in debug for 256
+  cases.
+
+**Next**:
+- Finish the hunt for the five unfinished areas, one probe at a time under
+  a memory limit.
+- `lytk.flatten` on a diamond of includes (`f(i)` including `f(i+1)` twice)
+  expands 2^depth; the other-readers hunter was measuring it when stopped.
+  It needs a bound like the reader's.
+- Then J2 (the exception hierarchy on top of `LytkError`) and J3
+  (diagnostics: the dropped constructs above become warnings or errors).
+
 ## 2026-09-27 — Release plan 0.3.0 → 0.5.0 (planning, no code)
 
 The roadmap gains Epics J (0.3.0), K (0.4.0) and L (0.5.0), from

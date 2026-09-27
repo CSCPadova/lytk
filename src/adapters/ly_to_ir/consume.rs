@@ -77,8 +77,11 @@ pub(super) fn consume_duration(
         *i += 1;
         if let Ok(num) = num_text.parse::<u32>() {
             let dots = consume_dots(state, children, i);
-            // Convert LilyPond number to fraction: 4 → 1/4, 2 → 1/2, 1 → 1/1
-            let base = if num > 0 {
+            // Convert LilyPond number to fraction: 4 → 1/4, 2 → 1/2, 1 → 1/1.
+            // Only powers of two are durations (LilyPond reports anything else
+            // as "not a duration" and reads a quarter, as here); past 1024, the
+            // shortest value LilyPond draws, a denominator only feeds overflow.
+            let base = if num.is_power_of_two() && num <= 1024 {
                 Ratio::new(1i64, num as i64)
             } else {
                 Ratio::new(1, 4)
@@ -124,6 +127,11 @@ fn consume_dots(state: &WalkState, children: &[Node], i: &mut usize) -> u8 {
     dots
 }
 
+/// Largest duration multiplier numerator (`R1*16777216`). Past it no note
+/// value stays under the reader's length bound, and the bound keeps duration
+/// arithmetic far from `i64` overflow.
+pub(super) const MAX_MULTIPLIER: u32 = 1 << 24;
+
 /// Consume an optional `*N` or `*N/M` duration scaling factor.
 /// Returns the fractional scale (e.g. `*8/7` → 8/7, `*3` → 3/1).
 /// Returns `None` if no multiplier is present.
@@ -133,31 +141,46 @@ fn consume_dots(state: &WalkState, children: &[Node], i: &mut usize) -> u8 {
 /// - `punctuation("*")` `fraction("N/M")` (single fraction token), or
 /// - `punctuation("*")` `unsigned_integer("N")` `punctuation("/")` `unsigned_integer("M")`
 pub(super) fn consume_duration_scale(
-    state: &WalkState,
+    state: &mut WalkState,
     children: &[Node],
     i: &mut usize,
 ) -> Option<Frac> {
+    // A multiplier numerator past MAX_MULTIPLIER stops the reading; a 0,
+    // unreadable or oversized denominator drops the multiplier.
+    let numer_or_refuse = |state: &mut WalkState, text: &str| -> Option<i64> {
+        match text.parse::<u32>() {
+            Ok(n) if n <= MAX_MULTIPLIER => Some(i64::from(n)),
+            _ => {
+                state.refuse(format!(
+                    "duration multiplier *{text} is above the limit of {MAX_MULTIPLIER}"
+                ));
+                None
+            }
+        }
+    };
+    let denom_of = |text: &str| {
+        text.parse::<u32>()
+            .ok()
+            .filter(|&d| d != 0 && d <= MAX_MULTIPLIER)
+            .map(i64::from)
+    };
     if *i < children.len() && children[*i].kind() == "punctuation" {
         let ptext = punct_text(state, children[*i]);
         if ptext == "*" {
             *i += 1;
             // Case 1: fraction token (e.g. "8/7")
             if *i < children.len() && children[*i].kind() == "fraction" {
-                let frac_text = state.text(children[*i]);
+                let frac_text = state.text(children[*i]).to_string();
                 *i += 1;
-                if let Some((num, den)) = parse_fraction(frac_text) {
-                    if den == 0 {
-                        return None; // *N/0 would panic in Frac::new
-                    }
-                    return Some(Frac::new(num as i64, den as i64));
-                }
-                return None;
+                let (num, den) = frac_text.split_once('/')?;
+                let numer = numer_or_refuse(state, num)?;
+                return Some(Frac::new(numer, denom_of(den)?));
             }
             // Case 2: unsigned_integer, optionally followed by / and unsigned_integer
             if *i < children.len() && children[*i].kind() == "unsigned_integer" {
                 let num_text = state.text(children[*i]).to_string();
                 *i += 1;
-                let numer: i64 = num_text.parse().unwrap_or(1);
+                let numer = numer_or_refuse(state, &num_text)?;
                 // Check for fraction: *N/M as separate tokens
                 if *i + 1 < children.len()
                     && children[*i].kind() == "punctuation"
@@ -167,11 +190,7 @@ pub(super) fn consume_duration_scale(
                     if *i < children.len() && children[*i].kind() == "unsigned_integer" {
                         let denom_text = state.text(children[*i]).to_string();
                         *i += 1;
-                        let denom: i64 = denom_text.parse().unwrap_or(1);
-                        if denom == 0 {
-                            return None; // *N/0 would panic in Frac::new
-                        }
-                        return Some(Frac::new(numer, denom));
+                        return Some(Frac::new(numer, denom_of(&denom_text)?));
                     }
                 }
                 return Some(Frac::from_integer(numer));
@@ -777,12 +796,13 @@ pub(super) fn parse_paper_block(state: &mut WalkState, block: Node) {
     state.page_layout = Some(layout);
 }
 
-/// Parse a fraction string like "4/4" into (numerator, denominator).
+/// Parse a fraction string like "4/4" into (numerator, denominator). A zero
+/// denominator is `None`: every caller would build a ratio from it.
 pub(super) fn parse_fraction(text: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = text.split('/').collect();
     if parts.len() == 2 {
         let num = parts[0].parse::<u32>().ok()?;
-        let den = parts[1].parse::<u32>().ok()?;
+        let den = parts[1].parse::<u32>().ok().filter(|&d| d != 0)?;
         Some((num, den))
     } else {
         None
@@ -790,7 +810,7 @@ pub(super) fn parse_fraction(text: &str) -> Option<(u32, u32)> {
 }
 
 /// Parse `#(ly:make-moment N D)` from a Scheme expression text.
-/// Returns (numerator, denominator) if successful.
+/// Returns (numerator, denominator) if successful; a zero denominator is `None`.
 pub(super) fn parse_ly_make_moment(text: &str) -> Option<(u32, u32)> {
     // Text looks like: #(ly:make-moment 3 4) or #(ly:make-moment 3/4)
     let inner = text.trim_start_matches('#').trim();
@@ -804,7 +824,7 @@ pub(super) fn parse_ly_make_moment(text: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = args.split_whitespace().collect();
     if parts.len() == 2 {
         let num = parts[0].parse::<u32>().ok()?;
-        let den = parts[1].parse::<u32>().ok()?;
+        let den = parts[1].parse::<u32>().ok().filter(|&d| d != 0)?;
         return Some((num, den));
     }
     // Try "N/D" format

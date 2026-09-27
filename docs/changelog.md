@@ -7,6 +7,64 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+### Added
+
+- `lytk.LytkError`, the base of the errors lytk raises, and
+  `lytk.InternalError`: a Rust panic inside any function or method that
+  reads, writes or transforms music now raises `InternalError` (an ordinary
+  `Exception`, carrying the panic's message and source location) and prints
+  nothing. It used to escape as pyo3's `PanicException`, a `BaseException`
+  that `except Exception` does not catch, with its message on stderr.
+
+### Changed
+
+- The LilyPond reader refuses input past its bounds with a `ValueError`
+  ("… lytk refuses input this large") instead of hanging, running out of
+  memory or crashing: more than 500,000 notes, rests and chords once repeats
+  and variables are expanded; music longer than 100,000 whole notes or with
+  100,000 bars; a duration multiplier above 16,777,216 (`R1*1000000000`);
+  music nested deeper than 2,000 levels; a pitch outside octaves -128..127; a
+  staff group of more than 255 staves. LilyPond's own 2,626 regression tests
+  and documentation snippets are all read.
+- Constructs whose numbers the IR cannot hold are dropped, and the music
+  around them is read: a time signature with a 0 or 256+ denominator
+  (`\time 3/256` used to become 3/0), a tuplet with a 0 term or one above
+  255 (its notes are read unscaled), a measure length with a 0 denominator,
+  a duration multiplier with a 0 or oversized denominator.
+- A written duration that is not a power of two up to 1024 (`c3`, `c2048`)
+  reads as a quarter note, as LilyPond reads its "not a duration".
+- `\repeat unfold` inside `\relative` repeats the same pitches, as LilyPond
+  does: each copy used to be read relative to the previous one, climbing.
+- `Score.from_dict`, `Score.from_json` and `MusicDocument.from_json` refuse
+  values no reader makes, with a `ValueError`: a 0 time-signature
+  denominator or tuplet term, a negative or oversized duration, an octave
+  outside -128..127, an alteration beyond ±4, time-signature beats above
+  10,000.
+- `transpose` takes at most ±127 semitones, `invert` an axis in octaves
+  -128..127 with an alteration of at most ±4, and an interval number is
+  1..99; other values are a `ValueError` (they overflowed in Rust).
+- MusicXML export: when no `divisions` up to 65535 represents every duration
+  exactly (several coprime tuplets, e.g. 3, 5, 7, 9, 11 and 13 in different
+  voices), 10080 is used and other durations are rounded. The least common
+  multiple used to overflow, or be truncated to 16 bits and write wrong
+  durations.
+
+### Fixed
+
+- Inputs that panicked: `\time N/0`, `\time 3/256`, `\tuplet 0/N`,
+  `\times N/0`, `#(ly:make-moment N 0)`, 256 or more dots on a figured-bass
+  figure, a zero-length note (`c4*0`) in LilyPond export, 256 or more staves
+  in a PianoStaff or in `MusicDocument.to_score()`, coprime durations whose
+  positions overflowed, note arrays of long music.
+- Inputs that hung or exhausted memory: `s1*N`, `R1*N` and `\skip 1*N` for
+  a huge N, nested `\repeat unfold`, variables that double one another, a
+  variable redefined in terms of itself and used inside `\relative`, a tiny
+  `measureLength`, an over-long note (bar lines were laid to its end and
+  thrown away), a relative passage climbing hundreds of octaves (every
+  writer wrote each octave mark out), and nesting of `\tuplet`, `\relative`
+  or `\repeat` a few hundred levels deep, which overflowed the stack. The
+  reader now walks on a thread with a stack of its own.
+
 ## [0.2.0] - 2026-09-27
 
 MIDI and ABC conversion rebuilt and checked against independent references

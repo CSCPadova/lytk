@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use num::rational::Ratio;
+use num::CheckedAdd;
 use tree_sitter::Node;
 
 use crate::ir::articulation::{BeamEvent, LyricSyllable};
@@ -50,6 +51,23 @@ pub(super) enum VarDef {
     FiguredBass(Vec<FiguredBassEntry>),
 }
 
+/// Most voice elements (notes, rests, chords) one reading may generate, and
+/// the furthest a voice may reach, in whole notes. Real scores stay orders of
+/// magnitude below; the bounds keep `s1*4000000000`, nested `\repeat unfold`
+/// and self-doubling variables from hanging or exhausting memory. Past either
+/// one the reading stops and fails.
+pub(super) const MAX_ELEMENTS: u64 = 500_000;
+pub(super) const MAX_WHOLE_NOTES: i64 = 100_000;
+/// Octaves a pitch may lie in (middle C is octave 4; MIDI reaches -1..=9).
+/// Far wider than music: LilyPond's own regression tests climb to octave 22
+/// with repeated relative scales. Emitters write one mark per octave, so the
+/// bound caps each note's output at about 127 marks.
+pub(super) const PITCH_OCTAVES: std::ops::RangeInclusive<i32> = -128..=127;
+/// Deepest the walk may recurse: music blocks inside music blocks, counting
+/// the variables read again inside `\relative`, which the syntax tree's own
+/// depth bound does not see.
+pub(super) const MAX_WALK_DEPTH: u32 = crate::parser::MAX_NESTING_DEPTH as u32;
+
 /// State accumulated while walking tree-sitter nodes.
 pub(super) struct WalkState<'src> {
     pub(super) source: &'src str,
@@ -57,6 +75,14 @@ pub(super) struct WalkState<'src> {
     pub(super) root: Option<Node<'src>>,
     /// Nesting of variables being read again, against self-reference.
     pub(super) var_depth: u8,
+    /// Voice elements generated so far, against [`MAX_ELEMENTS`].
+    pub(super) generated: u64,
+    /// Why the reading stopped, once it went past a bound.
+    pub(super) over_limit: Option<String>,
+    /// Music blocks being walked, one inside the other (see [`MAX_WALK_DEPTH`]).
+    pub(super) walk_depth: u32,
+    /// Variables being read again inside `\relative`, innermost last.
+    pub(super) rewalking: Vec<String>,
     /// Nesting of `\relative { … }` blocks being walked. Unlike `in_relative`
     /// (which can stay set after a `\relative` for the music that follows),
     /// this is exact: it is what decides whether a variable is read again.
@@ -180,6 +206,10 @@ impl<'src> WalkState<'src> {
             in_relative: false,
             root: None,
             var_depth: 0,
+            generated: 0,
+            over_limit: None,
+            walk_depth: 0,
+            rewalking: Vec::new(),
             relative_depth: 0,
             pending_arpeggio_type: None,
             pending_glissando_style: None,
@@ -229,8 +259,70 @@ impl<'src> WalkState<'src> {
         self.ensure_build().tl.add(pos, ev);
     }
 
+    /// Stop the reading: it went past a bound. The first reason is kept.
+    pub(super) fn refuse(&mut self, reason: String) {
+        self.over_limit.get_or_insert(reason);
+    }
+
+    /// Whether the reading stopped at a bound; walkers return early then.
+    pub(super) fn stopped(&self) -> bool {
+        self.over_limit.is_some()
+    }
+
+    /// Enter one more nested music block: false (and the reading stops)
+    /// past [`MAX_WALK_DEPTH`]. The caller decrements `walk_depth` on exit.
+    pub(super) fn enter_block(&mut self) -> bool {
+        if self.walk_depth >= MAX_WALK_DEPTH {
+            self.refuse(format!(
+                "the music nests deeper than {MAX_WALK_DEPTH} levels"
+            ));
+            return false;
+        }
+        self.walk_depth += 1;
+        true
+    }
+
+    /// Where music of length `len` placed at `at` ends, if within the bounds
+    /// (the reading stops otherwise).
+    pub(super) fn end_within_bounds(&mut self, at: Frac, len: Frac) -> Option<Frac> {
+        match at.checked_add(&len) {
+            Some(end) if end <= Frac::from_integer(MAX_WHOLE_NOTES) => Some(end),
+            Some(_) => {
+                self.refuse(format!(
+                    "the music is longer than {MAX_WHOLE_NOTES} whole notes"
+                ));
+                None
+            }
+            None => {
+                self.refuse(
+                    "note positions overflow: the durations' denominators are too large"
+                        .to_string(),
+                );
+                None
+            }
+        }
+    }
+
+    /// Count `n` more generated elements: false once past [`MAX_ELEMENTS`].
+    pub(super) fn spend(&mut self, n: u64) -> bool {
+        if self.stopped() {
+            return false;
+        }
+        self.generated = self.generated.saturating_add(n);
+        if self.generated > MAX_ELEMENTS {
+            self.refuse(format!(
+                "the music expands to more than {MAX_ELEMENTS} notes, rests and chords"
+            ));
+            return false;
+        }
+        true
+    }
+
     /// Push a voice element at the current position.
     pub(super) fn push_voice_element(&mut self, mut elem: VoiceElement) {
+        if !self.spend(1) {
+            return;
+        }
         // Apply active tuplet ratio to the element's duration. For nested
         // tuplets the effective scaling is the product of every enclosing
         // ratio, not just the innermost — so fold the whole stack.
@@ -312,7 +404,10 @@ impl<'src> WalkState<'src> {
         // attaches at the note rather than after its duration.
         self.last_element_onset = self.pos;
         // Grace notes take no time.
-        self.pos += elem.metric_duration();
+        let Some(end) = self.end_within_bounds(self.pos, elem.metric_duration()) else {
+            return;
+        };
+        self.pos = end;
         self.current_voice.push(elem);
     }
 
@@ -391,7 +486,12 @@ impl<'src> WalkState<'src> {
         // written with plain pitches (`cadenza = { fis2 … }` used in
         // `\relative c'' { \cadenza }`) is therefore read again here, in the
         // relative context, rather than spliced as read at its definition.
-        if self.relative_depth > 0 && self.var_depth < 16 {
+        // A variable being read again is not read again inside itself (`a =
+        // { \a \a }` refers to the previous `a`): its captured music is used.
+        if self.relative_depth > 0
+            && self.var_depth < 16
+            && !self.rewalking.iter().any(|n| n == name)
+        {
             if let Some(VarDef::Music {
                 block: Some((start, end)),
                 ..
@@ -404,9 +504,14 @@ impl<'src> WalkState<'src> {
                 let node = std::iter::successors(node, |n| n.parent()).find(|n| {
                     n.kind() == "expression_block" && (n.start_byte(), n.end_byte()) == (start, end)
                 });
-                if let Some(block) = node {
+                // A block that names its own variable (`a = { \a \a }`) meant
+                // the previous `a`, which is gone: use the music captured at
+                // the definition instead of reading the block again.
+                if let Some(block) = node.filter(|b| !mentions(*b, self.source, name)) {
                     self.var_depth += 1;
+                    self.rewalking.push(name.to_string());
                     super::music::walk_music_block(self, block);
+                    self.rewalking.pop();
                     self.var_depth -= 1;
                     return true;
                 }
@@ -414,10 +519,21 @@ impl<'src> WalkState<'src> {
         }
         // Positioned music is spliced straight from the definition, without
         // copying it first.
-        if let Some(VarDef::Music { len, main_lane, .. }) = self.definitions.get(name) {
-            let (len, main_lane) = (*len, *main_lane);
+        // Every copy counts against the budget: definitions that double the
+        // previous one (`b = { \a \a }`, `c = { \b \b }`, …) grow as 2^n.
+        if let Some(VarDef::Music {
+            len, main_lane, tl, ..
+        }) = self.definitions.get(name)
+        {
+            let (len, main_lane, count) = (*len, *main_lane, tl.element_count());
+            if !self.spend(count as u64) {
+                return true;
+            }
             self.flush_voice();
             let (at, lane) = (self.pos, self.current_voice_number);
+            let Some(end) = self.end_within_bounds(at, len) else {
+                return true;
+            };
             let uid = self.current_uid();
             let Some(VarDef::Music { tl, voices, .. }) = self.definitions.get(name) else {
                 unreachable!()
@@ -427,7 +543,7 @@ impl<'src> WalkState<'src> {
             for voice in voices {
                 self.voice_part_map.insert(voice.clone(), uid);
             }
-            self.pos = at + len;
+            self.pos = end;
             self.voice_start = self.pos;
             return true;
         }
@@ -436,6 +552,10 @@ impl<'src> WalkState<'src> {
         };
         match def {
             VarDef::Parts(parts, voices) => {
+                let count: usize = parts.iter().map(|pb| pb.tl.element_count()).sum();
+                if !self.spend(count as u64) {
+                    return true;
+                }
                 self.flush_voice();
                 let at = self.pos;
                 let mut uids = Vec::new();
@@ -455,6 +575,9 @@ impl<'src> WalkState<'src> {
             }
             VarDef::Music { .. } => unreachable!("handled above"),
             VarDef::FiguredBass(entries) => {
+                if !self.spend(entries.len() as u64) {
+                    return true;
+                }
                 let mut at = self.pos;
                 for entry in entries {
                     match entry {
@@ -482,21 +605,21 @@ impl<'src> WalkState<'src> {
             if let Some(ref prev) = self.prev_pitch {
                 // In relative mode: find closest pitch within a fourth, then apply marks
                 let inferred_octave = find_relative_octave(prev, step);
-                let octave = inferred_octave + octave_marks;
+                let octave = self.bounded_octave(inferred_octave.saturating_add(octave_marks));
                 let p = Pitch::with_alter(step, alter, octave);
                 self.prev_pitch = Some(p);
                 p
             } else {
                 // First note after \relative: use the reference pitch's octave
                 let base_oct = self.relative_ref.as_ref().map(|r| r.octave).unwrap_or(4);
-                let octave = base_oct + octave_marks;
+                let octave = self.bounded_octave(base_oct.saturating_add(octave_marks));
                 let p = Pitch::with_alter(step, alter, octave);
                 self.prev_pitch = Some(p);
                 p
             }
         } else {
             // Absolute mode: octave marks relative to LilyPond c (octave 3 in our numbering)
-            let octave = 3 + octave_marks;
+            let octave = self.bounded_octave(octave_marks.saturating_add(3));
             Pitch::with_alter(step, alter, octave)
         };
         // Apply any active \transpose intervals
@@ -505,10 +628,51 @@ impl<'src> WalkState<'src> {
                 .transpose_stack
                 .iter()
                 .map(|(from, to)| to.midi_number() - from.midi_number())
-                .sum();
-            pitch.transposed(total_semitones)
+                .fold(0, i32::saturating_add);
+            let p = pitch.transposed(total_semitones.clamp(-1200, 1200));
+            Pitch {
+                octave: self.bounded_octave(p.octave),
+                ..p
+            }
         } else {
             pitch
+        }
+    }
+
+    /// `octave` if within [`PITCH_OCTAVES`], else the nearest octave in it
+    /// (and the reading stops): a relative passage cannot climb for ever, and
+    /// every emitter writes each octave mark out.
+    fn bounded_octave(&mut self, octave: i32) -> i32 {
+        if !PITCH_OCTAVES.contains(&octave) {
+            self.refuse(format!(
+                "a pitch lies in octave {octave}, outside {}..={}",
+                PITCH_OCTAVES.start(),
+                PITCH_OCTAVES.end()
+            ));
+        }
+        octave.clamp(*PITCH_OCTAVES.start(), *PITCH_OCTAVES.end())
+    }
+}
+
+/// Whether `block` contains a reference to the variable `name` (`\name`).
+fn mentions(block: Node, source: &str, name: &str) -> bool {
+    let mut cursor = block.walk();
+    loop {
+        let node = cursor.node();
+        if node.kind() == "escaped_word"
+            && node
+                .utf8_text(source.as_bytes())
+                .is_ok_and(|t| t.strip_prefix('\\') == Some(name))
+        {
+            return true;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() || cursor.node() == block {
+                return false;
+            }
         }
     }
 }

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, dev]
   pull_request:
-    branches: [master]
+    branches: [master, dev]
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,6 +63,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lilypond
       - run: cargo test --test lilypond_oracle -- --ignored --nocapture
+
+  lilypond-corpus:
+    # The grammar against LilyPond's own regression tests and snippets:
+    # valid files the parser flags with syntax errors (tests/ly_corpus.rs).
+    name: LilyPond corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch LilyPond v2.26.0 (regression tests and snippets only)
+        run: |
+          git clone --depth 1 --branch v2.26.0 --filter=blob:none --sparse \
+            https://gitlab.com/lilypond/lilypond.git "$RUNNER_TEMP/lilypond"
+          git -C "$RUNNER_TEMP/lilypond" sparse-checkout set input/regression Documentation/snippets
+      - run: cargo test --test ly_corpus -- --ignored --nocapture
+        env:
+          LYTK_LILYPOND_SRC: ${{ runner.temp }}/lilypond
+      # The LilyPond-shaped fuzz properties, with many more cases than in
+      # `cargo test` (release build: inputs at the reader's bounds are slow
+      # unoptimised).
+      - run: cargo test --release --test fuzz_inputs lilypond_shaped
+        env:
+          LYTK_FUZZ_CASES: "1024"
 
   msrv:
     name: MSRV (rust-version in Cargo.toml)

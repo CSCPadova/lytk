@@ -288,6 +288,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 if next.kind() == "expression_block" && is_figuremode {
                                     // Parse figuremode block into figured bass entries
                                     let fb_measures = parse_figuremode_block(state, *next);
+                                    state.spend(fb_measures.len() as u64);
                                     state
                                         .definitions
                                         .insert(var_name, VarDef::FiguredBass(fb_measures));
@@ -582,7 +583,7 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
         state.relative_ref = saved_relative_ref;
         state.in_relative = saved_in_relative;
         state.stem_direction = saved_stem_direction.clone();
-        state.current_voice_number = (voice_idx + 1) as u8;
+        state.current_voice_number = u8::try_from(voice_idx + 1).unwrap_or(u8::MAX);
         state.last_duration = saved_last_duration.clone();
         state.tuplet_stack = saved_tuplet_stack.clone();
         state.auto_beam_off = saved_auto_beam_off;
@@ -1239,7 +1240,14 @@ fn merge_piano_staff_parts(
         return;
     }
 
-    let num_staves = staves.len() as u8;
+    // Staff numbers are `u8`: a group of more staves cannot be one part.
+    let Ok(num_staves) = u8::try_from(staves.len()) else {
+        state.refuse(format!(
+            "a staff group has {} staves; at most 255 fit in one part",
+            staves.len()
+        ));
+        return;
+    };
     let mut staves = staves.into_iter();
     let first = staves.next().unwrap();
     let mut base = PartBuild {
@@ -1250,7 +1258,7 @@ fn merge_piano_staff_parts(
     for (k, mut pb) in std::iter::once(first).chain(staves).enumerate() {
         pb.tl.fold_spacer_lanes();
         let top_lane = pb.tl.lanes.keys().copied().max().unwrap_or(0);
-        base.tl.absorb(pb.tl.into_staff(k as u8 + 1, lane_offset));
+        base.tl.absorb(pb.tl.into_staff(k as u8 + 1, lane_offset)); // k < num_staves ≤ 255
         lane_offset = lane_offset.saturating_add(top_lane);
         if pb.uid != base.uid {
             state.part_alias.insert(pb.uid, base.uid);

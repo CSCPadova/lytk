@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from lytk._core import (
     Chord,
+    InternalError,
+    LytkError,
     Measure,
     MusicDocument,
     Note,
@@ -48,6 +50,9 @@ from lytk._core import (
 )
 
 __all__ = [
+    # Errors
+    "LytkError",
+    "InternalError",
     "MusicDocument",
     "Score",
     # Structured note navigation (read-only Layer-2 tree)

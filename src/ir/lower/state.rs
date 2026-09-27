@@ -110,8 +110,10 @@ impl LowerState {
             idx
         } else {
             let idx = self.staves.len();
-            self.staves
-                .push(StaffBuilder::new(String::new(), idx as u8 + 1));
+            self.staves.push(StaffBuilder::new(
+                String::new(),
+                u8::try_from(idx + 1).unwrap_or(u8::MAX),
+            ));
             self.current_staff = Some(idx);
             idx
         }

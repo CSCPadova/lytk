@@ -3393,6 +3393,33 @@ lower = \relative c { \partial 8 c8 | d8 e f g a b | c8 b a g f e }
         );
     }
 
+    /// Inside `\relative`, LilyPond makes the written body relative once and
+    /// copies it: the copies of an unfold have the same pitches (lytk used to
+    /// read each pass relative to the previous one, climbing an octave step
+    /// per pass; LilyPond's page-layout tests reached octave 128 that way).
+    #[test]
+    fn test_repeat_unfold_in_relative_repeats_the_same_pitches() {
+        let score = LyToIrAdapter::new()
+            .convert_str(r#"\relative { \repeat unfold 10 { \repeat unfold 4 { c''4 } } d4 }"#)
+            .unwrap();
+        let octaves: Vec<i32> = score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.pitch.octave),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(octaves.len(), 41);
+        assert!(
+            octaves[..40].iter().all(|&o| o == octaves[0]),
+            "{octaves:?}"
+        );
+        assert_eq!(octaves[40], octaves[0], "d4 is relative to the last c");
+    }
+
     /// `\repeat unfold N { … }` writes the body out N times (was emitted once,
     /// dropping N−1 copies).
     #[test]

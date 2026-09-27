@@ -94,13 +94,16 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
     };
 
     // Parse repeat count
-    let repeat_count: u8 = if i < children.len() && children[i].kind() == "unsigned_integer" {
-        let n = state.text(children[i]).parse().unwrap_or(2);
+    // Past `u64` a count is unreadable: it counts as the most there can be,
+    // which the unfold loop's budget then refuses.
+    let count: u64 = if i < children.len() && children[i].kind() == "unsigned_integer" {
+        let n = state.text(children[i]).parse().unwrap_or(u64::MAX);
         i += 1;
         n
     } else {
         2
     };
+    let repeat_count = u8::try_from(count).unwrap_or(u8::MAX);
 
     // For unfold repeats, walk the body block `repeat_count` times — the music
     // is repeated literally (was previously walked only once, dropping N-1
@@ -108,7 +111,17 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
     if repeat_type == "unfold" {
         if i < children.len() && children[i].kind() == "expression_block" {
             let body = children[i];
-            for _ in 0..repeat_count.max(1) {
+            // LilyPond makes the written music relative once and then copies
+            // it: every pass starts from the same reference pitch, so copies
+            // are identical instead of climbing an octave step per pass.
+            // Each pass counts against the reading's budget, so an unfold of
+            // an empty body cannot spin for billions of passes either.
+            let reference = state.prev_pitch;
+            for _ in 0..count.max(1) {
+                if !state.spend(1) {
+                    break;
+                }
+                state.prev_pitch = reference;
                 walk_music_block(state, body);
             }
             return i + 1;

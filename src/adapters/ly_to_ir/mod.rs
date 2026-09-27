@@ -172,6 +172,11 @@ fn find_relative_octave(prev: &Pitch, step: PitchStep) -> i32 {
 // Adapter
 // ---------------------------------------------------------------------------
 
+/// Stack of the reader's walk thread: with at most `MAX_WALK_DEPTH` nested
+/// blocks at up to about 20 KB of frames each (unoptimised builds), 64 MB
+/// leaves room to spare; untouched stack pages cost no memory.
+const WALK_STACK_BYTES: usize = 64 << 20;
+
 /// LilyPond → IR adapter.
 ///
 /// Parses LilyPond source text using tree-sitter and produces an IR `Score`.
@@ -193,7 +198,23 @@ impl LyToIrAdapter {
     }
 
     /// Parse LilyPond source text into one or more IR Scores (one per `\score` block).
+    ///
+    /// The walk recurses once per nested music block, so it runs on a thread
+    /// with a stack of its own: how deep a score may nest must not depend on
+    /// the caller's thread (Rust test threads and many Python threads get 2 MB
+    /// or less). A panic on that thread resumes on the caller's.
     fn parse_source_multi(&self, source: &str) -> Result<Vec<Score>> {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("lytk-ly-reader".to_string())
+                .stack_size(WALK_STACK_BYTES)
+                .spawn_scoped(scope, || self.parse_source_multi_here(source))?
+                .join()
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+        })
+    }
+
+    fn parse_source_multi_here(&self, source: &str) -> Result<Vec<Score>> {
         let mut parser = LilyPondParser::new().map_err(|e| AdapterError::Parse(e.to_string()))?;
         let tree = parser
             .parse(source)
@@ -209,6 +230,12 @@ impl LyToIrAdapter {
         state.language = self.language;
 
         walk::walk_program(&mut state, root);
+        let refused = |reason: String| {
+            AdapterError::Unsupported(format!("{reason}; lytk refuses input this large"))
+        };
+        if let Some(reason) = state.over_limit.take() {
+            return Err(refused(reason));
+        }
 
         // `\score` blocks were assembled as they closed (one per movement).
         if !state.completed_scores.is_empty() {
@@ -216,7 +243,11 @@ impl LyToIrAdapter {
         }
 
         // Otherwise the file's top-level music is one implicit score.
-        let mut score = assemble_score(&mut state).unwrap_or_default();
+        let score = assemble_score(&mut state);
+        if let Some(reason) = state.over_limit.take() {
+            return Err(refused(reason));
+        }
+        let mut score = score.unwrap_or_default();
         if score.children.is_empty() {
             score.children.push(ScoreChild::Part(Part::new("P1")));
         }
@@ -299,6 +330,13 @@ fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
     }
 
     let grid = Grid::build(parts.iter().map(|pb| &pb.tl));
+    if grid.bars.len() >= crate::ir::timeline::MAX_BARS {
+        state.refuse(format!(
+            "the music reaches {} bars",
+            crate::ir::timeline::MAX_BARS
+        ));
+        return None;
+    }
     let mut built: Vec<(u32, Part)> = parts
         .into_iter()
         .map(|pb| {
