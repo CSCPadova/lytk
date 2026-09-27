@@ -220,11 +220,8 @@ pub(super) fn emit_measures(
                 }
             }
             if let Some(oct) = &dir.octave_shift {
-                match oct.shift_type.as_str() {
-                    "up" => parts.push(format!("\\ottava #{}", oct.size / 8)),
-                    "down" => parts.push(format!("\\ottava #-{}", oct.size / 8)),
-                    "stop" => parts.push("\\ottava #0".to_string()),
-                    _ => {}
+                if matches!(oct.shift_type.as_str(), "up" | "down" | "stop") {
+                    parts.push(format!("\\ottava #{}", oct.octaves()));
                 }
             }
             if !parts.is_empty() {

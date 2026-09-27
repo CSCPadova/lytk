@@ -135,6 +135,21 @@ engineering notes are in the [development log](devlog.md).
   writer wrote each octave mark out), and nesting of `\tuplet`, `\relative`
   or `\repeat` a few hundred levels deep, which overflowed the stack. The
   reader now walks on a thread with a stack of its own.
+- `\ottava` with a number past what a shift is (`#2147483647`) panicked; it
+  is clamped to three octaves. `\ottava #2` read as size 16 instead of 15 (a
+  15ma in MusicXML), and the Music-path LilyPond writer wrote an 8va as
+  `\ottava #8` and an 8vb as an 8va.
+- A `**kern` note with 256 or more dots panicked.
+- Music longer than 100,000 whole notes from MusicXML, ABC or `**kern` (one
+  MusicXML note of 25 million whole notes) was accepted, and the ABC writer
+  tied it over every bar line until an allocation aborted the process. The
+  three readers now refuse it, as the LilyPond and MIDI readers do, and the
+  ABC writer refuses music of more than 100,000 bars.
+- Time that grew with the square of the input: meter changes (reading and
+  lowering; 100,000 notes with 40,000 meter changes took 24 s through every
+  writer, now 5 s), long runs of tuplets in ABC output, long runs of grace
+  notes in the Music-path LilyPond output, and many diagnostics on one long
+  line.
 - A tremolo `:N` past 1024 (`c1:2147483648`) is not read as one: it gave
   31 tremolo marks, and the LilyPond writer's shift overflowed. The writers
   cap the marks of hand-made IR at 10.

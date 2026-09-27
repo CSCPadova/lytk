@@ -3,6 +3,51 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-27 — Epic J: J1's hunt, finished
+
+The five areas the first hunt left (commands, values, modes, resources,
+other readers) went through a scratch harness, one process at a time under
+`ulimit -v 4000000`: 308 hand-made cases, each read by every reader it fits,
+checked (syntax and semantic), and sent through every writer, transform,
+representation and the JSON round trip, with panics caught and time and peak
+memory measured per stage.
+
+Found and fixed:
+- *Panics*: `\ottava #2147483647` (`n * 8` overflowed) and
+  `#-2147483648` (`abs`); a `**kern` note with 300 dots (the dot counter).
+  The ottava sizes were also inconsistent: the LilyPond reader wrote `n * 8`
+  (16 for a 15ma), the Score-path writer divided by 8 (a MusicXML 15 came out
+  as `\ottava #1`), and the Music-path writer wrote the size itself
+  (`\ottava #8` for an 8va) without its sign. `OctaveShift::from_octaves` and
+  `octaves` now keep MusicXML's 8, 15, 22 throughout.
+- *An abort*: a MusicXML note of 25 million whole notes read fine, and the
+  ABC writer (which bars the Music tree by the meter) tied it over every bar
+  line until a 1.6 GB allocation failed; an abort, which no firewall catches.
+  The MusicXML, ABC and `**kern` readers now refuse music past 100,000 whole
+  notes (`adapters::check_*_length`, an f64 estimate that cannot overflow), as
+  the LilyPond and MIDI readers did, and the ABC writer, fallible now, refuses
+  more than 100,000 bars (hand-made IR has no reader bound).
+- *Quadratic time*, measured by doubling inputs of 18 repeated constructs
+  (a 4× input must take about 4× the time):
+  - meter changes: `Grid::build` retained over every meter at each change
+    (reading and lowering; 20,000 repetitions of two meters: 5.8 s → 0.6 s);
+    the cadenza lookup per bar is a sweep now too;
+  - the ABC writer counted a tuplet run to its end at every group;
+  - the Music-path LilyPond writer copied the grace group at every grace;
+  - a diagnostic counted its column from its line's start
+    (`diagnostics::Columns` counts on along the line).
+  `repeated_constructs_scale_linearly` pins the four with a time ratio, which
+  does not depend on the machine's speed.
+
+Not bugs, recorded here: at the reader's bound (450,000 notes) every stage
+takes about 20 s in all, and the MusicXML writer about 4 KB of memory per
+note (the `musicxml` crate serializes through a DOM of its own), 2 GB at the
+bound. The two panics and the abort were the whole harvest of the hunt's
+308 cases; the other readers held (zero divisions, SMPTE time, lying chunk
+lengths, huge counts), within linear time.
+
+Tests: 1,138 Rust, 229 Python.
+
 ## 2026-09-27 — Epic J: J6 (release hygiene)
 
 The version is `Cargo.toml`'s alone: `pyproject.toml` declares it dynamic

@@ -14,7 +14,7 @@ use _core::adapters::ir_to_humdrum::IrToHumdrumAdapter;
 use _core::adapters::ir_to_ly::IrToLyAdapter;
 use _core::adapters::ir_to_midi::IrToMidiAdapter;
 use _core::adapters::ir_to_mxml::IrToMxmlAdapter;
-use _core::adapters::ly_to_ir::LyToIrAdapter;
+use _core::adapters::ly_to_ir::{check, LyToIrAdapter};
 use _core::adapters::midi_to_ir::MidiToIrAdapter;
 use _core::adapters::mxml_to_ir::MxmlToIrAdapter;
 use _core::adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
@@ -472,4 +472,110 @@ fn oversized_tremolos_are_written_capped() {
         }
     }
     IrToLyAdapter::new().convert(&score).expect("writes");
+}
+
+#[test]
+fn humdrum_dots_saturate() {
+    // 300 dots overflowed the dot counter (found by J1's hunt).
+    let kern = format!("**kern\n4{}c\n*-\n", ".".repeat(300));
+    let score = HumdrumToIrAdapter::new().convert_str(&kern).unwrap();
+    assert_eq!(note_count(&score), 1);
+}
+
+#[test]
+fn music_longer_than_the_bound_is_refused_by_every_reader() {
+    // A single note of millions of whole notes was tied over every bar line
+    // downstream: the ABC writer aborted on a 1.6 GB allocation.
+    let long = "the music is longer than 100000 whole notes";
+    let abc = AbcToIrAdapter::new().convert_str("X:1\nL:1/1\nK:C\nc1000000\n");
+    assert!(abc.unwrap_err().to_string().contains(long));
+    let xml = "<?xml version=\"1.0\"?><score-partwise version=\"4.0\"><part-list>\
+               <score-part id=\"P1\"><part-name>P</part-name></score-part></part-list>\
+               <part id=\"P1\"><measure number=\"1\"><attributes><divisions>1</divisions>\
+               </attributes><note><pitch><step>C</step><octave>4</octave></pitch>\
+               <duration>400000000</duration></note></measure></part></score-partwise>";
+    let read = MxmlToIrAdapter::new().convert_str(xml);
+    assert!(read.unwrap_err().to_string().contains(long));
+    let kern = format!("**kern\n{}*-\n", "0c\n".repeat(60_000));
+    let read = HumdrumToIrAdapter::new().convert_str(&kern);
+    assert!(read.unwrap_err().to_string().contains(long));
+}
+
+#[test]
+fn the_abc_writer_refuses_hand_made_music_of_millions_of_bars() {
+    use _core::ir::duration::{Duration, Frac};
+    use _core::ir::music::{Music, MusicDocument};
+    use _core::ir::pitch::{Pitch, PitchStep};
+    let note = Music::Note {
+        pitch: Pitch::new(PitchStep::C, 4),
+        duration: Duration::new(Frac::from_integer(1 << 30)),
+        annotations: Vec::new(),
+    };
+    let doc = MusicDocument::new(Music::Sequential(vec![note]));
+    let start = std::time::Instant::now();
+    assert!(IrToAbcAdapter::new().convert_music(&doc).is_err());
+    assert!(start.elapsed().as_secs() < 30, "took {:?}", start.elapsed());
+}
+
+/// Seconds `f` takes on `n` and on `4 * n` repetitions.
+fn times(n: usize, f: impl Fn(usize)) -> (f64, f64) {
+    let time = |k: usize| {
+        let start = std::time::Instant::now();
+        f(k);
+        start.elapsed().as_secs_f64()
+    };
+    (time(n), time(4 * n))
+}
+
+#[test]
+fn repeated_constructs_scale_linearly() {
+    // Found by J1's hunt as quadratic: meter changes (`Grid::build` scanned
+    // every meter at each), runs of tuplets in the ABC writer (each group
+    // counted the run to its end), runs of grace notes in the Music-path
+    // LilyPond writer (each copied the group so far), diagnostics on one long
+    // line (each counted its column from the line's start). Four times the
+    // input must take about four times as long, not sixteen.
+    let meters = |n: usize| {
+        let src = format!(
+            "{{ {} }}",
+            r"\time 3/8 c'8 d' e' \time 2/4 c'4 d' ".repeat(n)
+        );
+        let score = LyToIrAdapter::new().convert_str(&src).unwrap();
+        let _ = _core::ir::lower::lower_to_score(&_core::ir::lift::lift_to_music(&score));
+    };
+    let tuplets = |n: usize| {
+        let src = format!("{{ {} }}", r"\tuplet 3/2 { c'8 d' e' } ".repeat(n));
+        let score = LyToIrAdapter::new().convert_str(&src).unwrap();
+        let doc = _core::ir::lift::lift_to_music(&score);
+        IrToAbcAdapter::new().convert_music(&doc).unwrap();
+    };
+    let graces = |n: usize| {
+        let grace = "<note><grace/><pitch><step>C</step><octave>4</octave></pitch><type>eighth</type></note>";
+        let xml = format!(
+            "<?xml version=\"1.0\"?><score-partwise version=\"4.0\"><part-list>\
+             <score-part id=\"P1\"><part-name>P</part-name></score-part></part-list>\
+             <part id=\"P1\"><measure number=\"1\"><attributes><divisions>1</divisions>\
+             </attributes>{}<note><pitch><step>C</step><octave>4</octave></pitch>\
+             <duration>1</duration></note></measure></part></score-partwise>",
+            grace.repeat(n)
+        );
+        let score = MxmlToIrAdapter::new().convert_str(&xml).unwrap();
+        let doc = _core::ir::lift::lift_to_music(&score);
+        IrToLyAdapter::new().convert_music(&doc).unwrap();
+    };
+    let diagnostics = |n: usize| {
+        let src = format!("{{ {} }}", r"c'3 \foo ".repeat(n));
+        assert_eq!(check(&src, true).len(), 2 * n);
+    };
+    for (name, (small, big)) in [
+        ("diagnostics on one line", times(2000, diagnostics)),
+        ("meter changes", times(1000, meters)),
+        ("tuplet runs", times(2000, tuplets)),
+        ("grace runs", times(2000, graces)),
+    ] {
+        assert!(
+            big < 8.0 * small + 0.05,
+            "{name}: {small:.3} s, then {big:.3} s"
+        );
+    }
 }

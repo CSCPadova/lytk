@@ -64,13 +64,23 @@ impl Diagnostic {
         code: &'static str,
         message: String,
     ) -> Self {
+        let mut columns = Columns::default();
+        Self::counted(&mut columns, source, node, end, severity, code, message)
+    }
+
+    /// [`spanning`](Self::spanning), counting its column with `columns`.
+    pub(crate) fn counted(
+        columns: &mut Columns,
+        source: &str,
+        node: Node,
+        end: usize,
+        severity: Severity,
+        code: &'static str,
+        message: String,
+    ) -> Self {
         let start = node.start_byte();
         let point = node.start_position();
-        let line_start = start - point.column;
-        let column = source
-            .get(line_start..start)
-            .map_or(point.column, |s| s.chars().count())
-            + 1;
+        let column = columns.column(source, start - point.column, start);
         Self {
             severity,
             code,
@@ -97,6 +107,31 @@ impl Diagnostic {
 
     pub fn is_error(&self) -> bool {
         self.severity == Severity::Error
+    }
+}
+
+/// Character columns of byte offsets, counted on from the last one on the
+/// same line: diagnostics come mostly in source order, and counting each from
+/// its line's start would be quadratic on a long line full of them.
+#[derive(Debug, Default)]
+pub(crate) struct Columns {
+    line_start: usize,
+    byte: usize,
+    chars: usize,
+}
+
+impl Columns {
+    /// The 1-based character column of byte `start` on the line starting at
+    /// byte `line_start`.
+    fn column(&mut self, source: &str, line_start: usize, start: usize) -> usize {
+        if line_start != self.line_start || start < self.byte {
+            (self.line_start, self.byte, self.chars) = (line_start, line_start, 0);
+        }
+        self.chars += source
+            .get(self.byte..start)
+            .map_or(start - self.byte, |s| s.chars().count());
+        self.byte = start;
+        self.chars + 1
     }
 }
 

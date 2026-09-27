@@ -520,7 +520,11 @@ impl Grid {
                     anchor = p;
                     if let Some(ts) = ts {
                         if meters.last().is_none_or(|(q, t)| *q != p || *t != ts) {
-                            meters.retain(|(q, _)| *q != p);
+                            // The controls come in position order, so a meter
+                            // already set here can only be the last one.
+                            if meters.last().is_some_and(|(q, _)| *q == p) {
+                                meters.pop();
+                            }
                             meters.push((p, ts));
                         }
                     }
@@ -569,9 +573,16 @@ impl Grid {
         if end > last || bars.is_empty() {
             bars.push((last, end.max(last)));
         }
+        // Both in position order: one sweep.
+        let mut spans = free_spans.iter().peekable();
         let senza = bars
             .iter()
-            .map(|(s, _)| free_spans.iter().any(|(a, b)| s >= a && s < b))
+            .map(|(s, _)| {
+                while spans.peek().is_some_and(|(_, b)| b <= s) {
+                    spans.next();
+                }
+                spans.peek().is_some_and(|(a, b)| s >= a && s < b)
+            })
             .collect();
         Grid {
             bars,

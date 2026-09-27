@@ -332,7 +332,11 @@ fn group_graces(children: &[Music]) -> Vec<Music> {
         };
         match out.last_mut() {
             Some(Music::Grace { content: group, .. }) => {
-                let mut all = notes(group);
+                // Moved, not cloned: a long run of graces stays linear.
+                let mut all = match std::mem::replace(&mut **group, Music::Sequential(Vec::new())) {
+                    Music::Sequential(v) => v,
+                    other => vec![other],
+                };
                 all.extend(notes(content));
                 **group = Music::Sequential(all);
             }
@@ -660,15 +664,7 @@ fn annotations_to_ly(annotations: &[Annotation]) -> String {
             Annotation::Fingering(f) => parts.push(format!("-{f}")),
             Annotation::Lyric(_) => {}    // lyrics handled separately
             Annotation::Velocity(_) => {} // performance data, no notation
-            Annotation::OctaveShift(os) => {
-                let n = os.size;
-                if os.shift_type == "up" || os.shift_type == "down" {
-                    let dir = if n > 0 { n } else { -n };
-                    parts.push(format!("\\ottava #{dir}"));
-                } else {
-                    parts.push("\\ottava #0".to_string());
-                }
-            }
+            Annotation::OctaveShift(os) => parts.push(format!("\\ottava #{}", os.octaves())),
         }
     }
 

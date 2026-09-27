@@ -3,34 +3,38 @@
 
 use tree_sitter::{Node, Tree};
 
-use crate::diagnostics::{Diagnostic, Severity};
+use crate::diagnostics::{Columns, Diagnostic, Severity};
 use crate::ir::language::{parse_pitch_name, PitchLanguage};
 
 /// Every syntax error in `tree`, parsed from `source`.
 pub(crate) fn syntax_diagnostics(tree: &Tree, source: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
+    let cols = &mut Columns::default();
     let mut cursor = tree.walk();
     loop {
         let node = cursor.node();
         let mut descend = true;
         if node.is_error() {
             out.push(
-                unclosed(source, node).unwrap_or_else(|| unexpected(source, node, node.end_byte())),
+                unclosed(cols, source, node)
+                    .unwrap_or_else(|| unexpected(cols, source, node, node.end_byte())),
             );
             descend = false;
         } else if node.is_missing() {
-            out.push(Diagnostic::at(
+            out.push(Diagnostic::counted(
+                cols,
                 source,
                 node,
+                node.end_byte(),
                 Severity::Error,
                 "missing-token",
                 format!("missing `{}`", node.kind()),
             ));
         } else if node.kind() == "punctuation" && text(source, node) == ">" {
-            out.extend(stray_angle(source, node));
+            out.extend(stray_angle(cols, source, node));
         } else if node.kind() == "embedded_scheme" {
-            out.extend(after_scheme(source, node));
-            out.extend(markup_override(source, node));
+            out.extend(after_scheme(cols, source, node));
+            out.extend(markup_override(cols, source, node));
         }
         if descend && cursor.goto_first_child() {
             continue;
@@ -49,7 +53,7 @@ fn text<'a>(source: &'a str, node: Node) -> &'a str {
 
 /// `unexpected `…`` for the text from `node` to byte `end` (its first line,
 /// shortened).
-fn unexpected(source: &str, node: Node, end: usize) -> Diagnostic {
+fn unexpected(cols: &mut Columns, source: &str, node: Node, end: usize) -> Diagnostic {
     let snippet = source.get(node.start_byte()..end).unwrap_or("");
     let snippet = snippet.lines().next().unwrap_or("").trim();
     let short: String = snippet.chars().take(30).collect();
@@ -58,12 +62,20 @@ fn unexpected(source: &str, node: Node, end: usize) -> Diagnostic {
         (false, true) => format!("unexpected `{short}…`"),
         (false, false) => format!("unexpected `{short}`"),
     };
-    Diagnostic::spanning(source, node, end, Severity::Error, "syntax-error", message)
+    Diagnostic::counted(
+        cols,
+        source,
+        node,
+        end,
+        Severity::Error,
+        "syntax-error",
+        message,
+    )
 }
 
 /// An ERROR node holding a bracket or quote it never closes, as tree-sitter
 /// makes of `{ c'4 d'4` at the end of the input: `missing `}``, at the opener.
-fn unclosed(source: &str, error: Node) -> Option<Diagnostic> {
+fn unclosed(cols: &mut Columns, source: &str, error: Node) -> Option<Diagnostic> {
     let mut open: Vec<(Node, &str)> = Vec::new();
     let mut cursor = error.walk();
     for child in error.children(&mut cursor) {
@@ -86,9 +98,11 @@ fn unclosed(source: &str, error: Node) -> Option<Diagnostic> {
         open.push((child, closer));
     }
     let (opener, closer) = open.pop()?;
-    Some(Diagnostic::at(
+    Some(Diagnostic::counted(
+        cols,
         source,
         opener,
+        opener.end_byte(),
         Severity::Error,
         "missing-token",
         format!("missing `{closer}`: `{}` is never closed", opener.kind()),
@@ -98,7 +112,7 @@ fn unclosed(source: &str, error: Node) -> Option<Diagnostic> {
 /// A `>` outside a chord that is not an accent (`->`, `^>`, `_>`): what is
 /// left of `<< … >>` without its `<<`, or of a chord without its `<`. The
 /// grammar reads it as punctuation.
-fn stray_angle(source: &str, node: Node) -> Option<Diagnostic> {
+fn stray_angle(cols: &mut Columns, source: &str, node: Node) -> Option<Diagnostic> {
     let is_angle = |n: Option<Node>, adjacent: usize| {
         n.is_some_and(|n| {
             n.kind() == "punctuation" && text(source, n) == ">" && {
@@ -126,7 +140,8 @@ fn stray_angle(source: &str, node: Node) -> Option<Diagnostic> {
     } else {
         "`>` outside a chord"
     };
-    Some(Diagnostic::spanning(
+    Some(Diagnostic::counted(
+        cols,
         source,
         node,
         end,
@@ -145,7 +160,7 @@ fn stray_angle(source: &str, node: Node) -> Option<Diagnostic> {
 /// (`-\tweak color #red (`, `\vshape #'(…) (`). Nor, at the top level, a
 /// number, string or quote on the line of a Scheme expression that starts it
 /// (`#set-global-staff-size 20)`).
-fn after_scheme(source: &str, node: Node) -> Option<Diagnostic> {
+fn after_scheme(cols: &mut Columns, source: &str, node: Node) -> Option<Diagnostic> {
     let mut next = node.next_sibling();
     while next.is_some_and(|n| n.kind() == "comment") {
         next = next.and_then(|n| n.next_sibling());
@@ -199,9 +214,11 @@ fn after_scheme(source: &str, node: Node) -> Option<Diagnostic> {
                 "unsigned_integer" | "decimal_number" | "fraction" | "string"
             ) || (kind == "punctuation" && t == "'")));
     (stray && !in_markup(source, next)).then(|| {
-        Diagnostic::at(
+        Diagnostic::counted(
+            cols,
             source,
             next,
+            next.end_byte(),
             Severity::Error,
             "syntax-error",
             format!("unexpected `{t}` after a Scheme expression"),
@@ -211,16 +228,18 @@ fn after_scheme(source: &str, node: Node) -> Option<Diagnostic> {
 
 /// `\override #'key` in markup: the command takes a pair (`#'(key . value)`),
 /// and a quoted symbol or number never is one.
-fn markup_override(source: &str, node: Node) -> Option<Diagnostic> {
+fn markup_override(cols: &mut Columns, source: &str, node: Node) -> Option<Diagnostic> {
     let command = previous(node).filter(|p| text(source, *p) == r"\override")?;
     let datum = text(source, node).strip_prefix('#')?;
     let quoted = datum
         .strip_prefix('\'')
         .or_else(|| datum.strip_prefix('`'))?;
     (!quoted.is_empty() && !quoted.starts_with('(')).then(|| {
-        Diagnostic::at(
+        Diagnostic::counted(
+            cols,
             source,
             node,
+            node.end_byte(),
             Severity::Error,
             "syntax-error",
             format!(

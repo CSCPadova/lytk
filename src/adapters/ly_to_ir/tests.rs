@@ -2225,6 +2225,46 @@ melB = { g'4 a' b' c'' }
     }
 
     #[test]
+    fn test_ottava_sizes_are_musicxml_intervals() {
+        // `\ottava #2` is a 15ma (MusicXML size 15, not 16); past three
+        // octaves the value is clamped (`#2147483647` overflowed `n * 8`).
+        let adapter = LyToIrAdapter::new();
+        for (n, kind, size) in [
+            ("2", "up", 15),
+            ("-2", "down", 15),
+            ("3", "up", 22),
+            ("2147483647", "up", 22),
+            ("-2147483648", "down", 22),
+        ] {
+            let score = adapter
+                .convert_str(&format!("{{ \\ottava #{n} c''4 }}"))
+                .unwrap();
+            let shift = score.parts()[0].measures[0]
+                .directions
+                .iter()
+                .find_map(|d| d.octave_shift.clone())
+                .unwrap();
+            assert_eq!(
+                (shift.shift_type.as_str(), shift.size),
+                (kind, size),
+                "#{n}"
+            );
+        }
+        // Written back, the octaves come out the same.
+        for n in ["2", "-2", "-1"] {
+            let score = adapter
+                .convert_str(&format!("{{ \\ottava #{n} c''4 }}"))
+                .unwrap();
+            let ly = crate::adapters::FromIrAdapter::convert(
+                &crate::adapters::ir_to_ly::IrToLyAdapter::new(),
+                &score,
+            )
+            .unwrap();
+            assert!(ly.contains(&format!("\\ottava #{n}")), "{n}: {ly}");
+        }
+    }
+
+    #[test]
     fn test_layout_break_parsing() {
         let adapter = LyToIrAdapter::new();
         let src = r#"{ c'4 d' e' f' \break g' a' b' c'' \pageBreak d'' e'' f'' g'' }"#;

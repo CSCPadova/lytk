@@ -44,7 +44,9 @@ impl ToMusicAdapter for HumdrumToIrAdapter {
     }
 
     fn convert_str_to_music(&self, text: &str) -> Result<MusicDocument> {
-        parse_kern(text)
+        let doc = parse_kern(text)?;
+        super::check_music_length(&doc.music)?;
+        Ok(doc)
     }
 }
 
@@ -481,7 +483,7 @@ fn split_subtoken(sub: &str) -> (Duration, TokenFlags, String) {
                 }
             }
             '%' => rational = Some((std::mem::take(&mut digits), String::new())),
-            '.' => dots += 1,
+            '.' => dots = dots.saturating_add(1),
             'a'..='g' | 'A'..='G' | '#' | '-' | 'n' | 'r' => body.push(c),
             _ => {} // beams (L/J), ornaments, editorial marks — ignored
         }

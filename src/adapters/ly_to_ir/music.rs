@@ -684,19 +684,9 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                     let scheme_text = state.text(*scheme_node);
                     // Parse #N or #-N from the embedded scheme
                     let num_str = scheme_text.trim_start_matches('#');
-                    if let Ok(n) = num_str.parse::<i32>() {
-                        let (shift_type, size) = if n > 0 {
-                            ("up", (n * 8) as i8)
-                        } else if n < 0 {
-                            ("down", (n.abs() * 8) as i8)
-                        } else {
-                            ("stop", 0i8)
-                        };
+                    if let Ok(n) = num_str.parse::<i64>() {
                         let dir = Direction {
-                            octave_shift: Some(OctaveShift {
-                                shift_type: shift_type.to_string(),
-                                size,
-                            }),
+                            octave_shift: Some(OctaveShift::from_octaves(n)),
                             ..Default::default()
                         };
                         state.add_event(Event::direction(dir));

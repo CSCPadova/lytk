@@ -4,7 +4,7 @@ use num::rational::Ratio;
 use num::CheckedAdd;
 use tree_sitter::Node;
 
-use crate::diagnostics::{Diagnostic, Severity};
+use crate::diagnostics::{Columns, Diagnostic, Severity};
 use crate::ir::articulation::{BeamEvent, LyricSyllable};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::{PitchLanguage, PitchMode};
@@ -199,6 +199,7 @@ pub(super) struct WalkState<'src> {
 
     /// What the walk found wrong, or did not read.
     pub(super) diagnostics: Vec<Diagnostic>,
+    columns: Columns,
     /// Above 0 while music already walked once is walked for another purpose
     /// (a chord-mode block read as notes): the first walk reported it.
     pub(super) quiet: u32,
@@ -263,6 +264,7 @@ impl<'src> WalkState<'src> {
             current_voice_number: 1,
             context_reentry: std::cell::Cell::new(false),
             diagnostics: Vec::new(),
+            columns: Columns::default(),
             quiet: 0,
             assigned: HashSet::new(),
             top_level_music: None,
@@ -312,7 +314,16 @@ impl<'src> WalkState<'src> {
         message: String,
     ) {
         if self.quiet == 0 {
-            let d = Diagnostic::at(self.source, node, severity, code, message);
+            let (source, end) = (self.source, node.end_byte());
+            let d = Diagnostic::counted(
+                &mut self.columns,
+                source,
+                node,
+                end,
+                severity,
+                code,
+                message,
+            );
             self.diagnostics.push(d);
         }
     }
