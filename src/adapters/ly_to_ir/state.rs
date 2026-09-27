@@ -1,8 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use num::rational::Ratio;
+use num::CheckedAdd;
 use tree_sitter::Node;
 
+use crate::diagnostics::{Columns, Diagnostic, Severity};
 use crate::ir::articulation::{BeamEvent, LyricSyllable};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::{PitchLanguage, PitchMode};
@@ -43,12 +45,50 @@ pub(super) enum VarDef {
         main_lane: u8,
         voices: Vec<String>,
         /// Byte range of the `{ … }` block that defines it, so a reference
-        /// inside `\relative` can read it again there (see `resolve_variable`).
-        block: Option<(usize, usize)>,
+        /// inside `\relative` can read it again there (see `resolve_variable`),
+        /// in the pitch language of its definition.
+        block: Option<(usize, usize, PitchLanguage)>,
     },
     /// Variable contained `\figuremode { ... }` — stores flat stream of entries.
     FiguredBass(Vec<FiguredBassEntry>),
 }
+
+/// Most voice elements (notes, rests, chords) one reading may generate, and
+/// the furthest a voice may reach, in whole notes. Real scores stay orders of
+/// magnitude below; the bounds keep `s1*4000000000`, nested `\repeat unfold`
+/// and self-doubling variables from hanging or exhausting memory. Past either
+/// one the reading stops and fails.
+pub(super) const MAX_ELEMENTS: u64 = 500_000;
+pub(super) const MAX_WHOLE_NOTES: i64 = 100_000;
+/// Octaves a pitch may lie in (middle C is octave 4; MIDI reaches -1..=9).
+/// Far wider than music: LilyPond's own regression tests climb to octave 22
+/// with repeated relative scales. Emitters write one mark per octave, so the
+/// bound caps each note's output at about 127 marks.
+pub(super) const PITCH_OCTAVES: std::ops::RangeInclusive<i32> = -128..=127;
+/// LilyPond's language files (its `ly/` directory), and the language each
+/// sets: `arabic.ly` uses Italian note names, with accidentals of its own.
+const LANGUAGE_FILES: [(&str, PitchLanguage); 12] = [
+    ("arabic", PitchLanguage::Italiano),
+    ("catalan", PitchLanguage::Catalan),
+    ("deutsch", PitchLanguage::Deutsch),
+    ("english", PitchLanguage::English),
+    ("espanol", PitchLanguage::Espanol),
+    ("italiano", PitchLanguage::Italiano),
+    ("nederlands", PitchLanguage::Nederlands),
+    ("norsk", PitchLanguage::Norsk),
+    ("portugues", PitchLanguage::Portugues),
+    ("suomi", PitchLanguage::Suomi),
+    ("svenska", PitchLanguage::Svenska),
+    ("vlaams", PitchLanguage::Vlaams),
+];
+/// LilyPond's files of pitch names lytk cannot read (with quarter and
+/// smaller tones of their own).
+const OTHER_PITCH_NAMES: [&str; 5] = ["bagpipe", "hel-arabic", "makam", "persian", "turkish-makam"];
+
+/// Deepest the walk may recurse: music blocks inside music blocks, counting
+/// the variables read again inside `\relative`, which the syntax tree's own
+/// depth bound does not see.
+pub(super) const MAX_WALK_DEPTH: u32 = crate::parser::MAX_NESTING_DEPTH as u32;
 
 /// State accumulated while walking tree-sitter nodes.
 pub(super) struct WalkState<'src> {
@@ -57,6 +97,14 @@ pub(super) struct WalkState<'src> {
     pub(super) root: Option<Node<'src>>,
     /// Nesting of variables being read again, against self-reference.
     pub(super) var_depth: u8,
+    /// Voice elements generated so far, against [`MAX_ELEMENTS`].
+    pub(super) generated: u64,
+    /// Why the reading stopped, once it went past a bound.
+    pub(super) over_limit: Option<String>,
+    /// Music blocks being walked, one inside the other (see [`MAX_WALK_DEPTH`]).
+    pub(super) walk_depth: u32,
+    /// Variables being read again inside `\relative`, innermost last.
+    pub(super) rewalking: Vec<String>,
     /// Nesting of `\relative { … }` blocks being walked. Unlike `in_relative`
     /// (which can stay set after a `\relative` for the music that follows),
     /// this is exact: it is what decides whether a variable is read again.
@@ -148,6 +196,27 @@ pub(super) struct WalkState<'src> {
     /// The context just read was `\context X` rather than `\new X`: it
     /// re-enters an existing X instead of creating one.
     pub(super) context_reentry: std::cell::Cell<bool>,
+
+    /// What the walk found wrong, or did not read.
+    pub(super) diagnostics: Vec<Diagnostic>,
+    columns: Columns,
+    /// Above 0 while music already walked once is walked for another purpose
+    /// (a chord-mode block read as notes): the first walk reported it.
+    pub(super) quiet: u32,
+    /// Names assigned at the top level (`name = …`), whatever their value.
+    pub(super) assigned: HashSet<String>,
+    /// The top-level music expression being read, if any: LilyPond makes a
+    /// score of each, so it is a movement of its own.
+    pub(super) open_movement: Option<Node<'src>>,
+    /// Octaves `\fixed` adds to absolute pitches (`\fixed c' { c }` is c').
+    pub(super) fixed_octaves: i32,
+    /// The `\score` blocks after the first, which a single-score reading drops.
+    pub(super) later_movements: Vec<Diagnostic>,
+    /// Fields of the top-level `\header` blocks, in order: they apply to
+    /// every movement that does not set them itself.
+    pub(super) book_header: Vec<(String, String)>,
+    /// Above 0 inside `\drummode` music: words are drum names.
+    pub(super) drum_mode: u32,
 }
 
 impl<'src> WalkState<'src> {
@@ -180,6 +249,10 @@ impl<'src> WalkState<'src> {
             in_relative: false,
             root: None,
             var_depth: 0,
+            generated: 0,
+            over_limit: None,
+            walk_depth: 0,
+            rewalking: Vec::new(),
             relative_depth: 0,
             pending_arpeggio_type: None,
             pending_glissando_style: None,
@@ -194,11 +267,20 @@ impl<'src> WalkState<'src> {
             transpose_stack: Vec::new(),
             current_voice_number: 1,
             context_reentry: std::cell::Cell::new(false),
+            diagnostics: Vec::new(),
+            columns: Columns::default(),
+            quiet: 0,
+            assigned: HashSet::new(),
+            open_movement: None,
+            fixed_octaves: 0,
+            later_movements: Vec::new(),
+            book_header: Vec::new(),
+            drum_mode: 0,
         }
     }
 
     /// Get the text content of a node.
-    pub(super) fn text(&self, node: Node) -> &str {
+    pub(super) fn text(&self, node: Node) -> &'src str {
         node.utf8_text(self.source.as_bytes()).unwrap_or("")
     }
 
@@ -229,8 +311,163 @@ impl<'src> WalkState<'src> {
         self.ensure_build().tl.add(pos, ev);
     }
 
+    /// Report a finding about `node`.
+    pub(super) fn report(
+        &mut self,
+        node: Node,
+        severity: Severity,
+        code: &'static str,
+        message: String,
+    ) {
+        if self.quiet == 0 {
+            let (source, end) = (self.source, node.end_byte());
+            let d = Diagnostic::counted(
+                &mut self.columns,
+                source,
+                node,
+                end,
+                severity,
+                code,
+                message,
+            );
+            self.diagnostics.push(d);
+        }
+    }
+
+    pub(super) fn warn(&mut self, node: Node, code: &'static str, message: String) {
+        self.report(node, Severity::Warning, code, message);
+    }
+
+    pub(super) fn error(&mut self, node: Node, code: &'static str, message: String) {
+        self.report(node, Severity::Error, code, message);
+    }
+
+    /// `\language "name"` (`node` is the string): the pitch names from here
+    /// on. An unknown name keeps the current language, and warns.
+    pub(super) fn set_language(&mut self, node: Node) {
+        let name = super::text::string_value(self.source, node);
+        match PitchLanguage::from_str_loose(&name) {
+            Some(lang) => self.language = lang,
+            None => {
+                let current = self.language.as_str();
+                self.warn(
+                    node,
+                    "unknown-language",
+                    format!("unknown pitch language `{name}`: {current} stays"),
+                );
+            }
+        }
+    }
+
+    /// `\include` (at `node`): LilyPond's language files set the language as
+    /// `\language` does; any other file is not followed.
+    fn include(&mut self, node: Node) {
+        let file = node.next_sibling().filter(|n| n.kind() == "string");
+        let path = file.map(|n| super::text::string_value(self.source, n));
+        let stem = path
+            .as_deref()
+            .and_then(|p| p.rsplit(['/', '\\']).next())
+            .and_then(|f| f.strip_suffix(".ly"));
+        if let Some(&(_, lang)) = LANGUAGE_FILES.iter().find(|(f, _)| Some(*f) == stem) {
+            self.language = lang;
+        } else if let Some(stem) = stem.filter(|s| OTHER_PITCH_NAMES.contains(s)) {
+            self.warn(
+                node,
+                "unknown-language",
+                format!("the pitch names of `{stem}.ly` are not read"),
+            );
+        } else {
+            let shown = file
+                .map(|n| format!(" {}", self.text(n)))
+                .unwrap_or_default();
+            self.warn(
+                node,
+                "ignored-include",
+                format!("`\\include{shown}` is not followed: flatten the file first"),
+            );
+        }
+    }
+
+    /// A command at `node` (`\name`) that the walk does not read: warn,
+    /// unless LilyPond or the file defines it.
+    pub(super) fn unread_command(&mut self, node: Node, name: &str) {
+        if name == "include" {
+            self.include(node);
+        } else if !self.assigned.contains(name)
+            && super::builtins::BUILTINS.binary_search(&name).is_err()
+        {
+            self.warn(
+                node,
+                "unknown-command",
+                format!("unknown command `\\{name}`"),
+            );
+        }
+    }
+
+    /// Stop the reading: it went past a bound. The first reason is kept.
+    pub(super) fn refuse(&mut self, reason: String) {
+        self.over_limit.get_or_insert(reason);
+    }
+
+    /// Whether the reading stopped at a bound; walkers return early then.
+    pub(super) fn stopped(&self) -> bool {
+        self.over_limit.is_some()
+    }
+
+    /// Enter one more nested music block: false (and the reading stops)
+    /// past [`MAX_WALK_DEPTH`]. The caller decrements `walk_depth` on exit.
+    pub(super) fn enter_block(&mut self) -> bool {
+        if self.walk_depth >= MAX_WALK_DEPTH {
+            self.refuse(format!(
+                "the music nests deeper than {MAX_WALK_DEPTH} levels"
+            ));
+            return false;
+        }
+        self.walk_depth += 1;
+        true
+    }
+
+    /// Where music of length `len` placed at `at` ends, if within the bounds
+    /// (the reading stops otherwise).
+    pub(super) fn end_within_bounds(&mut self, at: Frac, len: Frac) -> Option<Frac> {
+        match at.checked_add(&len) {
+            Some(end) if end <= Frac::from_integer(MAX_WHOLE_NOTES) => Some(end),
+            Some(_) => {
+                self.refuse(format!(
+                    "the music is longer than {MAX_WHOLE_NOTES} whole notes"
+                ));
+                None
+            }
+            None => {
+                self.refuse(
+                    "note positions overflow: the durations' denominators are too large"
+                        .to_string(),
+                );
+                None
+            }
+        }
+    }
+
+    /// Count `n` more generated elements: false once past [`MAX_ELEMENTS`].
+    pub(super) fn spend(&mut self, n: u64) -> bool {
+        if self.stopped() {
+            return false;
+        }
+        self.generated = self.generated.saturating_add(n);
+        if self.generated > MAX_ELEMENTS {
+            self.refuse(format!(
+                "the music expands to more than {MAX_ELEMENTS} notes, rests and chords"
+            ));
+            return false;
+        }
+        true
+    }
+
     /// Push a voice element at the current position.
     pub(super) fn push_voice_element(&mut self, mut elem: VoiceElement) {
+        if !self.spend(1) {
+            return;
+        }
         // Apply active tuplet ratio to the element's duration. For nested
         // tuplets the effective scaling is the product of every enclosing
         // ratio, not just the innermost — so fold the whole stack.
@@ -312,7 +549,10 @@ impl<'src> WalkState<'src> {
         // attaches at the note rather than after its duration.
         self.last_element_onset = self.pos;
         // Grace notes take no time.
-        self.pos += elem.metric_duration();
+        let Some(end) = self.end_within_bounds(self.pos, elem.metric_duration()) else {
+            return;
+        };
+        self.pos = end;
         self.current_voice.push(elem);
     }
 
@@ -384,6 +624,48 @@ impl<'src> WalkState<'src> {
         }
     }
 
+    /// In drum mode, the pitch whose MIDI key sounds drum `name` (`bd`,
+    /// `snare`, …), as MusicXML keeps unpitched notes on a percussion staff.
+    pub(super) fn drum_pitch(&self, name: &str) -> Option<Pitch> {
+        if self.drum_mode == 0 {
+            return None;
+        }
+        let drums = super::drums::DRUMS;
+        let &(_, octave, step, alter) = drums
+            .binary_search_by(|(n, ..)| n.cmp(&name))
+            .ok()
+            .map(|k| &drums[k])?;
+        let step = [
+            PitchStep::C,
+            PitchStep::D,
+            PitchStep::E,
+            PitchStep::F,
+            PitchStep::G,
+            PitchStep::A,
+            PitchStep::B,
+        ][step as usize];
+        Some(Pitch::with_alter(step, Ratio::from_integer(alter), octave))
+    }
+
+    /// Figured bass from the current position on (a `\figuremode` block or
+    /// variable): events, taking no time in the voice.
+    pub(super) fn place_figures(&mut self, entries: Vec<FiguredBassEntry>) {
+        if !self.spend(entries.len() as u64) {
+            return;
+        }
+        let mut at = self.pos;
+        for entry in entries {
+            match entry {
+                FiguredBassEntry::Figure(fb) => {
+                    let d = fb.duration.actual_duration();
+                    self.add_event_at(at, Event::FiguredBass(fb));
+                    at += d;
+                }
+                FiguredBassEntry::Skip(dur) => at += dur.actual_duration(),
+            }
+        }
+    }
+
     /// Resolve a variable reference at the current position.
     pub(super) fn resolve_variable(&mut self, name: &str) -> bool {
         // `\relative` applies to a variable's music where it is used: LilyPond
@@ -391,22 +673,34 @@ impl<'src> WalkState<'src> {
         // written with plain pitches (`cadenza = { fis2 … }` used in
         // `\relative c'' { \cadenza }`) is therefore read again here, in the
         // relative context, rather than spliced as read at its definition.
-        if self.relative_depth > 0 && self.var_depth < 16 {
+        // A variable being read again is not read again inside itself (`a =
+        // { \a \a }` refers to the previous `a`): its captured music is used.
+        if self.relative_depth > 0
+            && self.var_depth < 16
+            && !self.rewalking.iter().any(|n| n == name)
+        {
             if let Some(VarDef::Music {
-                block: Some((start, end)),
+                block: Some((start, end, language)),
                 ..
             }) = self.definitions.get(name)
             {
-                let (start, end) = (*start, *end);
+                let (start, end, language) = (*start, *end, *language);
                 let node = self
                     .root
                     .and_then(|r| r.descendant_for_byte_range(start, end));
                 let node = std::iter::successors(node, |n| n.parent()).find(|n| {
                     n.kind() == "expression_block" && (n.start_byte(), n.end_byte()) == (start, end)
                 });
-                if let Some(block) = node {
+                // A block that names its own variable (`a = { \a \a }`) meant
+                // the previous `a`, which is gone: use the music captured at
+                // the definition instead of reading the block again.
+                if let Some(block) = node.filter(|b| !mentions(*b, self.source, name)) {
                     self.var_depth += 1;
+                    self.rewalking.push(name.to_string());
+                    let outer = std::mem::replace(&mut self.language, language);
                     super::music::walk_music_block(self, block);
+                    self.language = outer;
+                    self.rewalking.pop();
                     self.var_depth -= 1;
                     return true;
                 }
@@ -414,10 +708,21 @@ impl<'src> WalkState<'src> {
         }
         // Positioned music is spliced straight from the definition, without
         // copying it first.
-        if let Some(VarDef::Music { len, main_lane, .. }) = self.definitions.get(name) {
-            let (len, main_lane) = (*len, *main_lane);
+        // Every copy counts against the budget: definitions that double the
+        // previous one (`b = { \a \a }`, `c = { \b \b }`, …) grow as 2^n.
+        if let Some(VarDef::Music {
+            len, main_lane, tl, ..
+        }) = self.definitions.get(name)
+        {
+            let (len, main_lane, count) = (*len, *main_lane, tl.element_count());
+            if !self.spend(count as u64) {
+                return true;
+            }
             self.flush_voice();
             let (at, lane) = (self.pos, self.current_voice_number);
+            let Some(end) = self.end_within_bounds(at, len) else {
+                return true;
+            };
             let uid = self.current_uid();
             let Some(VarDef::Music { tl, voices, .. }) = self.definitions.get(name) else {
                 unreachable!()
@@ -427,7 +732,7 @@ impl<'src> WalkState<'src> {
             for voice in voices {
                 self.voice_part_map.insert(voice.clone(), uid);
             }
-            self.pos = at + len;
+            self.pos = end;
             self.voice_start = self.pos;
             return true;
         }
@@ -436,6 +741,10 @@ impl<'src> WalkState<'src> {
         };
         match def {
             VarDef::Parts(parts, voices) => {
+                let count: usize = parts.iter().map(|pb| pb.tl.element_count()).sum();
+                if !self.spend(count as u64) {
+                    return true;
+                }
                 self.flush_voice();
                 let at = self.pos;
                 let mut uids = Vec::new();
@@ -454,19 +763,7 @@ impl<'src> WalkState<'src> {
                 }
             }
             VarDef::Music { .. } => unreachable!("handled above"),
-            VarDef::FiguredBass(entries) => {
-                let mut at = self.pos;
-                for entry in entries {
-                    match entry {
-                        FiguredBassEntry::Figure(fb) => {
-                            let d = fb.duration.actual_duration();
-                            self.add_event_at(at, Event::FiguredBass(fb));
-                            at += d;
-                        }
-                        FiguredBassEntry::Skip(dur) => at += dur.actual_duration(),
-                    }
-                }
-            }
+            VarDef::FiguredBass(entries) => self.place_figures(entries),
         }
         true
     }
@@ -482,21 +779,26 @@ impl<'src> WalkState<'src> {
             if let Some(ref prev) = self.prev_pitch {
                 // In relative mode: find closest pitch within a fourth, then apply marks
                 let inferred_octave = find_relative_octave(prev, step);
-                let octave = inferred_octave + octave_marks;
+                let octave = self.bounded_octave(inferred_octave.saturating_add(octave_marks));
                 let p = Pitch::with_alter(step, alter, octave);
                 self.prev_pitch = Some(p);
                 p
             } else {
                 // First note after \relative: use the reference pitch's octave
                 let base_oct = self.relative_ref.as_ref().map(|r| r.octave).unwrap_or(4);
-                let octave = base_oct + octave_marks;
+                let octave = self.bounded_octave(base_oct.saturating_add(octave_marks));
                 let p = Pitch::with_alter(step, alter, octave);
                 self.prev_pitch = Some(p);
                 p
             }
         } else {
-            // Absolute mode: octave marks relative to LilyPond c (octave 3 in our numbering)
-            let octave = 3 + octave_marks;
+            // Absolute mode: octave marks relative to LilyPond c (octave 3 in
+            // our numbering), and `\fixed`'s octaves.
+            let octave = self.bounded_octave(
+                octave_marks
+                    .saturating_add(3)
+                    .saturating_add(self.fixed_octaves),
+            );
             Pitch::with_alter(step, alter, octave)
         };
         // Apply any active \transpose intervals
@@ -505,10 +807,51 @@ impl<'src> WalkState<'src> {
                 .transpose_stack
                 .iter()
                 .map(|(from, to)| to.midi_number() - from.midi_number())
-                .sum();
-            pitch.transposed(total_semitones)
+                .fold(0, i32::saturating_add);
+            let p = pitch.transposed(total_semitones.clamp(-1200, 1200));
+            Pitch {
+                octave: self.bounded_octave(p.octave),
+                ..p
+            }
         } else {
             pitch
+        }
+    }
+
+    /// `octave` if within [`PITCH_OCTAVES`], else the nearest octave in it
+    /// (and the reading stops): a relative passage cannot climb for ever, and
+    /// every emitter writes each octave mark out.
+    fn bounded_octave(&mut self, octave: i32) -> i32 {
+        if !PITCH_OCTAVES.contains(&octave) {
+            self.refuse(format!(
+                "a pitch lies in octave {octave}, outside {}..={}",
+                PITCH_OCTAVES.start(),
+                PITCH_OCTAVES.end()
+            ));
+        }
+        octave.clamp(*PITCH_OCTAVES.start(), *PITCH_OCTAVES.end())
+    }
+}
+
+/// Whether `block` contains a reference to the variable `name` (`\name`).
+fn mentions(block: Node, source: &str, name: &str) -> bool {
+    let mut cursor = block.walk();
+    loop {
+        let node = cursor.node();
+        if node.kind() == "escaped_word"
+            && node
+                .utf8_text(source.as_bytes())
+                .is_ok_and(|t| t.strip_prefix('\\') == Some(name))
+        {
+            return true;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() || cursor.node() == block {
+                return false;
+            }
         }
     }
 }

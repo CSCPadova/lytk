@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from lytk._core import (
     Chord,
+    Diagnostic,
+    HeaderField,
+    InternalError,
+    LilyPondSyntaxError,
+    LytkError,
     Measure,
     MusicDocument,
     Note,
+    ParseError,
     Part,
     Pitch,
     Rest,
     Score,
     Voice,
     change_language,
+    check_lilypond,
     compute_metrics,
     flatten,
     from_abc,
@@ -31,6 +38,7 @@ from lytk._core import (
     from_musicxml_string,
     from_note_array,
     from_piano_roll,
+    header_fields,
     invert,
     retrograde,
     to_abc,
@@ -46,8 +54,18 @@ from lytk._core import (
     transpose_interval,
     transpose_to_key,
 )
+from lytk._core import __version__  # noqa: F401 - the crate's version
 
 __all__ = [
+    # Errors and diagnostics
+    "LytkError",
+    "ParseError",
+    "LilyPondSyntaxError",
+    "InternalError",
+    "Diagnostic",
+    "check_lilypond",
+    "HeaderField",
+    "header_fields",
     "MusicDocument",
     "Score",
     # Structured note navigation (read-only Layer-2 tree)

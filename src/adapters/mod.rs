@@ -55,6 +55,53 @@ pub enum AdapterError {
 /// Adapter result type.
 pub type Result<T> = std::result::Result<T, AdapterError>;
 
+/// Longest music the MusicXML, ABC and Humdrum readers accept, in whole notes
+/// (the LilyPond and MIDI readers have the same bound): past it the bars cut
+/// downstream would be millions.
+pub(crate) const MAX_WHOLE_NOTES: u32 = 100_000;
+
+fn too_long() -> AdapterError {
+    AdapterError::Unsupported(format!(
+        "the music is longer than {MAX_WHOLE_NOTES} whole notes; lytk refuses input this large"
+    ))
+}
+
+/// Refuse music longer than [`MAX_WHOLE_NOTES`].
+pub(crate) fn check_music_length(music: &crate::ir::music::Music) -> Result<()> {
+    if music.approx_length() > f64::from(MAX_WHOLE_NOTES) {
+        return Err(too_long());
+    }
+    Ok(())
+}
+
+/// Refuse a score longer than [`MAX_WHOLE_NOTES`]: its longest part, each
+/// measure as long as its longest voice.
+pub(crate) fn check_score_length(score: &Score) -> Result<()> {
+    let seconds = |e: &crate::ir::note::VoiceElement| {
+        let d = e.metric_duration();
+        *d.numer() as f64 / *d.denom() as f64
+    };
+    let longest = score
+        .parts()
+        .iter()
+        .map(|p| {
+            p.measures
+                .iter()
+                .map(|m| {
+                    m.voices
+                        .iter()
+                        .map(|v| v.elements.iter().map(seconds).sum::<f64>())
+                        .fold(0.0, f64::max)
+                })
+                .sum::<f64>()
+        })
+        .fold(0.0, f64::max);
+    if longest > f64::from(MAX_WHOLE_NOTES) {
+        return Err(too_long());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Traits
 // ---------------------------------------------------------------------------

@@ -10,7 +10,6 @@ use crate::ir::articulation::{LyricSyllable, StartStop, SyllabicType};
 use crate::ir::language::{PitchLanguage, PitchMode};
 use crate::ir::music::{ContextType, Music, MusicDocument, RepeatType};
 use crate::ir::pitch::Pitch;
-use crate::ir::score::ScoreMetadata;
 
 use super::maps::{
     articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, ornament_to_ly, partial_to_ly,
@@ -58,7 +57,7 @@ pub(super) fn emit_music_document(
     lines.push(String::new());
 
     // Header
-    emit_header(&doc.metadata, &mut lines);
+    lines.extend(super::helpers::header_block(&doc.metadata));
 
     // Music content. Always emit absolute pitches: this emitter does not wrap
     // output in `\relative { }`, so emitting relative octave marks would be
@@ -123,32 +122,6 @@ fn with_pickup(music: &Music, d: &crate::ir::duration::Duration) -> Music {
         m = Music::Sequential(vec![Music::Partial(d.clone()), m]);
     }
     m
-}
-
-/// Emit metadata as a `\header` block.
-fn emit_header(meta: &ScoreMetadata, lines: &mut Vec<String>) {
-    let esc = super::helpers::escape_ly_string;
-    let mut header_lines: Vec<String> = Vec::new();
-
-    if let Some(ref title) = meta.title {
-        header_lines.push(format!("  title = \"{}\"", esc(title)));
-    }
-    if let Some(ref composer) = meta.composer {
-        header_lines.push(format!("  composer = \"{}\"", esc(composer)));
-    }
-    if let Some(ref subtitle) = meta.subtitle {
-        header_lines.push(format!("  subtitle = \"{}\"", esc(subtitle)));
-    }
-    if let Some(ref arranger) = meta.arranger {
-        header_lines.push(format!("  arranger = \"{}\"", esc(arranger)));
-    }
-
-    if !header_lines.is_empty() {
-        lines.push("\\header {".to_string());
-        lines.extend(header_lines);
-        lines.push("}".to_string());
-        lines.push(String::new());
-    }
 }
 
 /// Emit a Music node recursively.
@@ -359,7 +332,11 @@ fn group_graces(children: &[Music]) -> Vec<Music> {
         };
         match out.last_mut() {
             Some(Music::Grace { content: group, .. }) => {
-                let mut all = notes(group);
+                // Moved, not cloned: a long run of graces stays linear.
+                let mut all = match std::mem::replace(&mut **group, Music::Sequential(Vec::new())) {
+                    Music::Sequential(v) => v,
+                    other => vec![other],
+                };
                 all.extend(notes(content));
                 **group = Music::Sequential(all);
             }
@@ -437,7 +414,7 @@ fn emit_context(
 ) {
     let type_name = ctx_type.ly_name();
     let name_part = match name {
-        Some(n) => format!(" = \"{n}\""),
+        Some(n) => format!(" = \"{}\"", super::helpers::escape_ly_string(n)),
         None => String::new(),
     };
 
@@ -524,7 +501,7 @@ fn emit_addlyrics(content: &Music, ctx: &EmitCtx, lines: &mut Vec<String>) {
     for syllables in by_verse.values() {
         let mut tokens: Vec<String> = Vec::new();
         for syl in syllables {
-            let text = escape_lyric(&syl.text);
+            let text = super::lyrics::escape_lyric_text(&syl.text);
             match syl.syllabic {
                 SyllabicType::Begin | SyllabicType::Middle => {
                     tokens.push(text);
@@ -541,15 +518,6 @@ fn emit_addlyrics(content: &Music, ctx: &EmitCtx, lines: &mut Vec<String>) {
             ctx.pad(),
             tokens.join(" ")
         ));
-    }
-}
-
-/// Quote lyric text if it contains spaces or special characters.
-fn escape_lyric(text: &str) -> String {
-    if text.contains(' ') || text.contains('"') || text.contains('\\') {
-        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        text.to_string()
     }
 }
 
@@ -679,7 +647,8 @@ fn annotations_to_ly(annotations: &[Annotation]) -> String {
             Annotation::Glissando(StartStop::Start) => parts.push("\\glissando".to_string()),
             Annotation::Glissando(_) => {}
             Annotation::Tremolo { marks } => {
-                let denom = 1u32 << (marks + 2); // marks=1 → :8, marks=2 → :16, etc.
+                // marks=1 → :8, marks=2 → :16, etc.
+                let denom = 1u32 << ((*marks).min(crate::ir::note::MAX_TREMOLO_MARKS) + 2);
                 parts.push(format!(":{denom}"));
             }
             Annotation::PedalStart => parts.push("\\sustainOn".to_string()),
@@ -695,15 +664,7 @@ fn annotations_to_ly(annotations: &[Annotation]) -> String {
             Annotation::Fingering(f) => parts.push(format!("-{f}")),
             Annotation::Lyric(_) => {}    // lyrics handled separately
             Annotation::Velocity(_) => {} // performance data, no notation
-            Annotation::OctaveShift(os) => {
-                let n = os.size;
-                if os.shift_type == "up" || os.shift_type == "down" {
-                    let dir = if n > 0 { n } else { -n };
-                    parts.push(format!("\\ottava #{dir}"));
-                } else {
-                    parts.push("\\ottava #0".to_string());
-                }
-            }
+            Annotation::OctaveShift(os) => parts.push(format!("\\ottava #{}", os.octaves())),
         }
     }
 

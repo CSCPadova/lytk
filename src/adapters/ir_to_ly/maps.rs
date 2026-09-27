@@ -194,7 +194,8 @@ pub(super) fn partial_to_ly(dur: &Duration) -> String {
 pub(super) fn tremolo_suffix(note: &Note) -> String {
     if note.tremolo_marks > 0 && !note.two_note_tremolo {
         let base_denom = *note.duration.base.denom() as u32;
-        let n = base_denom * (1u32 << note.tremolo_marks);
+        let marks = note.tremolo_marks.min(crate::ir::note::MAX_TREMOLO_MARKS);
+        let n = u64::from(base_denom) << marks;
         format!(":{n}")
     } else {
         String::new()

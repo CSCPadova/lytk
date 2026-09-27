@@ -1,13 +1,13 @@
 use tree_sitter::Node;
 
 use crate::ir::duration::Frac;
-use crate::ir::language::{parse_pitch_name, PitchLanguage, PitchMode};
+use crate::ir::language::{parse_pitch_name, PitchMode};
 use crate::ir::pitch::Pitch;
 
 use super::chord_mode::parse_chordmode_block;
 use super::consume::{
     block_contains_named_context, extract_string_value, parse_paper_block, parse_with_block,
-    score_block_output_types,
+    score_block_output_types, skip_markup,
 };
 use super::figured_bass::parse_figuremode_block;
 use super::lyrics::{extract_lyricsto_voice, parse_lyric_block};
@@ -15,12 +15,22 @@ use super::merge::{assign_piano_direction_staff, part_is_dynamics_only};
 use super::modifiers::{consume_relative, consume_transpose};
 use super::music::walk_music_block;
 use super::state::{PartBuild, VarDef, WalkState};
+use super::text::header_block_fields;
+use crate::diagnostics::{Diagnostic, Severity};
 use crate::ir::timeline::{Event, Timeline};
 
-/// Walk the `lilypond_program` root node.
-pub(super) fn walk_program(state: &mut WalkState, root: Node) {
-    let mut cursor = root.walk();
-    let children: Vec<Node> = root.children(&mut cursor).collect();
+/// Walk the `lilypond_program` root node. Each top-level music expression
+/// and each `\score` block is a movement, in order, as LilyPond makes a score
+/// of each.
+pub(super) fn walk_program<'a>(state: &mut WalkState<'a>, root: Node<'a>) {
+    walk_top(state, root);
+    close_movement(state);
+}
+
+/// The top level, or the inside of a `\book` or `\bookpart` block.
+fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
+    let mut cursor = parent.walk();
+    let children: Vec<Node> = parent.children(&mut cursor).collect();
     let mut i = 0;
 
     while i < children.len() {
@@ -35,20 +45,20 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                     }
                     "\\language" => {
                         // \language "english"
-                        if let Some(next) = children.get(i + 1) {
-                            if next.kind() == "string" {
-                                let lang_str = extract_string_value(state, *next);
-                                state.language = PitchLanguage::from_str_loose(&lang_str)
-                                    .unwrap_or(PitchLanguage::Nederlands);
-                                i += 1; // skip string
-                            }
+                        if let Some(&next) = children.get(i + 1).filter(|n| n.kind() == "string") {
+                            state.set_language(next);
+                            i += 1; // skip string
                         }
                     }
                     "\\header" => {
-                        // \header { ... }
+                        // The book's \header: every movement's, unless it
+                        // sets the field itself.
                         if let Some(next) = children.get(i + 1) {
                             if next.kind() == "expression_block" {
-                                walk_header(state, *next);
+                                let fields = header_block_fields(state.source, *next);
+                                state
+                                    .book_header
+                                    .extend(fields.into_iter().map(|f| (f.key, f.value)));
                                 i += 1;
                             }
                         }
@@ -60,45 +70,31 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 // Skip MIDI-only score blocks (have \midi but no \layout)
                                 let (has_layout, has_midi) = score_block_output_types(state, *next);
                                 if has_midi && !has_layout {
+                                    state.warn(
+                                        node,
+                                        "skipped-score",
+                                        "a `\\score` with `\\midi` and no `\\layout` prints nothing: \
+                                         not read"
+                                            .to_string(),
+                                    );
                                     i += 1; // skip the expression_block
                                     i += 1;
                                     continue;
                                 }
-                                // Each \score block is its own movement.
-                                state.flush_voice();
-                                let saved_parts = std::mem::take(&mut state.parts);
-                                let saved_counter = state.part_counter;
-                                let saved_pending_lyrics =
-                                    std::mem::take(&mut state.pending_lyrics);
-                                let saved_added_lyrics = std::mem::take(&mut state.added_lyrics);
-                                let saved_pending_harmonies =
-                                    std::mem::take(&mut state.pending_harmonies);
-                                let saved_voice_map = std::mem::take(&mut state.voice_part_map);
-                                state.part_counter = 0;
-                                state.set_pos(Frac::from_integer(0));
-                                // `\partial` is per-movement: reset so a pickup in
-                                // one \score block doesn't leak into the next.
-                                state.metadata.partial_duration = None;
-
+                                // Each \score block is its own movement, with
+                                // its own \header.
+                                close_movement(state);
+                                let saved_metadata = std::mem::take(&mut state.metadata);
                                 walk_score_block(state, *next);
-                                if let Some(score) = super::assemble_score(state) {
-                                    state.completed_scores.push(score);
-                                }
-
-                                // Restore saved state
-                                state.parts = saved_parts;
-                                state.part_counter = saved_counter;
-                                state.pending_lyrics = saved_pending_lyrics;
-                                state.added_lyrics = saved_added_lyrics;
-                                state.pending_harmonies = saved_pending_harmonies;
-                                state.voice_part_map = saved_voice_map;
-
+                                finish_movement(state, node);
+                                state.metadata = saved_metadata;
                                 i += 1;
                             }
                         }
                     }
                     "\\relative" => {
                         // Top-level \relative c' { ... }
+                        begin_movement(state, node);
                         state.in_relative = true;
                         state.mode = PitchMode::Relative;
                         i += 1;
@@ -106,6 +102,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                         continue;
                     }
                     "\\transpose" => {
+                        begin_movement(state, node);
                         i += 1;
                         i = consume_transpose(state, &children, i);
                         continue;
@@ -132,22 +129,57 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                             }
                         }
                     }
+                    "\\layout" | "\\midi" => {
+                        // Output settings and context definitions: not music.
+                        if children
+                            .get(i + 1)
+                            .is_some_and(|n| n.kind() == "expression_block")
+                        {
+                            i += 1;
+                        }
+                    }
+                    "\\markup" | "\\markuplist" => {
+                        // Top-level text: not music.
+                        i = skip_markup(state, &children, i + 1);
+                        continue;
+                    }
+                    "\\book" | "\\bookpart" => {
+                        // A book's scores and top-level music are movements
+                        // too, and its \header is the book's.
+                        if let Some(&next) = children.get(i + 1) {
+                            if next.kind() == "expression_block" {
+                                walk_top(state, next);
+                                i += 1;
+                            }
+                        }
+                    }
                     _ => {
-                        // Top-level escaped words we don't handle
+                        // A music variable at the top level is a music
+                        // expression (a movement); other commands aren't read.
+                        let name = text.trim_start_matches('\\');
+                        if state.definitions.contains_key(name) {
+                            begin_movement(state, node);
+                            state.resolve_variable(name);
+                        } else {
+                            state.unread_command(node, name);
+                        }
                     }
                 }
             }
             "expression_block" => {
-                // Bare { ... } at top level: treat as a single anonymous part
+                // Bare { ... } at top level: a movement of its own
+                begin_movement(state, node);
                 walk_music_block(state, node);
             }
             "parallel_music" => {
                 // Top-level `<< ... >>` (e.g. emitted multi-staff music with no
-                // explicit \score wrapper) is an implicit score. Walk it directly.
+                // explicit \score wrapper) is a movement. Walk it directly.
+                begin_movement(state, node);
                 walk_parallel_music(state, node);
             }
             "named_context" => {
-                // Top-level `\new Staff { ... }` etc. — an implicit score.
+                // Top-level `\new Staff { ... }` etc. — a movement.
+                begin_movement(state, node);
                 let (context, name) = extract_named_context(state, node);
                 i += 1;
                 i = walk_context_body(state, &children, i, &context, &name);
@@ -166,6 +198,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                     result
                 };
                 if !var_name.is_empty() {
+                    state.assigned.insert(var_name.clone());
                     // Skip the "=" punctuation, then capture the body
                     if let Some(eq) = children.get(i + 1) {
                         if eq.kind() == "punctuation" && state.text(*eq) == "=" {
@@ -202,6 +235,22 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                     if ew == "\\lyricmode" || ew == "\\notemode" {
                                         is_lyricmode = ew == "\\lyricmode";
                                         j += 1;
+                                        continue;
+                                    }
+                                    // Read from the block, which knows its mode.
+                                    if ew == "\\drummode" || ew == "\\drums" {
+                                        j += 1;
+                                        continue;
+                                    }
+                                    if ew == "\\fixed" {
+                                        // Its pitch and marks; the block reads them.
+                                        j += 1;
+                                        while children.get(j).is_some_and(|n| {
+                                            n.kind() == "symbol"
+                                                || matches!(state.text(*n), "'" | ",")
+                                        }) {
+                                            j += 1;
+                                        }
                                         continue;
                                     }
                                     if ew == "\\relative" {
@@ -288,6 +337,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 if next.kind() == "expression_block" && is_figuremode {
                                     // Parse figuremode block into figured bass entries
                                     let fb_measures = parse_figuremode_block(state, *next);
+                                    state.spend(fb_measures.len() as u64);
                                     state
                                         .definitions
                                         .insert(var_name, VarDef::FiguredBass(fb_measures));
@@ -307,16 +357,22 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                         // A `\relative` definition keeps its own
                                         // reference; a plain block is read again
                                         // where it's used inside `\relative`.
-                                        let range = (!is_relative)
-                                            .then(|| (block.start_byte(), block.end_byte()));
+                                        let range = (!is_relative).then(|| {
+                                            (block.start_byte(), block.end_byte(), state.language)
+                                        });
                                         let depth = u32::from(is_relative);
+                                        // A chord-mode block, read above as
+                                        // harmonies, is read as notes too.
+                                        let quiet = u32::from(is_chordmode);
                                         let (def, ()) = capture_variable(
                                             state,
                                             has_named_context,
                                             range,
                                             |state| {
                                                 state.relative_depth += depth;
+                                                state.quiet += quiet;
                                                 walk_music_block(state, block);
+                                                state.quiet -= quiet;
                                                 state.relative_depth -= depth;
                                             },
                                         );
@@ -347,59 +403,185 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                     }
                 }
             }
+            "string" if children.get(i + 1).is_some_and(|n| state.text(*n) == "=") => {
+                // `"name" = …`, a quoted identifier: `"\\|" = …` defines `\|`.
+                let raw = state.text(node);
+                let name = raw
+                    .get(1..raw.len().saturating_sub(1))
+                    .unwrap_or("")
+                    .replace("\\\\", "\\");
+                let name = name.strip_prefix('\\').unwrap_or(&name).to_string();
+                state.assigned.insert(name);
+            }
+            "embedded_scheme" => {
+                // `#(define (name …) …)` and its kin define `\name` too.
+                let names: Vec<String> = scheme_definitions(state.text(node))
+                    .map(str::to_string)
+                    .collect();
+                state.assigned.extend(names);
+            }
+            "symbol" => top_level_word(state, &children, i),
             _ => {}
         }
         i += 1;
     }
 }
 
-/// Walk a `\header { ... }` block.
-pub(super) fn walk_header(state: &mut WalkState, block: Node) {
-    let mut cursor = block.walk();
-    let children: Vec<Node> = block.children(&mut cursor).collect();
-    let mut i = 0;
+/// The names a Scheme expression defines: `(define name …)`, `(define (name
+/// …) …)`, `(define-public …)`, `(define-markup-command (name …) …)`.
+fn scheme_definitions(text: &str) -> impl Iterator<Item = &str> {
+    text.match_indices("(define").filter_map(|(at, _)| {
+        // Past the rest of the keyword (`-public`, `-markup-command`, …).
+        let rest = text[at + "(define".len()..]
+            .split_once(char::is_whitespace)?
+            .1;
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix('(').unwrap_or(rest);
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == '(' || c == ')')
+            .unwrap_or(rest.len());
+        (end > 0).then(|| &rest[..end])
+    })
+}
 
-    while i < children.len() {
-        let node = children[i];
-        if node.kind() == "assignment_lhs" {
-            let key = {
-                // assignment_lhs has a child symbol
-                let mut c = node.walk();
-                let result = node
-                    .children(&mut c)
-                    .find(|n| n.kind() == "symbol")
-                    .map(|n| state.text(n).to_string())
-                    .unwrap_or_default();
-                result
-            };
+/// Start a movement for the top-level music expression at `node`, closing
+/// the one before it (`\addlyrics` after an expression still belongs to it).
+fn begin_movement<'a>(state: &mut WalkState<'a>, node: Node<'a>) {
+    close_movement(state);
+    state.open_movement = Some(node);
+}
 
-            // Skip the "=" punctuation
-            // Then find the next string value
-            let mut j = i + 1;
-            while j < children.len() {
-                let val_node = children[j];
-                if val_node.kind() == "string" {
-                    let val = extract_string_value(state, val_node);
-                    match key.as_str() {
-                        "title" => state.metadata.title = Some(val),
-                        "subtitle" => state.metadata.subtitle = Some(val),
-                        "composer" => state.metadata.composer = Some(val),
-                        "arranger" => state.metadata.arranger = Some(val),
-                        "poet" | "lyricist" => state.metadata.lyricist = Some(val),
-                        k if !k.is_empty() => {
-                            state.metadata.extra.insert(k.to_string(), val);
-                        }
-                        _ => {}
-                    }
-                    i = j;
-                    break;
-                } else if val_node.kind() == "assignment_lhs" || val_node.kind() == "}" {
-                    break;
-                }
-                j += 1;
-            }
+/// Close the top-level music expression being read, if any, into a movement.
+fn close_movement(state: &mut WalkState) {
+    if let Some(anchor) = state.open_movement.take() {
+        finish_movement(state, anchor);
+    }
+}
+
+/// Assemble what was walked into a movement, and start afresh: each
+/// movement has its own parts, positions and lyrics.
+fn finish_movement(state: &mut WalkState, anchor: Node) {
+    if let Some(score) = super::assemble_score(state) {
+        state.completed_scores.push(score);
+        let n = state.completed_scores.len();
+        if n > 1 {
+            state.later_movements.push(Diagnostic::at(
+                state.source,
+                anchor,
+                Severity::Warning,
+                "dropped-music",
+                format!("movement {n} is not read: this reading takes the first movement only"),
+            ));
         }
-        i += 1;
+    }
+    state.parts.clear();
+    state.current_voice.clear();
+    state.part_counter = 0;
+    state.pending_lyrics.clear();
+    state.added_lyrics.clear();
+    state.pending_harmonies.clear();
+    state.voice_part_map.clear();
+    let zero = Frac::from_integer(0);
+    (state.pos, state.voice_start, state.origin) = (zero, zero, zero);
+    state.metadata.partial_duration = None;
+}
+
+/// A top-level word starting the file, or following `\version "…"` (or
+/// `\include`, `\language`): text that is not LilyPond, or notes outside
+/// braces, which LilyPond rejects too. Elsewhere a word may be a command's
+/// argument or an assignment's value: not judged.
+fn top_level_word(state: &mut WalkState, children: &[Node], i: usize) {
+    let significant = |j: usize| (0..j).rev().find(|&k| children[k].kind() != "comment");
+    let at_start = match significant(i) {
+        None => true,
+        Some(p) => {
+            children[p].kind() == "string"
+                && significant(p).is_some_and(|q| {
+                    matches!(
+                        state.text(children[q]),
+                        "\\version" | "\\include" | "\\language"
+                    )
+                })
+        }
+    };
+    if !at_start {
+        return;
+    }
+    // The run of words, numbers and marks from here (`violin.1 = …` is an
+    // assignment).
+    let run: Vec<Node> = children[i..]
+        .iter()
+        .copied()
+        .filter(|n| n.kind() != "comment")
+        .take_while(|n| {
+            matches!(
+                n.kind(),
+                "symbol" | "punctuation" | "unsigned_integer" | "decimal_number"
+            ) && state.text(*n) != "="
+        })
+        .collect();
+    let assigns = children[i..]
+        .iter()
+        .filter(|n| n.kind() != "comment")
+        .nth(run.len())
+        .is_some_and(|n| state.text(*n) == "=");
+    if assigns {
+        return;
+    }
+    let is_note = |text: &str| {
+        parse_pitch_name(text, state.language).is_some() || matches!(text, "r" | "R" | "s" | "q")
+    };
+    let word = run
+        .iter()
+        .find(|n| n.kind() == "symbol" && !is_note(state.text(**n)));
+    match word {
+        Some(&w) => {
+            let text = state.text(w);
+            state.error(
+                w,
+                "not-lilypond",
+                format!("`{text}` is not LilyPond: a bare word at the top level"),
+            );
+        }
+        // LilyPond: "syntax error, unexpected NOTENAME_PITCH".
+        None => state.error(
+            children[i],
+            "syntax-error",
+            "notes outside braces: music at the top level goes in `{ }`".to_string(),
+        ),
+    }
+}
+
+/// Walk a `\score`'s `\header { ... }` block into the movement's metadata.
+pub(super) fn walk_header(state: &mut WalkState, block: Node) {
+    for field in header_block_fields(state.source, block) {
+        set_header_field(&mut state.metadata, &field.key, field.value, true);
+    }
+}
+
+/// Set a header field in `meta`: the fields the IR names (`poet` is the
+/// lyricist) or one of `extra`. Unless `overwrite`, a field already set stays.
+pub(super) fn set_header_field(
+    meta: &mut crate::ir::score::ScoreMetadata,
+    key: &str,
+    value: String,
+    overwrite: bool,
+) {
+    let slot = match key {
+        "title" => &mut meta.title,
+        "subtitle" => &mut meta.subtitle,
+        "composer" => &mut meta.composer,
+        "arranger" => &mut meta.arranger,
+        "poet" | "lyricist" => &mut meta.lyricist,
+        _ => {
+            if overwrite || !meta.extra.contains_key(key) {
+                meta.extra.insert(key.to_string(), value);
+            }
+            return;
+        }
+    };
+    if overwrite || slot.is_none() {
+        *slot = Some(value);
     }
 }
 
@@ -442,6 +624,12 @@ pub(super) fn walk_score_block(state: &mut WalkState, block: Node) {
                             if next.kind() == "expression_block" {
                                 i += 1;
                             }
+                        }
+                    }
+                    "\\language" => {
+                        if let Some(&next) = children.get(i + 1).filter(|n| n.kind() == "string") {
+                            state.set_language(next);
+                            i += 1;
                         }
                     }
                     "\\addlyrics" => {
@@ -501,7 +689,9 @@ pub(super) fn walk_score_block(state: &mut WalkState, block: Node) {
                     }
                     _ => {
                         let var_name = text.trim_start_matches('\\');
-                        state.resolve_variable(var_name);
+                        if !state.resolve_variable(var_name) {
+                            state.unread_command(node, var_name);
+                        }
                     }
                 }
             }
@@ -582,7 +772,7 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
         state.relative_ref = saved_relative_ref;
         state.in_relative = saved_in_relative;
         state.stem_direction = saved_stem_direction.clone();
-        state.current_voice_number = (voice_idx + 1) as u8;
+        state.current_voice_number = u8::try_from(voice_idx + 1).unwrap_or(u8::MAX);
         state.last_duration = saved_last_duration.clone();
         state.tuplet_stack = saved_tuplet_stack.clone();
         state.auto_beam_off = saved_auto_beam_off;
@@ -671,7 +861,9 @@ fn walk_voice_branch(state: &mut WalkState, children: &[Node], branch_indices: &
                     continue;
                 } else {
                     let var_name = text.trim_start_matches('\\');
-                    state.resolve_variable(var_name);
+                    if !state.resolve_variable(var_name) {
+                        state.unread_command(child, var_name);
+                    }
                 }
             }
             _ => {}
@@ -828,7 +1020,10 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                 } else {
                     // A plain music variable is a simultaneous branch.
                     begin_branch(state);
-                    state.resolve_variable(text.trim_start_matches('\\'));
+                    let var_name = text.trim_start_matches('\\');
+                    if !state.resolve_variable(var_name) {
+                        state.unread_command(child, var_name);
+                    }
                     state.flush_voice();
                     end = end.max(state.pos);
                 }
@@ -906,7 +1101,7 @@ pub(super) fn walk_context_body(
 
     // Voice context: no new part — the voice's music goes into the current
     // staff (its own lane when it overlaps music already there).
-    if context == "Voice" {
+    if context == "Voice" || context == "DrumVoice" {
         i = skip_with_block(state, children, i);
         i = walk_body(state, children, i);
         if !name.is_empty() {
@@ -1069,6 +1264,9 @@ pub(super) fn walk_context_body(
             .is_some_and(|pb| pb.context == context && (name.is_empty() || pb.part.name == name));
     if !reenter {
         state.new_part(context, name);
+        if context == "DrumStaff" {
+            super::music::add_percussion_clef(state);
+        }
     }
 
     while i < children.len() {
@@ -1111,25 +1309,15 @@ pub(super) fn walk_context_body(
                         }
                     }
                     _ => {
-                        let var_name = text.trim_start_matches('\\');
-                        if state.resolve_variable(var_name) {
-                            i += 1;
-                        }
+                        i = walk_body(state, children, i);
                         break;
                     }
                 }
             }
-            "expression_block" => {
-                walk_music_block(state, node);
-                i += 1;
+            _ => {
+                i = walk_body(state, children, i);
                 break;
             }
-            "parallel_music" => {
-                walk_parallel_music(state, node);
-                i += 1;
-                break;
-            }
-            _ => break,
         }
         i += 1;
     }
@@ -1239,7 +1427,14 @@ fn merge_piano_staff_parts(
         return;
     }
 
-    let num_staves = staves.len() as u8;
+    // Staff numbers are `u8`: a group of more staves cannot be one part.
+    let Ok(num_staves) = u8::try_from(staves.len()) else {
+        state.refuse(format!(
+            "a staff group has {} staves; at most 255 fit in one part",
+            staves.len()
+        ));
+        return;
+    };
     let mut staves = staves.into_iter();
     let first = staves.next().unwrap();
     let mut base = PartBuild {
@@ -1250,7 +1445,7 @@ fn merge_piano_staff_parts(
     for (k, mut pb) in std::iter::once(first).chain(staves).enumerate() {
         pb.tl.fold_spacer_lanes();
         let top_lane = pb.tl.lanes.keys().copied().max().unwrap_or(0);
-        base.tl.absorb(pb.tl.into_staff(k as u8 + 1, lane_offset));
+        base.tl.absorb(pb.tl.into_staff(k as u8 + 1, lane_offset)); // k < num_staves ≤ 255
         lane_offset = lane_offset.saturating_add(top_lane);
         if pb.uid != base.uid {
             state.part_alias.insert(pb.uid, base.uid);
@@ -1323,6 +1518,11 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
             walk_parallel_music(state, node);
             i + 1
         }
+        // `\new Staff \new Voice { … }`
+        "named_context" => {
+            let (context, name) = extract_named_context(state, node);
+            walk_context_body(state, children, i + 1, &context, &name)
+        }
         "escaped_word" => {
             let text = state.text(node).to_string();
             match text.as_str() {
@@ -1332,6 +1532,20 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
                     consume_relative(state, children, i + 1)
                 }
                 "\\transpose" => consume_transpose(state, children, i + 1),
+                // The block after a mode reads the mode itself.
+                "\\drummode" | "\\chordmode" | "\\figuremode" | "\\lyricmode" | "\\notemode"
+                | "\\drums" | "\\chords" | "\\figures" | "\\lyrics" => {
+                    walk_body(state, children, i + 1)
+                }
+                "\\fixed" => {
+                    let mut j = i + 1;
+                    while children.get(j).is_some_and(|n| {
+                        n.kind() == "symbol" || matches!(state.text(*n), "'" | ",")
+                    }) {
+                        j += 1;
+                    }
+                    walk_body(state, children, j)
+                }
                 _ if state.resolve_variable(text.trim_start_matches('\\')) => i + 1,
                 _ => i,
             }
@@ -1345,13 +1559,15 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
 fn capture_variable<R>(
     state: &mut WalkState,
     as_parts: bool,
-    block: Option<(usize, usize)>,
+    block: Option<(usize, usize, crate::ir::language::PitchLanguage)>,
     walk: impl FnOnce(&mut WalkState) -> R,
 ) -> (VarDef, R) {
     state.flush_voice();
     let saved_parts = std::mem::take(&mut state.parts);
     let saved_voices = std::mem::take(&mut state.voice_part_map);
     let saved_pos = (state.pos, state.voice_start, state.origin);
+    // Parts a variable defines are numbered where it is used.
+    let saved_counter = state.part_counter;
     let (old_relative, old_mode, old_ref, old_prev) = (
         state.in_relative,
         state.mode,
@@ -1370,6 +1586,7 @@ fn capture_variable<R>(
     let parts = std::mem::replace(&mut state.parts, saved_parts);
     let voices = std::mem::replace(&mut state.voice_part_map, saved_voices);
     (state.pos, state.voice_start, state.origin) = saved_pos;
+    state.part_counter = saved_counter;
     // Restore state so variable definitions don't leak context
     state.in_relative = old_relative;
     state.mode = old_mode;

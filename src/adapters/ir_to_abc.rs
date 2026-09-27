@@ -42,9 +42,14 @@ impl IrToAbcAdapter {
 
 impl FromMusicAdapter for IrToAbcAdapter {
     fn convert_music(&self, doc: &MusicDocument) -> Result<String> {
-        Ok(emit_tune(doc))
+        emit_tune(doc)
     }
 }
+
+/// Most bar lines a voice is written with. A long note is tied over every
+/// bar line of the meter, so a note of millions of whole notes (hand-made IR)
+/// would be millions of tokens.
+const MAX_BARS: usize = crate::ir::timeline::MAX_BARS;
 
 /// One emitted ABC voice: an optional name and its flat event stream.
 struct OutVoice {
@@ -52,7 +57,7 @@ struct OutVoice {
     events: Vec<Music>,
 }
 
-fn emit_tune(doc: &MusicDocument) -> String {
+fn emit_tune(doc: &MusicDocument) -> Result<String> {
     // Split the tree into top-level voices (parts / staves). A single voice keeps
     // the original single-line ABC; ≥2 voices emit `V:` blocks (ABC 2.1 §4.1).
     let voices: Vec<OutVoice> = top_level_voices(&doc.music)
@@ -130,7 +135,7 @@ fn emit_tune(doc: &MusicDocument) -> String {
                 first_tempo.as_ref(),
                 init_bar,
                 pickup,
-            );
+            )?;
             // No blank line: it would end the tune for every ABC reader.
             out.push_str(body.trim_end());
             out.push('\n');
@@ -151,13 +156,13 @@ fn emit_tune(doc: &MusicDocument) -> String {
                     first_tempo.as_ref(),
                     init_bar,
                     pickup,
-                );
+                )?;
                 out.push_str(body.trim_end());
                 out.push('\n');
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Emit one voice's body as a space-joined token string. The voice's first
@@ -169,7 +174,7 @@ fn emit_body(
     header_tempo: Option<&TempoDirection>,
     init_bar: Option<Frac>,
     mut pickup: Option<Frac>,
-) -> String {
+) -> Result<String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut time_used = false;
     let mut tempo_used = false;
@@ -189,6 +194,7 @@ fn emit_body(
     let mut this_bar: Option<Frac> = None;
     let mut filled = Frac::new(0, 1);
     let mut bars_on_line = 0usize;
+    let mut bars = 0usize;
     // Sounding events still inside the open tuplet run (0 = not in a tuplet).
     let mut tuplet_left = 0usize;
     let mut queue: std::collections::VecDeque<Music> = events.iter().cloned().collect();
@@ -196,6 +202,11 @@ fn emit_body(
     // §7.4) just before its bar line.
     let mut layers: Vec<Vec<Music>> = Vec::new();
     while let Some(mut ev) = queue.pop_front() {
+        if bars > MAX_BARS {
+            return Err(crate::adapters::AdapterError::Unsupported(format!(
+                "the music has more than {MAX_BARS} bars: not written as ABC"
+            )));
+        }
         // A pickup: the first bar holds only its length.
         if sounding_duration(&ev).is_some() || matches!(ev, Music::Simultaneous(_)) {
             if let (Some(p), Some(len)) = (pickup.take(), bar_len) {
@@ -256,11 +267,13 @@ fn emit_body(
                 if tuplet_left == 0 {
                     // One group per `p` notes: always fits inside a bar, so a
                     // run never straddles a barline or a wrapped line.
+                    // (`take` first: a long run of groups is not counted
+                    // to its end at every group.)
                     let run = std::iter::once(&ev)
                         .chain(queue.iter())
+                        .take(ratio.0.max(1) as usize)
                         .take_while(|m| tuplet_ratio(m) == Some(ratio))
-                        .count()
-                        .min(ratio.0.max(1) as usize);
+                        .count();
                     tokens.push(format!("({}:{}:{}", ratio.0, ratio.1, run));
                     tuplet_left = run;
                 }
@@ -344,6 +357,7 @@ fn emit_body(
                 } else {
                     tokens.push(tok);
                     bars_on_line += 1;
+                    bars += 1;
                 }
                 acc.bar();
                 filled = Frac::new(0, 1);
@@ -365,6 +379,7 @@ fn emit_body(
                     filled = Frac::new(0, 1);
                     this_bar = None;
                     bars_on_line += 1;
+                    bars += 1;
                 }
             }
         }
@@ -382,7 +397,7 @@ fn emit_body(
         tokens.extend(words);
     }
     // Join on spaces, but keep the line breaks we inserted as real newlines.
-    tokens.join(" ").replace(" \n ", "\n").replace(" \n", "\n")
+    Ok(tokens.join(" ").replace(" \n ", "\n").replace(" \n", "\n"))
 }
 
 /// Write the bar's other voices, each after a `&`, with the accidentals the
@@ -397,9 +412,9 @@ fn push_layers(tokens: &mut Vec<String>, layers: &mut Vec<Vec<Music>>, acc: &mut
                     if left == 0 {
                         let run = layer[k..]
                             .iter()
+                            .take(r.0.max(1) as usize)
                             .take_while(|x| tuplet_ratio(x) == Some(r))
-                            .count()
-                            .min(r.0.max(1) as usize);
+                            .count();
                         tokens.push(format!("({}:{}:{}", r.0, r.1, run));
                         left = run;
                     }

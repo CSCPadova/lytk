@@ -73,20 +73,36 @@ pub(super) fn consume_duration(
 ) -> Duration {
     // Look for unsigned_integer
     if *i < children.len() && children[*i].kind() == "unsigned_integer" {
-        let num_text = state.text(children[*i]).to_string();
+        let node = children[*i];
+        let num_text = state.text(node);
         *i += 1;
-        if let Ok(num) = num_text.parse::<u32>() {
-            let dots = consume_dots(state, children, i);
-            // Convert LilyPond number to fraction: 4 → 1/4, 2 → 1/2, 1 → 1/1
-            let base = if num > 0 {
-                Ratio::new(1i64, num as i64)
-            } else {
+        let dots = consume_dots(state, children, i);
+        // Convert LilyPond number to fraction: 4 → 1/4, 2 → 1/2, 1 → 1/1.
+        // Only powers of two are durations (LilyPond reports anything else
+        // as "not a duration" and reads a quarter, as here); past 1024, the
+        // shortest value LilyPond draws, a denominator only feeds overflow.
+        let base = match num_text.parse::<u32>() {
+            Ok(num) if num.is_power_of_two() && num <= 1024 => Ratio::new(1i64, num as i64),
+            Ok(num) if num.is_power_of_two() => {
+                state.warn(
+                    node,
+                    "unsupported-value",
+                    format!("lytk reads durations up to 1024: `{num}` is read as a quarter"),
+                );
                 Ratio::new(1, 4)
-            };
-            let dur = Duration::dotted(base, dots);
-            state.last_duration = dur.clone();
-            return dur;
-        }
+            }
+            _ => {
+                state.error(
+                    node,
+                    "invalid-duration",
+                    format!("`{num_text}` is not a duration: read as a quarter"),
+                );
+                Ratio::new(1, 4)
+            }
+        };
+        let dur = Duration::dotted(base, dots);
+        state.last_duration = dur.clone();
+        return dur;
     }
     // Long durations are escaped words: \breve, \longa, \maxima
     if *i < children.len() && children[*i].kind() == "escaped_word" {
@@ -124,6 +140,11 @@ fn consume_dots(state: &WalkState, children: &[Node], i: &mut usize) -> u8 {
     dots
 }
 
+/// Largest duration multiplier numerator (`R1*16777216`). Past it no note
+/// value stays under the reader's length bound, and the bound keeps duration
+/// arithmetic far from `i64` overflow.
+pub(super) const MAX_MULTIPLIER: u32 = 1 << 24;
+
 /// Consume an optional `*N` or `*N/M` duration scaling factor.
 /// Returns the fractional scale (e.g. `*8/7` → 8/7, `*3` → 3/1).
 /// Returns `None` if no multiplier is present.
@@ -133,31 +154,60 @@ fn consume_dots(state: &WalkState, children: &[Node], i: &mut usize) -> u8 {
 /// - `punctuation("*")` `fraction("N/M")` (single fraction token), or
 /// - `punctuation("*")` `unsigned_integer("N")` `punctuation("/")` `unsigned_integer("M")`
 pub(super) fn consume_duration_scale(
-    state: &WalkState,
+    state: &mut WalkState,
     children: &[Node],
     i: &mut usize,
 ) -> Option<Frac> {
+    // A multiplier numerator past MAX_MULTIPLIER stops the reading; a 0,
+    // unreadable or oversized denominator drops the multiplier.
+    let numer_or_refuse = |state: &mut WalkState, text: &str| -> Option<i64> {
+        match text.parse::<u32>() {
+            Ok(n) if n <= MAX_MULTIPLIER => Some(i64::from(n)),
+            _ => {
+                state.refuse(format!(
+                    "duration multiplier *{text} is above the limit of {MAX_MULTIPLIER}"
+                ));
+                None
+            }
+        }
+    };
+    let denom_of = |state: &mut WalkState, node: Node, text: &str| match text.parse::<u32>() {
+        Ok(d) if d != 0 && d <= MAX_MULTIPLIER => Some(i64::from(d)),
+        Ok(0) => {
+            state.error(
+                node,
+                "invalid-ratio",
+                "a duration multiplier with a zero denominator: dropped".to_string(),
+            );
+            None
+        }
+        _ => {
+            state.warn(
+                node,
+                "unsupported-value",
+                format!("a duration multiplier denominator above {MAX_MULTIPLIER}: dropped"),
+            );
+            None
+        }
+    };
     if *i < children.len() && children[*i].kind() == "punctuation" {
         let ptext = punct_text(state, children[*i]);
         if ptext == "*" {
             *i += 1;
             // Case 1: fraction token (e.g. "8/7")
             if *i < children.len() && children[*i].kind() == "fraction" {
-                let frac_text = state.text(children[*i]);
+                let node = children[*i];
+                let frac_text = state.text(node);
                 *i += 1;
-                if let Some((num, den)) = parse_fraction(frac_text) {
-                    if den == 0 {
-                        return None; // *N/0 would panic in Frac::new
-                    }
-                    return Some(Frac::new(num as i64, den as i64));
-                }
-                return None;
+                let (num, den) = frac_text.split_once('/')?;
+                let numer = numer_or_refuse(state, num)?;
+                return Some(Frac::new(numer, denom_of(state, node, den)?));
             }
             // Case 2: unsigned_integer, optionally followed by / and unsigned_integer
             if *i < children.len() && children[*i].kind() == "unsigned_integer" {
                 let num_text = state.text(children[*i]).to_string();
                 *i += 1;
-                let numer: i64 = num_text.parse().unwrap_or(1);
+                let numer = numer_or_refuse(state, &num_text)?;
                 // Check for fraction: *N/M as separate tokens
                 if *i + 1 < children.len()
                     && children[*i].kind() == "punctuation"
@@ -165,13 +215,10 @@ pub(super) fn consume_duration_scale(
                 {
                     *i += 1; // skip "/"
                     if *i < children.len() && children[*i].kind() == "unsigned_integer" {
-                        let denom_text = state.text(children[*i]).to_string();
+                        let node = children[*i];
+                        let denom_text = state.text(node);
                         *i += 1;
-                        let denom: i64 = denom_text.parse().unwrap_or(1);
-                        if denom == 0 {
-                            return None; // *N/0 would panic in Frac::new
-                        }
-                        return Some(Frac::new(numer, denom));
+                        return Some(Frac::new(numer, denom_of(state, node, denom_text)?));
                     }
                 }
                 return Some(Frac::from_integer(numer));
@@ -200,7 +247,8 @@ pub(super) fn consume_tremolo(
                 if let Ok(n) = num_text.parse::<u32>() {
                     // base_dur denominator: e.g. quarter = 1/4 → denom 4
                     let base_denom = *base_dur.base.denom() as u32;
-                    if n > base_denom && base_denom > 0 {
+                    // `:N` is a duration, as LilyPond reads it: up to 1024.
+                    if n > base_denom && base_denom > 0 && n.is_power_of_two() && n <= 1024 {
                         let ratio = n / base_denom;
                         return (ratio as f64).log2() as u8;
                     }
@@ -343,6 +391,21 @@ pub(super) fn is_post_note_command(text: &str) -> bool {
     ) || is_dynamic_name(text)
 }
 
+/// The sibling before `children[i]`, skipping comments.
+pub(super) fn previous<'a>(children: &[Node<'a>], i: usize) -> Option<Node<'a>> {
+    children[..i]
+        .iter()
+        .rev()
+        .find(|n| n.kind() != "comment")
+        .copied()
+}
+
+/// The index past a markup expression starting at `i` (just after `\markup`);
+/// see [`super::text::markup_end`].
+pub(super) fn skip_markup(state: &WalkState, children: &[Node], i: usize) -> usize {
+    super::text::markup_end(state.source, children, i)
+}
+
 /// Get the text of a punctuation node (which may have a child).
 pub(super) fn punct_text(state: &WalkState, node: Node) -> String {
     if node.child_count() > 0 {
@@ -439,32 +502,15 @@ pub(super) fn ly_number_to_beat_unit(num: &str) -> String {
     .to_string()
 }
 
-/// Extract the text content of a `string` node. Returns the unquoted value.
+/// The decoded text of a `string` node (see [`super::text::string_value`]).
 pub(super) fn extract_string_value(state: &WalkState, node: Node) -> String {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "string_fragment" {
-            return state.text(child).to_string();
-        }
-    }
-    String::new()
+    super::text::string_value(state.source, node)
 }
 
-/// Extract text content from a markup expression_block like `{ "pizz." }`.
-/// Walks children looking for string nodes and returns the concatenated text.
+/// The plain text of a markup block like `{ \italic dolce }`: its words and
+/// strings (see [`super::text::markup_text`]).
 pub(super) fn extract_markup_text(state: &WalkState, block: Node) -> String {
-    let mut result = String::new();
-    let mut cursor = block.walk();
-    for child in block.children(&mut cursor) {
-        if child.kind() == "string" {
-            let s = extract_string_value(state, child);
-            if !result.is_empty() {
-                result.push(' ');
-            }
-            result.push_str(&s);
-        }
-    }
-    result
+    super::text::markup_text(state.source, &[block])
 }
 
 /// Parse a `\with { ... }` expression block and extract known properties.
@@ -623,6 +669,9 @@ pub(super) fn consume_override(state: &mut WalkState, children: &[Node], mut i: 
                 // Whatever follows the "=" is the value — grab its raw text
                 value = state.text(node).to_string();
                 i += 1;
+                if matches!(value.as_str(), "\\markup" | "\\markuplist") {
+                    i = skip_markup(state, children, i);
+                }
                 break;
             }
             _ => break,
@@ -777,7 +826,8 @@ pub(super) fn parse_paper_block(state: &mut WalkState, block: Node) {
     state.page_layout = Some(layout);
 }
 
-/// Parse a fraction string like "4/4" into (numerator, denominator).
+/// Parse a fraction string like "4/4" into (numerator, denominator). A zero
+/// denominator is `None`: every caller would build a ratio from it.
 pub(super) fn parse_fraction(text: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = text.split('/').collect();
     if parts.len() == 2 {
@@ -790,7 +840,7 @@ pub(super) fn parse_fraction(text: &str) -> Option<(u32, u32)> {
 }
 
 /// Parse `#(ly:make-moment N D)` from a Scheme expression text.
-/// Returns (numerator, denominator) if successful.
+/// Returns (numerator, denominator) if successful, a zero denominator included.
 pub(super) fn parse_ly_make_moment(text: &str) -> Option<(u32, u32)> {
     // Text looks like: #(ly:make-moment 3 4) or #(ly:make-moment 3/4)
     let inner = text.trim_start_matches('#').trim();
@@ -814,15 +864,10 @@ pub(super) fn parse_ly_make_moment(text: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// Extract a string from a scheme expression like `#"flute"`.
-/// Returns `None` if the expression doesn't contain a quoted string.
+/// The string of a Scheme string literal like `#"flute"`, escapes decoded;
+/// `None` for any other Scheme value.
 pub(super) fn extract_scheme_string(text: &str) -> Option<String> {
-    let inner = text.trim_start_matches('#').trim();
-    if inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2 {
-        Some(inner[1..inner.len() - 1].to_string())
-    } else {
-        None
-    }
+    super::text::scheme_string(text)
 }
 
 /// Build a Chord from a `chord` node (< ... >).
@@ -841,15 +886,22 @@ pub(super) fn build_chord(state: &mut WalkState, chord_node: Node, dur: Duration
         let child = children[i];
         if child.kind() == "symbol" {
             let sym = state.text(child);
-            if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
+            let pitch = if state.drum_mode > 0 {
+                // A drum chord (`<bd hh>`): absolute, and no reference for
+                // `\relative`.
+                state.drum_pitch(sym).inspect(|_| i += 1)
+            } else if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
                 i += 1;
                 let octave_marks = consume_octave_marks(state, &children, &mut i);
                 let acc_display = consume_accidental_marks(state, &children, &mut i);
                 let mut pitch = state.resolve_pitch(step, alter, octave_marks);
                 pitch.accidental = acc_display;
-                if first_pitch.is_none() {
-                    first_pitch = Some(pitch);
-                }
+                first_pitch.get_or_insert(pitch);
+                Some(pitch)
+            } else {
+                None
+            };
+            if let Some(pitch) = pitch {
                 let mut note = Note::new(pitch, dur.clone());
                 // A member's own post-events: `<dis-4-!>`, `<c~ e>`.
                 let attachments = consume_attachments(state, &children, &mut i);

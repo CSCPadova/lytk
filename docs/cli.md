@@ -18,6 +18,7 @@ shows each one's options.
 | [`diff`](#diff) | Compare two scores by what they sound |
 | [`batch`](#batch) | Run a JSON list of conversion jobs |
 | [`flatten`](#flatten) | Inline every `\include` of a LilyPond file |
+| [`check`](#check) | Report the errors in LilyPond files |
 
 ## Formats and streams
 
@@ -234,6 +235,24 @@ Repeated `\version` and `\language` lines are merged, keeping the last one and
 warning on stderr. More than one `\header` block is an error. Each inlined file
 is wrapped in `% === BEGIN INCLUDE: … ===` / `% === END INCLUDE: … ===`
 comments; `--no-markers` leaves them out.
+
+## check
+
+```
+lytk check FILE.ly ... [--semantic] [--json]
+```
+
+Checks LilyPond files (`-` reads stdin) and prints one line per finding,
+`FILE:LINE:COLUMN: SEVERITY: MESSAGE [CODE]`, such as
+`score.ly:12:7: error: `>>` without a matching `<<` [syntax-error]`. By
+default only the syntax is checked, from the parse tree, in well under a
+millisecond per file. `--semantic` reads the files too and adds what a reading
+reports: invalid durations and ratios, commands neither LilyPond nor the file
+defines, includes it does not follow, music it drops. The codes are listed in
+[import-export.md](import-export.md#diagnostics). `--json` writes a list of
+`{"file", "severity", "code", "message", "line", "column", "start", "end"}`
+objects instead. The exit status is 1 when a file has an error; warnings alone
+exit with 0.
 
 ## From Python
 

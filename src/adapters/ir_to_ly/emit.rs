@@ -220,11 +220,8 @@ pub(super) fn emit_measures(
                 }
             }
             if let Some(oct) = &dir.octave_shift {
-                match oct.shift_type.as_str() {
-                    "up" => parts.push(format!("\\ottava #{}", oct.size / 8)),
-                    "down" => parts.push(format!("\\ottava #-{}", oct.size / 8)),
-                    "stop" => parts.push("\\ottava #0".to_string()),
-                    _ => {}
+                if matches!(oct.shift_type.as_str(), "up" | "down" | "stop") {
+                    parts.push(format!("\\ottava #{}", oct.octaves()));
                 }
             }
             if !parts.is_empty() {
@@ -687,7 +684,10 @@ fn two_note_tremolo_to_ly(
     mode: PitchMode,
     prev: Option<&Pitch>,
 ) -> Option<(String, Pitch)> {
-    let marks = n1.tremolo_marks.max(n2.tremolo_marks);
+    let marks = n1
+        .tremolo_marks
+        .max(n2.tremolo_marks)
+        .min(crate::ir::note::MAX_TREMOLO_MARKS);
     if marks == 0 {
         return None;
     }
@@ -907,6 +907,17 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
             }
             _ => {}
         }
+    }
+
+    // Text written at the note (`^\markup { "dolce" }`)
+    for td in &note.text_directions {
+        let dir = match td.placement {
+            crate::ir::articulation::Placement::Above => '^',
+            crate::ir::articulation::Placement::Below => '_',
+            _ => '-',
+        };
+        let text = super::helpers::escape_ly_string(&td.text);
+        owned.push(format!("{dir}\\markup {{ \"{text}\" }}"));
     }
 
     let mut result: String = parts.join("");

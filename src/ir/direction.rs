@@ -121,7 +121,41 @@ pub struct RehearsalMark {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OctaveShift {
     pub shift_type: String,
+    /// MusicXML's size: the interval the shift spans, 8, 15 or 22 (0 for a
+    /// stop).
     pub size: i8,
+}
+
+impl OctaveShift {
+    /// LilyPond's `\ottava #n`: `n` octaves up (positive) or down, at most
+    /// three either way (22ma); 0 stops the shift.
+    pub fn from_octaves(n: i64) -> Self {
+        let octaves = n.clamp(-3, 3) as i8;
+        let shift_type = match octaves.signum() {
+            1 => "up",
+            -1 => "down",
+            _ => "stop",
+        };
+        Self {
+            shift_type: shift_type.to_string(),
+            size: if octaves == 0 {
+                0
+            } else {
+                7 * octaves.abs() + 1
+            },
+        }
+    }
+
+    /// The octaves of the shift, as `\ottava` takes them: positive up,
+    /// negative down, 0 for a stop.
+    pub fn octaves(&self) -> i8 {
+        let n = (self.size.clamp(8, 22) - 1) / 7;
+        match self.shift_type.as_str() {
+            "up" => n,
+            "down" => -n,
+            _ => 0,
+        }
+    }
 }
 
 /// A pedal marking.

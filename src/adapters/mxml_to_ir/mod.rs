@@ -163,10 +163,12 @@ fn read_partwise_bytes(bytes: Vec<u8>) -> Result<Score> {
     };
     // The firewall covers conversion too: panics there would otherwise escape
     // to the PyO3 boundary as aborts instead of AdapterError::Parse.
-    catch_read(|| {
+    let score = catch_read(|| {
         let mxml_score = musicxml::read_score_data_partwise(xml).map_err(AdapterError::Parse)?;
         convert_mxml_score(&mxml_score)
-    })
+    })?;
+    super::check_score_length(&score)?;
+    Ok(score)
 }
 
 impl ToIrAdapter for MxmlToIrAdapter {

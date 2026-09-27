@@ -19,7 +19,7 @@ use super::consume::{
     build_chord, consume_accidental_marks, consume_attachments, consume_duration,
     consume_duration_scale, consume_mark, consume_octave_marks, consume_override, consume_tempo,
     consume_tremolo, extract_scheme_string, extract_string_value, is_dynamic_name, parse_fraction,
-    parse_grace_block, parse_ly_make_moment, parse_paper_block, punct_text,
+    parse_grace_block, parse_ly_make_moment, parse_paper_block, previous, punct_text, skip_markup,
 };
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
@@ -60,8 +60,100 @@ fn parse_skip_of_length(scheme_text: &str) -> Option<&str> {
     (!var.is_empty()).then_some(var)
 }
 
-/// Walk an `expression_block` `{ ... }` containing music.
+/// Walk an `expression_block` `{ ... }` containing music, in the input mode
+/// the command before it sets: `\drummode` reads drum names, `\drums` is a
+/// drum staff of them; `\chords` and `\figures` (`\figuremode`) are chord
+/// names and figured bass, not notes; lyrics are not notes either.
 pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
+    // Past a bound, re-walks (unfolds, variables) end here.
+    if state.stopped() || !state.enter_block() {
+        return;
+    }
+    let mut prev = block.prev_sibling();
+    while prev.is_some_and(|p| p.kind() == "comment") {
+        prev = prev.and_then(|p| p.prev_sibling());
+    }
+    let mode = prev
+        .filter(|p| p.kind() == "escaped_word")
+        .map(|p| state.text(p));
+    if let Some(octaves) = fixed_octaves(state, block) {
+        // `\fixed c' { … }`: absolute pitches, an octave up per mark, even
+        // inside `\relative`.
+        let saved = (state.in_relative, state.relative_depth, state.fixed_octaves);
+        state.in_relative = false;
+        state.relative_depth = 0;
+        state.fixed_octaves = octaves;
+        walk_block_contents(state, block);
+        (state.in_relative, state.relative_depth, state.fixed_octaves) = saved;
+        state.walk_depth -= 1;
+        return;
+    }
+    match mode {
+        Some("\\drums") => {
+            state.new_part("DrumStaff", "");
+            add_percussion_clef(state);
+            state.drum_mode += 1;
+            walk_block_contents(state, block);
+            state.drum_mode -= 1;
+        }
+        Some("\\drummode") => {
+            state.drum_mode += 1;
+            walk_block_contents(state, block);
+            state.drum_mode -= 1;
+        }
+        // A chord-mode variable, walked again for its notes, stays notes.
+        Some("\\chords") if state.quiet == 0 => {
+            let entries = super::chord_mode::parse_chordmode_block(state, block);
+            state.pending_harmonies.extend(entries);
+        }
+        Some("\\figures" | "\\figuremode") => {
+            let entries = super::figured_bass::parse_figuremode_block(state, block);
+            state.place_figures(entries);
+        }
+        Some("\\lyrics" | "\\lyricmode") => {}
+        // Chords in a staff are their notes, which the walk reads as roots
+        // only: no warnings about the chord names' suffixes.
+        Some("\\chordmode" | "\\chords") => {
+            state.quiet += 1;
+            walk_block_contents(state, block);
+            state.quiet -= 1;
+        }
+        _ => walk_block_contents(state, block),
+    }
+    state.walk_depth -= 1;
+}
+
+/// The octaves of `\fixed <pitch>` right before `block`, if it follows one:
+/// the pitch's octave marks.
+fn fixed_octaves(state: &WalkState, block: Node) -> Option<i32> {
+    let mut marks = 0;
+    let mut at = block.prev_sibling();
+    while let Some(n) = at.filter(|n| n.kind() == "punctuation") {
+        marks += match state.text(n) {
+            "'" => 1,
+            "," => -1,
+            _ => return None,
+        };
+        at = n.prev_sibling();
+    }
+    let pitch = at.filter(|n| n.kind() == "symbol")?;
+    let fixed = pitch.prev_sibling()?;
+    (state.text(fixed) == "\\fixed").then_some(marks)
+}
+
+/// A percussion clef where the current part is (a drum staff).
+pub(super) fn add_percussion_clef(state: &mut WalkState) {
+    if let Some((sign, line, octave_change)) = parse_clef_name("percussion") {
+        let clef = Clef {
+            sign,
+            line,
+            octave_change,
+        };
+        state.add_event(Event::Clef(1, clef));
+    }
+}
+
+fn walk_block_contents(state: &mut WalkState, block: Node) {
     let mut cursor = block.walk();
     let children: Vec<Node> = block.children(&mut cursor).collect();
     let mut i = 0;
@@ -151,7 +243,13 @@ pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
 /// Handle a symbol node (pitch name, r, R, s, etc.).
 /// Returns the next index to process.
 fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) -> usize {
+    let (node, prev) = (children[i], previous(children, i));
     let mut i = i + 1;
+    if prev.is_some_and(|p| state.text(p) == "\\fixed") {
+        // `\fixed`'s pitch, not a note: the block after it reads it.
+        consume_octave_marks(state, children, &mut i);
+        return i;
+    }
 
     match sym {
         "r" => {
@@ -231,6 +329,9 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                     // Fractional multiplier: scale the duration
                     dur.base *= frac;
                     for _ in 0..repeat_count {
+                        if state.stopped() {
+                            break;
+                        }
                         let mut rest = Rest::new(dur.clone());
                         rest.is_spacer = true;
                         apply_rest_attachments(&mut rest, &attachments);
@@ -241,6 +342,9 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                     // Integer multiplier: push N spacer rests
                     let count = *frac.numer() as u32;
                     for _ in 0..count {
+                        if state.stopped() {
+                            break;
+                        }
                         let mut rest = Rest::new(dur.clone());
                         rest.is_spacer = true;
                         state.push_voice_element(VoiceElement::Rest(rest));
@@ -302,6 +406,27 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 state.push_voice_element(VoiceElement::Chord(chord));
             }
         }
+        _ if state.drum_mode > 0 => match state.drum_pitch(sym) {
+            // A drum note: absolute, and outside `\relative` and `\transpose`.
+            Some(pitch) => {
+                let mut dur = consume_duration(state, children, &mut i);
+                if let Some(scale) = consume_duration_scale(state, children, &mut i) {
+                    dur.base *= scale;
+                    state.last_duration = dur.clone();
+                }
+                let tremolo = consume_tremolo(state, children, &mut i, &dur);
+                let attachments = consume_attachments(state, children, &mut i);
+                let mut note = Note::new(pitch, dur);
+                note.tremolo_marks = tremolo;
+                apply_note_attachments(state, &mut note, &attachments);
+                state.push_voice_element(note_or_pitched_rest(note, &attachments));
+            }
+            None => state.warn(
+                node,
+                "unrecognized-token",
+                format!("`{sym}` is not a drum name"),
+            ),
+        },
         _ => {
             // Try as pitch name
             if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
@@ -332,8 +457,19 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 }
                 apply_note_attachments(state, &mut note, &attachments);
                 state.push_voice_element(note_or_pitched_rest(note, &attachments));
+            } else if !prev.is_some_and(|p| {
+                matches!(p.kind(), "escaped_word" | "embedded_scheme" | "string")
+                    || (p.kind() == "punctuation" && state.text(p) == "=")
+            }) {
+                // Not a command's argument (a context name, a `\repeat`
+                // type…) either: a word the walk does not read.
+                let language = state.language.as_str();
+                state.warn(
+                    node,
+                    "unrecognized-token",
+                    format!("`{sym}` is not a {language} note name"),
+                );
             }
-            // If not a pitch name, ignore (could be a context name etc.)
         }
     }
     i
@@ -385,10 +521,38 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                 }
                 i += 2;
             }
-            if let Some(frac_node) = children.get(i) {
+            if let Some(&frac_node) = children.get(i) {
                 if frac_node.kind() == "fraction" {
-                    let frac_text = state.text(*frac_node);
-                    if let Some((num, den)) = parse_fraction(frac_text) {
+                    let frac_text = state.text(frac_node);
+                    // A zero term is no time signature; a denominator the IR's
+                    // `u8` cannot hold (`\time 3/256`) is dropped: truncated,
+                    // it would become 0.
+                    let parsed = match parse_fraction(frac_text) {
+                        Some((num, den)) if num == 0 || den == 0 => {
+                            // LilyPond, too, only warns and ignores it.
+                            state.warn(
+                                frac_node,
+                                "unsupported-value",
+                                format!("`\\time {frac_text}` has a zero term: ignored"),
+                            );
+                            None
+                        }
+                        parsed => {
+                            let parsed = parsed.and_then(|(n, d)| Some((n, u8::try_from(d).ok()?)));
+                            if parsed.is_none() {
+                                state.warn(
+                                    frac_node,
+                                    "unsupported-value",
+                                    format!(
+                                        "`\\time {frac_text}`: lytk reads denominators up to \
+                                         255; dropped"
+                                    ),
+                                );
+                            }
+                            parsed
+                        }
+                    };
+                    if let Some((num, den)) = parsed {
                         let beats = if extra_beats.is_empty() {
                             num.to_string()
                         } else {
@@ -401,7 +565,7 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         };
                         let ts = TimeSignature {
                             beats,
-                            beat_type: den as u8,
+                            beat_type: den,
                             symbol: None,
                         };
                         state.add_event(Event::Time(ts));
@@ -496,17 +660,46 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
         }
         "\\tuplet" | "\\times" => {
             // \tuplet actual/normal { notes }  OR  \times normal/actual { notes }
-            if let Some(frac_node) = children.get(i) {
+            if let Some(&frac_node) = children.get(i) {
                 if frac_node.kind() == "fraction" {
-                    let frac_text = state.text(*frac_node);
+                    let frac_text = state.text(frac_node);
                     if let Some((num, denom)) = frac_text.split_once('/') {
-                        let n: u8 = num.parse().unwrap_or(1);
-                        let d: u8 = denom.parse().unwrap_or(1);
-                        let (actual, normal) = if text == "\\tuplet" {
-                            (n, d)
-                        } else {
-                            (d, n) // \times has reversed fraction
+                        // A ratio with a 0 or a term beyond the IR's `u8`
+                        // (`\tuplet 0/2`, `\times 2/0`, `\tuplet 300/2`) scales
+                        // nothing: its music is read unscaled.
+                        let ratio = match (num.parse::<u64>(), denom.parse::<u64>()) {
+                            (Ok(0), _) | (_, Ok(0)) => {
+                                state.error(
+                                    frac_node,
+                                    "invalid-ratio",
+                                    format!("`{text} {frac_text}` has a zero term: read unscaled"),
+                                );
+                                None
+                            }
+                            (n, d) => {
+                                let term =
+                                    |t: Result<u64, _>| t.ok().and_then(|t| u8::try_from(t).ok());
+                                let ratio = term(n).zip(term(d));
+                                if ratio.is_none() {
+                                    state.warn(
+                                        frac_node,
+                                        "unsupported-value",
+                                        format!(
+                                            "`{text} {frac_text}`: lytk reads tuplet terms up to \
+                                             255; read unscaled"
+                                        ),
+                                    );
+                                }
+                                ratio
+                            }
                         };
+                        let ratio = ratio.map(|(n, d)| {
+                            if text == "\\tuplet" {
+                                (n, d)
+                            } else {
+                                (d, n) // \times has reversed fraction
+                            }
+                        });
                         i += 1;
                         // Optional group-duration argument, e.g. `\tuplet 3/2 4 { … }`
                         // (the `4` tells LilyPond the span of each tuplet group for
@@ -526,20 +719,24 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                         }
                         if let Some(block) = children.get(i) {
                             if block.kind() == "expression_block" {
-                                // Push tuplet ratio so notes created inside get
-                                // the scaling applied immediately (for correct
-                                // measure duration tracking).
-                                state.tuplet_stack.push((actual, normal));
-                                let before = state.current_voice.len();
-                                walk_music_block(state, *block);
-                                let after = state.current_voice.len();
-                                state.tuplet_stack.pop();
-                                // Apply tuplet display markers (start/stop brackets)
-                                if after > before {
-                                    apply_tuplet_display(
-                                        &mut state.current_voice[before..after],
-                                        actual,
-                                    );
+                                if let Some((actual, normal)) = ratio {
+                                    // Push tuplet ratio so notes created inside get
+                                    // the scaling applied immediately (for correct
+                                    // measure duration tracking).
+                                    state.tuplet_stack.push((actual, normal));
+                                    let before = state.current_voice.len();
+                                    walk_music_block(state, *block);
+                                    let after = state.current_voice.len();
+                                    state.tuplet_stack.pop();
+                                    // Apply tuplet display markers (start/stop brackets)
+                                    if after > before {
+                                        apply_tuplet_display(
+                                            &mut state.current_voice[before..after],
+                                            actual,
+                                        );
+                                    }
+                                } else {
+                                    walk_music_block(state, *block);
                                 }
                                 i += 1;
                             }
@@ -596,19 +793,9 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                     let scheme_text = state.text(*scheme_node);
                     // Parse #N or #-N from the embedded scheme
                     let num_str = scheme_text.trim_start_matches('#');
-                    if let Ok(n) = num_str.parse::<i32>() {
-                        let (shift_type, size) = if n > 0 {
-                            ("up", (n * 8) as i8)
-                        } else if n < 0 {
-                            ("down", (n.abs() * 8) as i8)
-                        } else {
-                            ("stop", 0i8)
-                        };
+                    if let Ok(n) = num_str.parse::<i64>() {
                         let dir = Direction {
-                            octave_shift: Some(OctaveShift {
-                                shift_type: shift_type.to_string(),
-                                size,
-                            }),
+                            octave_shift: Some(OctaveShift::from_octaves(n)),
                             ..Default::default()
                         };
                         state.add_event(Event::direction(dir));
@@ -815,14 +1002,30 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                             // Handle \set Staff.midiInstrument = #"flute"
                             let scheme_text = state.text(*val_node);
                             if prop_text.contains("measureLength") {
-                                if let Some((num, den)) = parse_ly_make_moment(scheme_text) {
-                                    let len = Frac::new(num as i64, den as i64);
-                                    state.add_event(Event::MeasureLength(len));
+                                match parse_ly_make_moment(scheme_text) {
+                                    Some((_, 0)) => state.error(
+                                        *val_node,
+                                        "invalid-ratio",
+                                        "a measure length with a zero denominator: dropped"
+                                            .to_string(),
+                                    ),
+                                    Some((0, _)) => state.warn(
+                                        *val_node,
+                                        "unsupported-value",
+                                        "a measure length of zero: dropped".to_string(),
+                                    ),
+                                    Some((num, den)) => {
+                                        let len = Frac::new(num as i64, den as i64);
+                                        state.add_event(Event::MeasureLength(len));
+                                    }
+                                    None => {}
                                 }
                             } else if let Some(s) = extract_scheme_string(scheme_text) {
                                 apply_set_property(state, &prop_text, &s);
                             }
                             i += 1;
+                        } else if matches!(state.text(*val_node), "\\markup" | "\\markuplist") {
+                            i = skip_markup(state, children, i + 1);
                         } else {
                             // Skip unknown value types (scheme booleans, etc.)
                             i += 1;
@@ -845,6 +1048,9 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                 Some(frac) => {
                     let count = *frac.numer() as u32;
                     for _ in 0..count {
+                        if state.stopped() {
+                            break;
+                        }
                         let mut rest = Rest::new(dur.clone());
                         rest.is_spacer = true;
                         state.push_voice_element(VoiceElement::Rest(rest));
@@ -879,11 +1085,25 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             // walk_music_block level, but if tree-sitter doesn't wrap it as
             // named_context, skip it here.
         }
+        "\\markup" | "\\markuplist" => {
+            // Text standing on its own (as a `\tempo` or `\set` value): not music.
+            i = skip_markup(state, children, i);
+        }
+        "\\language" => {
+            if let Some(&next) = children.get(i).filter(|n| n.kind() == "string") {
+                state.set_language(next);
+                i += 1;
+            }
+        }
         _ => {
             // Unknown escaped word — may be a variable reference or dynamic
             let var_name = text.trim_start_matches('\\');
-            if !state.resolve_variable(var_name) && is_dynamic_name(text) {
-                attach_dynamic(state, text);
+            if !state.resolve_variable(var_name) {
+                if is_dynamic_name(text) {
+                    attach_dynamic(state, text);
+                } else {
+                    state.unread_command(children[i - 1], var_name);
+                }
             }
         }
     }

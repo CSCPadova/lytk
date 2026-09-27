@@ -308,6 +308,32 @@ impl Music {
         }
     }
 
+    /// [`written_length`](Self::written_length) as a float, which cannot
+    /// overflow: for the readers' length bound.
+    pub fn approx_length(&self) -> f64 {
+        let frac = |d: &Duration| {
+            let d = d.actual_duration();
+            *d.numer() as f64 / *d.denom() as f64
+        };
+        match self {
+            Music::Note { duration, .. }
+            | Music::Chord { duration, .. }
+            | Music::Rest { duration, .. }
+            | Music::Skip { duration } => frac(duration),
+            Music::Sequential(items) => items.iter().map(Music::approx_length).sum(),
+            Music::Simultaneous(items) => {
+                items.iter().map(Music::approx_length).fold(0.0, f64::max)
+            }
+            Music::Tuplet { content, .. }
+            | Music::Context { content, .. }
+            | Music::Variable { content, .. } => content.approx_length(),
+            Music::Repeat {
+                body, alternatives, ..
+            } => body.approx_length() + alternatives.iter().map(Music::approx_length).sum::<f64>(),
+            _ => 0.0,
+        }
+    }
+
     /// The duration of this music element (for leaf events).
     /// Returns None for containers — use `total_duration` for those.
     pub fn leaf_duration(&self) -> Option<&Duration> {

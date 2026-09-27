@@ -311,6 +311,267 @@ class TestTypedErrors:
             lytk.from_abc_string("\x00\x01 not abc")
 
 
+
+def test_version_is_the_crates():
+    # One version source: Cargo.toml, which maturin puts in the metadata too.
+    import re
+    from importlib.metadata import version
+
+    cargo = (Path(__file__).parent.parent / "Cargo.toml").read_text()
+    expected = re.search(r'^version = "(.+)"$', cargo, re.M).group(1)
+    assert lytk.__version__ == expected == version("lytk")
+
+
+class TestExceptionHierarchy:
+    """Readers raise ParseError, which is a ValueError too; I/O stays OSError."""
+
+    def test_classes(self):
+        assert issubclass(lytk.ParseError, lytk.LytkError)
+        assert issubclass(lytk.ParseError, ValueError)
+        assert issubclass(lytk.LilyPondSyntaxError, lytk.ParseError)
+        assert issubclass(lytk.InternalError, lytk.LytkError)
+        assert not issubclass(lytk.InternalError, ValueError)
+        assert lytk.ParseError.__module__ == "lytk"
+
+    @pytest.mark.parametrize(
+        "read",
+        [
+            lambda: lytk.from_musicxml_string("not musicxml <<<"),
+            lambda: lytk.from_musicxml_bytes(b"not musicxml"),
+            lambda: lytk.from_midi_bytes(b"not a midi file"),
+            lambda: lytk.from_lilypond_string("{ " * 3000 + "}" * 3000),
+            lambda: lytk.Score.from_json("{ not json"),
+            lambda: lytk.Score.from_dict({"not": "a score"}),
+            lambda: lytk.MusicDocument.from_json("[]"),
+        ],
+    )
+    def test_malformed_input_is_a_parse_error(self, read):
+        with pytest.raises(lytk.ParseError):
+            read()
+        # Code written against 0.2 keeps working.
+        with pytest.raises(ValueError):
+            read()
+
+    def test_a_missing_file_is_an_os_error(self, tmp_path):
+        for read in (lytk.from_lilypond, lytk.from_musicxml, lytk.from_abc, lytk.from_humdrum):
+            with pytest.raises(OSError):
+                read(str(tmp_path / "missing"))
+
+    def test_a_ly_file_that_is_not_utf8_is_a_parse_error(self, tmp_path):
+        path = tmp_path / "latin1.ly"
+        path.write_bytes(b"{ c'4 \xe9 }")
+        with pytest.raises(lytk.ParseError, match="not UTF-8"):
+            lytk.from_lilypond(str(path))
+
+    def test_flatten_errors_are_parse_errors(self, tmp_path):
+        main = tmp_path / "main.ly"
+        main.write_text('\\include "absent.ily"\n')
+        with pytest.raises(lytk.ParseError, match="not found"):
+            lytk.flatten(str(main))
+
+    def test_pickles_with_its_diagnostics(self):
+        import pickle
+
+        with pytest.raises(lytk.LilyPondSyntaxError) as info:
+            lytk.from_lilypond_string("{ c'3 }", strict=True)
+        again = pickle.loads(pickle.dumps(info.value))
+        assert type(again) is lytk.LilyPondSyntaxError
+        assert again.diagnostics == info.value.diagnostics
+
+
+class TestDiagnostics:
+    """check_lilypond, strict mode and .diagnostics (Epic J3)."""
+
+    def test_syntax_only_by_default(self):
+        text = "{ c'3 \\noSuchCommand }"
+        assert lytk.check_lilypond(text) == []
+        codes = [d.code for d in lytk.check_lilypond(text, semantic=True)]
+        assert codes == ["invalid-duration", "unknown-command"]
+
+    def test_fields_and_text(self):
+        text = "% é\n{ é c'4 >> }"
+        (d,) = lytk.check_lilypond(text)
+        assert (d.severity, d.code, d.line, d.column) == ("error", "syntax-error", 2, 9)
+        assert text[d.start : d.end] == ">>"  # character offsets
+        assert str(d) == "2:9: error: `>>` without a matching `<<` [syntax-error]"
+        assert d == lytk.Diagnostic(*[getattr(d, k) for k in ("severity", "code", "message", "line", "column", "start", "end")])
+
+    def test_too_large_is_a_diagnostic_not_an_exception(self):
+        (d,) = lytk.check_lilypond("{ " * 3000 + "}" * 3000)
+        assert (d.severity, d.code) == ("error", "too-large")
+
+    def test_readers_carry_diagnostics_outside_the_ir(self, tmp_path):
+        text = "\\include \"x.ily\"\n{ c'4 \\noSuchCommand d'4 }"
+        path = tmp_path / "in.ly"
+        path.write_text(text)
+        for music in (
+            lytk.from_lilypond_string(text),
+            lytk.from_lilypond(str(path)),
+            lytk.from_lilypond_music_string(text),
+            lytk.from_lilypond_music(str(path)),
+        ):
+            assert [d.code for d in music.diagnostics] == ["ignored-include", "unknown-command"]
+            assert "diagnostic" not in music.to_json()
+        assert lytk.from_musicxml_string(lytk.to_musicxml(music.to_score())).diagnostics == []
+
+    def test_strict_raises_on_errors_only(self):
+        text = "{ c'4 \\noSuchCommand d'4 }"  # a warning
+        assert lytk.from_lilypond_string(text, strict=True).num_parts == 1
+        with pytest.raises(lytk.LilyPondSyntaxError, match=r"1:1: error: missing `}`") as info:
+            lytk.from_lilypond_string("{ c'4 d'4", strict=True)
+        assert [d.severity for d in info.value.diagnostics] == ["error"]
+        with pytest.raises(lytk.LilyPondSyntaxError, match=r"\(and 1 more error\)"):
+            lytk.from_lilypond_music_string("{ c'3 d'3 }", strict=True)
+        # Without strict the same input reads, reporting what it could not.
+        assert lytk.from_lilypond_string("{ c'3 d'3 }").diagnostics[0].code == "invalid-duration"
+
+    def test_movements_and_the_first_movement(self, tmp_path):
+        path = tmp_path / "two.ly"
+        path.write_text("\\score { { c'1 } }\n\\score { { d'1 } }\n")
+        movements = lytk.from_lilypond_movements(str(path), strict=True)
+        assert [len(m.diagnostics) for m in movements] == [0, 0]
+        (dropped,) = lytk.from_lilypond(str(path)).diagnostics
+        assert (dropped.code, dropped.line) == ("dropped-music", 2)
+
+
+class TestStringsAndHeaders:
+    """Strings decoded as LilyPond reads them, headers as dicts (Epic J4);
+    pitch-language files (J5)."""
+
+    def test_header_is_a_dict_of_every_field(self):
+        text = '\\header { title = "A \\"B\\"" composer = \\markup { \\bold "J. S." Bach } opus = "5" }\n{ c\'1 }'
+        score = lytk.from_lilypond_string(text)
+        assert score.header == {"title": 'A "B"', "composer": "J. S. Bach", "opus": "5"}
+        doc = lytk.from_lilypond_music_string('\\header { poet = "P" }\n{ c\'1 }')
+        assert (doc.lyricist, doc.header) == ("P", {"lyricist": "P"})
+
+    def test_each_movement_has_its_header(self, tmp_path):
+        path = tmp_path / "two.ly"
+        path.write_text('\\header { composer = "C" }\n\\score { \\header { piece = "I" } { c\'1 } }\n\\score { { d\'1 } }\n')
+        first, second = lytk.from_lilypond_movements(str(path))
+        assert first.header == {"composer": "C", "piece": "I"}
+        assert second.header == {"composer": "C"}
+
+    def test_header_fields_locate_each_assignment(self):
+        text = '% é\n\\header { title = "é\\"x" tagline = ##f }\n\\score { \\header { piece = "II" } { c\'1 } }'
+        fields = lytk.header_fields(text)
+        assert [(f.key, f.value, f.score) for f in fields] == [("title", 'é"x', None), ("piece", "II", 0)]
+        assert text[fields[0].start : fields[0].end] == 'title = "é\\"x"'  # character offsets
+        cut = text[: fields[0].start] + text[fields[0].end :]
+        assert [f.key for f in lytk.header_fields(cut)] == ["piece"]
+
+    def test_language_files_set_the_pitch_names(self):
+        score = lytk.from_lilypond_string('\\include "english.ly"\n{ cs\'4 }')
+        assert [n[2] for n in score.notes()] == [61]
+        assert score.diagnostics == []
+
+
+class TestPanicFirewall:
+    """A Rust panic reaches Python as lytk.InternalError, never as pyo3's
+    PanicException (a BaseException), and prints nothing."""
+
+    def test_hierarchy(self):
+        assert issubclass(lytk.InternalError, lytk.LytkError)
+        assert issubclass(lytk.LytkError, Exception)
+
+    def test_panic_becomes_internal_error_silently(self, capfd):
+        with pytest.raises(lytk.InternalError, match=r"lytk panicked: boom \(at src/python\.rs:\d+\)"):
+            lytk._core._panic_for_tests("boom")
+        assert capfd.readouterr().err == ""
+
+    def test_except_exception_catches_it(self):
+        try:
+            lytk._core._panic_for_tests("caught")
+        except Exception as e:  # noqa: BLE001 - the point of the test
+            assert isinstance(e, lytk.InternalError)
+        else:
+            pytest.fail("no exception")
+
+    def test_library_still_works_after_a_panic(self):
+        for _ in range(3):
+            with pytest.raises(lytk.InternalError):
+                lytk._core._panic_for_tests("again")
+        assert lytk.from_lilypond_string("{ c'4 d' }").num_parts == 1
+
+
+
+def _set_first(node, key, value):
+    """Set the first occurrence of `key` in a nested JSON value; True if found."""
+    if isinstance(node, dict):
+        if key in node:
+            node[key] = value
+            return True
+        return any(_set_first(v, key, value) for v in node.values())
+    if isinstance(node, list):
+        return any(_set_first(v, key, value) for v in node)
+    return False
+
+
+class TestHandSuppliedIr:
+    """from_dict / from_json refuse the values the IR would divide by."""
+
+    LY = r"{ \time 3/4 \tuplet 3/2 { c8 d e } f4 }"
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("beat_type", 0), ("tuplet_actual", 0), ("tuplet_normal", 0), ("base", [-1, 8])],
+    )
+    def test_score_refuses_values_no_reader_makes(self, key, value):
+        d = lytk.from_lilypond_string(self.LY).to_dict()
+        assert _set_first(d, key, value)
+        with pytest.raises(ValueError, match="invalid IR"):
+            lytk.Score.from_dict(d)
+        with pytest.raises(ValueError, match="invalid IR"):
+            lytk.Score.from_json(json.dumps(d))
+
+    def test_music_document_refuses_a_zero_tuplet_term(self):
+        d = json.loads(lytk.from_lilypond_music_string(self.LY).to_json())
+        with pytest.raises(ValueError, match="invalid IR"):
+            e = json.loads(json.dumps(d))
+            assert _set_first(e, "tuplet_actual", 0)
+            lytk.MusicDocument.from_json(json.dumps(e))
+        # A Tuplet node of the Music tree, as the ABC and Humdrum readers make them.
+        d["music"] = {"Tuplet": {"normal": 2, "actual": 0, "content": d["music"]}}
+        with pytest.raises(ValueError, match="invalid IR"):
+            lytk.MusicDocument.from_json(json.dumps(d))
+
+    def test_valid_ir_round_trips(self):
+        score = lytk.from_lilypond_string(self.LY)
+        assert lytk.Score.from_dict(score.to_dict()) == score
+        assert lytk.Score.from_json(score.to_json()) == score
+
+
+
+class TestArgumentBounds:
+    """Extreme arguments are a ValueError, not an i32 overflow in Rust."""
+
+    LY = r"{ c'4 d' e' f' }"
+
+    def test_transpose(self):
+        score = lytk.from_lilypond_string(self.LY)
+        assert lytk.transpose(score, 127).num_parts == 1
+        with pytest.raises(ValueError, match="semitones"):
+            lytk.transpose(score, 2**31 - 1)
+
+    def test_invert_axis(self):
+        score = lytk.from_lilypond_string(self.LY)
+        with pytest.raises(ValueError, match="axis"):
+            lytk.invert(score, octave=2**31 - 1)
+        with pytest.raises(ValueError, match="axis"):
+            lytk.invert(score, alter=2**31 - 1)
+
+    def test_interval_number(self):
+        score = lytk.from_lilypond_string(self.LY)
+        with pytest.raises(ValueError, match="between 1 and 99"):
+            lytk.transpose_interval(score, "P2147483647")
+
+    def test_extreme_octave_in_hand_supplied_ir(self):
+        d = lytk.from_lilypond_string(self.LY).to_dict()
+        assert _set_first(d, "octave", 2**31 - 1)
+        with pytest.raises(ValueError, match="octave"):
+            lytk.Score.from_dict(d)
+
+
 # -- Review R8/R9: Layer-1 transforms, transpose_to_key, compressed MXL -------
 
 

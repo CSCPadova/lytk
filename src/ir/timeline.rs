@@ -79,6 +79,11 @@ impl Timeline {
     }
 
     /// Position after the last element or event.
+    /// Elements and events held (what copying this timeline costs).
+    pub(crate) fn element_count(&self) -> usize {
+        self.lanes.values().map(Vec::len).sum::<usize>() + self.events.len()
+    }
+
     pub(crate) fn end(&self) -> Frac {
         let lanes = self
             .lanes
@@ -392,6 +397,12 @@ fn element_staff(e: &VoiceElement) -> u8 {
 // ---------------------------------------------------------------------------
 
 /// Score-wide bar layout.
+/// Most bars a grid holds. A bar line is cut per `bar_len` of music, so a
+/// tiny bar (`\set Score.measureLength = #(ly:make-moment 1 4294967295)`) or
+/// an enormous piece would otherwise make billions of them. The grid stops
+/// cutting there, and readers refuse a score whose grid reaches it.
+pub(crate) const MAX_BARS: usize = 100_000;
+
 pub(crate) struct Grid {
     /// `[start, end)` of each bar, contiguous from 0.
     pub(crate) bars: Vec<(Frac, Frac)>,
@@ -488,7 +499,7 @@ impl Grid {
                         b += bar_len;
                     }
                 }
-                while b < to {
+                while b < to && cuts.len() <= MAX_BARS {
                     cuts.push(b);
                     b += bar_len;
                 }
@@ -509,7 +520,11 @@ impl Grid {
                     anchor = p;
                     if let Some(ts) = ts {
                         if meters.last().is_none_or(|(q, t)| *q != p || *t != ts) {
-                            meters.retain(|(q, _)| *q != p);
+                            // The controls come in position order, so a meter
+                            // already set here can only be the last one.
+                            if meters.last().is_some_and(|(q, _)| *q == p) {
+                                meters.pop();
+                            }
                             meters.push((p, ts));
                         }
                     }
@@ -540,7 +555,14 @@ impl Grid {
         if let Some(from) = free_from {
             free_spans.push((from, end.max(from)));
         } else {
-            grid_lines(&mut cuts, anchor, bar_len, at, end);
+            // Unless notes are tied on (`to_end`), bar lines past the last
+            // start are dropped below: stop cutting at the bar holding it.
+            let to = if to_end {
+                end
+            } else {
+                num::CheckedAdd::checked_add(&last_start, &bar_len).map_or(end, |t| end.min(t))
+            };
+            grid_lines(&mut cuts, anchor, bar_len, at, to);
         }
 
         cuts.retain(|&c| c <= end && (to_end || c == zero() || c <= last_start));
@@ -551,9 +573,16 @@ impl Grid {
         if end > last || bars.is_empty() {
             bars.push((last, end.max(last)));
         }
+        // Both in position order: one sweep.
+        let mut spans = free_spans.iter().peekable();
         let senza = bars
             .iter()
-            .map(|(s, _)| free_spans.iter().any(|(a, b)| s >= a && s < b))
+            .map(|(s, _)| {
+                while spans.peek().is_some_and(|(_, b)| b <= s) {
+                    spans.next();
+                }
+                spans.peek().is_some_and(|(a, b)| s >= a && s < b)
+            })
             .collect();
         Grid {
             bars,

@@ -65,8 +65,10 @@ impl Interval {
         let number: i32 = num_str
             .parse()
             .map_err(|_| format!("interval `{s}` has an invalid number"))?;
-        if number < 1 {
-            return Err(format!("interval number must be ≥ 1 in `{s}`"));
+        // Past 99 (fourteen octaves) an interval is no longer music, and the
+        // semitone arithmetic below would overflow for large numbers.
+        if !(1..=99).contains(&number) {
+            return Err(format!("interval number must be between 1 and 99 in `{s}`"));
         }
         let (base, perfect) = base_semitones(number);
         let adjust = quality_adjust(qual, perfect)

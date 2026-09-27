@@ -128,7 +128,11 @@ const MIDI_DUR_BASELINE: usize = 4;
 // Bar structure kept (bar count and each bar's length, score-wide; see
 // `common::bar_lengths`). Note signatures merge ties and ignore bar lines, so
 // they can't see a note that moved into the wrong bar. Measured 2026-09-25.
-const LY_BARS_BASELINE: usize = 27;
+// Epic J3 (2026-09-27): two PDMX fixtures write `fis4 -\markup \bold a8 d4`;
+// LilyPond reads `a8` as the markup's word (its bar check then fails), and so
+// does the reader now, where it used to read the note a8. Their bars are short
+// and the LY round trip does not keep them: 27 → 26.
+const LY_BARS_BASELINE: usize = 26;
 const XML_BARS_BASELINE: usize = 152;
 const ABC_BARS_BASELINE: usize = 4;
 const XML_ABC_BARS_BASELINE: usize = 142;

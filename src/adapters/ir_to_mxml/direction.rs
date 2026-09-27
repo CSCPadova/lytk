@@ -167,7 +167,7 @@ impl IrToMxmlAdapter {
                 content: mxml::DirectionTypeContents::OctaveShift(mxml::OctaveShift {
                     attributes: mxml::OctaveShiftAttributes {
                         r#type: shift_type,
-                        size: Some(mdt::PositiveInteger(os.size as u32)),
+                        size: (os.size > 0).then_some(mdt::PositiveInteger(os.size as u32)),
                         ..Default::default()
                     },
                     content: (),

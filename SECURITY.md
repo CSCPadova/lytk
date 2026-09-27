@@ -19,9 +19,10 @@ reachable from a malicious input file are in scope, in particular:
 
 - panics or unbounded memory/CPU use while parsing (a reachable
   denial-of-service for any service that converts user uploads)
-- path traversal or unintended file reads — note that LilyPond `\include` is
-  followed by design, so callers that accept untrusted `.ly` files should run
-  conversion in a sandbox and pass only trusted `-I` search paths
+- path traversal or unintended file reads. The LilyPond reader does not
+  follow `\include` (it reports it); `lytk flatten` / `lytk.flatten` does, by
+  design, so callers that flatten untrusted `.ly` files should run it in a
+  sandbox and pass only trusted `-I` search paths
 - decompression bombs in `.mxl` archives (these are read with a size cap)
 
 Release builds keep `overflow-checks` on, so an integer overflow panics rather

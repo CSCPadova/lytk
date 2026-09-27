@@ -220,7 +220,7 @@ pub(super) fn emit_lyrics_variable(part: &Part, staff_filter: Option<u8>, lines:
 /// Escape special characters in lyric text for LilyPond: quoted when
 /// `\lyricmode` would read it as something else — a duration (`0/0/1`,
 /// `2nd`), a hyphen or extender, a brace, Scheme, or several words.
-fn escape_lyric_text(text: &str) -> String {
+pub(super) fn escape_lyric_text(text: &str) -> String {
     let special = text.is_empty()
         || text.starts_with(|c: char| c.is_ascii_digit())
         || matches!(text, "--" | "__" | "_")

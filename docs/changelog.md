@@ -7,6 +7,191 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-27
+
+LilyPond input you can trust. Readers raise `lytk.ParseError` instead of
+crashing, `lytk.check_lilypond` and `lytk check` report diagnostics, and
+`strict=True` rejects what LilyPond rejects. Strings and headers are read
+as LilyPond reads them, pitch-language files are honoured, and top-level
+music, `\book`, drum mode and `\fixed` follow LilyPond. The inputs that made
+lytk panic, hang or run out of memory, found by fuzzing and a hunt, are
+fixed, and all of LilyPond's 2,626 regression tests and snippets are read.
+
+### Added
+
+- `lytk.__version__`, the crate's version (`lytk --version` prints it).
+
+- `lytk.LytkError`, the base of the errors lytk raises, and
+  `lytk.InternalError`: a Rust panic inside any function or method that
+  reads, writes or transforms music now raises `InternalError` (an ordinary
+  `Exception`, carrying the panic's message and source location) and prints
+  nothing. It used to escape as pyo3's `PanicException`, a `BaseException`
+  that `except Exception` does not catch, with its message on stderr.
+- `lytk.ParseError`, raised by every reader (`from_*`, `Score.from_json`,
+  `Score.from_dict`, `MusicDocument.from_json`, `flatten`) when its input
+  cannot be read. It subclasses both `LytkError` and `ValueError`, so
+  `except ValueError` keeps working. I/O failures stay `OSError`.
+- Diagnostics for LilyPond: `lytk.check_lilypond(text, *, semantic=False)`
+  returns `lytk.Diagnostic` objects (severity, code, message, line, column
+  and a character span), from the parse tree alone by default (about 0.1 ms
+  per file), from a full reading with `semantic=True`. Errors are input
+  LilyPond rejects: syntax errors, unclosed brackets, a `>>` without its
+  `<<`, what is left of a Scheme expression missing its `(`, `c3`, a tuplet
+  or multiplier with a zero term, plain text. Warnings are input lytk reads
+  around: unknown commands, includes, unknown languages, dropped music,
+  `\midi`-only scores, values it cannot represent. The codes are listed in
+  `docs/import-export.md`.
+- `strict=False` on every LilyPond reader: `strict=True` raises
+  `lytk.LilyPondSyntaxError` (a `ParseError`) when the reading has an error,
+  with every diagnostic in its `diagnostics` attribute.
+  `Score.diagnostics` and `MusicDocument.diagnostics` hold them either way
+  (they are not part of `to_dict`/`to_json`).
+- `lytk check FILE… [--semantic] [--json]`: the diagnostics of LilyPond
+  files; exit status 1 on an error.
+- Rust: `diagnostics::{Diagnostic, Severity}`; `LyToIrAdapter::read_str` and
+  `read_file` return a `LyReading` (every movement and the diagnostics);
+  `ly_to_ir::check` and `ly_to_ir::read_source`.
+- `Score.header` and `MusicDocument.header`: every header field as a dict
+  (`title`, `subtitle`, `composer`, `arranger`, `lyricist`, then the others by
+  key), and `MusicDocument.lyricist`.
+- `lytk.header_fields(text)`: every `\header` field of LilyPond text as a
+  `HeaderField` (key, value as text, character span of the whole `key = value`,
+  and the `\score` block it is in), from the parse tree alone, so a field can
+  be read and cut without reading the music. Rust: `ly_to_ir::header_fields`.
+- LilyPond drum mode: `\drums { bd4 sn }`, `\drummode`, `\new DrumStaff`
+  and `\new DrumVoice` read LilyPond's 128 drum names as their General MIDI
+  keys (`bd` is key 36) on a percussion staff, which MIDI export puts on
+  channel 10. A word that is no drum name is `unrecognized-token`.
+- LilyPond `\fixed c' { … }`: absolute pitches an octave up per mark of the
+  reference pitch, also inside `\relative` and in a variable.
+- LilyPond `\book` and `\bookpart`: their scores and music are movements,
+  and their `\header` is the book's.
+
+### Changed
+
+- Each top-level LilyPond music expression is a movement, as LilyPond makes
+  a score of each: `{ c'1 } { d'1 }` is two movements, and music beside
+  `\score` blocks takes its place among them. It was dropped
+  (`dropped-music`), or merged into one movement. A music variable used at
+  the top level (`\m`) is read; it was dropped. Notes outside braces at the
+  top level (`c'4 d'`) are a `syntax-error`, as in LilyPond; they were a
+  warning.
+- The shorthands `\chords { … }`, `\figures { … }` and `\lyrics { … }` are
+  chord names, figured bass and lyrics; their contents were read as notes.
+
+- The version has one source, `Cargo.toml` (`pyproject.toml` declares it
+  dynamic); the release workflow fails when the tag is not that version, and
+  CI runs the Python tests on 3.10 to 3.13.
+- Readers raise `lytk.ParseError` where they raised `ValueError` (a subclass,
+  so existing handlers still catch it). A `.ly` file that is not UTF-8 is a
+  `ParseError`; it was an `OSError`.
+- LilyPond markup is text, not music: `c4 -\markup \bold a8 d4` has two notes,
+  as LilyPond reads it (`a8` is the markup's word), and the words of a
+  top-level `\markup`, of `\tempo \markup …` or of a `\set`/`\override`
+  markup value no longer become notes. Top-level `\layout` and `\midi` blocks
+  are no longer read as music either.
+- A UTF-8 byte-order mark is whitespace anywhere in LilyPond input, as in
+  LilyPond; the grammar reported one past the start as a syntax error.
+- `\time 0/4` is ignored like `\time 1/0`, as LilyPond does.
+- LilyPond strings are decoded as LilyPond reads them, in every context
+  (headers, lyrics, `\tempo`, markup, `\with`, `\mark`, `\set`, context and
+  voice names, `\language`): `\"`, `\\`, `\n`, `\t` and `\'`, any other
+  backslash kept. A string used to end at its first escape:
+  `texidoc = "Some \"doc\" here"` read as `Some `.
+- A header value given as `\markup` is its plain text
+  (`composer = \markup { \bold "J. S." Bach }` is `J. S. Bach`), and `#"…"`
+  its string; both were dropped. Markup text at a note keeps its words
+  (`c4^\markup { \italic dolce }`), not only its strings.
+- Headers are scoped: a `\score`'s `\header` belongs to that movement only (it
+  leaked into the next ones), and the top-level `\header` fills every
+  movement's unset fields, wherever it stands.
+- The LilyPond writer writes every header field (it wrote none unless a
+  title, composer, arranger or poet was set), the others sorted by key and
+  quoted when they are no identifier; the Music path writes the poet and the
+  other fields too. Text directions at notes are written
+  (`^\markup { "dolce" }`); they were lost. The Music path quotes lyrics as
+  the Score path does.
+- `\include "english.ly"` and LilyPond's other language files set the pitch
+  language, as `\language` does (`arabic.ly`: Italian names); the files of
+  pitch names lytk cannot read (`makam.ly`, `persian.ly`, `bagpipe.ly`, …)
+  raise `unknown-language`. `\language` is honoured inside `\score` and
+  music, not only at the top level, and an unknown name keeps the language in
+  force instead of resetting it to Dutch.
+- The LilyPond reader refuses input past its bounds with a `ParseError` (a
+  `ValueError`: "… lytk refuses input this large") instead of hanging, running out of
+  memory or crashing: more than 500,000 notes, rests and chords once repeats
+  and variables are expanded; music longer than 100,000 whole notes or with
+  100,000 bars; a duration multiplier above 16,777,216 (`R1*1000000000`);
+  music nested deeper than 2,000 levels; a pitch outside octaves -128..127; a
+  staff group of more than 255 staves. LilyPond's own 2,626 regression tests
+  and documentation snippets are all read.
+- Constructs whose numbers the IR cannot hold are dropped, and the music
+  around them is read: a time signature with a 0 or 256+ denominator
+  (`\time 3/256` used to become 3/0), a tuplet with a 0 term or one above
+  255 (its notes are read unscaled), a measure length with a 0 denominator,
+  a duration multiplier with a 0 or oversized denominator.
+- A written duration that is not a power of two up to 1024 (`c3`, `c2048`)
+  reads as a quarter note, as LilyPond reads its "not a duration".
+- `\repeat unfold` inside `\relative` repeats the same pitches, as LilyPond
+  does: each copy used to be read relative to the previous one, climbing.
+- `Score.from_dict`, `Score.from_json` and `MusicDocument.from_json` refuse
+  values no reader makes, with a `ValueError`: a 0 time-signature
+  denominator or tuplet term, a negative or oversized duration, an octave
+  outside -128..127, an alteration beyond ±4, time-signature beats above
+  10,000.
+- `transpose` takes at most ±127 semitones, `invert` an axis in octaves
+  -128..127 with an alteration of at most ±4, and an interval number is
+  1..99; other values are a `ValueError` (they overflowed in Rust).
+- MusicXML export: when no `divisions` up to 65535 represents every duration
+  exactly (several coprime tuplets, e.g. 3, 5, 7, 9, 11 and 13 in different
+  voices), 10080 is used and other durations are rounded. The least common
+  multiple used to overflow, or be truncated to 16 bits and write wrong
+  durations.
+
+### Fixed
+
+- Inputs that panicked: `\time N/0`, `\time 3/256`, `\tuplet 0/N`,
+  `\times N/0`, `#(ly:make-moment N 0)`, 256 or more dots on a figured-bass
+  figure, a zero-length note (`c4*0`) in LilyPond export, 256 or more staves
+  in a PianoStaff or in `MusicDocument.to_score()`, coprime durations whose
+  positions overflowed, note arrays of long music.
+- Inputs that hung or exhausted memory: `s1*N`, `R1*N` and `\skip 1*N` for
+  a huge N, nested `\repeat unfold`, variables that double one another, a
+  variable redefined in terms of itself and used inside `\relative`, a tiny
+  `measureLength`, an over-long note (bar lines were laid to its end and
+  thrown away), a relative passage climbing hundreds of octaves (every
+  writer wrote each octave mark out), and nesting of `\tuplet`, `\relative`
+  or `\repeat` a few hundred levels deep, which overflowed the stack. The
+  reader now walks on a thread with a stack of its own.
+- `\ottava` with a number past what a shift is (`#2147483647`) panicked; it
+  is clamped to three octaves. `\ottava #2` read as size 16 instead of 15 (a
+  15ma in MusicXML), and the Music-path LilyPond writer wrote an 8va as
+  `\ottava #8` and an 8vb as an 8va.
+- A `**kern` note with 256 or more dots panicked.
+- Music longer than 100,000 whole notes from MusicXML, ABC or `**kern` (one
+  MusicXML note of 25 million whole notes) was accepted, and the ABC writer
+  tied it over every bar line until an allocation aborted the process. The
+  three readers now refuse it, as the LilyPond and MIDI readers do, and the
+  ABC writer refuses music of more than 100,000 bars.
+- Time that grew with the square of the input: meter changes (reading and
+  lowering; 100,000 notes with 40,000 meter changes took 24 s through every
+  writer, now 5 s), long runs of tuplets in ABC output, long runs of grace
+  notes in the Music-path LilyPond output, and many diagnostics on one long
+  line.
+- A tremolo `:N` past 1024 (`c1:2147483648`) is not read as one: it gave
+  31 tremolo marks, and the LilyPond writer's shift overflowed. The writers
+  cap the marks of hand-made IR at 10.
+- `lytk.flatten` on a diamond of includes (a file including the next one
+  twice, level after level) doubled its output at every level until memory
+  ran out. It now stops with a `ValueError` after 10,000 includes or 64 MiB
+  of output.
+- A LilyPond context whose music follows a nested `\new` or a mode
+  (`\new Staff \new Voice { … }` at the top level,
+  `\new Staff \drummode { … }`, `\new Staff \fixed c' { … }`) left its
+  music to be read as a separate expression.
+- LilyPond part ids after a variable definition started at `P2`.
+- The MusicXML writer panicked on figured bass at the beat of a grace note.
+
 ## [0.2.0] - 2026-09-27
 
 MIDI and ABC conversion rebuilt and checked against independent references
@@ -270,9 +455,10 @@ First public release.
 
 - Readers and writers for LilyPond, MusicXML, compressed MusicXML (`.mxl`),
   MIDI, ABC and Humdrum `**kern`, all through one internal representation.
-- A LilyPond reader for real files: variables, `\relative`, `\include`, piano
-  scores with several voices per staff, repeats and voltas, cadenzas, lyrics,
-  chord names and figured bass. The LilyPond writer supports all 12
+- A LilyPond reader for real files: variables, `\relative`, piano scores with
+  several voices per staff, repeats and voltas, cadenzas, lyrics, chord names
+  and figured bass. (It does not follow `\include`: `lytk flatten` inlines
+  includes first.) The LilyPond writer supports all 12
   note-name languages.
 - Transforms: transpose (by semitones, interval or target key), invert,
   retrograde, and note-name language changes.
@@ -291,6 +477,7 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/CSCPadova/lytk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CSCPadova/lytk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/CSCPadova/lytk/releases/tag/v0.1.0

@@ -76,12 +76,12 @@ struct FlatNote {
 /// Convert a whole-note `Frac` time to integer time steps for the given
 /// resolution (time steps per quarter note). Rounds to nearest.
 fn frac_to_steps(t: Frac, resolution: u16) -> u32 {
-    // quarter = 1/4 whole, so steps = t * 4 * resolution.
-    let scaled = t * Frac::from_integer(4 * resolution as i64);
-    let num = *scaled.numer();
-    let den = *scaled.denom();
-    // Rounded integer division for non-negative values.
-    (((num * 2 + den) / (den * 2)).max(0)) as u32
+    // quarter = 1/4 whole, so steps = t * 4 * resolution, computed in i128 so
+    // no numerator or denominator the IR holds can overflow it.
+    let num = i128::from(*t.numer()) * 4 * i128::from(resolution);
+    let den = i128::from(*t.denom());
+    // Rounded integer division for non-negative values, saturating at u32.
+    ((num * 2 + den) / (den * 2)).clamp(0, i128::from(u32::MAX)) as u32
 }
 
 /// Inverse of [`frac_to_steps`].

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, dev]
   pull_request:
-    branches: [master]
+    branches: [master, dev]
 
 env:
   CARGO_TERM_COLOR: always
@@ -64,6 +64,32 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lilypond
       - run: cargo test --test lilypond_oracle -- --ignored --nocapture
 
+  lilypond-corpus:
+    # The grammar against LilyPond's own regression tests and snippets:
+    # valid files the parser flags with syntax errors (tests/ly_corpus.rs).
+    name: LilyPond corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch LilyPond v2.26.0 (regression tests and snippets only)
+        run: |
+          git clone --depth 1 --branch v2.26.0 --filter=blob:none --sparse \
+            https://gitlab.com/lilypond/lilypond.git "$RUNNER_TEMP/lilypond"
+          git -C "$RUNNER_TEMP/lilypond" sparse-checkout set input/regression Documentation/snippets
+      - run: cargo test --test ly_corpus -- --ignored --nocapture
+        env:
+          LYTK_LILYPOND_SRC: ${{ runner.temp }}/lilypond
+      # The LilyPond-shaped fuzz properties, with many more cases than in
+      # `cargo test` (release build: inputs at the reader's bounds are slow
+      # unoptimised).
+      - run: cargo test --release --test fuzz_inputs lilypond_shaped
+        env:
+          LYTK_FUZZ_CASES: "1024"
+
   msrv:
     name: MSRV (rust-version in Cargo.toml)
     runs-on: ubuntu-latest
@@ -78,8 +104,13 @@ jobs:
       - run: cargo check --all-targets
 
   python:
-    name: Python tests
+    name: Python ${{ matrix.python }} tests
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The abi3 floor (lilycorpus runs on 3.10) up to the newest.
+        python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,7 +119,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - name: Create and expose virtualenv
         run: |
           python -m venv .venv
@@ -98,11 +129,14 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install maturin pytest pytest-benchmark scipy
       # CPU-only torch so the torch dataset-adapter tests run instead of skipping
-      # (scipy above enables the eval-metric tests too).
-      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      # (scipy above enables the eval-metric tests too). On one Python only:
+      # the frameworks are large, and the others test the bindings.
+      - if: matrix.python == '3.12'
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       # TensorFlow too: its dtype rules are stricter than torch's, so the tf
       # data-loader path fails on inputs the torch path accepts. Without this
       # every tf test silently skips and that class of bug ships.
-      - run: pip install tensorflow-cpu
+      - if: matrix.python == '3.12'
+        run: pip install tensorflow-cpu
       - run: maturin develop
       - run: pytest tests/ -v

@@ -177,25 +177,61 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 | Multi-voice | ✅ | `<< \\\\ >>` syntax |
 | Multi-staff | ✅ | `\new Staff`, `\new PianoStaff` |
 | Variables | ✅ | Definition + resolution |
-| `\include` | ✅ | File inlining |
+| Movements | ✅ | Each `\score` block and each top-level music expression (`{ }`, `<< >>`, `\new Staff`, `\relative`, a music variable), in order, as LilyPond makes a score of each; `\book`/`\bookpart` scores and music too, their `\header` the book's |
+| `\include` | 🟡 | LilyPond's language files (`english.ly`, …) set the pitch language; other files are not followed (`ignored-include`: flatten first) |
 | `\transpose` | ✅ | Transposing instrument context |
 | Relative mode | ✅ | `\relative` pitch context |
+| `\fixed` | ✅ | Absolute pitches an octave up per mark of the reference, also inside `\relative` |
+| Drum mode | ✅ | `\drums`, `\drummode`, `\new DrumStaff`/`DrumVoice`: LilyPond's 128 drum names as General MIDI keys (`bd` = 36) on a percussion staff (MIDI channel 10) |
 | Glissando | ✅ | `\glissando` with style override |
 | Arpeggio | ✅ | `\arpeggio` with direction |
 | Slide | ✅ | Via glissando trill style |
 | Anacrusis | ✅ | `\partial` |
 | Paper block | ✅ | `\paper { }` → page layout |
+| `\header` | ✅ | Every field (`Score.header`); strings decoded as LilyPond does; `\markup` values as plain text, `#"…"` as the string; a `\score`'s header is its movement's, the top-level one every movement's |
+| `\language` | ✅ | At the top level, in `\score` and in music; an unknown name keeps the language in force |
 | `\set Staff.instrumentName` | ✅ | Part name from `\set` property |
 | `\set Staff.midiInstrument` | ✅ | MIDI instrument from `\set` property |
 | `\context Voice = "name"` | ✅ | Named voices for lyrics attachment |
-| Lyrics | ✅ | `\lyricsto`, `\lyricmode`, `\context Lyrics`, `\addlyrics` |
+| Lyrics | ✅ | `\lyricsto`, `\lyricmode`, `\lyrics`, `\context Lyrics`, `\addlyrics` |
 | Staff variables | ✅ | `staffX = \new Staff { ... }` with full part metadata |
 | `\cadenzaOn/Off` | ✅ | Free-time span collapses to one `senza_misura` measure (both hands, score-wide) |
 | `\melisma/End` | ✅ | Gracefully skipped |
 | `\autoBeamOff/On` | ✅ | Gracefully skipped |
 | `\dynamicUp/Down` | ✅ | Gracefully skipped |
-| Harmony/chord names | ✅ | `\chordmode` (root, quality, bass; language-aware) |
-| Figured bass | ✅ | `\figuremode` (figures, accidentals incl. natural & double) |
+| Harmony/chord names | ✅ | `\chordmode`, `\chords` (root, quality, bass; language-aware) |
+| Figured bass | ✅ | `\figuremode`, `\figures` (figures, accidentals incl. natural & double) |
+
+### Diagnostics
+
+The reader reports what it finds wrong and what it does not read
+(`LyReading.diagnostics` in Rust; `Score.diagnostics`,
+`lytk.check_lilypond` and `lytk check` in Python). An error is input LilyPond
+itself rejects: `strict=True` readers raise `lytk.LilyPondSyntaxError` on one.
+A warning is input lytk reads around.
+
+| Code | Severity | Raised by |
+|---|---|---|
+| `syntax-error` | error | What the grammar cannot parse; notes outside braces at the top level (`c'4 d'`); a `>>` without its `<<`; what is left of a Scheme expression that lost an opening `(` (`#set-global-staff-size 20)`); a markup `\override` whose argument is not a pair |
+| `missing-token` | error | A bracket or quote never closed (`{ c'4 d'4`, `<< … }`) |
+| `invalid-duration` | error | A duration that is not a power of two (`c3`); read as a quarter |
+| `invalid-ratio` | error | A zero term in a tuplet (`\tuplet 0/2`), a duration multiplier (`*1/0`) or a measure length |
+| `not-lilypond` | error | Words at the start of the file that are no LilyPond (plain text) |
+| `too-large` | error | Input past the reader's bounds (`check_lilypond` only; a reader raises `ParseError`) |
+| `unknown-command` | warning | A command neither LilyPond 2.26 nor the file defines (a typo, or one from an include) |
+| `unrecognized-token` | warning | A word in music that is no note name in the current language, or no drum name in drum mode |
+| `ignored-include` | warning | `\include`: the reader does not follow includes; flatten the file first |
+| `unknown-language` | warning | `\language` with a name lytk does not know |
+| `dropped-music` | warning | The movements after the first, from a reader that takes one (`from_lilypond`, `convert_str`) |
+| `skipped-score` | warning | A `\score` with `\midi` and no `\layout` |
+| `unsupported-value` | warning | A value LilyPond accepts but lytk cannot represent (durations past 1024, time-signature denominators or tuplet terms past 255), or ignores as LilyPond does (`\time 1/0`) |
+
+`check_lilypond(text)` checks the syntax only, from the parse tree (about
+0.1 ms per file on LilyPond's regression tests); `semantic=True` reads the text
+too. On LilyPond 2.26's 2,626 regression tests and snippets, one file has an
+error (`display-lily-tests.ly`, whose `##[ … #]` the grammar does not know);
+of 502 fixtures broken by deleting one brace, quote, `<<`, `>>`, chord `>` or
+Scheme parenthesis, 499 have one.
 
 ### Export (IR → LilyPond) — `src/adapters/ir_to_ly.rs`
 

@@ -2225,6 +2225,46 @@ melB = { g'4 a' b' c'' }
     }
 
     #[test]
+    fn test_ottava_sizes_are_musicxml_intervals() {
+        // `\ottava #2` is a 15ma (MusicXML size 15, not 16); past three
+        // octaves the value is clamped (`#2147483647` overflowed `n * 8`).
+        let adapter = LyToIrAdapter::new();
+        for (n, kind, size) in [
+            ("2", "up", 15),
+            ("-2", "down", 15),
+            ("3", "up", 22),
+            ("2147483647", "up", 22),
+            ("-2147483648", "down", 22),
+        ] {
+            let score = adapter
+                .convert_str(&format!("{{ \\ottava #{n} c''4 }}"))
+                .unwrap();
+            let shift = score.parts()[0].measures[0]
+                .directions
+                .iter()
+                .find_map(|d| d.octave_shift.clone())
+                .unwrap();
+            assert_eq!(
+                (shift.shift_type.as_str(), shift.size),
+                (kind, size),
+                "#{n}"
+            );
+        }
+        // Written back, the octaves come out the same.
+        for n in ["2", "-2", "-1"] {
+            let score = adapter
+                .convert_str(&format!("{{ \\ottava #{n} c''4 }}"))
+                .unwrap();
+            let ly = crate::adapters::FromIrAdapter::convert(
+                &crate::adapters::ir_to_ly::IrToLyAdapter::new(),
+                &score,
+            )
+            .unwrap();
+            assert!(ly.contains(&format!("\\ottava #{n}")), "{n}: {ly}");
+        }
+    }
+
+    #[test]
     fn test_layout_break_parsing() {
         let adapter = LyToIrAdapter::new();
         let src = r#"{ c'4 d' e' f' \break g' a' b' c'' \pageBreak d'' e'' f'' g'' }"#;
@@ -3393,6 +3433,33 @@ lower = \relative c { \partial 8 c8 | d8 e f g a b | c8 b a g f e }
         );
     }
 
+    /// Inside `\relative`, LilyPond makes the written body relative once and
+    /// copies it: the copies of an unfold have the same pitches (lytk used to
+    /// read each pass relative to the previous one, climbing an octave step
+    /// per pass; LilyPond's page-layout tests reached octave 128 that way).
+    #[test]
+    fn test_repeat_unfold_in_relative_repeats_the_same_pitches() {
+        let score = LyToIrAdapter::new()
+            .convert_str(r#"\relative { \repeat unfold 10 { \repeat unfold 4 { c''4 } } d4 }"#)
+            .unwrap();
+        let octaves: Vec<i32> = score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.pitch.octave),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(octaves.len(), 41);
+        assert!(
+            octaves[..40].iter().all(|&o| o == octaves[0]),
+            "{octaves:?}"
+        );
+        assert_eq!(octaves[40], octaves[0], "d4 is relative to the last c");
+    }
+
     /// `\repeat unfold N { … }` writes the body out N times (was emitted once,
     /// dropping N−1 copies).
     #[test]
@@ -3517,4 +3584,10 @@ mod transposition {
             assert_eq!(read(&ly), (Some(want), 4), "{ly}");
         }
     }
+}
+
+#[test]
+fn builtins_are_sorted_for_binary_search() {
+    let names = super::builtins::BUILTINS;
+    assert!(names.windows(2).all(|w| w[0] < w[1]));
 }

@@ -81,7 +81,11 @@ impl Duration {
     pub fn actual_duration(&self) -> Frac {
         // Dot formula: base * (2 - 1/2^dots)
         let dotted = self.base * dot_multiplier(self.dots);
-        // Tuplet scaling
+        // Tuplet scaling. No reader makes a 0 term (they drop such ratios);
+        // one from a hand-edited IR scales nothing rather than dividing by 0.
+        if self.tuplet_normal == 0 || self.tuplet_actual == 0 {
+            return dotted;
+        }
         dotted * Frac::new(self.tuplet_normal as i64, self.tuplet_actual as i64)
     }
 
@@ -91,6 +95,10 @@ impl Duration {
     /// `1 / base` for standard durations. Returns `None` for non-power-of-two
     /// bases (breve, longa, maxima use 0, −1, −2 which we don't encode as ints).
     pub fn lilypond_log(&self) -> Option<i32> {
+        // A zero-length note (LilyPond's `c4*0`) has no written value.
+        if *self.base.numer() <= 0 {
+            return None;
+        }
         // log2(1/base) — e.g. quarter (1/4) → log2(4) = 2
         let recip = self.base.recip();
         if *recip.denom() != 1 {

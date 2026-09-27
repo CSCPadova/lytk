@@ -22,7 +22,8 @@ pub(super) fn walk_music(music: &Music, state: &mut LowerState) {
 
             for (i, child) in children.iter().enumerate() {
                 state.time = saved_time;
-                state.voice = saved_voice + i as u8;
+                // Voice numbers are `u8`: a 256th parallel branch shares the last.
+                state.voice = saved_voice.saturating_add(u8::try_from(i).unwrap_or(u8::MAX));
                 walk_music(child, state);
                 if state.time > max_time {
                     max_time = state.time;
@@ -190,7 +191,7 @@ fn walk_context(
             let idx = state.staves.len();
             state.staves.push(StaffBuilder::new(
                 name.unwrap_or("").to_string(),
-                idx as u8 + 1,
+                u8::try_from(idx + 1).unwrap_or(u8::MAX),
             ));
             let saved_staff = state.current_staff;
             state.current_staff = Some(idx);

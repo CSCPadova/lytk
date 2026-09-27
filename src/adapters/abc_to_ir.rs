@@ -82,7 +82,9 @@ impl ToMusicAdapter for AbcToIrAdapter {
     }
 
     fn convert_str_to_music(&self, text: &str) -> Result<MusicDocument> {
-        parse_tune(text)
+        let doc = parse_tune(text)?;
+        super::check_music_length(&doc.music)?;
+        Ok(doc)
     }
 }
 
