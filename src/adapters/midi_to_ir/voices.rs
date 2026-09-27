@@ -63,7 +63,7 @@ pub(super) fn separate(
         notes.into_iter().partition(|n| n.grace.is_some());
     // A group's graces in the order they were played.
     graces.sort_by_key(|g| g.tick);
-    plain.sort_by(|a, b| (a.on, a.off, a.key).cmp(&(b.on, b.off, b.key)));
+    plain.sort_by_key(|n| (n.on, n.off, n.key));
 
     // Chords: same start, same end.
     let mut events: Vec<Event> = Vec::new();

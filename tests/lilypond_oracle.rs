@@ -202,8 +202,8 @@ fn lilypond_plays_our_ly_like_our_midi() {
             ));
         }
     }
-    worst.sort_by(|x, y| y.0.cmp(&x.0));
-    loudness.sort_by(|x, y| y.0.cmp(&x.0));
+    worst.sort_by_key(|x| std::cmp::Reverse(x.0));
+    loudness.sort_by_key(|x| std::cmp::Reverse(x.0));
 
     println!("\n===== LilyPond plays lytk's LilyPond vs lytk's MIDI =====");
     println!(

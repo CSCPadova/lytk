@@ -468,7 +468,7 @@ impl TempoMap {
                 }
             }
         }
-        changes.sort_by(|a, b| a.0.cmp(&b.0));
+        changes.sort_by_key(|a| a.0);
         changes.dedup_by(|b, a| a.0 == b.0);
         if changes.first().is_none_or(|c| c.0 > zero()) {
             changes.insert(0, (zero(), 500_000));
@@ -859,7 +859,7 @@ impl Player<'_> {
                     .filter(|(_, l, _)| l.is_none_or(|l| l == s.lane))
                     .map(|(p, _, d)| (*p, *d))
                     .collect();
-                evs.sort_by(|a, b| a.0.cmp(&b.0));
+                evs.sort_by_key(|a| a.0);
                 Curve::new(&evs, default, eq, self.end)
             });
             let vel = match s.own_velocity {
@@ -1203,7 +1203,7 @@ impl Curve {
         if !group.is_empty() {
             resolve(&mut points, &group, cur, None, lo, hi);
         }
-        points.sort_by(|a, b| a.0.cmp(&b.0));
+        points.sort_by_key(|a| a.0);
         Curve { points }
     }
 
