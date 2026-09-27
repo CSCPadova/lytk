@@ -142,8 +142,8 @@ lyrics); slurs and ornaments are not performed.
 ## Not there yet
 
 - Tablature, percussion (unpitched notes) and fretboard diagrams.
-- MIDI import transcribes the file as it is. It does not yet quantize, separate
-  voices, detect tuplets or split the hands of a piano part.
+- Performed MIDI is quantized less reliably when its tempo is far from the
+  file's own, when chords are released unevenly, or at a low resolution.
 - Non-traditional key signatures, cross-staff notes (`\change Staff`), and
   Humdrum spine splits (`*^`, `*v`). Files that use spine splits are rejected
   with an error.

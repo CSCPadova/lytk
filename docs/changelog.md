@@ -9,6 +9,8 @@ engineering notes are in the [development log](devlog.md).
 
 ### Added
 
+- `lytk.__version__`, the crate's version (`lytk --version` prints it).
+
 - `lytk.LytkError`, the base of the errors lytk raises, and
   `lytk.InternalError`: a Rust panic inside any function or method that
   reads, writes or transforms music now raises `InternalError` (an ordinary
@@ -49,6 +51,9 @@ engineering notes are in the [development log](devlog.md).
 
 ### Changed
 
+- The version has one source, `Cargo.toml` (`pyproject.toml` declares it
+  dynamic); the release workflow fails when the tag is not that version, and
+  CI runs the Python tests on 3.10 to 3.13.
 - Readers raise `lytk.ParseError` where they raised `ValueError` (a subclass,
   so existing handlers still catch it). A `.ly` file that is not UTF-8 is a
   `ParseError`; it was an `OSError`.
@@ -401,9 +406,10 @@ First public release.
 
 - Readers and writers for LilyPond, MusicXML, compressed MusicXML (`.mxl`),
   MIDI, ABC and Humdrum `**kern`, all through one internal representation.
-- A LilyPond reader for real files: variables, `\relative`, `\include`, piano
-  scores with several voices per staff, repeats and voltas, cadenzas, lyrics,
-  chord names and figured bass. The LilyPond writer supports all 12
+- A LilyPond reader for real files: variables, `\relative`, piano scores with
+  several voices per staff, repeats and voltas, cadenzas, lyrics, chord names
+  and figured bass. (It does not follow `\include`: `lytk flatten` inlines
+  includes first.) The LilyPond writer supports all 12
   note-name languages.
 - Transforms: transpose (by semitones, interval or target key), invert,
   retrograde, and note-name language changes.

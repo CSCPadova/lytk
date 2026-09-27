@@ -594,7 +594,6 @@ wheels = [
 
 [[package]]
 name = "lytk"
-version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -642,7 +641,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'eval'", specifier = ">=4.30" },
     { name = "typer", specifier = ">=0.26.8" },
 ]
-provides-extras = ["torch", "tensorflow", "eval", "all"]
+provides-extras = ["all", "eval", "tensorflow", "torch"]
 
 [package.metadata.requires-dev]
 dev = [

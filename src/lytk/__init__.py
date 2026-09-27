@@ -54,6 +54,7 @@ from lytk._core import (
     transpose_interval,
     transpose_to_key,
 )
+from lytk._core import __version__  # noqa: F401 - the crate's version
 
 __all__ = [
     # Errors and diagnostics

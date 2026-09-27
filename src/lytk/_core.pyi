@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, TypeVar
 
+__version__: str
+
 class LytkError(Exception):
     """Base class of the errors lytk raises itself."""
 

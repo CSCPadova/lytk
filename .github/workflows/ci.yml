@@ -104,8 +104,13 @@ jobs:
       - run: cargo check --all-targets
 
   python:
-    name: Python tests
+    name: Python ${{ matrix.python }} tests
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The abi3 floor (lilycorpus runs on 3.10) up to the newest.
+        python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,7 +119,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - name: Create and expose virtualenv
         run: |
           python -m venv .venv
@@ -124,11 +129,14 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install maturin pytest pytest-benchmark scipy
       # CPU-only torch so the torch dataset-adapter tests run instead of skipping
-      # (scipy above enables the eval-metric tests too).
-      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      # (scipy above enables the eval-metric tests too). On one Python only:
+      # the frameworks are large, and the others test the bindings.
+      - if: matrix.python == '3.12'
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       # TensorFlow too: its dtype rules are stricter than torch's, so the tf
       # data-loader path fails on inputs the torch path accepts. Without this
       # every tf test silently skips and that class of bug ships.
-      - run: pip install tensorflow-cpu
+      - if: matrix.python == '3.12'
+        run: pip install tensorflow-cpu
       - run: maturin develop
       - run: pytest tests/ -v

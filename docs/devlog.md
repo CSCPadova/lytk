@@ -3,6 +3,25 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-27 — Epic J: J6 (release hygiene)
+
+The version is `Cargo.toml`'s alone: `pyproject.toml` declares it dynamic
+(maturin reads it), `_core` exports it as `__version__`, and
+`test_version_is_the_crates` checks both against the file. It is 0.3.0 now,
+the release Epic J is for. The release workflow's test gate fails when the
+tag is not `v` + that version. The Python CI job runs on 3.10, 3.11, 3.12 and
+3.13; torch and TensorFlow, large, are installed on 3.12 only, so the others
+test the bindings and the CLI.
+
+Docs: SECURITY.md said the reader follows `\include` (it reports it; only
+`flatten` follows includes), and so did the 0.1.0 changelog entry; README's
+"not there yet" described the MIDI importer before 0.2.0; `design.md` gave
+test counts from the first weeks and a Rust CLI test suite that no longer
+exists; `development.md` spoke of a Rust CLI. `src/tree-sitter/README.md`
+records the vendored grammar's upstream commit, found by matching blob hashes
+against upstream's history: `b3b38a6` (Tree-sitter 0.26.2); the grammar is
+unchanged upstream since (only regenerated, with 0.27.0).
+
 ## 2026-09-27 — Epic J: J4 (strings and headers) and J5 (pitch language)
 
 **J4.** `ly_to_ir/text.rs` decodes text as LilyPond's lexer does

@@ -240,13 +240,7 @@ def _command(name: str | None = None) -> Callable[[Callable[..., None]], Callabl
 
 def _version(value: bool) -> None:
     if value:
-        try:
-            from importlib.metadata import version
-
-            v = version("lytk")
-        except Exception:  # noqa: BLE001 - not installed as a distribution
-            v = "unknown"
-        typer.echo(f"lytk {v}")
+        typer.echo(f"lytk {lytk.__version__}")
         raise typer.Exit()
 
 

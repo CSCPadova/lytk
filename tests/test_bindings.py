@@ -312,6 +312,16 @@ class TestTypedErrors:
 
 
 
+def test_version_is_the_crates():
+    # One version source: Cargo.toml, which maturin puts in the metadata too.
+    import re
+    from importlib.metadata import version
+
+    cargo = (Path(__file__).parent.parent / "Cargo.toml").read_text()
+    expected = re.search(r'^version = "(.+)"$', cargo, re.M).group(1)
+    assert lytk.__version__ == expected == version("lytk")
+
+
 class TestExceptionHierarchy:
     """Readers raise ParseError, which is a ValueError too; I/O stays OSError."""
 

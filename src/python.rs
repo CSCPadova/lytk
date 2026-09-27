@@ -1643,6 +1643,7 @@ fn compute_metrics<'py>(
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     install_panic_hook();
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("LytkError", m.py().get_type_bound::<LytkError>())?;
     m.add("InternalError", m.py().get_type_bound::<InternalError>())?;
     m.add("ParseError", parse_error_type(m.py())?)?;

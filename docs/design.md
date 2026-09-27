@@ -249,15 +249,19 @@ Implemented transforms: `Transpose`, `ChangeLanguage`, `Invert`, `Retrograde`.
 
 ## Testing Strategy
 
-- **Unit tests** — colocated with each module (`#[cfg(test)]`). 255 passing.
-- **Fixture tests** — 143 MusicXML files from `musicxmlTestSuite/` in `tests/fixtures/xml/`.
-- **Round-trip tests** — `LilyPond → IR → LilyPond` and `MusicXML → IR → MusicXML`,
-  comparing semantic equivalence. Currently tested via `test_roundtrip_*` in the adapter tests.
-- **CLI integration tests** — `tests/cli.rs` using `assert_cmd` + `predicates` + `tempfile`.
-  15 passing.
-- **Python tests** — `pytest tests/` (26 tests) for PyO3 binding correctness.
-- **Criterion benchmarks** — `benches/benchmarks.rs`, 25 benchmarks.
-- **pytest-benchmark** — `benches/bench_python.py`, cross-language comparison.
+- **Unit tests** — colocated with each module (`#[cfg(test)]`).
+- **Integration tests** (`tests/*.rs`) — the MusicXML test suite and LilyPond
+  fixtures (`tests/fixtures/`), round trips per format with a fidelity
+  scoreboard (`fidelity.rs`), LilyPond-shaped fuzzing (`fuzz_inputs.rs`), the
+  LilyPond corpus boards (`ly_corpus.rs`, CI job `lilypond-corpus`), the
+  LilyPond oracle (`lilypond-oracle` job) and the diagnostics and text tests.
+- **Python tests** (`tests/*.py`) — the bindings, the CLI (Typer's
+  `CliRunner`), datasets, representations and end-to-end conversions.
+- **Benchmarks** — Criterion (`benches/benchmarks.rs`) and pytest-benchmark
+  (`benches/bench_python.py`), cross-language.
+
+Counts change with every release; `docs/roadmap.md` and the devlog give the
+current ones.
 
 ---
 

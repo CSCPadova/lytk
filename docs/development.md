@@ -4,7 +4,7 @@
 
 | Tool | Version | Purpose |
 |---|---|---|
-| Rust + Cargo | ≥ 1.85 | Compile the Rust library and CLI (`rust-version` in `Cargo.toml`) |
+| Rust + Cargo | ≥ 1.85 | Compile the Rust library (`rust-version` in `Cargo.toml`) |
 | Python | ≥ 3.10 | Python bindings and tooling |
 | uv | latest | Python dependency management |
 | maturin | ≥ 1.0, < 2.0 | Build the PyO3 extension |
@@ -26,7 +26,7 @@ uv tool install maturin
 
 ## Compiling
 
-### Rust — library and CLI
+### Rust — library
 
 Debug build (fast compile, no optimisations):
 
