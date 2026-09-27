@@ -16,7 +16,7 @@
 
 mod common;
 
-use common::{note_signature, pitch_multiset, signature};
+use common::{bar_lengths, note_signature, pitch_multiset, safe, signature};
 
 use _core::adapters::abc_to_ir::AbcToIrAdapter;
 use _core::adapters::humdrum_to_ir::HumdrumToIrAdapter;
@@ -31,7 +31,6 @@ use _core::adapters::mxml_to_ir::MxmlToIrAdapter;
 use _core::adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
 use _core::ir::score::Score;
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
@@ -62,12 +61,12 @@ const XML_DUR_BASELINE: usize = 152; // full onset+duration fidelity
                                      // concatenated a staff's two voices into one sequential stream (a one-bar score
                                      // became two bars). With the lift fixed the voices are simultaneous, and the ABC
                                      // writer's documented inner-polyphony limit keeps one of them.
-const XML_ABC_NOTES_BASELINE: usize = 124;
-const XML_ABC_PITCHES_BASELINE: usize = 123;
-const XML_ABC_DUR_BASELINE: usize = 121;
-const XML_KRN_NOTES_BASELINE: usize = 132;
-const XML_KRN_PITCHES_BASELINE: usize = 130;
-const XML_KRN_DUR_BASELINE: usize = 130;
+const XML_ABC_NOTES_BASELINE: usize = 144;
+const XML_ABC_PITCHES_BASELINE: usize = 144;
+const XML_ABC_DUR_BASELINE: usize = 145;
+const XML_KRN_NOTES_BASELINE: usize = 138;
+const XML_KRN_PITCHES_BASELINE: usize = 136;
+const XML_KRN_DUR_BASELINE: usize = 142;
 // ABC now includes a multi-voice fixture (multivoice.abc) that round-trips.
 const ABC_NOTES_BASELINE: usize = 4;
 const ABC_PITCHES_BASELINE: usize = 4;
@@ -91,9 +90,44 @@ const ABC_DUR_BASELINE: usize = 4;
 // notes per (key, channel) and the writer orders note-offs before note-ons at
 // equal ticks — cross-voice unisons no longer drop notes. Baselines raised
 // 3/3/2 → 4/4/3 (only chopin_n's inherent meter drift remains).
-const MIDI_NOTES_BASELINE: usize = 4;
-const MIDI_PITCHES_BASELINE: usize = 4;
-const MIDI_DUR_BASELINE: usize = 3;
+// Epic I phase C (2026-09-25): the rebuilt reader re-anchors its bars at
+// every time signature (the notes above no longer apply) and reads positions,
+// not durations: 5/5/5, bars 5/5 (chopin_n's cadenza drifted until grace
+// notes were recognised only at LilyPond's exact 9/40 lengths).
+const MIDI_NOTES_BASELINE: usize = 5;
+const MIDI_PITCHES_BASELINE: usize = 5;
+const MIDI_DUR_BASELINE: usize = 5;
+
+// Epic I phase L (2026-09-25): the Layer-1 lowering now bars music on the
+// same score-wide grid as the LilyPond reader, ties notes across bar lines
+// instead of copying them into both bars, keeps volta repeats as repeats, and
+// honours pickups. XML→ABC 130/129/127 → 138/138/139 (bars 126 → 135),
+// XML→KRN 132/130/130 → 138/136/140 (bars 119 → 133).
+// Epic I phase A2 (2026-09-25): ABC bar lines are real bar lines (an irregular
+// bar keeps its length) and kern writes repeat signs. XML→ABC → 141/141/139
+// (bars 138), XML→KRN onsets 140 → 143.
+// Phase L review fixes (2026-09-25): XML→ABC bars 138 → 141. The one planned
+// drop, XML→KRN onsets 143 → 142: lift now rebuilds a repeat that has endings
+// but no forward repeat sign (45b), so the source plays its endings; before,
+// both sides ignored that repeat and agreed by accident. Kern writes no
+// endings (`*>` expansion lists), so its copy plays the repeat without them.
+// Epic I phase A3 (2026-09-25): the ABC writer keeps a bar's inner voices as
+// `&` layers, writes spacers, ties overflow over bar lines, and lift keeps
+// irregular bars: XML→ABC → 144/144/144, bars 144.
+// Second review (2026-09-26): repeat counts are read from the backward repeat
+// too (45a: 5 times, 45c: 5 and 3 times). ABC has no repeat count, so the
+// writer writes the extra passes out: they play the same (onsets 144 → 145)
+// but no longer have the source's bar list — the planned drop, bars 144 → 142;
+// both passed while the count was lost.
+// Bar structure kept (bar count and each bar's length, score-wide; see
+// `common::bar_lengths`). Note signatures merge ties and ignore bar lines, so
+// they can't see a note that moved into the wrong bar. Measured 2026-09-25.
+const LY_BARS_BASELINE: usize = 27;
+const XML_BARS_BASELINE: usize = 152;
+const ABC_BARS_BASELINE: usize = 4;
+const XML_ABC_BARS_BASELINE: usize = 142;
+const XML_KRN_BARS_BASELINE: usize = 133;
+const MIDI_BARS_BASELINE: usize = 5;
 
 #[derive(Default)]
 struct Board {
@@ -101,6 +135,7 @@ struct Board {
     notes_ok: usize,
     pitches_ok: usize,
     dur_ok: usize,
+    bars_ok: usize,
     /// fixtures whose content changed (for the report)
     fails: Vec<String>,
 }
@@ -122,10 +157,6 @@ fn list(dir: &str, exts: &[&str]) -> Vec<PathBuf> {
     v
 }
 
-fn safe<T, F: FnOnce() -> Option<T>>(f: F) -> Option<T> {
-    catch_unwind(AssertUnwindSafe(f)).ok().flatten()
-}
-
 fn record(board: &mut Board, fixture: &str, before: &Score, after: Option<&Score>) {
     board.total += 1;
     let Some(after) = after else {
@@ -144,6 +175,9 @@ fn record(board: &mut Board, fixture: &str, before: &Score, after: Option<&Score
     if note_signature(before) == note_signature(after) {
         board.dur_ok += 1;
     }
+    if bar_lengths(before) == bar_lengths(after) {
+        board.bars_ok += 1;
+    }
     if !pitch_ok && board.fails.len() < 12 {
         board
             .fails
@@ -153,8 +187,18 @@ fn record(board: &mut Board, fixture: &str, before: &Score, after: Option<&Score
 
 fn report(name: &str, b: &Board, base: (usize, usize, usize)) {
     println!(
-        "{name} : {}/{} note-count, {}/{} pitch, {}/{} onset+dur (baseline {}/{}/{})",
-        b.notes_ok, b.total, b.pitches_ok, b.total, b.dur_ok, b.total, base.0, base.1, base.2
+        "{name} : {}/{} note-count, {}/{} pitch, {}/{} onset+dur, {}/{} bars (baseline {}/{}/{})",
+        b.notes_ok,
+        b.total,
+        b.pitches_ok,
+        b.total,
+        b.dur_ok,
+        b.total,
+        b.bars_ok,
+        b.total,
+        base.0,
+        base.1,
+        base.2
     );
 }
 
@@ -181,8 +225,6 @@ fn gate(name: &str, b: &Board, base: (usize, usize, usize)) {
 
 #[test]
 fn fidelity_scoreboard() {
-    std::panic::set_hook(Box::new(|_| {}));
-
     // ----- LY → IR → LY → IR (Music path) -----
     let mut ly = Board::default();
     for path in list("tests/fixtures/ly", &["ly"]) {
@@ -396,4 +438,18 @@ fn fidelity_scoreboard() {
             MIDI_DUR_BASELINE,
         ),
     );
+    for (name, b, base) in [
+        ("LY", &ly, LY_BARS_BASELINE),
+        ("XML", &xml, XML_BARS_BASELINE),
+        ("ABC", &abc, ABC_BARS_BASELINE),
+        ("XML→ABC", &xml_abc, XML_ABC_BARS_BASELINE),
+        ("XML→KRN", &xml_krn, XML_KRN_BARS_BASELINE),
+        ("MIDI", &midi, MIDI_BARS_BASELINE),
+    ] {
+        assert!(
+            b.bars_ok >= base,
+            "{name} bar structure regressed: {} < {base}",
+            b.bars_ok
+        );
+    }
 }

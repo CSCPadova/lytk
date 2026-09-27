@@ -16,20 +16,26 @@
 
 use std::collections::BTreeMap;
 
+use crate::ir::articulation::{StartStop, TieEvent};
 use crate::ir::direction::{Barline, BarlineType, Direction};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::harmony::{FiguredBass, Harmony};
-use crate::ir::measure::{Clef, KeySignature, Measure, MeasureAttributes, TimeSignature};
-use crate::ir::note::{Rest, VoiceElement};
+use crate::ir::measure::{
+    Clef, KeySignature, Measure, MeasureAttributes, TimeSignature, Transpose,
+};
+use crate::ir::notate::notate;
+use crate::ir::note::{Note, Rest, VoiceElement};
 use crate::ir::voice::Voice;
 
 /// Something that happens at a position but is not a voice element.
 #[derive(Clone, Debug)]
-pub(super) enum Event {
+pub(crate) enum Event {
     Time(TimeSignature),
     /// `\set Score.measureLength`: changes the bar length without a signature.
     MeasureLength(Frac),
     Key(KeySignature),
+    /// A transposing instrument from here on.
+    Transpose(Transpose),
     /// Clef for a staff (1 until the part is folded into a PianoStaff).
     Clef(u8, Clef),
     Direction(Box<Direction>),
@@ -47,29 +53,33 @@ pub(super) enum Event {
 
 /// Positioned content of one part (or of a variable, relative to 0).
 #[derive(Clone, Debug, Default)]
-pub(super) struct Timeline {
+pub(crate) struct Timeline {
     /// Voice lanes (lane number = IR voice number), each onset-ordered.
-    pub(super) lanes: BTreeMap<u8, Vec<(Frac, VoiceElement)>>,
-    pub(super) events: Vec<(Frac, Event)>,
+    pub(crate) lanes: BTreeMap<u8, Vec<(Frac, VoiceElement)>>,
+    pub(crate) events: Vec<(Frac, Event)>,
 }
 
 fn zero() -> Frac {
     Frac::from_integer(0)
 }
 
+/// Divisions per quarter note of harmony and figured-bass offsets in a
+/// measure (the IR's convention; `DEFAULT_DIVISIONS` in the MusicXML writer).
+pub(crate) const OFFSET_DIVISIONS: i64 = 4;
+
 impl Event {
-    pub(super) fn direction(d: Direction) -> Event {
+    pub(crate) fn direction(d: Direction) -> Event {
         Event::Direction(Box::new(d))
     }
 }
 
 impl Timeline {
-    pub(super) fn add(&mut self, pos: Frac, ev: Event) {
+    pub(crate) fn add(&mut self, pos: Frac, ev: Event) {
         self.events.push((pos, ev));
     }
 
     /// Position after the last element or event.
-    pub(super) fn end(&self) -> Frac {
+    pub(crate) fn end(&self) -> Frac {
         let lanes = self
             .lanes
             .values()
@@ -78,7 +88,7 @@ impl Timeline {
         lanes.chain(events).max().unwrap_or_else(zero)
     }
 
-    pub(super) fn has_lane_content(&self) -> bool {
+    pub(crate) fn has_lane_content(&self) -> bool {
         self.lanes.values().any(|l| !l.is_empty())
     }
 
@@ -86,7 +96,7 @@ impl Timeline {
     /// when that lane already holds music overlapping the run (a second
     /// simultaneous voice), in the lowest-numbered lane above it that is free
     /// over the run. Returns the lane used.
-    pub(super) fn place_run(&mut self, lane: u8, start: Frac, elems: Vec<VoiceElement>) -> u8 {
+    pub(crate) fn place_run(&mut self, lane: u8, start: Frac, elems: Vec<VoiceElement>) -> u8 {
         if elems.is_empty() {
             return lane;
         }
@@ -96,12 +106,14 @@ impl Timeline {
                 .map(VoiceElement::metric_duration)
                 .sum::<Frac>();
         let mut lane = lane.max(1);
-        while self
-            .lanes
-            .get(&lane)
-            .is_some_and(|l| overlaps(l, start, end))
+        // Past lane 255 there is nowhere to go: the run shares the last one.
+        while lane < u8::MAX
+            && self
+                .lanes
+                .get(&lane)
+                .is_some_and(|l| overlaps(l, start, end))
         {
-            lane = lane.saturating_add(1);
+            lane += 1;
         }
         let slot = self.lanes.entry(lane).or_default();
         let mut pos = start;
@@ -117,10 +129,19 @@ impl Timeline {
         lane
     }
 
+    /// Place a voice's elements (onset-ordered) in `lane`, one run of
+    /// back-to-back elements at a time: a run that would overlap music already
+    /// there moves up to the next free lane.
+    pub(crate) fn place_voice(&mut self, lane: u8, elems: &[(Frac, VoiceElement)]) {
+        for (start, run) in contiguous_runs(elems) {
+            self.place_run(lane, start, run);
+        }
+    }
+
     /// Splice a variable's timeline in at `at`. Its `main_lane` (the lane the
     /// variable's music was written in) lands in `lane`; other lanes keep their
     /// numbers, moving up past any lane their music would overlap.
-    pub(super) fn splice(&mut self, frag: &Timeline, at: Frac, main_lane: u8, lane: u8) {
+    pub(crate) fn splice(&mut self, frag: &Timeline, at: Frac, main_lane: u8, lane: u8) {
         for (&l, elems) in &frag.lanes {
             let target = if l == main_lane { lane } else { l };
             for (start, run) in contiguous_runs(elems) {
@@ -133,7 +154,7 @@ impl Timeline {
     }
 
     /// Shift every position by `by` (a variable spliced in at `by`).
-    pub(super) fn shifted(mut self, by: Frac) -> Timeline {
+    pub(crate) fn shifted(mut self, by: Frac) -> Timeline {
         if by != zero() {
             for lane in self.lanes.values_mut() {
                 for (on, _) in lane.iter_mut() {
@@ -150,7 +171,7 @@ impl Timeline {
     /// Stamp a staff number on every element, clef and direction (a staff
     /// being folded into a multi-staff part), and move lanes up by `offset`
     /// so they stay disjoint from the staves before it.
-    pub(super) fn into_staff(self, staff: u8, offset: u8) -> Timeline {
+    pub(crate) fn into_staff(self, staff: u8, offset: u8) -> Timeline {
         let lanes = self
             .lanes
             .into_iter()
@@ -187,8 +208,48 @@ impl Timeline {
         Timeline { lanes, events }
     }
 
+    /// Move every staff number down by `staves` (an unnumbered staff counts
+    /// as staff 1) and every lane up by `offset`: a timeline of one or more
+    /// staves folded in after `staves` others keeps its own layout.
+    pub(crate) fn shift_staves(self, staves: u8, offset: u8) -> Timeline {
+        let staff = |s: u8| s.max(1).saturating_add(staves);
+        let lanes = self
+            .lanes
+            .into_iter()
+            .map(|(l, elems)| {
+                let lane = l.saturating_add(offset);
+                let elems = elems
+                    .into_iter()
+                    .map(|(on, mut e)| {
+                        let s = staff(element_staff(&e));
+                        set_staff(&mut e, s);
+                        set_voice_number(&mut e, lane);
+                        (on, e)
+                    })
+                    .collect();
+                (lane, elems)
+            })
+            .collect();
+        let events = self
+            .events
+            .into_iter()
+            .map(|(p, ev)| {
+                let ev = match ev {
+                    Event::Clef(s, c) => Event::Clef(staff(s), c),
+                    Event::Direction(mut d) => {
+                        d.staff = staff(d.staff);
+                        Event::Direction(d)
+                    }
+                    other => other,
+                };
+                (p, ev)
+            })
+            .collect();
+        Timeline { lanes, events }
+    }
+
     /// Absorb another timeline's lanes (numbers unchanged) and events.
-    pub(super) fn absorb(&mut self, other: Timeline) {
+    pub(crate) fn absorb(&mut self, other: Timeline) {
         for (l, elems) in other.lanes {
             let slot = self.lanes.entry(l).or_default();
             slot.extend(elems);
@@ -200,7 +261,7 @@ impl Timeline {
     /// Lanes holding only spacers (`s`, `\skip`, or `R` next to real music) are
     /// not voices: they carry dynamics, hairpins and timing. Turn what they
     /// carry into directions at the spacer's position and drop the lane.
-    pub(super) fn fold_spacer_lanes(&mut self) {
+    pub(crate) fn fold_spacer_lanes(&mut self) {
         let has_music = self
             .lanes
             .values()
@@ -331,9 +392,9 @@ fn element_staff(e: &VoiceElement) -> u8 {
 // ---------------------------------------------------------------------------
 
 /// Score-wide bar layout.
-pub(super) struct Grid {
+pub(crate) struct Grid {
     /// `[start, end)` of each bar, contiguous from 0.
-    pub(super) bars: Vec<(Frac, Frac)>,
+    pub(crate) bars: Vec<(Frac, Frac)>,
     /// Bars inside a cadenza.
     senza: Vec<bool>,
     /// Meter in force from each `\time` (for parts that don't declare it).
@@ -364,7 +425,19 @@ impl Ctl {
 }
 
 impl Grid {
-    pub(super) fn build<'a>(timelines: impl IntoIterator<Item = &'a Timeline>) -> Grid {
+    pub(crate) fn build<'a>(timelines: impl IntoIterator<Item = &'a Timeline>) -> Grid {
+        Grid::build_with(timelines, false)
+    }
+
+    /// The grid for music whose notes are tied across bar lines
+    /// ([`split_tied`]): bar lines run on to the end of the music, so an
+    /// over-long last note is tied into further bars instead of stretching
+    /// the last one.
+    pub(crate) fn build_tied<'a>(timelines: impl IntoIterator<Item = &'a Timeline>) -> Grid {
+        Grid::build_with(timelines, true)
+    }
+
+    fn build_with<'a>(timelines: impl IntoIterator<Item = &'a Timeline>, to_end: bool) -> Grid {
         let mut end = zero();
         // The last point where anything starts: bar lines past it would only
         // cut an over-long last note into an empty bar.
@@ -470,7 +543,7 @@ impl Grid {
             grid_lines(&mut cuts, anchor, bar_len, at, end);
         }
 
-        cuts.retain(|&c| c <= end && (c == zero() || c <= last_start));
+        cuts.retain(|&c| c <= end && (to_end || c == zero() || c <= last_start));
         cuts.sort();
         cuts.dedup();
         let mut bars: Vec<(Frac, Frac)> = cuts.windows(2).map(|w| (w[0], w[1])).collect();
@@ -491,7 +564,7 @@ impl Grid {
     }
 
     /// Index of the bar containing `pos` (the one starting at `pos` on a boundary).
-    pub(super) fn bar_at(&self, pos: Frac) -> usize {
+    pub(crate) fn bar_at(&self, pos: Frac) -> usize {
         self.bars
             .partition_point(|(s, _)| *s <= pos)
             .saturating_sub(1)
@@ -540,11 +613,34 @@ fn attrs(m: &mut Measure) -> &mut MeasureAttributes {
 }
 
 /// Build a part's measures on the score's grid.
-pub(super) fn split(
+pub(crate) fn split(
     tl: Timeline,
     grid: &Grid,
     harmony_divs: i64,
     figure_divs: i64,
+) -> Vec<Measure> {
+    split_with(tl, grid, harmony_divs, figure_divs, false)
+}
+
+/// [`split`], cutting an element that runs past a bar line into tied pieces
+/// (rests into rests), each spelled with [`notate`]. LilyPond input keeps its
+/// own notation, so its reader uses [`split`]; music read from formats that
+/// don't bar their notes (the Layer-1 tree, MIDI) uses this.
+pub(crate) fn split_tied(
+    tl: Timeline,
+    grid: &Grid,
+    harmony_divs: i64,
+    figure_divs: i64,
+) -> Vec<Measure> {
+    split_with(tl, grid, harmony_divs, figure_divs, true)
+}
+
+fn split_with(
+    tl: Timeline,
+    grid: &Grid,
+    harmony_divs: i64,
+    figure_divs: i64,
+    tie_over: bool,
 ) -> Vec<Measure> {
     if grid.bars.is_empty() || (!tl.has_lane_content() && tl.events.is_empty()) {
         return Vec::new();
@@ -573,6 +669,7 @@ pub(super) fn split(
         match ev {
             Event::Time(ts) => attrs(&mut measures[i]).time = Some(ts),
             Event::Key(k) => attrs(&mut measures[i]).key = Some(k),
+            Event::Transpose(t) => attrs(&mut measures[i]).transpose = Some(t),
             Event::Clef(staff, c) => {
                 attrs(&mut measures[i]).clefs.insert(staff, c);
             }
@@ -605,7 +702,14 @@ pub(super) fn split(
         let mut bar = 0usize;
         let mut current: Option<(usize, Vec<VoiceElement>)> = None;
         let mut cursor = zero(); // end of the lane's previous element
-        for (on, e) in elems {
+        let pieces = elems.into_iter().flat_map(|(on, e)| {
+            if tie_over {
+                cut_at_bars(on, e, grid)
+            } else {
+                vec![(on, e)]
+            }
+        });
+        for (on, e) in pieces {
             while bar + 1 < grid.bars.len() && grid.bars[bar + 1].0 <= on {
                 bar += 1;
             }
@@ -651,6 +755,130 @@ pub(super) fn split(
     measures
 }
 
+/// Cut an element that runs past its bar's end at the bar lines: notes and
+/// chords into tied pieces, rests into rests. Each piece is spelled as written
+/// values ([`notate`]), tied too. The first piece keeps the element's marks
+/// (dynamics, articulations, lyrics, slur starts); the last gets its slur stops
+/// and its onward tie.
+fn cut_at_bars(on: Frac, e: VoiceElement, grid: &Grid) -> Vec<(Frac, VoiceElement)> {
+    let len = e.metric_duration();
+    let i = grid.bar_at(on);
+    if len <= zero() || on + len <= grid.bars[i].1 || i + 1 >= grid.bars.len() {
+        return vec![(on, e)];
+    }
+    let d = match &e {
+        VoiceElement::Note(n) => &n.duration,
+        VoiceElement::Rest(r) => &r.duration,
+        VoiceElement::Chord(c) => &c.duration,
+    };
+    let ratio = (d.tuplet_actual > 0 && d.tuplet_normal > 0 && d.tuplet_actual != d.tuplet_normal)
+        .then_some((d.tuplet_actual, d.tuplet_normal));
+    // Spans up to each bar line, each spelled as values.
+    let mut values: Vec<(Frac, Duration)> = Vec::new();
+    let (mut start, stop) = (on, on + len);
+    while start < stop {
+        let j = grid.bar_at(start);
+        let bar_end = if j + 1 < grid.bars.len() {
+            grid.bars[j].1
+        } else {
+            stop
+        };
+        let take = bar_end.min(stop) - start;
+        if take <= zero() {
+            break;
+        }
+        let mut pos = start;
+        for d in notate(take, ratio) {
+            let l = d.actual_duration();
+            values.push((pos, d));
+            pos += l;
+        }
+        start += take;
+    }
+    let last = values.len() - 1;
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(k, (pos, d))| (pos, piece(&e, k, last, d)))
+        .collect()
+}
+
+/// Piece `k` (of `0..=last`) of a cut element, `d` long.
+fn piece(e: &VoiceElement, k: usize, last: usize, d: Duration) -> VoiceElement {
+    match e {
+        VoiceElement::Rest(r) => {
+            let mut r = if k == 0 {
+                r.clone()
+            } else {
+                Rest::new(d.clone())
+            };
+            r.duration = d;
+            r.is_measure_rest = false;
+            if k > 0 {
+                let VoiceElement::Rest(orig) = e else {
+                    unreachable!()
+                };
+                (r.voice, r.staff, r.is_spacer) = (orig.voice, orig.staff, orig.is_spacer);
+            }
+            VoiceElement::Rest(r)
+        }
+        VoiceElement::Note(n) => VoiceElement::Note(Box::new(note_piece(n, k, last, d))),
+        VoiceElement::Chord(c) => {
+            let mut out = c.clone();
+            out.duration = d.clone();
+            out.notes = c
+                .notes
+                .iter()
+                .map(|n| note_piece(n, k, last, d.clone()))
+                .collect();
+            if k > 0 {
+                out.arpeggio = None;
+            }
+            VoiceElement::Chord(out)
+        }
+    }
+}
+
+fn note_piece(n: &Note, k: usize, last: usize, d: Duration) -> Note {
+    let start = TieEvent {
+        tie_type: StartStop::Start,
+    };
+    let stop = TieEvent {
+        tie_type: StartStop::Stop,
+    };
+    let tied_on = n.ties.iter().any(|t| t.tie_type == StartStop::Start);
+    // A slur that ends on the note ends on its last piece — unless another
+    // starts there (`d2)(`): then both stay on the first, stop before start.
+    let chained = n.slurs.iter().any(|s| s.slur_type == StartStop::Start);
+    let mut m = if k == 0 {
+        let mut m = n.clone();
+        m.ties.retain(|t| t.tie_type == StartStop::Stop);
+        if !chained {
+            m.slurs.retain(|s| s.slur_type != StartStop::Stop);
+        }
+        m
+    } else {
+        let mut m = Note::new(n.pitch, d.clone());
+        (m.voice, m.staff, m.velocity) = (n.voice, n.staff, n.velocity);
+        m.tremolo_marks = n.tremolo_marks;
+        m.ties.push(stop);
+        if k == last && !chained {
+            m.slurs = n
+                .slurs
+                .iter()
+                .filter(|s| s.slur_type == StartStop::Stop)
+                .cloned()
+                .collect();
+        }
+        m
+    };
+    m.duration = d;
+    if k < last || tied_on {
+        m.ties.push(start);
+    }
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,6 +898,34 @@ mod tests {
             beat_type: t,
             symbol: None,
         }
+    }
+
+    #[test]
+    fn cut_notes_keep_chained_slurs_and_tremolo() {
+        use crate::ir::articulation::{Placement, SlurEvent};
+        let slur = |slur_type| SlurEvent {
+            slur_type,
+            number: 1,
+            placement: Placement::Unspecified,
+        };
+        let mut n = Note::new(Pitch::new(PitchStep::D, 4), Duration::new(Frac::new(1, 2)));
+        n.slurs = vec![slur(StartStop::Stop), slur(StartStop::Start)];
+        n.tremolo_marks = 3;
+        let q = || Duration::new(Frac::new(1, 4));
+        let (a, b) = (note_piece(&n, 0, 1, q()), note_piece(&n, 1, 1, q()));
+        let kinds = |m: &Note| m.slurs.iter().map(|s| s.slur_type).collect::<Vec<_>>();
+        assert_eq!(kinds(&a), [StartStop::Stop, StartStop::Start]);
+        assert!(b.slurs.is_empty());
+        assert_eq!(b.tremolo_marks, 3);
+    }
+
+    #[test]
+    fn runs_past_lane_255_share_the_last_lane() {
+        let mut tl = Timeline::default();
+        for _ in 0..300 {
+            tl.place_run(1, zero(), vec![note(4)]);
+        }
+        assert_eq!(tl.lanes.len(), 255);
     }
 
     #[test]

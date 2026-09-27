@@ -10,7 +10,7 @@ use crate::ir::pitch::{AccidentalDisplay, Pitch};
 use crate::ir::score::PageLayout;
 
 use super::state::WalkState;
-use super::timeline::Event;
+use crate::ir::timeline::Event;
 
 /// Consume octave marks (' and ,) after a pitch symbol. Returns net marks.
 pub(super) fn consume_octave_marks(state: &WalkState, children: &[Node], i: &mut usize) -> i32 {
@@ -850,7 +850,10 @@ pub(super) fn build_chord(state: &mut WalkState, chord_node: Node, dur: Duration
                 if first_pitch.is_none() {
                     first_pitch = Some(pitch);
                 }
-                let note = Note::new(pitch, dur.clone());
+                let mut note = Note::new(pitch, dur.clone());
+                // A member's own post-events: `<dis-4-!>`, `<c~ e>`.
+                let attachments = consume_attachments(state, &children, &mut i);
+                super::apply::apply_note_attachments(state, &mut note, &attachments);
                 notes.push(note);
                 continue;
             }

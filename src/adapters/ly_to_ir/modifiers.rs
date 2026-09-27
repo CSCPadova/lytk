@@ -8,7 +8,7 @@ use crate::ir::pitch::Pitch;
 use super::consume::consume_octave_marks;
 use super::music::walk_music_block;
 use super::state::WalkState;
-use super::timeline::Event;
+use crate::ir::timeline::Event;
 
 /// Consume optional reference pitch after `\relative`, then the music block.
 /// Returns the next index.
@@ -69,7 +69,9 @@ pub(super) fn consume_relative(state: &mut WalkState, children: &[Node], mut i: 
                     state.relative_ref = Some(Pitch::new(crate::ir::pitch::PitchStep::C, 4));
                     state.prev_pitch = state.relative_ref;
                 }
+                state.relative_depth += 1;
                 walk_music_block(state, node);
+                state.relative_depth -= 1;
                 i += 1;
                 return i;
             }
@@ -267,15 +269,16 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
     }
 
     // Each alternative is a volta: an ending opens where it starts and closes
-    // where it ends, and every ending but the last also repeats back.
-    if alts.is_empty() {
-        // Degenerate `\alternative { }` — close the repeat like the
-        // no-alternative case.
+    // where it ends, and every ending but the last (empty ones count) also
+    // repeats back.
+    let total = ending_num - 1;
+    if alts.is_empty() || total == 1 {
+        // `\alternative { }`, or a lone alternative played on every pass:
+        // close the repeat like the no-alternative case.
         state.add_event(Event::RightBarline(backward_repeat()));
         return;
     }
-    let last = alts.len() - 1;
-    for (k, (start, end, number)) in alts.into_iter().enumerate() {
+    for (start, end, number) in alts {
         state.add_event_at(
             start,
             Event::LeftBarline(Barline {
@@ -284,7 +287,7 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
                 ..Default::default()
             }),
         );
-        let close = if k < last {
+        let close = if number < total {
             backward_repeat()
         } else {
             Barline::default()

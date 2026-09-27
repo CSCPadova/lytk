@@ -4,29 +4,12 @@
 
 use crate::ir::articulation::{Placement, StartStop, TupletDisplay};
 use crate::ir::direction::Direction;
-use crate::ir::duration::Duration;
 use crate::ir::note::VoiceElement;
 
-use super::state::PartBuild;
-use super::timeline::Event;
+pub(super) use crate::ir::beams::beam_level_for_duration;
 
-/// Return the beam level for a note duration:
-/// 0 = not beamable (quarter or longer), 1 = eighth, 2 = 16th, 3 = 32nd, 4 = 64th.
-pub(super) fn beam_level_for_duration(dur: &Duration) -> u8 {
-    let d = *dur.base.denom();
-    let n = *dur.base.numer();
-    if n != 1 {
-        return 0;
-    }
-    match d {
-        8 => 1,
-        16 => 2,
-        32 => 3,
-        64 => 4,
-        128 => 5,
-        _ => 0,
-    }
-}
+use super::state::PartBuild;
+use crate::ir::timeline::Event;
 
 /// Assign a multi-staff `<staff>` and placement to a direction by content,
 /// for piano grand staves: the sustain pedal goes below the bottom staff;

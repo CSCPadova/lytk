@@ -15,6 +15,8 @@
 //!
 //! Run with output: `cargo test --test fixture_audit -- --nocapture`
 
+mod common;
+
 use _core::adapters::ir_to_ly::IrToLyAdapter;
 use _core::adapters::ir_to_midi::IrToMidiAdapter;
 use _core::adapters::ir_to_mxml::IrToMxmlAdapter;
@@ -77,7 +79,7 @@ fn run_read(
     fixture: &str,
     parse: impl FnOnce() -> _core::adapters::Result<Score>,
 ) -> Option<Score> {
-    match catch_unwind(AssertUnwindSafe(parse)) {
+    match common::quiet(|| catch_unwind(AssertUnwindSafe(parse))) {
         Ok(Ok(score)) => {
             tally.record_ok();
             Some(score)
@@ -99,7 +101,7 @@ fn run_write<T>(
     fixture: &str,
     emit: impl FnOnce() -> _core::adapters::Result<T>,
 ) {
-    match catch_unwind(AssertUnwindSafe(emit)) {
+    match common::quiet(|| catch_unwind(AssertUnwindSafe(emit))) {
         Ok(Ok(_)) => tally.record_ok(),
         Ok(Err(e)) => tally.record_err(fixture, e.to_string()),
         Err(p) => tally.record_panic(fixture, panic_msg(p)),
@@ -143,9 +145,6 @@ fn collect(dir: &str, exts: &[&str], kind: InputKind, out: &mut Vec<(InputKind, 
 
 #[test]
 fn fixture_conversion_audit() {
-    // Silence panic noise; we capture and report panics ourselves.
-    std::panic::set_hook(Box::new(|_| {}));
-
     let mut fixtures: Vec<(InputKind, PathBuf)> = Vec::new();
     collect(
         "tests/fixtures/ly",

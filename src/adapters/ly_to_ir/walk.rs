@@ -15,7 +15,7 @@ use super::merge::{assign_piano_direction_staff, part_is_dynamics_only};
 use super::modifiers::{consume_relative, consume_transpose};
 use super::music::walk_music_block;
 use super::state::{PartBuild, VarDef, WalkState};
-use super::timeline::{Event, Timeline};
+use crate::ir::timeline::{Event, Timeline};
 
 /// Walk the `lilypond_program` root node.
 pub(super) fn walk_program(state: &mut WalkState, root: Node) {
@@ -175,6 +175,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                             let mut is_figuremode = false;
                             let mut is_chordmode = false;
                             let mut is_markup = false;
+                            let mut is_relative = false;
                             while j < children.len() {
                                 let candidate = children[j];
                                 if candidate.kind() == "escaped_word" {
@@ -206,6 +207,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                     if ew == "\\relative" {
                                         state.in_relative = true;
                                         state.mode = PitchMode::Relative;
+                                        is_relative = true;
                                         j += 1;
                                         // Consume optional reference pitch and octave marks
                                         let mut octave_marks = 0i32;
@@ -302,10 +304,22 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                         let has_named_context =
                                             block_contains_named_context(state, *next);
                                         let block = *next;
-                                        let (def, ()) =
-                                            capture_variable(state, has_named_context, |state| {
-                                                walk_music_block(state, block)
-                                            });
+                                        // A `\relative` definition keeps its own
+                                        // reference; a plain block is read again
+                                        // where it's used inside `\relative`.
+                                        let range = (!is_relative)
+                                            .then(|| (block.start_byte(), block.end_byte()));
+                                        let depth = u32::from(is_relative);
+                                        let (def, ()) = capture_variable(
+                                            state,
+                                            has_named_context,
+                                            range,
+                                            |state| {
+                                                state.relative_depth += depth;
+                                                walk_music_block(state, block);
+                                                state.relative_depth -= depth;
+                                            },
+                                        );
                                         state.definitions.insert(var_name, def);
                                     }
                                     i = j + 1; // skip to after block
@@ -313,7 +327,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 } else if next.kind() == "named_context" {
                                     // Variable is `name = \new Staff { ... }`
                                     let node = *next;
-                                    let (def, end) = capture_variable(state, true, |state| {
+                                    let (def, end) = capture_variable(state, true, None, |state| {
                                         let (context, ctx_name) =
                                             extract_named_context(state, node);
                                         walk_context_body(
@@ -1331,6 +1345,7 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
 fn capture_variable<R>(
     state: &mut WalkState,
     as_parts: bool,
+    block: Option<(usize, usize)>,
     walk: impl FnOnce(&mut WalkState) -> R,
 ) -> (VarDef, R) {
     state.flush_voice();
@@ -1378,6 +1393,7 @@ fn capture_variable<R>(
             len,
             main_lane,
             voices: voices.into_keys().collect(),
+            block,
         }
     };
     (def, result)

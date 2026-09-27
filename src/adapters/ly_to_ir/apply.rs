@@ -294,6 +294,16 @@ pub(super) fn apply_chord_attachments(
         .cloned()
         .collect();
     apply_note_attachments(_state, &mut chord.notes[0], &rest);
+    // `<d fis>8~` ties every note of the chord, not just the first.
+    if attachments.iter().any(|a| a == "~") {
+        for n in &mut chord.notes[1..] {
+            if !n.ties.iter().any(|t| t.tie_type == StartStop::Start) {
+                n.ties.push(TieEvent {
+                    tie_type: StartStop::Start,
+                });
+            }
+        }
+    }
 }
 
 /// Attach a dynamic mark to the most recent note or chord in the current voice.
@@ -373,7 +383,7 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
                     ..Default::default()
                 }
             };
-            state.add_event(super::timeline::Event::direction(dir));
+            state.add_event(crate::ir::timeline::Event::direction(dir));
         }
     }
 }

@@ -178,6 +178,11 @@ pub enum Music {
     /// Barline (explicit bar check `|` or special barline `\bar "||"`).
     Barline(Barline),
 
+    /// The bar starting here lasts this long rather than its meter — LilyPond's
+    /// `\partial`, an ABC bar shorter or longer than `M:`. (The opening pickup
+    /// is `ScoreMetadata::partial_duration`.)
+    Partial(Duration),
+
     // ── Directions ──────────────────────────────────────────
     /// A standalone direction not attached to a note (dynamics, pedal, text, etc.)
     /// In most cases, annotations on `Note`/`Chord` are preferred.
@@ -221,6 +226,37 @@ pub enum Music {
     Lyric(super::articulation::LyricSyllable),
 }
 
+/// How a volta repeat's alternatives are written (LilyPond's meaning: with
+/// fewer alternatives than passes, the first plays on the extra passes).
+pub(crate) struct VoltaLayout<'a> {
+    /// A lone alternative plays on every pass: it is part of what repeats.
+    pub(crate) tail: Option<&'a Music>,
+    /// The endings written, `[1`, `[2`, ….
+    pub(crate) endings: &'a [Music],
+    /// The last ending written closes with a repeat sign too (an empty
+    /// alternative followed it: MusicXML's ending that plays the first time
+    /// only, then the music goes on).
+    pub(crate) last_repeats: bool,
+}
+
+pub(crate) fn volta_layout(alternatives: &[Music]) -> VoltaLayout<'_> {
+    let empty = |m: &Music| m.written_length() == super::duration::Frac::from_integer(0);
+    let kept = alternatives.len() - alternatives.iter().rev().take_while(|m| empty(m)).count();
+    let last_repeats = kept < alternatives.len() && kept > 0;
+    match (kept, last_repeats) {
+        (1, false) => VoltaLayout {
+            tail: alternatives.first(),
+            endings: &[],
+            last_repeats: false,
+        },
+        _ => VoltaLayout {
+            tail: None,
+            endings: &alternatives[..kept],
+            last_repeats,
+        },
+    }
+}
+
 impl Music {
     /// Create an empty sequential container.
     pub fn empty() -> Self {
@@ -238,6 +274,37 @@ impl Music {
             context_type,
             name,
             content: Box::new(self),
+        }
+    }
+
+    /// How long the music lasts as written, in whole notes: repeats once
+    /// (body, then each alternative), grace notes taking no time, parallel
+    /// music as long as its longest part. Tuplet scaling is in the durations.
+    pub fn written_length(&self) -> super::duration::Frac {
+        match self {
+            Music::Note { duration, .. }
+            | Music::Chord { duration, .. }
+            | Music::Rest { duration, .. }
+            | Music::Skip { duration } => duration.actual_duration(),
+            Music::Sequential(items) => items.iter().map(Music::written_length).sum(),
+            Music::Simultaneous(items) => items
+                .iter()
+                .map(Music::written_length)
+                .max()
+                .unwrap_or_default(),
+            Music::Tuplet { content, .. }
+            | Music::Context { content, .. }
+            | Music::Variable { content, .. } => content.written_length(),
+            Music::Repeat {
+                body, alternatives, ..
+            } => {
+                body.written_length()
+                    + alternatives
+                        .iter()
+                        .map(Music::written_length)
+                        .sum::<super::duration::Frac>()
+            }
+            _ => super::duration::Frac::from_integer(0),
         }
     }
 

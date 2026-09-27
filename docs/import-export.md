@@ -14,8 +14,8 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 | LilyPond | `.ly` `.ily` | ✅ | ✅ | Score + Music-tree paths; all 12 LilyPond pitch languages |
 | MusicXML | `.xml` `.musicxml` | ✅ | ✅ | The most complete adapter |
 | Compressed MusicXML | `.mxl` | ✅ | ✅ | ZIP handled natively |
-| MIDI | `.mid` `.midi` | ✅ | ✅ | Lossy (no slurs/articulations/lyrics) |
-| ABC | `.abc` | ✅ | ✅ | Core subset (headers, notes, chords, ties, repeats) |
+| MIDI | `.mid` `.midi` | ✅ | ✅ | Export plays like LilyPond's MIDI; import is being rebuilt (see below) |
+| ABC | `.abc` | ✅ | ✅ | ABC 2.1 pitches and rhythm; repeats, lyrics, decorations in progress |
 | Humdrum (`**kern`) | `.krn` | ✅ | ✅ | Core `**kern`; spine rearrangement (`*^`/`*v`) unsupported |
 | MEI | `.mei` | 🔲 | 🔲 | Planned |
 
@@ -246,103 +246,111 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 
 ## MIDI
 
-### Import (MIDI → IR) — `src/adapters/midi_to_ir.rs`
+### Import (MIDI → IR) — `src/adapters/midi_to_ir/`
 
-MIDI support is always compiled (the `midi` feature gate was removed in Epic 4).
+Rebuilds notation from MIDI written by notation programs (LilyPond, MuseScore,
+lytk), following MuseScore's import pipeline, simplified: quantize positions,
+find tuplets and grace notes, group chords, separate voices, then bar
+everything with the crate's one bar-splitter. Performed (played-in) MIDI —
+most onsets off every grid — is read by its own path: beats tracked where the
+playing drifts, onsets placed by a Viterbi search that weighs distance
+against where the meter expects a note of that length, hands split, swing
+straightened.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Notes with pitch | ✅ | Note-on/note-off pairs |
-| Rests | ✅ | Gaps between notes |
-| Chords | ✅ | Simultaneous notes on same channel |
-| Duration quantization | ✅ | Snap to nearest standard duration |
-| Dotted durations | ✅ | In quantization candidates |
-| Triplets | ✅ | 3:2 ratio in quantization |
-| Key signatures | ✅ | MIDI meta events |
-| Time signatures | ✅ | MIDI meta events (default 4/4) |
-| Clef | ✅ | Default treble assigned |
-| Tempo | ✅ | Tempo meta events → TempoDirection |
-| Multi-track (Format 1) | ✅ | One part per track |
-| Channel splitting (Format 0) | ✅ | Channels → parts |
-| Program changes | ✅ | → `Part.midi_program` |
-| Dynamics / velocity | ✅ | Velocity quantized to nearest dynamic; mark emitted on band change |
-| Articulations | 🔲 | Not preserved (MIDI lossy) |
-| Slurs / ties | 🔲 | Not preserved |
-| Grace notes | 🔲 | Not preserved |
-| Lyrics | 🔲 | Not preserved |
-| Repeats | 🔲 | Must be pre-expanded |
+| Notes with pitch | ✅ | Note-on/note-off pairs; overlapping same-key notes pair first-in first-out; spelled in the key in force |
+| Timing | ✅ | Onsets and ends snap to one grid per beat: plain (to 64ths) or tuplet (3, 5, 6, 7, 10, 12 a beat), whichever fits exactly; nothing drifts |
+| Durations, ties | ✅ | Written values from the positions; notes across bar lines tied |
+| Tuplets | ✅ | Triplets, quintuplets, septuplets (and 16th/32nd kinds), bracketed a beat at a time |
+| Rests | ✅ | Only where a voice is silent; legato gaps (a third of the note or less) are closed |
+| Staccato | ✅ | Notation files: as LilyPond and lytk play it (half length, 4 louder than the notes around a run). Played files: a note lengthened by 30 % or more to one written value (to the next onset or the beat after its sound), unless the pedal holds it |
+| Grace notes | ✅ | LilyPond's and lytk's (9/40 of their value, before the beat) |
+| Chords, voices | ✅ | Notes starting and ending together are a chord; up to 4 voices a staff, nearest in pitch, numbered from the top |
+| Time signatures | ✅ | At their positions; bars re-anchor at each; a first time signature shorter than the next is a pickup |
+| Key signatures | ✅ | At their positions, in every part |
+| Clef | ✅ | Treble or bass from the staff's range; percussion clef on channel 10 |
+| Parts | ✅ | One per track (per channel when a track mixes them); a keyboard's two tracks (LilyPond's `upper:`/`lower:`, lytk's `Name 1`/`Name 2`, "RH"/"LH") are one two-staff part |
+| Program changes | ✅ | → `Part.midi_program` and the GM instrument name |
+| Dynamics | ✅ | Each note keeps its velocity (`Note.velocity`); a dynamic mark where a part's level changes (LilyPond's table for files LilyPond or lytk wrote) |
+| Tempo | ✅ | Tempo events at their positions, whole beats a minute where a writer truncated them |
+| Pedal, lyrics | ✅ | CC64 → pedal marks (start, stop, change); lyric events → lyrics on the top note starting there |
+| Format 2 | 🔲 | Refused with a clear error |
+| Played MIDI | ✅ | Onsets placed by a Viterbi search: distance plus a cost for points weaker in the meter than the note's length expects, plain (to 32nds, or `quantize=`) or triplet beats (two onsets off the 16th grid), a rolled chord as one. Beats tracked when the playing drifts from the file's tempo (rubato, a late start). A one-track piano splits into hands by MuseScore's cost model. Swung eighths (3:2 to 2:1) straightened and marked "Swing" (`swing=`; a 3:1 shuffle reads dotted unless asked). A file without a key signature gets one (Krumhansl–Kessler profiles); karaoke text events are lyrics. A performance far from the file's tempo from the start is not re-timed, and played quarter-note triplets read as syncopations |
 
 ### Export (IR → MIDI) — `src/adapters/ir_to_midi.rs`
 
-MIDI support is always compiled (the `midi` feature gate was removed in Epic 4).
+Plays the score as LilyPond's MIDI performers do, so `ly → MIDI` matches
+LilyPond's own MIDI of the test pieces note for note (onsets, pitches, and
+99.9 % of note-offs).
 
 | Feature | Status | Notes |
 |---|---|---|
-| Notes | ✅ | Note-on/note-off pairs |
-| Rests | ✅ | Represented as gaps (no events) |
-| Chords | ✅ | All notes on/off simultaneously |
-| Durations | ✅ | Converted to ticks |
-| Tuplet durations | ✅ | Ratio preserved as ticks |
-| Key signatures | ✅ | MIDI meta events |
-| Time signatures | ✅ | MIDI meta events |
-| Tempo | ✅ | MIDI meta tempo events (default 120 BPM) |
-| Grace notes | ✅ | Short-duration notes before main |
-| Multi-part (Format 1) | ✅ | Conductor track + one per part |
-| Program changes | ✅ | From `Part.midi_program` |
-| Channel assignment | ✅ | From `Part.midi_channel` |
-| Configurable TPQ | ✅ | Default 480 ticks/quarter |
-| Dynamics | ✅ | Dynamic marks → MIDI velocity ladder; running velocity persists |
-| Articulations | 🔲 | Not emitted |
-| Slurs / ties | 🔲 | Not emitted |
-| Repeats | 🔲 | Must be expanded before export |
+| Timing | ✅ | 384 ticks a quarter (`with_divisions`); exact positions, so tuplets don't drift; a bar lasts as long as its music |
+| Pickups, irregular bars | ✅ | Written as a time signature of the bar's length, then the meter (MuseScore's convention; LilyPond can't say `\partial` in MIDI) |
+| Repeats | ✅ | Played out with their endings (MuseScore's rules); `to_midi(…, unfold_repeats=False)` keeps the written order. D.C./D.S. jumps are not followed yet |
+| Ties | ✅ | A tied chain sounds once, chords note by note |
+| Grace notes | ✅ | Before the beat, 9/40 of their written length, cutting the note before (LilyPond) |
+| Dynamics | ✅ | LilyPond's table (p 69, mf 86, f 95; 90 without a dynamic) and instrument equalizer; hairpins ramp to the next dynamic; MusicXML direction dynamics count |
+| Per-note velocity | ✅ | `Note.velocity` (from MusicXML `<note dynamics>`; MIDI import sets it in phase C) wins |
+| Articulations | ✅ | Staccato, staccatissimo, portato shorten; accent, marcato add velocity (`ly/script-init.ly`) |
+| Unisons | ✅ | Two voices on one key play it once (LilyPond's MIDI walker) |
+| Tracks and channels | ✅ | Conductor track + one track per staff; one channel per part; percussion on channel 10; past 15 parts, channels are shared by program |
+| Sustain pedal | ✅ | CC64 from pedal directions |
+| Lyrics | ✅ | Lyric events (first verse) |
+| Transposing instruments | ✅ | `<transpose>` applied: sounding pitch |
+| Tempo, key, time | ✅ | Conductor track; tempo changes at their position (120 BPM if none) |
+| Slurs, ornaments, fermatas | 🔲 | Not performed |
 
 ---
 
 ## ABC
 
-A core subset of ABC notation. Conversion goes through the Layer-1 Music tree
-(`ToMusicAdapter` / `FromMusicAdapter`), so the Python `to_abc(score)` lifts the
-score internally.
+ABC 2.1. Conversion goes through the Layer-1 Music tree (`ToMusicAdapter` /
+`FromMusicAdapter`), so the Python `to_abc(score)` lifts the score internally.
+The reader and the writer are checked against an independent ABC 2.1 player
+(`tests/abc_standard.rs`), not only against each other.
 
 ### Import (ABC → IR) — `src/adapters/abc_to_ir.rs`
 
 | Feature | Status | Notes |
 |---|---|---|
-| Tune headers | ✅ | `X` `T` `C` `M` `L` `K` `Q` |
-| Notes with pitch | ✅ | Octave marks (`,` / `'`), explicit accidentals |
-| Default unit length | ✅ | `L:` rule; inferred from `M:` when absent |
-| Durations (fractional) | ✅ | `a2`, `a/2`, `a3/2` |
-| Rests | ✅ | `z`, `x` |
-| Chords | ✅ | `[CEG]` |
-| Ties | ✅ | `-` |
-| Bar lines + repeats | ✅ | `|`, `||`, `|:`, `:|` |
-| Key signatures | ✅ | Tonic + mode → fifths (incl. church modes) |
-| Time signatures | ✅ | `M:` (incl. `C`/`C|`) |
-| Tempo | ✅ | `Q:` |
-| Multi-voice (`V:`) | ✅ | ABC 2.1 §4.1 — header/body `V:id`, inline `[V:id]`, `name=`; each voice → a Part |
-| MIDI instrument | 🔲 | ABC has **no standard** instrument field — the `%%MIDI program N` directive is a non-standard `abc2midi` stylesheet extension, so it is **not** parsed (see Export note) |
-| Tuplets | ✅ | `(p`, `(p:q`, `(p:q:r`; bare `(p` uses the ABC default ratios |
-| Grace notes | ✅ | `{ab}`, `{/a}` (acciaccatura) |
-| Chord symbols `"…"` | 🔲 | Skipped gracefully |
-| Decorations / inline fields | 🔲 | Skipped gracefully |
+| Tune | ✅ | The first tune of a file (`from_abc_tunes` reads them all, with the file header before the first `X:` applied to each); an empty line ends a tune |
+| Headers | ✅ | `X` `T` `C` `M` `L` `K` `V`; `Q` kept as metadata only |
+| Key signatures | ✅ | Tonic, all modes, explicit accidentals (`K:D Phr ^f`), `exp`, `none`, `HP`/`Hp`, applied to every unmarked note |
+| Accidentals | ✅ | Last to the end of the bar, in the same octave by default (abcm2ps, abc2svg); `%%propagate-accidentals` / `I:propagate-accidentals` change it; a tied note keeps its accidental over the bar line |
+| Clefs, octave | ✅ | `clef=` (and `-8`/`+8`, which transpose), `octave=` on `K:` and `V:` |
+| Inline fields | ✅ | `[K:]`, `[M:]`, `[L:]`, and `[V:]` anywhere in a line |
+| Meters | ✅ | `C`, `C|`, additive `2+3+2/8` and `(2+3+2)/8`; `M:`/`L:` in the body apply to their voice only |
+| Durations | ✅ | `a2`, `a/2`, `a3/2`; broken rhythm `>`, `<`, `>>`; default unit from the header `M:` |
+| Rests | ✅ | `z`; `x` as an invisible skip; `Z`, `Z4` whole-bar rests, `X` invisible ones |
+| Chords | ✅ | `[CEG]2`; length of the first note (`[C2E2G2]`); ties on single notes (`[C-E]`) or all (`[CE]-`) |
+| Ties, tuplets, grace notes | ✅ | `-`; `(p`, `(p:q`, `(p:q:r` (`(5` in 6/8 is 5 in the time of 3); `{ab}`, `{/a}` |
+| Multi-voice (`V:`) | ✅ | Header/body `V:id`, inline `[V:id]`, `name=`; each voice → a Part |
+| Overlays (`&`) | 🟡 | Each layer is a voice of its own for that bar; multi-bar `(&`…`&)` not read |
+| Bar lines + repeats | ✅ | `|`, `||`, `|]`, `|:`, `:|`, `::`, endings `[1`, `|1`, `:|2`. A bar line always ends a bar: a short first bar is the pickup, and any other bar keeps its length |
+| Decorations | ✅ | `!p!`…`!ffff!`, `!sfz!`; hairpins `!<(!`/`!<)!`/`!>(!`/`!>)!` (and `!crescendo(!`…); `.` `!>!` `!tenuto!` `!wedge!` `!breath!`; `T` `M` `P` `~` and their `!…!` names; `H`/`!fermata!`. Bowings, segno and coda are skipped |
+| Chord symbols, annotations | ✅ | `"Am7"`, `"F#m7b5"`, `"G/B"` → chord symbols; `"^text"`/`"_text"` (and `<`, `>`, `@`) → words |
+| Slurs, tempo | ✅ | `(`…`)`, nested; `Q:1/4=120`, `Q:"Allegro" 3/8=80`, old `Q:120` |
+| Lyrics | ✅ | `w:` under the notes since the last `w:` (`-`, `_`, `*`, `~`, `\-`, `|`); consecutive `w:` lines are verses; `W:` kept as metadata |
+| MIDI instrument | 🔲 | ABC has **no standard** instrument field — `%%MIDI program N` is a non-standard `abc2midi` extension and is not parsed |
 
 ### Export (IR → ABC) — `src/adapters/ir_to_abc.rs`
 
 | Feature | Status | Notes |
 |---|---|---|
-| Tune headers | ✅ | `X` `T` `C` `M` `L` `K` |
-| Notes with pitch | ✅ | Body emitted at `L:1/8` |
-| Durations | ✅ | Relative to the unit length |
-| Rests | ✅ | |
-| Chords | ✅ | `[…]` |
-| Ties | ✅ | |
-| Bar lines + repeats | ✅ | Regular bar lines are derived from the running meter (the IR only stores *explicit* barlines), and the body wraps every 4 bars |
-| Tuplets | ✅ | `(p:q:r`, one group per `p` notes so a run never crosses a bar |
-| Grace notes | ✅ | `{…}` / `{/…}`; carry no metrical time |
-| Key / meter | ✅ | |
-| Multi-voice (`V:`) | ✅ | ≥2 parts/staves emit `V:n name="…"` blocks (ABC 2.1 §4.1); polyphony is lossless |
-| MIDI instrument | 🔲 | **Deliberately not emitted.** ABC has no standard instrument field; the only convention, `%%MIDI program N`, is a non-standard `abc2midi` directive, not part of the ABC 2.1 standard. Emitting it would produce output other ABC tools ignore or reject, so instrument identity is dropped on `→ ABC` (a format limitation, not a bug). It is preserved across LilyPond ↔ MusicXML ↔ MIDI. |
-| Key-aware accidental re-spelling | 🔲 | v1 carries only explicit accidentals (self-consistent on round-trip) |
+| Headers | ✅ | `X` `T` `C` `M` `L:1/8` `K`; every key named (`K:G#m`); keys past 7 sharps/flats as `K:C` with explicit accidentals |
+| Accidentals | ✅ | The score's own spelling; an accidental wherever a reader under either ABC rule would otherwise sound something else (after a mid-bar key change, every note states its own) |
+| Durations, rests, chords, ties | ✅ | Chord ties on all notes (`[CE]2-`) or some (`[C-E]2`) |
+| Tuplets, grace notes | ✅ | `(p:q:r`; `{…}` / `{/…}` |
+| Multi-voice (`V:`) | ✅ | One `V:` block per part/staff; a voice's own `K:`/`M:` when it differs from the header |
+| Bar lines + repeats | ✅ | Derived from the meter plus explicit bar lines; `|:`/`:|` with `[1`/`[2` endings; a pickup as a short first bar; an irregular bar keeps its length; a note across a bar line is tied over it |
+| Inner voices | ✅ | A bar's voices as `&` layers (ABC 2.1 §7.4); voices running across bar lines as the richest one |
+| Spacers | ✅ | `x` |
+| Decorations, slurs | ✅ | Dynamics, hairpins, articulations, ornaments, fermatas, slurs; a direction's dynamic or hairpin goes on the next note |
+| Chord symbols, words, tempo | ✅ | `"Am7"`; `"^dolce"`; `Q:` in the header, `[Q:]` inside |
+| Lyrics | ✅ | A `w:` line under each music line, per verse (`*` under a note without a syllable, `_` while one is held) |
+| MIDI instrument | 🔲 | **Deliberately not emitted.** ABC has no standard instrument field; `%%MIDI program N` is a non-standard `abc2midi` directive, so instrument identity is dropped on `→ ABC` (a format limit, not a bug). It is kept across LilyPond ↔ MusicXML ↔ MIDI. |
 
 ---
 
@@ -376,7 +384,7 @@ part/voice, with `.` padding on the time slices a spine does not sound.
 | Tuplets | ✅ | Ratio folded into the recip (`12` = triplet eighth) |
 | Grace notes | ✅ | Each gets its own data record, `.` in the other spines |
 | Ties / slurs / fermata | ✅ | |
-| Barlines + repeats | ✅ | |
+| Barlines + repeats | 🟡 | `=N`, `==`; repeats as `:|!`, `!|:`; endings not written (kern needs `*>` expansion lists) |
 | Key / time / clef / instrument | ✅ | Tandem interpretations |
 | Multi-voice | ✅ | One spine per voice |
 

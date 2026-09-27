@@ -127,8 +127,13 @@ fn emit_or_fuse(
     open: &mut HashMap<i32, usize>,
     out: &mut Vec<FlatNote>,
 ) {
-    if let Some(&idx) = open.get(&pitch) {
-        // Continuation of an open tie: extend the held note, don't re-articulate.
+    // Continuation of an open tie — only where the held note ends: extend it,
+    // don't re-articulate.
+    let held = open
+        .get(&pitch)
+        .copied()
+        .filter(|&idx| out[idx].onset + out[idx].duration == time);
+    if let Some(idx) = held {
         out[idx].duration += dur;
         if !has_start {
             open.remove(&pitch);
@@ -141,10 +146,22 @@ fn emit_or_fuse(
             pitch,
             velocity,
         });
+        // A new note of the pitch ends whatever tie was left dangling.
         if has_start {
             open.insert(pitch, idx);
+        } else {
+            open.remove(&pitch);
         }
     }
+}
+
+/// The velocity a note was played with, when it carries one (MIDI import,
+/// MusicXML `<note dynamics>`); it wins over the running dynamic.
+fn own_velocity(annotations: &[Annotation]) -> Option<u8> {
+    annotations.iter().find_map(|a| match a {
+        Annotation::Velocity(v) => Some(*v),
+        _ => None,
+    })
 }
 
 /// Whether an annotation list opens a tie.
@@ -172,16 +189,39 @@ fn walk(
         }
         Music::Simultaneous(items) => {
             // Each branch starts at the same time; the block ends at the
-            // latest branch end. Ties never cross voices, so each branch gets a
-            // fresh tie scope.
+            // latest branch end. A tie from before may end in any branch (a
+            // bar that splits into voices), and one may run on after it: the
+            // ties the branches close and open are the block's.
             let mut end = time;
+            let mut closed: Vec<i32> = Vec::new();
+            let mut opened: HashMap<i32, usize> = HashMap::new();
             for m in items {
-                let mut branch_open: HashMap<i32, usize> = HashMap::new();
+                let mut branch_open = open.clone();
+                let held: Vec<(i32, usize, Frac)> = open
+                    .iter()
+                    .map(|(p, &i)| (*p, i, out[i].duration))
+                    .collect();
                 let e = walk(m, time, vel, &mut branch_open, out);
+                // A tie this branch carried on and ended (another voice's note
+                // of the same pitch doesn't end it).
+                closed.extend(
+                    held.iter()
+                        .filter(|(p, i, d)| out[*i].duration > *d && branch_open.get(p) != Some(i))
+                        .map(|(p, ..)| *p),
+                );
+                opened.extend(
+                    branch_open
+                        .into_iter()
+                        .filter(|(p, idx)| open.get(p) != Some(idx)),
+                );
                 if e > end {
                     end = e;
                 }
             }
+            for p in closed {
+                open.remove(&p);
+            }
+            open.extend(opened);
             end
         }
         Music::Context { content, .. }
@@ -202,7 +242,7 @@ fn walk(
             emit_or_fuse(
                 pitch.midi_number(),
                 dur,
-                *vel,
+                own_velocity(annotations).unwrap_or(*vel),
                 time,
                 has_tie_start(annotations),
                 open,
@@ -223,7 +263,9 @@ fn walk(
                 emit_or_fuse(
                     p.midi_number(),
                     dur,
-                    *vel,
+                    own_velocity(pitch_anns)
+                        .or(own_velocity(annotations))
+                        .unwrap_or(*vel),
                     time,
                     chord_tie || has_tie_start(pitch_anns),
                     open,
@@ -305,8 +347,9 @@ pub fn to_note_array(doc: &MusicDocument, resolution: u16) -> NoteArray {
 /// Reconstruct a Music document from a [`NoteArray`].
 ///
 /// Each note becomes its own parallel branch `Skip(onset) · Note(duration)`,
-/// so `to_note_array` recovers the exact same rows (onset/duration/pitch
-/// exactly; velocity via the dynamics band). The output is faithful to the
+/// so `to_note_array` recovers the exact same rows. Each velocity is kept
+/// exactly (an [`Annotation::Velocity`]); a note away from the default also
+/// gets the nearest dynamic mark, for notation. The output is faithful to the
 /// played content, not idiomatic notation.
 pub fn from_note_array(arr: &NoteArray) -> MusicDocument {
     let branches: Vec<Music> = arr
@@ -325,6 +368,7 @@ pub fn from_note_array(arr: &NoteArray) -> MusicDocument {
                     sign: velocity_to_dynamic(n.velocity).to_string(),
                     placement: Default::default(),
                 }));
+                annotations.push(Annotation::Velocity(n.velocity));
             }
             seq.push(Music::Note {
                 pitch: pitch_from_midi(n.pitch),
@@ -585,6 +629,27 @@ mod tests {
             duration: dur,
             annotations: anns,
         }
+    }
+
+    #[test]
+    fn a_tie_into_a_multi_voice_bar_closes_there() {
+        // e'4~ | << { e'4 } \\ { r4 } >> | e'4: the tie ends in the second
+        // bar; the third e' is a note of its own.
+        let q = || Duration::new(Frac::new(1, 4));
+        let music = Music::Sequential(vec![
+            tied(PitchStep::E, 4, q(), vec![Annotation::TieStart]),
+            Music::Simultaneous(vec![
+                Music::Sequential(vec![tied(PitchStep::E, 4, q(), vec![Annotation::TieStop])]),
+                Music::Sequential(vec![Music::Rest {
+                    duration: q(),
+                    is_measure_rest: false,
+                }]),
+            ]),
+            note(PitchStep::E, 4, q()),
+        ]);
+        let arr = to_note_array(&doc(music), 480);
+        let got: Vec<(u32, u32)> = arr.notes.iter().map(|n| (n.onset, n.duration)).collect();
+        assert_eq!(got, vec![(0, 960), (960, 480)]);
     }
 
     #[test]

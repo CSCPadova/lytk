@@ -160,6 +160,13 @@ class TestConvert:
         assert out.exists() and (tmp_path / "out_02.xml").exists()
         assert "2 movements" in result.stderr
 
+    def test_several_abc_tunes(self, tmp_path: Path):
+        src = tmp_path / "two.abc"
+        src.write_text("X:1\nK:C\nC|\n\nX:2\nK:C\nD|\n")
+        out = tmp_path / "out.xml"
+        ok("convert", str(src), "-o", str(out))
+        assert out.exists() and (tmp_path / "out_02.xml").exists()
+
     def test_several_movements_refuse_stdout(self, tmp_path: Path):
         src = tmp_path / "two.ly"
         src.write_text(r"\score { \new Staff { c'1 } } \score { \new Staff { d'1 } }")

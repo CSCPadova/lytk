@@ -31,7 +31,6 @@ mod modifiers;
 mod music;
 mod postprocess;
 mod state;
-mod timeline;
 mod walk;
 
 #[cfg(test)]
@@ -55,10 +54,9 @@ use super::{AdapterError, Result, ToIrAdapter};
 use crate::ir::duration::{Duration, Frac};
 
 // Re-export items needed by sub-modules via `super::`
+use crate::ir::beams::post_process_beams_and_stems;
 use merge::{apply_tuplet_ratio, beam_level_for_duration};
-use postprocess::{
-    assign_slur_numbers, ensure_staff_clefs, post_process_beams_and_stems, resolve_ties,
-};
+use postprocess::{assign_slur_numbers, ensure_staff_clefs, resolve_ties};
 
 // ---------------------------------------------------------------------------
 // Clef name → (sign, line)
@@ -207,6 +205,7 @@ impl LyToIrAdapter {
         }
 
         let mut state = state::WalkState::new(source);
+        state.root = Some(root);
         state.language = self.language;
 
         walk::walk_program(&mut state, root);
@@ -252,7 +251,7 @@ impl LyToIrAdapter {
 /// score-wide grid, attach lyrics, then run the measure-level passes.
 /// `None` when nothing was walked.
 fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
-    use timeline::{split, Grid};
+    use crate::ir::timeline::{split, Grid};
 
     state.flush_voice();
     let mut parts = std::mem::take(&mut state.parts);

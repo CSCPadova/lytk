@@ -8,7 +8,7 @@ use super::FiguredBassEntry;
 
 /// Divisions per quarter note used when computing figured bass offsets.
 /// Must match `DEFAULT_DIVISIONS` in `ir_to_mxml.rs`.
-pub(super) const FIGURED_BASS_DIVISIONS: i64 = 4;
+pub(super) const FIGURED_BASS_DIVISIONS: i64 = crate::ir::timeline::OFFSET_DIVISIONS;
 
 /// Parse a `\figuremode { ... }` expression block into a flat stream of figured bass entries.
 ///

@@ -168,8 +168,30 @@ impl IrToMxmlAdapter {
     fn build_part_list(&self, score: &Score) -> mxml::PartList {
         let mut content: Vec<mxml::PartListElement> = Vec::new();
         let mut auto_group_number: u8 = 0;
+        self.push_part_list(
+            &score.children,
+            &mut content,
+            &mut auto_group_number,
+            &mut Vec::new(),
+        );
+        mxml::PartList {
+            attributes: (),
+            content: mxml::PartListContents { content },
+        }
+    }
 
-        for child in &score.children {
+    /// Score-parts and part-groups for `children`, groups inside groups too
+    /// (a piano's brace inside an orchestra's bracket).
+    /// `open`: the numbers of the groups still open around `children` — a
+    /// nested group needs a number of its own.
+    fn push_part_list(
+        &self,
+        children: &[ScoreChild],
+        content: &mut Vec<mxml::PartListElement>,
+        auto_group_number: &mut u8,
+        open: &mut Vec<u8>,
+    ) {
+        for child in children {
             match child {
                 ScoreChild::Part(part) => {
                     content.push(mxml::PartListElement::ScorePart(
@@ -177,11 +199,14 @@ impl IrToMxmlAdapter {
                     ));
                 }
                 ScoreChild::PartGroup(group) => {
-                    let num = if group.number > 0 {
+                    let num = if group.number > 0 && !open.contains(&group.number) {
                         group.number
                     } else {
-                        auto_group_number += 1;
-                        auto_group_number
+                        *auto_group_number += 1;
+                        while open.contains(auto_group_number) {
+                            *auto_group_number += 1;
+                        }
+                        *auto_group_number
                     };
 
                     // part-group start
@@ -219,13 +244,9 @@ impl IrToMxmlAdapter {
                         },
                     }));
 
-                    // Nested score-parts
-                    for sc in &group.children {
-                        if let ScoreChild::Part(p) = sc {
-                            content
-                                .push(mxml::PartListElement::ScorePart(self.build_score_part(p)));
-                        }
-                    }
+                    open.push(num);
+                    self.push_part_list(&group.children, content, auto_group_number, open);
+                    open.pop();
 
                     // part-group stop
                     content.push(mxml::PartListElement::PartGroup(mxml::PartGroup {
@@ -237,11 +258,6 @@ impl IrToMxmlAdapter {
                     }));
                 }
             }
-        }
-
-        mxml::PartList {
-            attributes: (),
-            content: mxml::PartListContents { content },
         }
     }
 

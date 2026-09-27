@@ -10,11 +10,15 @@ use std::path::Path;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
+use _core::adapters::abc_to_ir::AbcToIrAdapter;
+use _core::adapters::ir_to_abc::IrToAbcAdapter;
 use _core::adapters::ir_to_ly::IrToLyAdapter;
+use _core::adapters::ir_to_midi::IrToMidiAdapter;
 use _core::adapters::ir_to_mxml::IrToMxmlAdapter;
 use _core::adapters::ly_to_ir::LyToIrAdapter;
+use _core::adapters::midi_to_ir::MidiToIrAdapter;
 use _core::adapters::mxml_to_ir::MxmlToIrAdapter;
-use _core::adapters::{FromIrAdapter, ToIrAdapter};
+use _core::adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
 use _core::ir::language::PitchLanguage;
 use _core::ir::pitch::{Pitch, PitchStep};
 use _core::ir::Score;
@@ -223,6 +227,48 @@ fn bench_retrograde(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// MIDI and ABC benchmarks (baseline before the reader/writer rework)
+// ---------------------------------------------------------------------------
+
+const MIDI_CHOPIN: &str = "tests/fixtures/midi/chopin_n.midi";
+const LY_CHOPIN: &str = "tests/fixtures/ly/chopin_n.ly";
+
+fn bench_midi(c: &mut Criterion) {
+    let mut group = c.benchmark_group("midi");
+    let bytes = std::fs::read(MIDI_CHOPIN).unwrap();
+    group.bench_function("from_midi/chopin_n", |b| {
+        let adapter = MidiToIrAdapter::new();
+        b.iter(|| adapter.convert_bytes(black_box(&bytes)).unwrap());
+    });
+    let score = LyToIrAdapter::new()
+        .convert_file(Path::new(LY_CHOPIN))
+        .unwrap();
+    group.bench_function("to_midi/chopin_n", |b| {
+        let adapter = IrToMidiAdapter::new();
+        b.iter(|| adapter.convert_bytes(black_box(&score)).unwrap());
+    });
+    group.finish();
+}
+
+fn bench_abc(c: &mut Criterion) {
+    let mut group = c.benchmark_group("abc");
+    let score = LyToIrAdapter::new()
+        .convert_file(Path::new(LY_CHOPIN))
+        .unwrap();
+    let doc = _core::ir::lift::lift_to_music(&score);
+    group.bench_function("to_abc/chopin_n", |b| {
+        let adapter = IrToAbcAdapter::new();
+        b.iter(|| adapter.convert_music(black_box(&doc)).unwrap());
+    });
+    let abc = IrToAbcAdapter::new().convert_music(&doc).unwrap();
+    group.bench_function("from_abc/chopin_n", |b| {
+        let adapter = AbcToIrAdapter::new();
+        b.iter(|| adapter.convert_str_to_music(black_box(&abc)).unwrap());
+    });
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Round-trip benchmarks
 // ---------------------------------------------------------------------------
 
@@ -297,4 +343,6 @@ criterion_group!(
 
 criterion_group!(roundtrips, bench_roundtrip);
 
-criterion_main!(parsing, emission, transforms, roundtrips);
+criterion_group!(midi_abc, bench_midi, bench_abc);
+
+criterion_main!(parsing, emission, transforms, roundtrips, midi_abc);

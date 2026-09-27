@@ -2,7 +2,7 @@
 //!
 //! Functions that walk Music nodes and produce timed events into `LowerState`.
 
-use super::super::direction::Direction;
+use super::super::direction::{Barline, BarlineType, Direction, RepeatDirection};
 use super::super::music::{ContextType, Music, RepeatType};
 use super::state::{LowerState, StaffBuilder, TimedEvent};
 
@@ -129,6 +129,10 @@ pub(super) fn walk_music(music: &Music, state: &mut LowerState) {
             state.push_event(TimedEvent::Barline(barline.clone()));
         }
 
+        Music::Partial(d) => {
+            state.push_event(TimedEvent::Partial(d.actual_duration()));
+        }
+
         Music::Grace { content, slash } => {
             // Grace notes don't advance time; the notes inside are flagged so
             // they come out of the lowering with is_grace/grace_slash set.
@@ -234,6 +238,15 @@ fn walk_context(
     }
 }
 
+fn backward_repeat() -> Barline {
+    Barline {
+        style: BarlineType::RepeatBackward,
+        location: "right".to_string(),
+        repeat_direction: Some(RepeatDirection::Backward),
+        ..Barline::default()
+    }
+}
+
 /// Walk a repeat structure.
 fn walk_repeat(
     repeat_type: &RepeatType,
@@ -243,10 +256,47 @@ fn walk_repeat(
     state: &mut LowerState,
 ) {
     match repeat_type {
-        // Volta and Unfold both unfold the body for score layout (the MusicXML
-        // emitter handles volta brackets separately). An empty `alternatives`
-        // simply skips the alternative pass.
-        RepeatType::Volta | RepeatType::Unfold => {
+        // A volta repeat stays a repeat: its bar lines (and endings) are written
+        // once, as MusicXML holds them, so the writers show it and `lift`
+        // rebuilds it. Players (MIDI export, note arrays) play it out.
+        RepeatType::Volta => {
+            state.push_event(TimedEvent::Barline(Barline {
+                style: BarlineType::RepeatForward,
+                location: "left".to_string(),
+                repeat_direction: Some(RepeatDirection::Forward),
+                repeat_times: u8::try_from(count).ok().filter(|&c| c != 2),
+                ..Barline::default()
+            }));
+            walk_music(body, state);
+            let layout = super::super::music::volta_layout(alternatives);
+            if let Some(tail) = layout.tail {
+                walk_music(tail, state);
+            }
+            let alternatives = layout.endings;
+            if alternatives.is_empty() {
+                state.push_event(TimedEvent::Barline(backward_repeat()));
+            }
+            for (k, alt) in alternatives.iter().enumerate() {
+                let number = u8::try_from(k + 1).unwrap_or(u8::MAX);
+                state.push_event(TimedEvent::Barline(Barline {
+                    location: "left".to_string(),
+                    ending_number: Some(number),
+                    ending_type: Some("start".to_string()),
+                    ..Barline::default()
+                }));
+                walk_music(alt, state);
+                let mut close = if k + 1 < alternatives.len() || layout.last_repeats {
+                    backward_repeat()
+                } else {
+                    Barline::default()
+                };
+                close.ending_number = Some(number);
+                close.ending_type = Some("stop".to_string());
+                state.push_event(TimedEvent::Barline(close));
+            }
+        }
+        // Written out in full.
+        RepeatType::Unfold => {
             for i in 0..count as usize {
                 walk_music(body, state);
                 if !alternatives.is_empty() {

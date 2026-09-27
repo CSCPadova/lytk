@@ -7,8 +7,9 @@ use crate::ir::direction::{
 use crate::ir::duration::Frac;
 use crate::ir::language::parse_pitch_name;
 use crate::ir::language::PitchMode;
-use crate::ir::measure::{Clef, KeyMode, KeySignature, TimeSignature};
+use crate::ir::measure::{Clef, KeyMode, KeySignature, TimeSignature, Transpose};
 use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
+use crate::ir::pitch::Pitch;
 
 use super::apply::{
     apply_chord_attachments, apply_note_attachments, apply_rest_attachments, attach_articulation,
@@ -23,7 +24,7 @@ use super::consume::{
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
 use super::state::WalkState;
-use super::timeline::Event;
+use crate::ir::timeline::Event;
 
 /// If attachments contain `\rest`, convert the note to a pitched rest
 /// (display-step + display-octave) and return it as a VoiceElement::Rest.
@@ -407,6 +408,29 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                     }
                     i += 1;
                 }
+            }
+        }
+        "\\transposition" => {
+            // `\transposition bes`: the (absolute) pitch a written c' sounds.
+            if let Some((step, alter)) = children
+                .get(i)
+                .filter(|n| n.kind() == "symbol")
+                .and_then(|n| parse_pitch_name(state.text(*n), state.language))
+            {
+                i += 1;
+                let marks = consume_octave_marks(state, children, &mut i);
+                let sounding = Pitch::with_alter(step, alter, 3 + marks);
+                state.add_event(Event::Transpose(Transpose::from_sounding_c(&sounding)));
+            }
+        }
+        "\\compoundMeter" => {
+            if let Some(ts) = children
+                .get(i)
+                .filter(|n| n.kind() == "embedded_scheme")
+                .and_then(|n| compound_meter(state.text(*n)))
+            {
+                state.add_event(Event::Time(ts));
+                i += 1;
             }
         }
         "\\clef" => {
@@ -939,4 +963,33 @@ pub(super) fn handle_punctuation(state: &mut WalkState, punc: &str) {
         }
         _ => {}
     }
+}
+
+/// `\compoundMeter #'((3 2 8))` as `3+2/8`; groups over several
+/// denominators (`#'((3 8) (2 4))`) add up over the smallest value.
+fn compound_meter(scheme: &str) -> Option<TimeSignature> {
+    let groups: Vec<Vec<u32>> = scheme
+        .split('(')
+        .map(|g| g.split(')').next().unwrap_or(""))
+        .map(|g| {
+            g.split_whitespace()
+                .filter_map(|n| n.parse().ok())
+                .collect()
+        })
+        .filter(|g: &Vec<u32>| g.len() >= 2)
+        .collect();
+    let den = groups.iter().filter_map(|g| g.last().copied()).max()?;
+    let mut beats = Vec::new();
+    for g in &groups {
+        let (d, counts) = g.split_last()?;
+        if *d == 0 || den % d != 0 {
+            return None;
+        }
+        beats.extend(counts.iter().map(|c| (c * (den / d)).to_string()));
+    }
+    Some(TimeSignature {
+        beats: beats.join("+"),
+        beat_type: u8::try_from(den).ok()?,
+        symbol: None,
+    })
 }

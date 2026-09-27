@@ -49,8 +49,11 @@ pub mod moment;
 pub mod music;
 
 // Conversion between layers.
+pub(crate) mod beams;
 pub mod lift;
 pub mod lower;
+pub(crate) mod notate;
+pub(crate) mod timeline;
 
 // Re-export all public types for convenience.
 pub use articulation::*;

@@ -153,8 +153,17 @@ fn parse_kern(text: &str) -> Result<MusicDocument> {
         if tokens.first().is_some_and(|t| t.starts_with('=')) {
             saw_barline = true;
             let bar = parse_barline(tokens[0]);
+            // `:|!|:` ends one repeat and starts the next.
+            let restart = (bar.repeat_direction == Some(RepeatDirection::Backward)
+                && tokens[0].contains("|:"))
+            .then(|| Barline {
+                style: BarlineType::RepeatForward,
+                repeat_direction: Some(RepeatDirection::Forward),
+                ..Default::default()
+            });
             for spine in spines.iter_mut().flatten() {
                 spine.events.push(Music::Barline(bar.clone()));
+                spine.events.extend(restart.clone().map(Music::Barline));
             }
             continue;
         }

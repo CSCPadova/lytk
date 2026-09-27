@@ -76,6 +76,11 @@ pub struct Note {
     /// If true, this note is inside a \melisma ... \melismaEnd block and does not consume a lyric syllable.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_melisma: bool,
+    /// MIDI velocity (1–127) the note was played with, when known (from a MIDI
+    /// file or a MusicXML `<note dynamics>`). MIDI export uses it instead of
+    /// the dynamic in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity: Option<u8>,
 }
 
 impl Note {
@@ -113,6 +118,7 @@ impl Note {
             tremolo_start: true,
             no_auto_beam: false,
             in_melisma: false,
+            velocity: None,
         }
     }
 }
@@ -239,10 +245,14 @@ pub enum VoiceElement {
 }
 
 impl VoiceElement {
-    /// Time this element occupies in its measure. Grace notes take none.
+    /// Time this element occupies in its measure. Grace notes and grace
+    /// chords (their notes carry `is_grace`) take none.
     pub fn metric_duration(&self) -> super::duration::Frac {
         match self {
             VoiceElement::Note(n) if n.is_grace => super::duration::Frac::from_integer(0),
+            VoiceElement::Chord(c) if c.notes.first().is_some_and(|n| n.is_grace) => {
+                super::duration::Frac::from_integer(0)
+            }
             VoiceElement::Note(n) => n.duration.actual_duration(),
             VoiceElement::Rest(r) => r.duration.actual_duration(),
             VoiceElement::Chord(c) => c.duration.actual_duration(),

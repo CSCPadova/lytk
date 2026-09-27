@@ -141,9 +141,15 @@ def read_score(path: str, forced: Format | str | None = None) -> lytk.Score:
 
 
 def _read_movements(path: str, forced: Format | None) -> list[lytk.Score]:
-    """Every movement: one per ``\\score`` block of a LilyPond file."""
-    if _input_format(path, forced) == "ly" and path != "-":
+    """Every movement: one per ``\\score`` block of a LilyPond file, one per
+    tune of an ABC file."""
+    if path == "-":
+        return [read_score(path, forced)]
+    fmt = _input_format(path, forced)
+    if fmt == "ly":
         return lytk.from_lilypond_movements(path) or [read_score(path, forced)]
+    if fmt == "abc":
+        return lytk.from_abc_tunes(path) or [read_score(path, forced)]
     return [read_score(path, forced)]
 
 
@@ -278,8 +284,9 @@ def convert(input: Input, output: Output, format: FormatOpt = None, from_: FromO
 
     Given a directory, converts every score in it (recursively) into the output
     directory, in parallel; the exit status is non-zero if any file fails.
-    A LilyPond file with several \\score blocks writes the first movement to the
-    output path and the others next to it, as NAME_02.EXT, NAME_03.EXT, …
+    A LilyPond file with several \\score blocks, or an ABC file with several
+    tunes, writes the first to the output path and the others next to it, as
+    NAME_02.EXT, NAME_03.EXT, …
     """
     if input != "-" and Path(input).is_dir():
         _run_batch(Path(input), Path(output), _value(format), jobs)

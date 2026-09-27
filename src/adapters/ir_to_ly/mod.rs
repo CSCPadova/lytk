@@ -254,7 +254,18 @@ fn emit_score_block(score: &Score, lines: &mut Vec<String>) {
 
     lines.push("  >>".to_string());
     lines.push("  \\layout { }".to_string());
-    lines.push("  \\midi { }".to_string());
+    // Chord symbols are marks, not notes: LilyPond would play them.
+    let chords = score
+        .parts()
+        .iter()
+        .any(|p| p.measures.iter().any(|m| !m.harmonies.is_empty()));
+    if chords {
+        lines.push(
+            "  \\midi { \\context { \\ChordNames \\remove \"Note_performer\" } }".to_string(),
+        );
+    } else {
+        lines.push("  \\midi { }".to_string());
+    }
     lines.push("}".to_string());
 }
 

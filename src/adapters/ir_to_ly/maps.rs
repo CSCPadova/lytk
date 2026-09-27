@@ -134,44 +134,59 @@ pub(super) fn key_to_ly(key: &KeySignature, lang: PitchLanguage) -> String {
 }
 
 /// Time signature -> LilyPond `\time` command.
+/// `\time 3/4`; an additive meter as LilyPond writes it, `\compoundMeter
+/// #'((3 2 8))` (`\time 3+2/8` is no LilyPond syntax).
 pub(super) fn time_to_ly(ts: &TimeSignature) -> String {
-    format!("\\time {}/{}", ts.beats, ts.beat_type)
+    if ts.beats.contains('+') {
+        let parts: Vec<&str> = ts.beats.split('+').map(str::trim).collect();
+        format!("\\compoundMeter #'(({} {}))", parts.join(" "), ts.beat_type)
+    } else {
+        format!("\\time {}/{}", ts.beats, ts.beat_type)
+    }
 }
 
 /// Duration -> LilyPond duration string (e.g. "4", "8.", "2..").
+/// A length no value can write (a 3/4 bar rest) is a scaled whole: `1*3/4`.
 pub(super) fn duration_to_ly(dur: &Duration) -> String {
-    let base = match dur.lilypond_log() {
-        Some(log) => {
-            if log == 0 {
-                // Whole note: lilypond_log returns log2(1) = 0 -> "1"
-                "1".to_string()
-            } else {
-                (1i32 << log).to_string()
-            }
-        }
-        None => {
-            // Fallback: try reciprocal
-            let recip = dur.base.recip();
-            let n = *recip.numer();
-            if n > 0 {
-                n.to_string()
-            } else {
-                "4".to_string()
-            }
-        }
-    };
-
-    // Handle breve (base = 2/1 -> lilypond_log would be negative)
-    let result = if dur.base == Ratio::new(2, 1) {
+    let base = if dur.base == Ratio::new(2, 1) {
         "\\breve".to_string()
     } else if dur.base == Ratio::new(4, 1) {
         "\\longa".to_string()
+    } else if let Some(log) = dur.lilypond_log() {
+        (1i64 << log).to_string()
     } else {
-        base
+        // The dotted length, as dots can't follow a factor.
+        let dotted = Duration {
+            tuplet_normal: 1,
+            tuplet_actual: 1,
+            ..dur.clone()
+        }
+        .actual_duration();
+        return match (*dotted.numer(), *dotted.denom()) {
+            (n, 1) => format!("1*{n}"),
+            (n, d) => format!("1*{n}/{d}"),
+        };
     };
-
     let dots = ".".repeat(dur.dots as usize);
-    format!("{result}{dots}")
+    format!("{base}{dots}")
+}
+
+/// A `\partial` length: one written value when it is one (`2.`), else a
+/// multiple of its unit (`8*5`, and `4*2/3` for a tuplet's length).
+pub(super) fn partial_to_ly(dur: &Duration) -> String {
+    let len = dur.actual_duration();
+    if let [one] = crate::ir::notate::notate(len, None).as_slice() {
+        if one.actual_duration() == len {
+            return duration_to_ly(one);
+        }
+    }
+    let den = *len.denom();
+    if (den as u64).is_power_of_two() {
+        format!("{den}*{}", len.numer())
+    } else {
+        let q = len * Ratio::from_integer(4);
+        format!("4*{}/{}", q.numer(), q.denom())
+    }
 }
 
 /// Tremolo suffix -> `:N` for single-note tremolo (e.g. `:32`), empty if no tremolo.
@@ -328,7 +343,9 @@ pub(super) fn tempo_to_ly(tempo: &crate::ir::direction::TempoDirection) -> Strin
     let dots = ".".repeat(tempo.dots as usize);
 
     let escaped = tempo.text.as_deref().map(super::helpers::escape_ly_string);
-    match (&escaped, &tempo.beat_unit, tempo.per_minute) {
+    // LilyPond takes a whole number of beats a minute.
+    let per_minute = tempo.per_minute.map(|b| b.round().max(1.0) as u32);
+    match (&escaped, &tempo.beat_unit, per_minute) {
         (Some(text), Some(unit), Some(bpm)) => {
             let ly_dur = beat_unit_to_ly(unit);
             format!("\\tempo \"{text}\" {ly_dur}{dots} = {bpm}")
@@ -344,5 +361,19 @@ pub(super) fn tempo_to_ly(tempo: &crate::ir::direction::TempoDirection) -> Strin
             format!("\\tempo 4 = {bpm}")
         }
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod partial_tests {
+    use super::*;
+
+    #[test]
+    fn partial_lengths() {
+        let p = |n, d| partial_to_ly(&Duration::new(Ratio::new(n, d)));
+        assert_eq!(p(1, 4), "4");
+        assert_eq!(p(3, 4), "2.");
+        assert_eq!(p(5, 8), "8*5");
+        assert_eq!(p(1, 6), "4*2/3");
     }
 }

@@ -9,8 +9,8 @@ use crate::ir::voice::Voice;
 use crate::ir::Part;
 
 use super::maps::{
-    articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, ornament_to_ly, pitch_to_ly,
-    tempo_to_ly, time_to_ly, tremolo_suffix,
+    articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, ornament_to_ly, partial_to_ly,
+    pitch_to_ly, tempo_to_ly, time_to_ly, tremolo_suffix,
 };
 
 /// Persistent state across measure boundaries during LilyPond emission.
@@ -19,6 +19,10 @@ pub(super) struct EmitState {
     pub(super) prev_pitch: Option<Pitch>,
     pub(super) auto_beam_off: bool,
     pub(super) in_melisma: bool,
+    /// Graces ending a bar: they lead to the next bar's first note, so they
+    /// are written after its bar check (a bar check between two grace
+    /// groups aborts LilyPond).
+    pub(super) grace_carry: Option<String>,
 }
 
 /// Extract the tuplet display hint from a voice element, if present.
@@ -38,13 +42,6 @@ fn element_tuplet_ratio(elem: &VoiceElement) -> (u8, u8) {
         VoiceElement::Chord(c) => &c.duration,
     };
     (dur.tuplet_actual, dur.tuplet_normal)
-}
-
-/// Convert a Duration to a number of MusicXML divisions.
-fn duration_to_divisions(dur: &Duration, divisions: i64) -> i64 {
-    let frac = dur.actual_duration() * Frac::from_integer(4 * divisions);
-    // Should always be an integer when divisions is correctly set.
-    (*frac.numer() / *frac.denom()).max(0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -104,10 +101,14 @@ pub(super) fn emit_measures(
             in_alternative = false;
             section_start = lines.len();
         }
+        // What the bar sets (partial, key, time, clef, marks, breaks) goes
+        // inside a repeat or an alternative opening here: between two
+        // alternatives LilyPond reads it as one more.
+        let pre_start = lines.len();
         // Anacrusis: emit \partial before first measure
         if is_first_measure {
             if let Some(dur) = partial_dur {
-                lines.push(format!("{pad}\\partial {}", duration_to_ly(dur)));
+                lines.push(format!("{pad}\\partial {}", partial_to_ly(dur)));
             }
             is_first_measure = false;
         }
@@ -119,6 +120,11 @@ pub(super) fn emit_measures(
             }
             if let Some(ts) = &attrs.time {
                 lines.push(format!("{pad}{}", time_to_ly(ts)));
+            }
+            // What a written c' sounds (absolute, outside `\relative`).
+            if let Some(t) = &attrs.transpose {
+                let p = pitch_to_ly(&t.sounding_c(), lang, None, PitchMode::Absolute);
+                lines.push(format!("{pad}\\transposition {p}"));
             }
             // Clef for our staff
             let staff_num = staff_filter.unwrap_or(1);
@@ -135,8 +141,8 @@ pub(super) fn emit_measures(
         // Separate directions into standalone (tempo, rehearsal) and note-attached (dynamics, wedges, markup).
         // Note-attached directions are grouped by their forward-position offset
         // (populated in mxml_to_ir) so they attach to the correct voice element.
-        let mut dir_at_offset: std::collections::BTreeMap<i32, Vec<String>> =
-            std::collections::BTreeMap::new();
+        // (position in the bar, in divisions or exactly) → marks there.
+        let mut dir_parts: Vec<(i32, Frac, Vec<String>)> = Vec::new();
         for dir in &measure.directions {
             // Tempo and rehearsal marks can stand alone
             if let Some(tempo) = &dir.tempo {
@@ -222,7 +228,7 @@ pub(super) fn emit_measures(
                 }
             }
             if !parts.is_empty() {
-                dir_at_offset.entry(dir.offset).or_default().extend(parts);
+                dir_parts.push((dir.offset, dir.offset_frac, parts));
             }
         }
 
@@ -233,7 +239,20 @@ pub(super) fn emit_measures(
             .map(|a| a.divisions as i64)
             .unwrap_or(last_divisions);
         last_divisions = divisions;
+        // Each mark at its exact place in the bar: `offset_frac` (every
+        // reader sets it), else the MusicXML divisions `offset`.
+        let mut dir_at_offset: std::collections::BTreeMap<Frac, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (offset, exact, parts) in dir_parts {
+            let at = if exact != Frac::from_integer(0) || offset == 0 {
+                exact
+            } else {
+                Frac::new(i64::from(offset), 4 * divisions.max(1))
+            };
+            dir_at_offset.entry(at).or_default().extend(parts);
+        }
 
+        let pre = lines.split_off(pre_start);
         // Left barline
         if let Some(bl) = &measure.left_barline {
             if bl.repeat_direction.is_some() && bl.ending_number.is_none() {
@@ -267,6 +286,7 @@ pub(super) fn emit_measures(
                 }
             }
         }
+        lines.extend(pre);
 
         // Voices
         let voices: Vec<&Voice> = if let Some(sf) = staff_filter {
@@ -289,7 +309,6 @@ pub(super) fn emit_measures(
                     &mut emit_state,
                     &pad,
                     &dir_at_offset,
-                    divisions,
                     lines,
                 );
             }
@@ -312,15 +331,19 @@ pub(super) fn emit_measures(
                     &mut emit_state,
                     &inner_pad,
                     dirs_for_voice,
-                    divisions,
                     lines,
                 );
+                // Only a lone voice carries graces on.
+                if let Some(g) = emit_state.grace_carry.take() {
+                    lines.push(format!("{inner_pad}{g}"));
+                }
                 lines.push(format!("{pad}  }}"));
             }
             lines.push(format!("{pad}>>"));
         }
 
         // Right barline
+        let mut checked = false;
         if let Some(bl) = &measure.right_barline {
             if bl.ending_number.is_some() {
                 // Close this alternative's block — unless the next measure
@@ -335,6 +358,12 @@ pub(super) fn emit_measures(
                 ) && open_ending.is_some()
                     && !next_continues_same
                 {
+                    // The bar check goes inside: between the alternatives
+                    // LilyPond would count it as one more.
+                    if measure.number > 0 {
+                        lines.push(format!("{pad}| % {}", measure.number));
+                        checked = true;
+                    }
                     lines.push(format!("{pad}  }}"));
                     open_ending = None;
                 }
@@ -370,9 +399,13 @@ pub(super) fn emit_measures(
         }
 
         // Measure separator comment
-        if measure.number > 0 {
+        if measure.number > 0 && !checked {
             lines.push(format!("{pad}| % {}", measure.number));
         }
+    }
+
+    if let Some(g) = emit_state.grace_carry.take() {
+        lines.push(format!("{pad}{g}"));
     }
 
     // Close a still-open ending and \alternative (part ends on the last ending).
@@ -398,26 +431,25 @@ fn emit_voice_elements(
     mode: PitchMode,
     state: &mut EmitState,
     pad: &str,
-    dir_at_offset: &std::collections::BTreeMap<i32, Vec<String>>,
-    divisions: i64,
+    dir_at_offset: &std::collections::BTreeMap<Frac, Vec<String>>,
     lines: &mut Vec<String>,
 ) {
-    let mut tokens: Vec<String> = Vec::new();
+    let mut tokens: Vec<String> = state.grace_carry.take().into_iter().collect();
     let mut in_tuplet = false;
+    let mut open_ratio: (u8, u8) = (1, 1);
     // Open duration-ratio tuplet (actual, normal) for elements that carry a
     // tuplet ratio in their Duration but no explicit TupletDisplay — see the
     // fallback below.
     let mut dur_tuplet: Option<(u8, u8)> = None;
     let mut current_stem: String = String::new(); // track stem direction changes
 
-    // Running forward position in divisions -- mirrors the value computed in
-    // mxml_to_ir during parse_measure.
-    let mut fwd_pos: i64 = 0;
+    // Running position in the bar, in wholes (grace notes take none).
+    let mut fwd_pos = Frac::from_integer(0);
 
     // Helper: collect direction strings whose offset matches `pos` and return
     // them concatenated (to append after a note token).
-    let dirs_at = |pos: i64| -> String {
-        if let Some(parts) = dir_at_offset.get(&(pos as i32)) {
+    let dirs_at = |pos: Frac| -> String {
+        if let Some(parts) = dir_at_offset.get(&pos) {
             parts.join("")
         } else {
             String::new()
@@ -444,8 +476,8 @@ fn emit_voice_elements(
                                 format!("{token}{suffix}")
                             });
                             state.prev_pitch = Some(last_pitch);
-                            fwd_pos += duration_to_divisions(&n1.duration, divisions);
-                            fwd_pos += duration_to_divisions(&n2.duration, divisions);
+                            fwd_pos += n1.duration.actual_duration();
+                            fwd_pos += n2.duration.actual_duration();
                             idx += 2;
                             continue;
                         }
@@ -461,6 +493,13 @@ fn emit_voice_elements(
         // print as three plain eighths and overfill the bar (invalid LilyPond).
         // Group consecutive same-ratio elements into one wrapper. Skipped while
         // an explicit TupletDisplay tuplet is open (it manages its own braces).
+        // An open tuplet ends before an element outside its ratio (a
+        // one-element tuplet, `\tuplet 4/2 { r1 } la4`, has no stop mark).
+        let grace = matches!(elem, VoiceElement::Note(n) if n.is_grace);
+        if in_tuplet && !grace && element_tuplet_ratio(elem) != open_ratio {
+            tokens.push("}".to_string());
+            in_tuplet = false;
+        }
         if !in_tuplet && element_tuplet(elem).is_none() {
             let (actual, normal) = element_tuplet_ratio(elem);
             let desired = if actual != normal && actual != 0 && normal != 0 {
@@ -490,6 +529,7 @@ fn emit_voice_elements(
                 let (actual, normal) = element_tuplet_ratio(elem);
                 tokens.push(format!("\\tuplet {actual}/{normal} {{"));
                 in_tuplet = true;
+                open_ratio = (actual, normal);
             }
         }
 
@@ -562,20 +602,19 @@ fn emit_voice_elements(
                     }
                 }
                 state.prev_pitch = Some(note.pitch);
-                // Advance position for non-grace notes
-                if !note.is_grace {
-                    let dur_divs = duration_to_divisions(&note.duration, divisions);
-                    fwd_pos += dur_divs;
+                fwd_pos += elem.metric_duration();
+                if note.is_grace && !note.after_grace {
+                    push_grace(&mut tokens, token);
+                } else {
+                    tokens.push(token);
                 }
-                tokens.push(token);
             }
             VoiceElement::Rest(rest) => {
                 let mut token = rest_to_ly(rest);
                 if !dir_suffix.is_empty() {
                     token = format!("{token}{dir_suffix}");
                 }
-                let dur_divs = duration_to_divisions(&rest.duration, divisions);
-                fwd_pos += dur_divs;
+                fwd_pos += elem.metric_duration();
                 tokens.push(token);
             }
             VoiceElement::Chord(chord) => {
@@ -598,8 +637,7 @@ fn emit_voice_elements(
                     token = format!("{token}{dir_suffix}");
                 }
                 state.prev_pitch = last;
-                let dur_divs = duration_to_divisions(&chord.duration, divisions);
-                fwd_pos += dur_divs;
+                fwd_pos += elem.metric_duration();
                 tokens.push(token);
             }
         }
@@ -618,7 +656,7 @@ fn emit_voice_elements(
     // Attach any remaining directions that didn't match a note position
     // (e.g. at the very end of the measure): append to the last token.
     for (&off, parts) in dir_at_offset.iter() {
-        if (off as i64) >= fwd_pos && !parts.is_empty() {
+        if off >= fwd_pos && !parts.is_empty() {
             let suffix = parts.join("");
             if let Some(last) = tokens.last_mut() {
                 *last = format!("{last}{suffix}");
@@ -629,6 +667,9 @@ fn emit_voice_elements(
     // Safety: close any unclosed tuplet (explicit or duration-ratio).
     if in_tuplet || dur_tuplet.is_some() {
         tokens.push("}".to_string());
+    } else if matches!(voice.elements.last(), Some(VoiceElement::Note(n)) if n.is_grace && !n.after_grace)
+    {
+        state.grace_carry = tokens.pop();
     }
 
     // Group tokens into lines of ~72 chars.
@@ -662,6 +703,28 @@ fn two_note_tremolo_to_ly(
     let p2 = pitch_to_ly(&n2.pitch, lang, Some(&n1.pitch), mode);
     let token = format!("\\repeat tremolo {n} {{ {p1}{d} {p2}{d} }}");
     Some((token, n2.pitch))
+}
+
+/// A grace note right after another joins its group: `\acciaccatura { a16
+/// b16 }`. Two grace commands in a row break LilyPond's grace timing (it
+/// aborts on `is_grace_fixup_sane`).
+fn push_grace(tokens: &mut Vec<String>, token: String) {
+    // Mixed kinds join the group too (it keeps the first one's command).
+    let joined = token.split_once(' ').and_then(|(_, body)| {
+        let last = tokens.last()?;
+        let (cmd, prev) = ["\\acciaccatura", "\\appoggiatura", "\\grace"]
+            .into_iter()
+            .find_map(|c| Some((c, last.strip_prefix(c)?.strip_prefix(' ')?)))?;
+        let group = match prev.strip_prefix("{ ").and_then(|p| p.strip_suffix(" }")) {
+            Some(inner) => format!("{cmd} {{ {inner} {body} }}"),
+            None => format!("{cmd} {{ {prev} {body} }}"),
+        };
+        Some(group)
+    });
+    match joined {
+        Some(group) => *tokens.last_mut().expect("joined onto the last token") = group,
+        None => tokens.push(token),
+    }
 }
 
 fn note_to_ly(note: &Note, lang: PitchLanguage, mode: PitchMode, prev: Option<&Pitch>) -> String {

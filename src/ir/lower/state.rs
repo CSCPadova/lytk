@@ -38,6 +38,8 @@ pub(super) enum TimedEvent {
         voice: u8,
     },
     TimeSignature(TimeSignature),
+    /// The bar starting here lasts this long.
+    Partial(Frac),
     KeySignature(KeySignature),
     Clef(Clef),
     Direction(Box<Direction>),

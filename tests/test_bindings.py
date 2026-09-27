@@ -374,6 +374,13 @@ def test_from_lilypond_movements(tmp_path):
     assert len(lytk.from_lilypond_movements(str(single))) == 1
 
 
+def test_from_abc_tunes(tmp_path):
+    src = tmp_path / "two.abc"
+    src.write_text("X:1\nK:C\nC|\n\nX:2\nK:C\nD E|\n")
+    assert [len(t.notes()) for t in lytk.from_abc_tunes(str(src))] == [1, 2]
+    assert len(lytk.from_abc(str(src)).notes()) == 1
+
+
 def test_to_lilypond_relative_and_absolute():
     score = lytk.from_lilypond_string(r"\relative c' { c4 d e }")
     assert "\\relative" in lytk.to_lilypond(score, relative=True)
@@ -397,3 +404,27 @@ def test_score_lyricist_and_part_midi_instrument():
     )
     assert score.lyricist == "Anon"
     assert score.iter_parts()[0].midi_instrument == "violin"
+
+
+def test_from_midi_quantize_option(tmp_path):
+    score = lytk.from_lilypond_string("{ c'4 d'4 e'4 f'4 }")
+    data = lytk.to_midi_bytes(score)
+    for q in (None, 8, 16):
+        back = lytk.from_midi_bytes(data, quantize=q)
+        assert len(back.notes()) == 4
+
+
+def test_from_midi_swing_option(tmp_path):
+    # Quarter-eighth triplets written exactly: triplets unless asked.
+    score = lytk.from_lilypond_string(r"{ \tuplet 3/2 { c'4 e'8 } \tuplet 3/2 { c'4 e'8 } c'2 }")
+    data = lytk.to_midi_bytes(score)
+    path = tmp_path / "swing.mid"
+    path.write_bytes(data)
+    for read in (
+        lambda **kw: lytk.from_midi_bytes(data, **kw),
+        lambda **kw: lytk.from_midi(str(path), **kw),
+    ):
+        written = lytk.to_lilypond(read())
+        assert "Swing" not in written and "\\tuplet" in written
+        straight = lytk.to_lilypond(read(swing=True))
+        assert "Swing" in straight and "\\tuplet" not in straight

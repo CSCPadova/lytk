@@ -182,6 +182,11 @@ fn test_emit_rest_types() {
     let mut spacer = Rest::new(Duration::half());
     spacer.is_spacer = true;
     assert_eq!(rest_to_ly(&spacer), "s2");
+    // A 3/4 or 5/8 bar rest, as `R1*3/4` reads.
+    let bar = |n, d| Rest::measure_rest(Duration::new(Ratio::new(n, d)));
+    assert_eq!(rest_to_ly(&bar(3, 4)), "R1*3/4");
+    assert_eq!(rest_to_ly(&bar(5, 8)), "R1*5/8");
+    assert_eq!(rest_to_ly(&bar(3, 1)), "R1*3");
 }
 
 #[test]
@@ -636,6 +641,33 @@ fn test_emit_acciaccatura() {
 }
 
 #[test]
+fn consecutive_graces_are_one_group() {
+    let grace = |step| {
+        let mut n = Note::new(Pitch::new(step, 5), Duration::new(Ratio::new(1, 16)));
+        n.is_grace = true;
+        n.grace_slash = true;
+        VoiceElement::Note(Box::new(n))
+    };
+    let main = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+    let mut measure = Measure::new(1);
+    measure.voices.push(Voice {
+        number: 1,
+        elements: vec![
+            grace(PitchStep::E),
+            grace(PitchStep::F),
+            VoiceElement::Note(Box::new(main)),
+        ],
+    });
+    let mut part = Part::new("P1");
+    part.measures.push(measure);
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    assert_eq!(ly.matches("\\acciaccatura").count(), 1, "{ly}");
+    assert!(ly.contains("\\acciaccatura { e''16 f''16 }"), "{ly}");
+}
+
+#[test]
 fn test_emit_grace_not_acciaccatura() {
     let mut n = Note::new(
         Pitch::new(PitchStep::E, 5),
@@ -1009,6 +1041,11 @@ fn test_emit_harmony_chordnames() {
         ly.contains("ChordNames"),
         "should emit ChordNames context: {}",
         ly
+    );
+    // Written, not played.
+    assert!(
+        ly.contains(r#"\ChordNames \remove "Note_performer""#),
+        "{ly}"
     );
 }
 
@@ -1895,6 +1932,29 @@ mod repeat_alternative_roundtrip {
         );
         let re = LyToIrAdapter::new().convert_str(&ly).unwrap();
         assert_eq!(note_count(&re), note_count(&score), "notes lost in:\n{ly}");
+        // Between the alternatives anything — a bar check, a break, a key —
+        // would be one more (LilyPond junks the extra ones).
+        let src = r#"\score { \new Staff {
+            \repeat volta 2 { c'1 d'1 } \alternative { { e'1 } { \break \key g \major f'1 } } g'1
+        } }"#;
+        let with_break = super::IrToLyAdapter::new()
+            .convert(&LyToIrAdapter::new().convert_str(src).unwrap())
+            .unwrap();
+        assert!(with_break.contains("\\break"), "{with_break}");
+        for ly in [ly, with_break] {
+            let alts = &ly[ly.find("\\alternative {").unwrap() + 14..];
+            let mut depth = 1;
+            for line in alts.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                assert!(
+                    depth != 1 || line.starts_with(['{', '}']),
+                    "{line} between alternatives:\n{ly}"
+                );
+                depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                if depth == 0 {
+                    break;
+                }
+            }
+        }
     }
 
     /// Foreign MusicXML shape (acid test 45b): the repeat starts at score
@@ -1945,4 +2005,71 @@ fn direction_text_quotes_are_escaped() {
         .map(|v| v.elements.len())
         .sum();
     assert_eq!(notes, 2, "quoted words must not truncate the score:\n{ly}");
+}
+
+#[test]
+fn lyrics_lilypond_would_misread_are_quoted() {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+    let src = r#"\score { << \new Voice = "v" { c'4 d' e' f' } \new Lyrics \lyricsto "v" { \set stanza = "1." "0/0/1" "2nd" "{x}" la } >> }"#;
+    let sung = |ly: &str| -> Vec<String> {
+        let score = LyToIrAdapter::new().convert_str(ly).unwrap();
+        score.parts()[0].measures[0].voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => n.lyrics.first().map(|l| l.text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let want = ["0/0/1", "2nd", "{x}", "la"];
+    assert_eq!(sung(src), want);
+    let ly = IrToLyAdapter::new()
+        .convert(&LyToIrAdapter::new().convert_str(src).unwrap())
+        .unwrap();
+    assert!(ly.contains(r#""0/0/1" "2nd" "{x}" la"#), "{ly}");
+    assert_eq!(sung(&ly), want);
+}
+
+#[test]
+fn graces_ending_a_bar_lead_into_the_next() {
+    // 24a: bar 2 ends with a grace e'' and bar 3 opens with another before
+    // its chord. A bar check between two grace groups aborts LilyPond.
+    use crate::adapters::mxml_to_ir::MxmlToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+    let xml = std::fs::read_to_string("tests/fixtures/xml/24a-GraceNotes.xml").unwrap();
+    let score = MxmlToIrAdapter::new().convert_str(&xml).unwrap();
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    assert!(
+        ly.contains("| % 2\n  \\appoggiatura { e''16 e''16 } <f' c''>4"),
+        "{ly}"
+    );
+}
+
+#[test]
+fn a_one_element_tuplet_closes_before_the_next_note() {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+    let score = LyToIrAdapter::new()
+        .convert_str(r"{ \time 3/4 \tuplet 4/2 { r1 } a'4 }")
+        .unwrap();
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    assert!(ly.contains(r"\tuplet 4/2 { r1 } \stemDown a'4"), "{ly}");
+}
+
+#[test]
+fn marks_from_a_dynamics_staff_land_on_their_notes() {
+    // Read from LilyPond, a mark knows its place only exactly (offset_frac):
+    // a hairpin from beat 1 to beat 3 was written `\<\!` on beat 1.
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+    let src = r"\score { << \new Staff { c'4 d'4 e'4 f'4 } \new Dynamics { s4\< s4 s4\! s4 } >> }";
+    let ly = IrToLyAdapter::new()
+        .convert(&LyToIrAdapter::new().convert_str(src).unwrap())
+        .unwrap();
+    let body: String = ly.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(body.contains(r"c'4\<"), "{ly}");
+    assert!(body.contains(r"e'4\!"), "{ly}");
+    assert!(!body.contains(r"\<\!"), "{ly}");
 }

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::direction::{Barline, Direction};
 use super::harmony::{FiguredBass, Harmony};
+use super::pitch::{Pitch, PitchStep};
 use super::voice::Voice;
 
 /// Key signature.
@@ -177,6 +178,30 @@ pub struct Transpose {
     pub diatonic: i8,
     pub chromatic: i8,
     pub octave_change: i8,
+}
+
+impl Transpose {
+    /// The pitch a written c' sounds at (LilyPond's `\transposition`).
+    pub fn sounding_c(&self) -> Pitch {
+        let o = i32::from(self.octave_change);
+        Pitch::new(PitchStep::C, 4).transpose_diatonic(
+            i32::from(self.diatonic) + 7 * o,
+            i32::from(self.chromatic) + 12 * o,
+        )
+    }
+
+    /// The transposition of an instrument whose written c' sounds at `p`,
+    /// whole octaves apart as MusicXML writes them.
+    pub fn from_sounding_c(p: &Pitch) -> Self {
+        let diatonic = p.step.index() + 7 * (p.octave - 4);
+        let chromatic = p.midi_number() - 60;
+        let octave = diatonic / 7;
+        Transpose {
+            diatonic: (diatonic - 7 * octave) as i8,
+            chromatic: (chromatic - 12 * octave) as i8,
+            octave_change: octave as i8,
+        }
+    }
 }
 
 /// Attributes that may change at the start of a measure.

@@ -4,6 +4,8 @@
 //! round-trip conversions: MusicXML→Score→MusicXML, LilyPond→Score→LilyPond,
 //! and cross-format MusicXML→Score→LilyPond→Score.
 
+use _core::adapters::abc_to_ir::AbcToIrAdapter;
+use _core::adapters::ir_to_abc::IrToAbcAdapter;
 use _core::adapters::ir_to_ly::IrToLyAdapter;
 use _core::adapters::ir_to_midi::IrToMidiAdapter;
 use _core::adapters::ir_to_mxml::IrToMxmlAdapter;
@@ -1542,9 +1544,267 @@ fn midi_ref_chopin_programs() {
     );
     let our_smf = midly::Smf::parse(&ours).unwrap();
     let ref_smf = midly::Smf::parse(&reference).unwrap();
+    // Same instruments. The channels differ on purpose: LilyPond gives each
+    // staff its own channel, lytk one channel per part (as MuseScore does), so
+    // the piano's sustain pedal holds both hands.
+    let programs = |smf: &midly::Smf| {
+        let mut p: Vec<u8> = extract_programs(smf).into_iter().map(|(_, p)| p).collect();
+        p.dedup();
+        p
+    };
     assert_eq!(
-        extract_programs(&our_smf),
-        extract_programs(&ref_smf),
+        programs(&our_smf),
+        programs(&ref_smf),
         "chopin: program changes differ"
     );
+}
+
+/// `\partial` opens the first staff, also when a later bar has two voices, and
+/// is written as LilyPond reads it when the pickup isn't one note value.
+#[test]
+fn pickups_are_written_where_and_as_lilypond_reads_them() {
+    let ly = |src: &str| {
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        IrToLyAdapter::new()
+            .convert_music(&_core::ir::lift::lift_to_music(&score))
+            .unwrap()
+    };
+    let out = ly(
+        r"\new Staff { \time 4/4 \partial 4 g'4 | c''1 | << { e''2 d''2 } \\ { c''1 } >> | c''1 }",
+    );
+    let (p, g) = (out.find("\\partial 4").unwrap(), out.find("g'4").unwrap());
+    assert!(p < g, "{out}");
+    // Three quarters: a dotted half, not `\partial 4`.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\nGAB|c4|c4|]\n";
+    let score = _core::adapters::abc_to_ir::AbcToIrAdapter::new()
+        .convert_str(abc)
+        .unwrap();
+    let out = IrToLyAdapter::new().convert(&score).unwrap();
+    assert!(out.contains("\\partial 2."), "{out}");
+}
+
+/// Reversed, the old last bar is the pickup.
+#[test]
+fn retrograde_moves_the_pickup() {
+    use _core::transforms::retrograde::Retrograde;
+    use _core::transforms::MusicTransform;
+    let doc = LyToIrAdapter::new()
+        .convert_str_to_music(r"\new Staff { \time 3/4 \partial 4 g'4 | c''2. | d''2 }")
+        .unwrap();
+    let rev = Retrograde.apply_music(&doc);
+    let p = rev.metadata.partial_duration.map(|d| d.actual_duration());
+    assert_eq!(p, Some(_core::ir::duration::Frac::new(1, 2)));
+    // The final bar line stays last.
+    let doc = AbcToIrAdapter::new()
+        .convert_str_to_music("X:1\nM:4/4\nL:1/4\nK:C\nC | D E F G | A B |]")
+        .unwrap();
+    let abc = IrToAbcAdapter::new()
+        .convert_music(&Retrograde.apply_music(&doc))
+        .unwrap();
+    let body = abc.lines().last().unwrap().trim();
+    assert_eq!(body, "B2 A2 | G2 F2 E2 D2 | C2 |]", "{abc}");
+}
+
+/// Score → Music → Score keeps what the bar-splitter rebuilds: a direction's
+/// place in its bar, a piano's two staves (lowered twice), and a part-list
+/// that declares every part (a piano group inside a bracket group).
+#[test]
+fn lift_then_lower_keeps_directions_staves_and_part_list() {
+    use _core::ir::lift::lift_to_music;
+    use _core::ir::lower::lower_to_score;
+
+    // A dynamic on beat 3.
+    let xml = std::fs::read_to_string("tests/fixtures/xml/01a-Pitches-Pitches.xml").unwrap();
+    let mut score = MxmlToIrAdapter::new().convert_str(&xml).unwrap();
+    let f = _core::ir::direction::Direction {
+        offset_frac: _core::ir::duration::Frac::new(1, 2),
+        text: Some(_core::ir::direction::TextDirection {
+            text: "dolce".to_string(),
+            placement: Default::default(),
+            font_style: None,
+            font_weight: None,
+        }),
+        ..Default::default()
+    };
+    score.parts_mut()[0].measures[0].directions.push(f);
+    let again = lower_to_score(&lift_to_music(&score));
+    let offsets: Vec<_> = again.parts()[0].measures[0]
+        .directions
+        .iter()
+        .filter(|d| d.text.is_some())
+        .map(|d| d.offset_frac)
+        .collect();
+    assert_eq!(offsets, vec![_core::ir::duration::Frac::new(1, 2)]);
+
+    // A piano lowered, lifted and lowered again.
+    let doc = LyToIrAdapter::new()
+        .convert_str_to_music(
+            r"\new PianoStaff << \new Staff { \clef treble c''1 } \new Staff { \clef bass c1 } >>",
+        )
+        .unwrap();
+    let twice = lower_to_score(&lift_to_music(&lower_to_score(&doc)));
+    let part = twice.parts()[0];
+    assert_eq!(part.staves, 2);
+    let staves: Vec<u8> = part.measures[0]
+        .voices
+        .iter()
+        .flat_map(|v| &v.elements)
+        .map(|e| match e {
+            VoiceElement::Note(n) => n.staff,
+            _ => 0,
+        })
+        .collect();
+    assert_eq!(staves, vec![1, 2]);
+
+    // Every part written is declared, for every fixture.
+    let mut paths: Vec<_> = std::fs::read_dir("tests/fixtures/xml")
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+    for p in paths {
+        let Ok(score) = MxmlToIrAdapter::new().convert_file(&p) else {
+            continue;
+        };
+        let out = IrToMxmlAdapter::new()
+            .convert(&lower_to_score(&lift_to_music(&score)))
+            .unwrap();
+        let ids = |tag: &str| -> Vec<String> {
+            out.match_indices(tag)
+                .map(|(i, _)| {
+                    let rest = &out[i + tag.len()..];
+                    rest[..rest.find('"').unwrap()].to_string()
+                })
+                .collect()
+        };
+        let declared = ids("<score-part id=\"");
+        for id in ids("<part id=\"") {
+            assert!(
+                declared.contains(&id),
+                "{}: part {id} undeclared",
+                p.display()
+            );
+        }
+    }
+}
+
+/// Review findings on lift: `discontinue` endings and endings before a new
+/// repeat end their repeat; repeat counts come from backward signs too;
+/// grace notes in a row are one group on the Music path; a piano's staff-2
+/// directions stay on staff 2.
+#[test]
+fn lift_repeats_graces_and_staff_directions() {
+    use _core::ir::lift::lift_to_music;
+    use _core::ir::lower::lower_to_score;
+    use _core::ir::music::Music;
+    fn repeats(m: &Music, out: &mut Vec<u16>) {
+        match m {
+            Music::Repeat {
+                count,
+                body,
+                alternatives,
+                ..
+            } => {
+                out.push(*count);
+                repeats(body, out);
+                for a in alternatives {
+                    repeats(a, out);
+                }
+            }
+            Music::Sequential(v) | Music::Simultaneous(v) => v.iter().for_each(|x| repeats(x, out)),
+            Music::Context { content, .. } => repeats(content, out),
+            _ => {}
+        }
+    }
+    let read = |f: &str| {
+        let xml = std::fs::read_to_string(format!("tests/fixtures/xml/{f}")).unwrap();
+        MxmlToIrAdapter::new().convert_str(&xml).unwrap()
+    };
+    let mut counts = Vec::new();
+    let nested = lift_to_music(&read("45e-Repeats-Nested-Alternatives.xml")).music;
+    repeats(&nested, &mut counts);
+    assert!(counts.len() >= 3, "{counts:?}");
+    // Bars 6-10: `|: 6 [1 7 :| [2 |: 8 9 :| 10` — bar 8 opens the next
+    // repeat: (rests in the body, alternatives) of each repeat.
+    fn shapes(m: &Music, out: &mut Vec<(usize, usize)>) {
+        fn rests(m: &Music) -> usize {
+            match m {
+                Music::Rest { .. } => 1,
+                Music::Sequential(v) | Music::Simultaneous(v) => v.iter().map(rests).sum(),
+                Music::Context { content, .. } => rests(content),
+                _ => 0,
+            }
+        }
+        match m {
+            Music::Repeat {
+                body, alternatives, ..
+            } => out.push((rests(body), alternatives.len())),
+            Music::Sequential(v) | Music::Simultaneous(v) => v.iter().for_each(|x| shapes(x, out)),
+            Music::Context { content, .. } => shapes(content, out),
+            _ => {}
+        }
+    }
+    let mut got = Vec::new();
+    shapes(&nested, &mut got);
+    assert_eq!(got[got.len() - 2..], [(1, 2), (2, 0)], "{got:?}");
+    let mut counts = Vec::new();
+    repeats(
+        &lift_to_music(&read("45c-RepeatMultipleTimes.xml")).music,
+        &mut counts,
+    );
+    assert_eq!(counts, [5, 3]);
+
+    let ly = |src: &str| {
+        let doc = LyToIrAdapter::new().convert_str_to_music(src).unwrap();
+        IrToLyAdapter::new().convert_music(&doc).unwrap()
+    };
+    let out = ly(r"{ \acciaccatura { d'16 e'16 } c'4 }");
+    assert_eq!(out.matches("\\acciaccatura").count(), 1, "{out}");
+
+    let doc = LyToIrAdapter::new()
+        .convert_str_to_music(
+            r"\new PianoStaff << \new Staff { c'1 } \new Staff { \clef bass c1\sustainOn d1\sustainOff } >>",
+        )
+        .unwrap();
+    let score = lower_to_score(&doc);
+    let staves: Vec<u8> = score.parts()[0]
+        .measures
+        .iter()
+        .flat_map(|m| &m.directions)
+        .filter(|d| d.pedal.is_some())
+        .map(|d| d.staff)
+        .collect();
+    assert!(
+        !staves.is_empty() && staves.iter().all(|s| *s == 2),
+        "{staves:?}"
+    );
+}
+
+/// Nested part-groups get numbers of their own.
+#[test]
+fn nested_part_groups_are_numbered_apart() {
+    use _core::ir::score::{PartGroup, ScoreChild};
+    let xml = std::fs::read_to_string("tests/fixtures/xml/01a-Pitches-Pitches.xml").unwrap();
+    let base = MxmlToIrAdapter::new().convert_str(&xml).unwrap();
+    let part = base.parts()[0].clone();
+    let mut piano = part.clone();
+    piano.part_id = "P2".to_string();
+    let mut inner = PartGroup::new("PianoStaff");
+    inner.number = 1;
+    inner.children.push(ScoreChild::Part(piano));
+    let mut outer = PartGroup::new("StaffGroup");
+    outer.number = 1;
+    outer.children.push(ScoreChild::Part(part));
+    outer.children.push(ScoreChild::PartGroup(inner));
+    let mut score = Score::new();
+    score.metadata = base.metadata.clone();
+    score.children.push(ScoreChild::PartGroup(outer));
+    let out = IrToMxmlAdapter::new().convert(&score).unwrap();
+    let starts: Vec<&str> = out
+        .match_indices("type=\"start\" number=\"")
+        .map(|(i, m)| &out[i + m.len()..i + m.len() + 1])
+        .collect();
+    assert_eq!(starts.len(), 2, "{out}");
+    assert_ne!(starts[0], starts[1], "{out}");
 }
