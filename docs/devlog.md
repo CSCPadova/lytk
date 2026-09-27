@@ -95,9 +95,9 @@ tests now run one at a time under `ulimit -v 4000000`.
 **Next**:
 - Finish the hunt for the five unfinished areas, one probe at a time under
   a memory limit.
-- `lytk.flatten` on a diamond of includes (`f(i)` including `f(i+1)` twice)
-  expands 2^depth; the other-readers hunter was measuring it when stopped.
-  It needs a bound like the reader's.
+- ~~`lytk.flatten` on a diamond of includes (`f(i)` including `f(i+1)`
+  twice) expands 2^depth.~~ Done: it stops after 10,000 includes or 64 MiB
+  of output (`FlattenError::TooLarge`).
 - Then J2 (the exception hierarchy on top of `LytkError`) and J3
   (diagnostics: the dropped constructs above become warnings or errors).
 

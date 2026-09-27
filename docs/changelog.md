@@ -64,6 +64,10 @@ engineering notes are in the [development log](devlog.md).
   writer wrote each octave mark out), and nesting of `\tuplet`, `\relative`
   or `\repeat` a few hundred levels deep, which overflowed the stack. The
   reader now walks on a thread with a stack of its own.
+- `lytk.flatten` on a diamond of includes (a file including the next one
+  twice, level after level) doubled its output at every level until memory
+  ran out. It now stops with a `ValueError` after 10,000 includes or 64 MiB
+  of output.
 
 ## [0.2.0] - 2026-09-27
 

@@ -7,7 +7,10 @@
 //! Plain `\include` always inlines the referenced file (faithful to LilyPond's
 //! own behaviour). There is no include-once deduplication. If file A includes
 //! file B which in turn includes file A, a [`FlattenError::Circular`] is
-//! returned.
+//! returned. Without include-once, a diamond (a file including the next one
+//! twice) doubles the output at every level, so flattening stops with
+//! [`FlattenError::TooLarge`] after [`MAX_INCLUDES`] includes or
+//! [`MAX_OUTPUT_BYTES`] of output.
 //!
 //! # Normalization (post-processing)
 //! After full expansion the output is scanned for duplicate command lines:
@@ -30,6 +33,11 @@
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
+
+/// Most `\include` expansions one flatten performs; real projects use tens.
+pub const MAX_INCLUDES: usize = 10_000;
+/// Most bytes of source one flatten emits.
+pub const MAX_OUTPUT_BYTES: usize = 64 << 20;
 
 // ---------------------------------------------------------------------------
 // Public API types
@@ -75,6 +83,9 @@ pub enum FlattenError {
 
     #[error("multiple \\header blocks found in flattened output")]
     MultipleHeaders,
+
+    #[error("{0}; lytk refuses input this large")]
+    TooLarge(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +112,8 @@ pub fn flatten_str(src: &str, base_dir: &Path, opts: FlattenOpts) -> Result<Stri
     let mut ctx = ExpandCtx {
         opts: &opts,
         ancestors: Vec::new(),
+        includes: 0,
+        bytes: src.len(),
     };
     let expanded = expand(src, base_dir, &mut ctx)?;
     normalize(expanded)
@@ -115,6 +128,9 @@ struct ExpandCtx<'a> {
     /// Canonical absolute paths of files currently open (ancestor chain).
     /// Used for circular-dependency detection.
     ancestors: Vec<PathBuf>,
+    /// Includes expanded and bytes read so far, against the bounds above.
+    includes: usize,
+    bytes: usize,
 }
 
 fn expand(src: &str, base_dir: &Path, ctx: &mut ExpandCtx<'_>) -> Result<String, FlattenError> {
@@ -166,6 +182,19 @@ fn expand(src: &str, base_dir: &Path, ctx: &mut ExpandCtx<'_>) -> Result<String,
             }
 
             let inc_src = read_file(&resolved)?;
+            ctx.includes += 1;
+            ctx.bytes += inc_src.len() + 2 * raw_path.len();
+            if ctx.includes > MAX_INCLUDES {
+                return Err(FlattenError::TooLarge(format!(
+                    "the includes expand more than {MAX_INCLUDES} times"
+                )));
+            }
+            if ctx.bytes > MAX_OUTPUT_BYTES {
+                return Err(FlattenError::TooLarge(format!(
+                    "the flattened source exceeds {} MiB",
+                    MAX_OUTPUT_BYTES >> 20
+                )));
+            }
             let inc_base = resolved.parent().unwrap_or(Path::new("."));
 
             ctx.ancestors.push(canonical.clone());
@@ -530,6 +559,19 @@ mod tests {
         assert!(
             matches!(&err, FlattenError::Circular { chain } if chain.contains("a.ly") && chain.contains("b.ly"))
         );
+    }
+
+    #[test]
+    fn test_include_diamond_is_refused() {
+        // f0 includes f1 twice, f1 includes f2 twice, …: 2^20 expansions.
+        let dir = TempDir::new().unwrap();
+        for i in 0..20 {
+            let next = format!("\\include \"f{}.ly\"\n", i + 1);
+            write(dir.path(), &format!("f{i}.ly"), &next.repeat(2));
+        }
+        write(dir.path(), "f20.ly", "c4\n");
+        let err = flatten(&dir.path().join("f0.ly"), FlattenOpts::default()).unwrap_err();
+        assert!(matches!(err, FlattenError::TooLarge(_)), "got {err:?}");
     }
 
     #[test]
