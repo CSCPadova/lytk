@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use num::rational::Ratio;
 use num::CheckedAdd;
 use tree_sitter::Node;
 
+use crate::diagnostics::{Diagnostic, Severity};
 use crate::ir::articulation::{BeamEvent, LyricSyllable};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::{PitchLanguage, PitchMode};
@@ -174,6 +175,19 @@ pub(super) struct WalkState<'src> {
     /// The context just read was `\context X` rather than `\new X`: it
     /// re-enters an existing X instead of creating one.
     pub(super) context_reentry: std::cell::Cell<bool>,
+
+    /// What the walk found wrong, or did not read.
+    pub(super) diagnostics: Vec<Diagnostic>,
+    /// Above 0 while music already walked once is walked for another purpose
+    /// (a chord-mode block read as notes): the first walk reported it.
+    pub(super) quiet: u32,
+    /// Names assigned at the top level (`name = …`), whatever their value.
+    pub(super) assigned: HashSet<String>,
+    /// Where top-level music first stands: it is dropped if the file also
+    /// has `\score` blocks.
+    pub(super) top_level_music: Option<Diagnostic>,
+    /// The `\score` blocks after the first, which a single-score reading drops.
+    pub(super) later_movements: Vec<Diagnostic>,
 }
 
 impl<'src> WalkState<'src> {
@@ -224,11 +238,16 @@ impl<'src> WalkState<'src> {
             transpose_stack: Vec::new(),
             current_voice_number: 1,
             context_reentry: std::cell::Cell::new(false),
+            diagnostics: Vec::new(),
+            quiet: 0,
+            assigned: HashSet::new(),
+            top_level_music: None,
+            later_movements: Vec::new(),
         }
     }
 
     /// Get the text content of a node.
-    pub(super) fn text(&self, node: Node) -> &str {
+    pub(super) fn text(&self, node: Node) -> &'src str {
         node.utf8_text(self.source.as_bytes()).unwrap_or("")
     }
 
@@ -257,6 +276,53 @@ impl<'src> WalkState<'src> {
 
     pub(super) fn add_event_at(&mut self, pos: Frac, ev: Event) {
         self.ensure_build().tl.add(pos, ev);
+    }
+
+    /// Report a finding about `node`.
+    pub(super) fn report(
+        &mut self,
+        node: Node,
+        severity: Severity,
+        code: &'static str,
+        message: String,
+    ) {
+        if self.quiet == 0 {
+            let d = Diagnostic::at(self.source, node, severity, code, message);
+            self.diagnostics.push(d);
+        }
+    }
+
+    pub(super) fn warn(&mut self, node: Node, code: &'static str, message: String) {
+        self.report(node, Severity::Warning, code, message);
+    }
+
+    pub(super) fn error(&mut self, node: Node, code: &'static str, message: String) {
+        self.report(node, Severity::Error, code, message);
+    }
+
+    /// A command at `node` (`\name`) that the walk does not read: warn,
+    /// unless LilyPond or the file defines it.
+    pub(super) fn unread_command(&mut self, node: Node, name: &str) {
+        if name == "include" {
+            let file = node
+                .next_sibling()
+                .filter(|n| n.kind() == "string")
+                .map(|n| format!(" {}", self.text(n)))
+                .unwrap_or_default();
+            self.warn(
+                node,
+                "ignored-include",
+                format!("`\\include{file}` is not followed: flatten the file first"),
+            );
+        } else if !self.assigned.contains(name)
+            && super::builtins::BUILTINS.binary_search(&name).is_err()
+        {
+            self.warn(
+                node,
+                "unknown-command",
+                format!("unknown command `\\{name}`"),
+            );
+        }
     }
 
     /// Stop the reading: it went past a bound. The first reason is kept.

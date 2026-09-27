@@ -15,11 +15,46 @@ engineering notes are in the [development log](devlog.md).
   `Exception`, carrying the panic's message and source location) and prints
   nothing. It used to escape as pyo3's `PanicException`, a `BaseException`
   that `except Exception` does not catch, with its message on stderr.
+- `lytk.ParseError`, raised by every reader (`from_*`, `Score.from_json`,
+  `Score.from_dict`, `MusicDocument.from_json`, `flatten`) when its input
+  cannot be read. It subclasses both `LytkError` and `ValueError`, so
+  `except ValueError` keeps working. I/O failures stay `OSError`.
+- Diagnostics for LilyPond: `lytk.check_lilypond(text, *, semantic=False)`
+  returns `lytk.Diagnostic` objects (severity, code, message, line, column
+  and a character span), from the parse tree alone by default (about 0.1 ms
+  per file), from a full reading with `semantic=True`. Errors are input
+  LilyPond rejects: syntax errors, unclosed brackets, a `>>` without its
+  `<<`, what is left of a Scheme expression missing its `(`, `c3`, a tuplet
+  or multiplier with a zero term, plain text. Warnings are input lytk reads
+  around: unknown commands, includes, unknown languages, dropped music,
+  `\midi`-only scores, values it cannot represent. The codes are listed in
+  `docs/import-export.md`.
+- `strict=False` on every LilyPond reader: `strict=True` raises
+  `lytk.LilyPondSyntaxError` (a `ParseError`) when the reading has an error,
+  with every diagnostic in its `diagnostics` attribute.
+  `Score.diagnostics` and `MusicDocument.diagnostics` hold them either way
+  (they are not part of `to_dict`/`to_json`).
+- `lytk check FILE… [--semantic] [--json]`: the diagnostics of LilyPond
+  files; exit status 1 on an error.
+- Rust: `diagnostics::{Diagnostic, Severity}`; `LyToIrAdapter::read_str` and
+  `read_file` return a `LyReading` (every movement and the diagnostics);
+  `ly_to_ir::check` and `ly_to_ir::read_source`.
 
 ### Changed
 
-- The LilyPond reader refuses input past its bounds with a `ValueError`
-  ("… lytk refuses input this large") instead of hanging, running out of
+- Readers raise `lytk.ParseError` where they raised `ValueError` (a subclass,
+  so existing handlers still catch it). A `.ly` file that is not UTF-8 is a
+  `ParseError`; it was an `OSError`.
+- LilyPond markup is text, not music: `c4 -\markup \bold a8 d4` has two notes,
+  as LilyPond reads it (`a8` is the markup's word), and the words of a
+  top-level `\markup`, of `\tempo \markup …` or of a `\set`/`\override`
+  markup value no longer become notes. Top-level `\layout` and `\midi` blocks
+  are no longer read as music either.
+- A UTF-8 byte-order mark is whitespace anywhere in LilyPond input, as in
+  LilyPond; the grammar reported one past the start as a syntax error.
+- `\time 0/4` is ignored like `\time 1/0`, as LilyPond does.
+- The LilyPond reader refuses input past its bounds with a `ParseError` (a
+  `ValueError`: "… lytk refuses input this large") instead of hanging, running out of
   memory or crashing: more than 500,000 notes, rests and chords once repeats
   and variables are expanded; music longer than 100,000 whole notes or with
   100,000 bars; a duration multiplier above 16,777,216 (`R1*1000000000`);
@@ -64,6 +99,9 @@ engineering notes are in the [development log](devlog.md).
   writer wrote each octave mark out), and nesting of `\tuplet`, `\relative`
   or `\repeat` a few hundred levels deep, which overflowed the stack. The
   reader now walks on a thread with a stack of its own.
+- A tremolo `:N` past 1024 (`c1:2147483648`) is not read as one: it gave
+  31 tremolo marks, and the LilyPond writer's shift overflowed. The writers
+  cap the marks of hand-made IR at 10.
 - `lytk.flatten` on a diamond of includes (a file including the next one
   twice, level after level) doubled its output at every level until memory
   ran out. It now stops with a `ValueError` after 10,000 includes or 64 MiB

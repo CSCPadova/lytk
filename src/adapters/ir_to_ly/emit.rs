@@ -687,7 +687,10 @@ fn two_note_tremolo_to_ly(
     mode: PitchMode,
     prev: Option<&Pitch>,
 ) -> Option<(String, Pitch)> {
-    let marks = n1.tremolo_marks.max(n2.tremolo_marks);
+    let marks = n1
+        .tremolo_marks
+        .max(n2.tremolo_marks)
+        .min(crate::ir::note::MAX_TREMOLO_MARKS);
     if marks == 0 {
         return None;
     }

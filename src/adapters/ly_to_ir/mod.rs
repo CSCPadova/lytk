@@ -22,6 +22,7 @@
 //! not tree-sitter, so the tree walk strategy differs).
 
 mod apply;
+mod builtins;
 mod chord_mode;
 mod consume;
 mod figured_bass;
@@ -31,6 +32,7 @@ mod modifiers;
 mod music;
 mod postprocess;
 mod state;
+mod syntax;
 mod walk;
 
 #[cfg(test)]
@@ -40,6 +42,7 @@ use std::path::Path;
 
 use num::rational::Ratio;
 
+use crate::diagnostics::{tidy, Diagnostic, Severity};
 use crate::ir::harmony::FiguredBass;
 use crate::ir::language::PitchLanguage;
 use crate::ir::measure::{ClefSign, KeyMode};
@@ -177,6 +180,70 @@ fn find_relative_octave(prev: &Pitch, step: PitchStep) -> i32 {
 /// leaves room to spare; untouched stack pages cost no memory.
 const WALK_STACK_BYTES: usize = 64 << 20;
 
+/// What reading LilyPond text produced.
+#[derive(Debug, Clone)]
+pub struct LyReading {
+    /// One score per movement (`\score` block); a file without `\score`
+    /// blocks is one movement.
+    pub scores: Vec<Score>,
+    /// Syntax errors and what the walk did not read, in source order.
+    pub diagnostics: Vec<Diagnostic>,
+    /// A warning for each movement after the first, which
+    /// [`into_first`](Self::into_first) drops.
+    later_movements: Vec<Diagnostic>,
+}
+
+impl LyReading {
+    /// The first movement and the diagnostics, with a warning for each
+    /// movement dropped.
+    pub fn into_first(self) -> (Score, Vec<Diagnostic>) {
+        let mut diagnostics = self.diagnostics;
+        diagnostics.extend(self.later_movements);
+        tidy(&mut diagnostics);
+        let score = self.scores.into_iter().next().unwrap_or_else(|| {
+            let mut s = Score::new();
+            s.children.push(ScoreChild::Part(Part::new("P1")));
+            s
+        });
+        (score, diagnostics)
+    }
+}
+
+/// The text of a `.ly` file. LilyPond reads UTF-8 only, so other bytes are a
+/// parse error, not an I/O error.
+pub fn read_source(path: &Path) -> Result<String> {
+    String::from_utf8(std::fs::read(path)?).map_err(|e| {
+        AdapterError::Parse(format!(
+            "{} is not UTF-8 text (invalid byte at offset {})",
+            path.display(),
+            e.utf8_error().valid_up_to()
+        ))
+    })
+}
+
+/// Check LilyPond text. By default only the syntax, from the tree (fast, no
+/// reading); with `semantic`, everything a reading reports too. Input the
+/// reader refuses as too large is an error diagnostic here, not an `Err`.
+pub fn check(text: &str, semantic: bool) -> Vec<Diagnostic> {
+    let too_large = |message: String| Diagnostic::whole(Severity::Error, "too-large", message);
+    if semantic {
+        return match LyToIrAdapter::new().read_str(text) {
+            Ok(reading) => reading.diagnostics,
+            Err(e) => {
+                let mut out = check(text, false);
+                out.push(too_large(e.to_string()));
+                tidy(&mut out);
+                out
+            }
+        };
+    }
+    let parsed = LilyPondParser::new().and_then(|mut p| p.parse(text));
+    match parsed {
+        Ok(tree) => syntax::syntax_diagnostics(&tree, text),
+        Err(e) => vec![too_large(e.to_string())],
+    }
+}
+
 /// LilyPond → IR adapter.
 ///
 /// Parses LilyPond source text using tree-sitter and produces an IR `Score`.
@@ -197,33 +264,35 @@ impl LyToIrAdapter {
         self
     }
 
-    /// Parse LilyPond source text into one or more IR Scores (one per `\score` block).
+    /// Read LilyPond text: every movement, and the diagnostics.
     ///
     /// The walk recurses once per nested music block, so it runs on a thread
     /// with a stack of its own: how deep a score may nest must not depend on
     /// the caller's thread (Rust test threads and many Python threads get 2 MB
     /// or less). A panic on that thread resumes on the caller's.
-    fn parse_source_multi(&self, source: &str) -> Result<Vec<Score>> {
+    pub fn read_str(&self, text: &str) -> Result<LyReading> {
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .name("lytk-ly-reader".to_string())
                 .stack_size(WALK_STACK_BYTES)
-                .spawn_scoped(scope, || self.parse_source_multi_here(source))?
+                .spawn_scoped(scope, || self.read_here(text))?
                 .join()
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
         })
     }
 
-    fn parse_source_multi_here(&self, source: &str) -> Result<Vec<Score>> {
+    /// Read a LilyPond file (see [`read_source`]).
+    pub fn read_file(&self, path: &Path) -> Result<LyReading> {
+        self.read_str(&read_source(path)?)
+    }
+
+    fn read_here(&self, source: &str) -> Result<LyReading> {
         let mut parser = LilyPondParser::new().map_err(|e| AdapterError::Parse(e.to_string()))?;
         let tree = parser
             .parse(source)
             .map_err(|e| AdapterError::Parse(e.to_string()))?;
-
         let root = tree.root_node();
-        if root.has_error() {
-            // Still attempt to extract what we can; tree-sitter is error-tolerant
-        }
+        let mut diagnostics = syntax::syntax_diagnostics(&tree, source);
 
         let mut state = state::WalkState::new(source);
         state.root = Some(root);
@@ -237,43 +306,49 @@ impl LyToIrAdapter {
             return Err(refused(reason));
         }
 
-        // `\score` blocks were assembled as they closed (one per movement).
-        if !state.completed_scores.is_empty() {
-            return Ok(state.completed_scores);
-        }
-
-        // Otherwise the file's top-level music is one implicit score.
-        let score = assemble_score(&mut state);
-        if let Some(reason) = state.over_limit.take() {
-            return Err(refused(reason));
-        }
-        let mut score = score.unwrap_or_default();
-        if score.children.is_empty() {
-            score.children.push(ScoreChild::Part(Part::new("P1")));
-        }
-        Ok(vec![score])
+        let scores = if !state.completed_scores.is_empty() {
+            // `\score` blocks were assembled as they closed (one per
+            // movement); music outside them is not read.
+            state.flush_voice();
+            if !state.parts.is_empty() {
+                diagnostics.extend(state.top_level_music.take());
+            }
+            std::mem::take(&mut state.completed_scores)
+        } else {
+            // Otherwise the file's top-level music is one implicit score.
+            let score = assemble_score(&mut state);
+            if let Some(reason) = state.over_limit.take() {
+                return Err(refused(reason));
+            }
+            let mut score = score.unwrap_or_default();
+            if score.children.is_empty() {
+                score.children.push(ScoreChild::Part(Part::new("P1")));
+            }
+            vec![score]
+        };
+        diagnostics.append(&mut state.diagnostics);
+        tidy(&mut diagnostics);
+        Ok(LyReading {
+            scores,
+            diagnostics,
+            later_movements: state.later_movements,
+        })
     }
 
     /// Parse LilyPond source text into an IR Score.
     /// If there are multiple `\score` blocks, returns only the first one.
     fn parse_source(&self, source: &str) -> Result<Score> {
-        let scores = self.parse_source_multi(source)?;
-        Ok(scores.into_iter().next().unwrap_or_else(|| {
-            let mut s = Score::new();
-            s.children.push(ScoreChild::Part(Part::new("P1")));
-            s
-        }))
+        Ok(self.read_str(source)?.into_first().0)
     }
 
     /// Parse LilyPond source into multiple scores (one per movement).
     pub fn convert_file_multi(&self, path: &Path) -> Result<Vec<Score>> {
-        let source = std::fs::read_to_string(path)?;
-        self.parse_source_multi(&source)
+        Ok(self.read_file(path)?.scores)
     }
 
     /// Parse LilyPond source string into multiple scores (one per movement).
     pub fn convert_str_multi(&self, text: &str) -> Result<Vec<Score>> {
-        self.parse_source_multi(text)
+        Ok(self.read_str(text)?.scores)
     }
 }
 
@@ -407,8 +482,7 @@ impl Default for LyToIrAdapter {
 
 impl ToIrAdapter for LyToIrAdapter {
     fn convert_file(&self, path: &Path) -> Result<Score> {
-        let source = std::fs::read_to_string(path)?;
-        self.parse_source(&source)
+        self.parse_source(&read_source(path)?)
     }
 
     fn convert_str(&self, text: &str) -> Result<Score> {

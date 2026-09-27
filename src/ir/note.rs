@@ -26,6 +26,9 @@ pub enum ArpeggioType {
     NonArpeggio,
 }
 
+/// Most tremolo slashes a note carries (LilyPond's `:1024` on a whole note).
+pub const MAX_TREMOLO_MARKS: u8 = 10;
+
 /// A single pitched note.
 ///
 /// From lytk-py's `Note(IRNode)`.
@@ -64,7 +67,8 @@ pub struct Note {
     pub stem_direction: String,
     pub notehead: String,
     pub print_object: bool,
-    /// Number of tremolo slashes (1–4) for single-note tremolo.
+    /// Number of tremolo slashes (1–4) for single-note tremolo; writers cap
+    /// it at [`MAX_TREMOLO_MARKS`].
     pub tremolo_marks: u8,
     /// Whether this note is part of a two-note tremolo (paired with next/prev note).
     pub two_note_tremolo: bool,

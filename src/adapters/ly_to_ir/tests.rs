@@ -3545,3 +3545,9 @@ mod transposition {
         }
     }
 }
+
+#[test]
+fn builtins_are_sorted_for_binary_search() {
+    let names = super::builtins::BUILTINS;
+    assert!(names.windows(2).all(|w| w[0] < w[1]));
+}

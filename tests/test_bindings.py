@@ -312,6 +312,118 @@ class TestTypedErrors:
 
 
 
+class TestExceptionHierarchy:
+    """Readers raise ParseError, which is a ValueError too; I/O stays OSError."""
+
+    def test_classes(self):
+        assert issubclass(lytk.ParseError, lytk.LytkError)
+        assert issubclass(lytk.ParseError, ValueError)
+        assert issubclass(lytk.LilyPondSyntaxError, lytk.ParseError)
+        assert issubclass(lytk.InternalError, lytk.LytkError)
+        assert not issubclass(lytk.InternalError, ValueError)
+        assert lytk.ParseError.__module__ == "lytk"
+
+    @pytest.mark.parametrize(
+        "read",
+        [
+            lambda: lytk.from_musicxml_string("not musicxml <<<"),
+            lambda: lytk.from_musicxml_bytes(b"not musicxml"),
+            lambda: lytk.from_midi_bytes(b"not a midi file"),
+            lambda: lytk.from_lilypond_string("{ " * 3000 + "}" * 3000),
+            lambda: lytk.Score.from_json("{ not json"),
+            lambda: lytk.Score.from_dict({"not": "a score"}),
+            lambda: lytk.MusicDocument.from_json("[]"),
+        ],
+    )
+    def test_malformed_input_is_a_parse_error(self, read):
+        with pytest.raises(lytk.ParseError):
+            read()
+        # Code written against 0.2 keeps working.
+        with pytest.raises(ValueError):
+            read()
+
+    def test_a_missing_file_is_an_os_error(self, tmp_path):
+        for read in (lytk.from_lilypond, lytk.from_musicxml, lytk.from_abc, lytk.from_humdrum):
+            with pytest.raises(OSError):
+                read(str(tmp_path / "missing"))
+
+    def test_a_ly_file_that_is_not_utf8_is_a_parse_error(self, tmp_path):
+        path = tmp_path / "latin1.ly"
+        path.write_bytes(b"{ c'4 \xe9 }")
+        with pytest.raises(lytk.ParseError, match="not UTF-8"):
+            lytk.from_lilypond(str(path))
+
+    def test_flatten_errors_are_parse_errors(self, tmp_path):
+        main = tmp_path / "main.ly"
+        main.write_text('\\include "absent.ily"\n')
+        with pytest.raises(lytk.ParseError, match="not found"):
+            lytk.flatten(str(main))
+
+    def test_pickles_with_its_diagnostics(self):
+        import pickle
+
+        with pytest.raises(lytk.LilyPondSyntaxError) as info:
+            lytk.from_lilypond_string("{ c'3 }", strict=True)
+        again = pickle.loads(pickle.dumps(info.value))
+        assert type(again) is lytk.LilyPondSyntaxError
+        assert again.diagnostics == info.value.diagnostics
+
+
+class TestDiagnostics:
+    """check_lilypond, strict mode and .diagnostics (Epic J3)."""
+
+    def test_syntax_only_by_default(self):
+        text = "{ c'3 \\noSuchCommand }"
+        assert lytk.check_lilypond(text) == []
+        codes = [d.code for d in lytk.check_lilypond(text, semantic=True)]
+        assert codes == ["invalid-duration", "unknown-command"]
+
+    def test_fields_and_text(self):
+        text = "% é\n{ é c'4 >> }"
+        (d,) = lytk.check_lilypond(text)
+        assert (d.severity, d.code, d.line, d.column) == ("error", "syntax-error", 2, 9)
+        assert text[d.start : d.end] == ">>"  # character offsets
+        assert str(d) == "2:9: error: `>>` without a matching `<<` [syntax-error]"
+        assert d == lytk.Diagnostic(*[getattr(d, k) for k in ("severity", "code", "message", "line", "column", "start", "end")])
+
+    def test_too_large_is_a_diagnostic_not_an_exception(self):
+        (d,) = lytk.check_lilypond("{ " * 3000 + "}" * 3000)
+        assert (d.severity, d.code) == ("error", "too-large")
+
+    def test_readers_carry_diagnostics_outside_the_ir(self, tmp_path):
+        text = "\\include \"x.ily\"\n{ c'4 \\noSuchCommand d'4 }"
+        path = tmp_path / "in.ly"
+        path.write_text(text)
+        for music in (
+            lytk.from_lilypond_string(text),
+            lytk.from_lilypond(str(path)),
+            lytk.from_lilypond_music_string(text),
+            lytk.from_lilypond_music(str(path)),
+        ):
+            assert [d.code for d in music.diagnostics] == ["ignored-include", "unknown-command"]
+            assert "diagnostic" not in music.to_json()
+        assert lytk.from_musicxml_string(lytk.to_musicxml(music.to_score())).diagnostics == []
+
+    def test_strict_raises_on_errors_only(self):
+        text = "{ c'4 \\noSuchCommand d'4 }"  # a warning
+        assert lytk.from_lilypond_string(text, strict=True).num_parts == 1
+        with pytest.raises(lytk.LilyPondSyntaxError, match=r"1:1: error: missing `}`") as info:
+            lytk.from_lilypond_string("{ c'4 d'4", strict=True)
+        assert [d.severity for d in info.value.diagnostics] == ["error"]
+        with pytest.raises(lytk.LilyPondSyntaxError, match=r"\(and 1 more error\)"):
+            lytk.from_lilypond_music_string("{ c'3 d'3 }", strict=True)
+        # Without strict the same input reads, reporting what it could not.
+        assert lytk.from_lilypond_string("{ c'3 d'3 }").diagnostics[0].code == "invalid-duration"
+
+    def test_movements_and_the_first_movement(self, tmp_path):
+        path = tmp_path / "two.ly"
+        path.write_text("\\score { { c'1 } }\n\\score { { d'1 } }\n")
+        movements = lytk.from_lilypond_movements(str(path), strict=True)
+        assert [len(m.diagnostics) for m in movements] == [0, 0]
+        (dropped,) = lytk.from_lilypond(str(path)).diagnostics
+        assert (dropped.code, dropped.line) == ("dropped-music", 2)
+
+
 class TestPanicFirewall:
     """A Rust panic reaches Python as lytk.InternalError, never as pyo3's
     PanicException (a BaseException), and prints nothing."""

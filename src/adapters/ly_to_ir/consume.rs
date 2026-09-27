@@ -73,23 +73,36 @@ pub(super) fn consume_duration(
 ) -> Duration {
     // Look for unsigned_integer
     if *i < children.len() && children[*i].kind() == "unsigned_integer" {
-        let num_text = state.text(children[*i]).to_string();
+        let node = children[*i];
+        let num_text = state.text(node);
         *i += 1;
-        if let Ok(num) = num_text.parse::<u32>() {
-            let dots = consume_dots(state, children, i);
-            // Convert LilyPond number to fraction: 4 → 1/4, 2 → 1/2, 1 → 1/1.
-            // Only powers of two are durations (LilyPond reports anything else
-            // as "not a duration" and reads a quarter, as here); past 1024, the
-            // shortest value LilyPond draws, a denominator only feeds overflow.
-            let base = if num.is_power_of_two() && num <= 1024 {
-                Ratio::new(1i64, num as i64)
-            } else {
+        let dots = consume_dots(state, children, i);
+        // Convert LilyPond number to fraction: 4 → 1/4, 2 → 1/2, 1 → 1/1.
+        // Only powers of two are durations (LilyPond reports anything else
+        // as "not a duration" and reads a quarter, as here); past 1024, the
+        // shortest value LilyPond draws, a denominator only feeds overflow.
+        let base = match num_text.parse::<u32>() {
+            Ok(num) if num.is_power_of_two() && num <= 1024 => Ratio::new(1i64, num as i64),
+            Ok(num) if num.is_power_of_two() => {
+                state.warn(
+                    node,
+                    "unsupported-value",
+                    format!("lytk reads durations up to 1024: `{num}` is read as a quarter"),
+                );
                 Ratio::new(1, 4)
-            };
-            let dur = Duration::dotted(base, dots);
-            state.last_duration = dur.clone();
-            return dur;
-        }
+            }
+            _ => {
+                state.error(
+                    node,
+                    "invalid-duration",
+                    format!("`{num_text}` is not a duration: read as a quarter"),
+                );
+                Ratio::new(1, 4)
+            }
+        };
+        let dur = Duration::dotted(base, dots);
+        state.last_duration = dur.clone();
+        return dur;
     }
     // Long durations are escaped words: \breve, \longa, \maxima
     if *i < children.len() && children[*i].kind() == "escaped_word" {
@@ -158,11 +171,24 @@ pub(super) fn consume_duration_scale(
             }
         }
     };
-    let denom_of = |text: &str| {
-        text.parse::<u32>()
-            .ok()
-            .filter(|&d| d != 0 && d <= MAX_MULTIPLIER)
-            .map(i64::from)
+    let denom_of = |state: &mut WalkState, node: Node, text: &str| match text.parse::<u32>() {
+        Ok(d) if d != 0 && d <= MAX_MULTIPLIER => Some(i64::from(d)),
+        Ok(0) => {
+            state.error(
+                node,
+                "invalid-ratio",
+                "a duration multiplier with a zero denominator: dropped".to_string(),
+            );
+            None
+        }
+        _ => {
+            state.warn(
+                node,
+                "unsupported-value",
+                format!("a duration multiplier denominator above {MAX_MULTIPLIER}: dropped"),
+            );
+            None
+        }
     };
     if *i < children.len() && children[*i].kind() == "punctuation" {
         let ptext = punct_text(state, children[*i]);
@@ -170,11 +196,12 @@ pub(super) fn consume_duration_scale(
             *i += 1;
             // Case 1: fraction token (e.g. "8/7")
             if *i < children.len() && children[*i].kind() == "fraction" {
-                let frac_text = state.text(children[*i]).to_string();
+                let node = children[*i];
+                let frac_text = state.text(node);
                 *i += 1;
                 let (num, den) = frac_text.split_once('/')?;
                 let numer = numer_or_refuse(state, num)?;
-                return Some(Frac::new(numer, denom_of(den)?));
+                return Some(Frac::new(numer, denom_of(state, node, den)?));
             }
             // Case 2: unsigned_integer, optionally followed by / and unsigned_integer
             if *i < children.len() && children[*i].kind() == "unsigned_integer" {
@@ -188,9 +215,10 @@ pub(super) fn consume_duration_scale(
                 {
                     *i += 1; // skip "/"
                     if *i < children.len() && children[*i].kind() == "unsigned_integer" {
-                        let denom_text = state.text(children[*i]).to_string();
+                        let node = children[*i];
+                        let denom_text = state.text(node);
                         *i += 1;
-                        return Some(Frac::new(numer, denom_of(&denom_text)?));
+                        return Some(Frac::new(numer, denom_of(state, node, denom_text)?));
                     }
                 }
                 return Some(Frac::from_integer(numer));
@@ -219,7 +247,8 @@ pub(super) fn consume_tremolo(
                 if let Ok(n) = num_text.parse::<u32>() {
                     // base_dur denominator: e.g. quarter = 1/4 → denom 4
                     let base_denom = *base_dur.base.denom() as u32;
-                    if n > base_denom && base_denom > 0 {
+                    // `:N` is a duration, as LilyPond reads it: up to 1024.
+                    if n > base_denom && base_denom > 0 && n.is_power_of_two() && n <= 1024 {
                         let ratio = n / base_denom;
                         return (ratio as f64).log2() as u8;
                     }
@@ -360,6 +389,52 @@ pub(super) fn is_post_note_command(text: &str) -> bool {
             | "\\open"
             | "\\snappizzicato"
     ) || is_dynamic_name(text)
+}
+
+/// The sibling before `children[i]`, skipping comments.
+pub(super) fn previous<'a>(children: &[Node<'a>], i: usize) -> Option<Node<'a>> {
+    children[..i]
+        .iter()
+        .rev()
+        .find(|n| n.kind() != "comment")
+        .copied()
+}
+
+/// The index past a markup expression starting at `i` (just after `\markup`):
+/// markup commands with their Scheme arguments, then one block, string or
+/// word. It stops at a command that starts a new top-level construct.
+pub(super) fn skip_markup(state: &WalkState, children: &[Node], mut i: usize) -> usize {
+    while let Some(node) = children.get(i) {
+        match node.kind() {
+            "escaped_word"
+                if !matches!(
+                    state.text(*node),
+                    "\\score"
+                        | "\\book"
+                        | "\\bookpart"
+                        | "\\header"
+                        | "\\paper"
+                        | "\\layout"
+                        | "\\midi"
+                        | "\\version"
+                        | "\\include"
+                        | "\\language"
+                        | "\\markup"
+                        | "\\markuplist"
+                        | "\\new"
+                        | "\\context"
+                        | "\\relative"
+                        | "\\transpose"
+                ) =>
+            {
+                i += 1
+            }
+            "embedded_scheme" => i += 1,
+            "expression_block" | "string" | "symbol" => return i + 1,
+            _ => return i,
+        }
+    }
+    i
 }
 
 /// Get the text of a punctuation node (which may have a child).
@@ -642,6 +717,9 @@ pub(super) fn consume_override(state: &mut WalkState, children: &[Node], mut i: 
                 // Whatever follows the "=" is the value — grab its raw text
                 value = state.text(node).to_string();
                 i += 1;
+                if matches!(value.as_str(), "\\markup" | "\\markuplist") {
+                    i = skip_markup(state, children, i);
+                }
                 break;
             }
             _ => break,
@@ -802,7 +880,7 @@ pub(super) fn parse_fraction(text: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = text.split('/').collect();
     if parts.len() == 2 {
         let num = parts[0].parse::<u32>().ok()?;
-        let den = parts[1].parse::<u32>().ok().filter(|&d| d != 0)?;
+        let den = parts[1].parse::<u32>().ok()?;
         Some((num, den))
     } else {
         None
@@ -810,7 +888,7 @@ pub(super) fn parse_fraction(text: &str) -> Option<(u32, u32)> {
 }
 
 /// Parse `#(ly:make-moment N D)` from a Scheme expression text.
-/// Returns (numerator, denominator) if successful; a zero denominator is `None`.
+/// Returns (numerator, denominator) if successful, a zero denominator included.
 pub(super) fn parse_ly_make_moment(text: &str) -> Option<(u32, u32)> {
     // Text looks like: #(ly:make-moment 3 4) or #(ly:make-moment 3/4)
     let inner = text.trim_start_matches('#').trim();
@@ -824,7 +902,7 @@ pub(super) fn parse_ly_make_moment(text: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = args.split_whitespace().collect();
     if parts.len() == 2 {
         let num = parts[0].parse::<u32>().ok()?;
-        let den = parts[1].parse::<u32>().ok().filter(|&d| d != 0)?;
+        let den = parts[1].parse::<u32>().ok()?;
         return Some((num, den));
     }
     // Try "N/D" format

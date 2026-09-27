@@ -97,7 +97,17 @@ impl LilyPondParser {
     ///
     /// Rejects input nested deeper than [`MAX_NESTING_DEPTH`] (which would risk a
     /// stack-overflow abort during the IR walk) with [`ParseError::TooDeeplyNested`].
+    /// A byte-order mark is whitespace wherever it stands, as in LilyPond.
     pub fn parse(&mut self, source: &str) -> Result<Tree, ParseError> {
+        // LilyPond reads a UTF-8 byte-order mark anywhere as whitespace; the
+        // grammar allows one only at the start. Three spaces keep every offset.
+        let spaced;
+        let source = if source.contains('\u{feff}') {
+            spaced = source.replace('\u{feff}', "   ");
+            spaced.as_str()
+        } else {
+            source
+        };
         let tree = self
             .parser
             .parse(source, None)
@@ -175,6 +185,13 @@ mod tests {
         // A normally-nested score is unaffected.
         let shallow = "{ << { c'4 d' } \\\\ { e'4 f' } >> }";
         assert!(parser.parse(shallow).is_ok());
+    }
+
+    #[test]
+    fn test_byte_order_mark_is_whitespace_anywhere() {
+        let mut parser = LilyPondParser::new().unwrap();
+        let tree = parser.parse("{ c'4 \u{feff}d'4 }").unwrap();
+        assert!(!tree.root_node().has_error());
     }
 
     #[test]

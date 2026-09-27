@@ -714,6 +714,40 @@ def batch(
 
 
 # ---------------------------------------------------------------------------
+# check
+# ---------------------------------------------------------------------------
+
+
+@_command()
+def check(
+    files: Annotated[list[str], typer.Argument(help="LilyPond files (`-` for stdin).", show_default=False)],
+    semantic: Annotated[
+        bool,
+        typer.Option("--semantic", help="Read the files too, and report what the reader drops or cannot represent."),
+    ] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Write the diagnostics as a JSON list.")] = False,
+) -> None:
+    """Report the syntax errors of LilyPond files (and, with --semantic, what a
+    reading reports), one per line as FILE:LINE:COLUMN: SEVERITY: MESSAGE [CODE].
+
+    Exits with 1 when a file has an error; warnings alone exit with 0.
+    """
+    found = []
+    for name in files:
+        text = sys.stdin.buffer.read().decode("utf-8") if name == "-" else Path(name).read_text(encoding="utf-8")
+        found += [(name, d) for d in lytk.check_lilypond(text, semantic=semantic)]
+    if as_json:
+        keys = ("severity", "code", "message", "line", "column", "start", "end")
+        rows = [{"file": name, **{k: getattr(d, k) for k in keys}} for name, d in found]
+        write_bytes("-", (json.dumps(rows, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    else:
+        for name, d in found:
+            print(f"{name}:{d}")
+    if any(d.severity == "error" for _, d in found):
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
 # flatten
 # ---------------------------------------------------------------------------
 

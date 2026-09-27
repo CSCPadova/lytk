@@ -12,6 +12,63 @@ class InternalError(LytkError):
     reads, writes or transforms music raises this instead of letting a Rust
     panic through; the message names the panic and where it happened."""
 
+class ParseError(LytkError, ValueError):
+    """The input could not be read: malformed, not the format expected, or
+    past the reader's bounds. A ValueError too."""
+
+class LilyPondSyntaxError(ParseError):
+    """LilyPond read with ``strict=True`` has errors."""
+
+    diagnostics: list[Diagnostic]
+    """Every diagnostic of the reading, errors and warnings."""
+
+class Diagnostic:
+    """One finding of the LilyPond reader. Comparable, hashable, picklable."""
+
+    def __init__(
+        self,
+        severity: str,
+        code: str,
+        message: str,
+        line: int,
+        column: int,
+        start: int,
+        end: int,
+    ) -> None: ...
+
+    @property
+    def severity(self) -> str:
+        """``"error"``: LilyPond rejects the input; ``"warning"``: lytk does not
+        read it, or cannot represent it, and reads around it."""
+        ...
+    @property
+    def code(self) -> str:
+        """A stable identifier: ``syntax-error``, ``missing-token``,
+        ``invalid-duration``, ``invalid-ratio``, ``not-lilypond``,
+        ``too-large`` (errors); ``unknown-command``, ``unrecognized-token``,
+        ``ignored-include``, ``unknown-language``, ``dropped-music``,
+        ``skipped-score``, ``unsupported-value`` (warnings)."""
+        ...
+    @property
+    def message(self) -> str: ...
+    @property
+    def line(self) -> int:
+        """1-based."""
+        ...
+    @property
+    def column(self) -> int:
+        """1-based, in characters."""
+        ...
+    @property
+    def start(self) -> int:
+        """Character offset: ``text[d.start:d.end]`` is the span."""
+        ...
+    @property
+    def end(self) -> int: ...
+    def __str__(self) -> str:
+        """``3:12: error: missing `}` [missing-token]``"""
+        ...
+
 class Score:
     """Opaque handle to a parsed music score."""
 
@@ -31,6 +88,11 @@ class Score:
     def num_parts(self) -> int: ...
     @property
     def parts(self) -> list[str]: ...
+    @property
+    def diagnostics(self) -> list[Diagnostic]:
+        """What reading LilyPond reported (empty for other sources); not part
+        of ``to_dict``/``to_json``."""
+        ...
     def to_json(self) -> str: ...
     @staticmethod
     def from_json(json: str) -> Score: ...
@@ -61,6 +123,10 @@ class MusicDocument:
     def arranger(self) -> str | None: ...
     @property
     def language(self) -> str | None: ...
+    @property
+    def diagnostics(self) -> list[Diagnostic]:
+        """What reading LilyPond reported (empty for other sources)."""
+        ...
     def notes(self, resolution: int = 480) -> list[tuple[int, int, int, int]]:
         """Notes as ``(onset, duration, pitch, velocity)`` tuples in time steps."""
         ...
@@ -231,22 +297,46 @@ class Part:
     def __repr__(self) -> str: ...
 
 # -- Adapters ----------------------------------------------------------------
+#
+# Readers (``from_*``, ``Score.from_json``/``from_dict``,
+# ``MusicDocument.from_json``, ``flatten``) raise ParseError (a ValueError)
+# when the input cannot be read, and OSError when a file cannot be opened.
+# ``strict=True`` LilyPond readers raise LilyPondSyntaxError (a ParseError) on
+# errors. Writers (``to_*``) raise ValueError when a score cannot be written,
+# OSError when the file cannot be. Anything may raise InternalError.
+
+def check_lilypond(text: str, *, semantic: bool = False) -> list[Diagnostic]:
+    """Diagnostics of LilyPond text, in source order: the syntax only (fast,
+    nothing is read), or with ``semantic=True`` what a reading reports too.
+    Never raises for bad input: input too large to read is a ``too-large``
+    error."""
+    ...
 
 def from_musicxml(path: str) -> Score: ...
 def from_musicxml_string(xml: str) -> Score: ...
 def from_musicxml_bytes(data: bytes) -> Score:
     """Parse MusicXML or compressed MXL from in-memory bytes."""
     ...
-def from_lilypond(path: str, *, language: str | None = None) -> Score: ...
-def from_lilypond_string(text: str, *, language: str | None = None) -> Score: ...
-def from_lilypond_movements(path: str, *, language: str | None = None) -> list[Score]:
-    """Every movement of a LilyPond file: one score per ``\\score`` block."""
+def from_lilypond(
+    path: str, *, language: str | None = None, strict: bool = False
+) -> Score:
+    """The first movement; ``strict=True`` raises LilyPondSyntaxError on an
+    error. The diagnostics are in ``Score.diagnostics`` either way."""
+    ...
+def from_lilypond_string(
+    text: str, *, language: str | None = None, strict: bool = False
+) -> Score: ...
+def from_lilypond_movements(
+    path: str, *, language: str | None = None, strict: bool = False
+) -> list[Score]:
+    """Every movement of a LilyPond file: one score per ``\\score`` block,
+    each with the file's diagnostics."""
     ...
 def from_lilypond_music(
-    path: str, *, language: str | None = None
+    path: str, *, language: str | None = None, strict: bool = False
 ) -> MusicDocument: ...
 def from_lilypond_music_string(
-    text: str, *, language: str | None = None
+    text: str, *, language: str | None = None, strict: bool = False
 ) -> MusicDocument: ...
 def to_lilypond(
     score: Score,

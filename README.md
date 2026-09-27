@@ -58,6 +58,18 @@ lytk.to_lilypond(score, "output.ly")         # or to_musicxml, to_midi, to_abc, 
 abc = lytk.to_abc(score)                     # without a path, writers return the text
 ```
 
+Check LilyPond before you rely on it:
+
+```python
+for d in lytk.check_lilypond(text, semantic=True):   # errors and warnings, in source order
+    print(d)                                         # 3:12: error: missing `}` [missing-token]
+score = lytk.from_lilypond("score.ly", strict=True)  # raises lytk.LilyPondSyntaxError on an error
+score.diagnostics                                    # what the reading reported, either way
+```
+
+A reader raises `lytk.ParseError` (a `ValueError`) when its input cannot be
+read, and `OSError` when the file cannot be opened.
+
 Turn a score into arrays:
 
 ```python
@@ -101,6 +113,7 @@ lytk convert input.xml -o output.ly           # formats are taken from the exten
 lytk convert corpus/ -o out/ -f xml -j 8      # a whole folder, in parallel
 lytk transpose input.ly -s 3 -o up.ly
 lytk flatten score.ly -o flat.ly              # inline every \include
+lytk check score.ly --semantic                # report the errors of LilyPond files
 lytk info input.mxl
 ```
 

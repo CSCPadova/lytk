@@ -4,17 +4,21 @@ from __future__ import annotations
 
 from lytk._core import (
     Chord,
+    Diagnostic,
     InternalError,
+    LilyPondSyntaxError,
     LytkError,
     Measure,
     MusicDocument,
     Note,
+    ParseError,
     Part,
     Pitch,
     Rest,
     Score,
     Voice,
     change_language,
+    check_lilypond,
     compute_metrics,
     flatten,
     from_abc,
@@ -50,9 +54,13 @@ from lytk._core import (
 )
 
 __all__ = [
-    # Errors
+    # Errors and diagnostics
     "LytkError",
+    "ParseError",
+    "LilyPondSyntaxError",
     "InternalError",
+    "Diagnostic",
+    "check_lilypond",
     "MusicDocument",
     "Score",
     # Structured note navigation (read-only Layer-2 tree)

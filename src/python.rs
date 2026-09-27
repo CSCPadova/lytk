@@ -5,11 +5,15 @@
 
 use std::path::Path;
 
+use std::borrow::Cow;
+
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyModule};
+use pyo3::sync::GILOnceCell;
+use pyo3::types::{PyBytes, PyDict, PyModule, PyTuple, PyType};
 
-use crate::adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
+use crate::adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter};
+use crate::diagnostics::Diagnostic;
 use crate::ir::interval::Interval;
 use crate::ir::language::{PitchLanguage, PitchMode};
 use crate::ir::music::MusicDocument;
@@ -42,6 +46,71 @@ mod errors {
     );
 }
 use errors::{InternalError, LytkError};
+
+/// `ParseError(LytkError, ValueError)` and `LilyPondSyntaxError(ParseError)`:
+/// classes with two bases, which `create_exception!` cannot make.
+static PARSE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+static SYNTAX_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+
+fn new_exception(
+    py: Python<'_>,
+    name: &str,
+    bases: Vec<Bound<'_, PyType>>,
+    doc: &str,
+) -> PyResult<Py<PyType>> {
+    let namespace = PyDict::new_bound(py);
+    namespace.set_item("__module__", "lytk")?;
+    namespace.set_item("__doc__", doc)?;
+    let class =
+        py.get_type_bound::<PyType>()
+            .call1((name, PyTuple::new_bound(py, bases), namespace))?;
+    Ok(class.downcast_into::<PyType>()?.unbind())
+}
+
+fn parse_error_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    let class = PARSE_ERROR.get_or_try_init(py, || {
+        new_exception(
+            py,
+            "ParseError",
+            vec![
+                py.get_type_bound::<LytkError>(),
+                py.get_type_bound::<PyValueError>(),
+            ],
+            "The input could not be read: malformed, not the format expected, or \
+             past the reader's bounds. A ValueError too.",
+        )
+    })?;
+    Ok(class.bind(py))
+}
+
+fn syntax_error_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    let class = SYNTAX_ERROR.get_or_try_init(py, || {
+        new_exception(
+            py,
+            "LilyPondSyntaxError",
+            vec![parse_error_type(py)?.clone()],
+            "LilyPond read with strict=True has errors. Its ``diagnostics`` \
+             attribute lists them, with the warnings.",
+        )
+    })?;
+    Ok(class.bind(py))
+}
+
+/// A `ParseError`: the input could not be read.
+fn parse_error(message: String) -> PyErr {
+    Python::with_gil(|py| match parse_error_type(py) {
+        Ok(class) => PyErr::from_type_bound(class.clone(), message),
+        Err(e) => e,
+    })
+}
+
+/// A reader's failure: I/O stays `OSError`, anything else is a `ParseError`.
+fn read_err(e: adapters::AdapterError) -> PyErr {
+    match e {
+        adapters::AdapterError::Io(_) => PyIOError::new_err(e.to_string()),
+        _ => parse_error(e.to_string()),
+    }
+}
 
 /// How many `guard` calls are active, on any thread: the LilyPond reader walks
 /// on a thread of its own, so a panic can happen away from the caller's.
@@ -108,9 +177,9 @@ fn guard<T>(f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
 /// or tuplet term, or a negative duration.
 fn ir_from_json<T: serde::de::DeserializeOwned>(json: &str) -> PyResult<T> {
     let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))?;
-    check_ir_values(&value).map_err(PyValueError::new_err)?;
-    serde_json::from_value(value).map_err(|e| PyValueError::new_err(e.to_string()))
+        serde_json::from_str(json).map_err(|e| parse_error(e.to_string()))?;
+    check_ir_values(&value).map_err(parse_error)?;
+    serde_json::from_value(value).map_err(|e| parse_error(e.to_string()))
 }
 
 fn check_ir_values(value: &serde_json::Value) -> Result<(), String> {
@@ -177,6 +246,188 @@ fn _panic_for_tests(message: &str) -> PyResult<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+/// One finding of the LilyPond reader: ``severity`` is ``"error"`` (LilyPond
+/// rejects the input) or ``"warning"`` (lytk does not read it, or cannot
+/// represent it); ``code`` is a stable identifier such as
+/// ``"missing-token"``. ``line`` and ``column`` count from 1 (the column in
+/// characters); ``text[start:end]`` is the span.
+#[pyclass(name = "Diagnostic", module = "lytk", frozen, get_all, eq, hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PyDiagnostic {
+    severity: String,
+    code: String,
+    message: String,
+    line: usize,
+    column: usize,
+    start: usize,
+    end: usize,
+}
+
+type DiagnosticFields = (String, String, String, usize, usize, usize, usize);
+
+#[pymethods]
+impl PyDiagnostic {
+    #[new]
+    fn new(
+        severity: String,
+        code: String,
+        message: String,
+        line: usize,
+        column: usize,
+        start: usize,
+        end: usize,
+    ) -> Self {
+        Self {
+            severity,
+            code,
+            message,
+            line,
+            column,
+            start,
+            end,
+        }
+    }
+
+    /// Pickling (an exception carrying diagnostics crosses process pools).
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> (Bound<'py, PyType>, DiagnosticFields) {
+        let d = slf.get();
+        (
+            slf.get_type(),
+            (
+                d.severity.clone(),
+                d.code.clone(),
+                d.message.clone(),
+                d.line,
+                d.column,
+                d.start,
+                d.end,
+            ),
+        )
+    }
+
+    /// ``3:12: error: missing `}` [missing-token]``
+    fn __str__(&self) -> String {
+        format!(
+            "{}:{}: {}: {} [{}]",
+            self.line, self.column, self.severity, self.message, self.code
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<Diagnostic {}>", self.__str__())
+    }
+}
+
+/// Diagnostics for Python, their byte ranges turned into character offsets
+/// into `text` (in one pass over it).
+fn py_diagnostics(text: &str, diagnostics: &[Diagnostic]) -> Vec<PyDiagnostic> {
+    let boundary = |b: usize| {
+        let mut b = b.min(text.len());
+        while !text.is_char_boundary(b) {
+            b -= 1;
+        }
+        b
+    };
+    let mut bytes: Vec<usize> = diagnostics
+        .iter()
+        .flat_map(|d| [boundary(d.start), boundary(d.end)])
+        .collect();
+    bytes.sort_unstable();
+    bytes.dedup();
+    let (mut chars, mut count, mut at) = (Vec::with_capacity(bytes.len()), 0, 0);
+    for &b in &bytes {
+        count += text[at..b].chars().count();
+        at = b;
+        chars.push(count);
+    }
+    let char_at = |b: usize| chars[bytes.binary_search(&boundary(b)).unwrap_or(0)];
+    diagnostics
+        .iter()
+        .map(|d| PyDiagnostic {
+            severity: d.severity.as_str().to_string(),
+            code: d.code.to_string(),
+            message: d.message.clone(),
+            line: d.line,
+            column: d.column,
+            start: char_at(d.start),
+            end: char_at(d.end),
+        })
+        .collect()
+}
+
+/// With `strict`, an error among `diagnostics` fails the reading: a
+/// `LilyPondSyntaxError` that carries them all.
+fn check_strict(strict: bool, diagnostics: &[PyDiagnostic]) -> PyResult<()> {
+    let mut errors = diagnostics.iter().filter(|d| d.severity == "error");
+    let (Some(first), true) = (errors.next(), strict) else {
+        return Ok(());
+    };
+    let more = match errors.count() {
+        0 => String::new(),
+        1 => " (and 1 more error)".to_string(),
+        n => format!(" (and {n} more errors)"),
+    };
+    Python::with_gil(|py| {
+        let class = syntax_error_type(py)?.clone();
+        let err = PyErr::from_type_bound(class, format!("{}{more}", first.__str__()));
+        err.value_bound(py)
+            .setattr("diagnostics", diagnostics.to_vec().into_py(py))?;
+        Err(err)
+    })
+}
+
+/// Read LilyPond, from a file or text, releasing the GIL: the text and the
+/// reading.
+fn read_lilypond(
+    py: Python<'_>,
+    source: Result<&str, &str>,
+    language: Option<&str>,
+) -> PyResult<(String, adapters::ly_to_ir::LyReading)> {
+    let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+    if let Some(lang_str) = language {
+        adapter = adapter.with_language(parse_language(lang_str)?);
+    }
+    py.allow_threads(|| {
+        let text = match source {
+            Ok(path) => Cow::Owned(adapters::ly_to_ir::read_source(Path::new(path))?),
+            Err(text) => Cow::Borrowed(text),
+        };
+        let reading = adapter.read_str(&text)?;
+        Ok((text.into_owned(), reading))
+    })
+    .map_err(read_err)
+}
+
+/// The first movement of a LilyPond reading, with its diagnostics.
+fn first_movement(
+    text: &str,
+    reading: adapters::ly_to_ir::LyReading,
+    strict: bool,
+) -> PyResult<(Score, Vec<PyDiagnostic>)> {
+    let (score, diagnostics) = reading.into_first();
+    let diagnostics = py_diagnostics(text, &diagnostics);
+    check_strict(strict, &diagnostics)?;
+    Ok((score, diagnostics))
+}
+
+/// Check LilyPond text and return its :class:`Diagnostic` list, errors and
+/// warnings in source order. By default only the syntax, from the parse tree
+/// (fast, nothing is read); with ``semantic=True`` also what a reading
+/// reports: invalid durations and ratios, unknown commands, input it does not
+/// read. Input too large to read is an error here, not an exception.
+#[pyfunction]
+#[pyo3(signature = (text, *, semantic=false))]
+fn check_lilypond(py: Python<'_>, text: &str, semantic: bool) -> PyResult<Vec<PyDiagnostic>> {
+    guard(|| {
+        let diagnostics = py.allow_threads(|| adapters::ly_to_ir::check(text, semantic));
+        Ok(py_diagnostics(text, &diagnostics))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // PyScore — opaque wrapper for the IR Score
 // ---------------------------------------------------------------------------
 
@@ -189,10 +440,27 @@ fn _panic_for_tests(message: &str) -> PyResult<()> {
 #[derive(Clone)]
 struct PyScore {
     inner: Score,
+    diagnostics: Vec<PyDiagnostic>,
+}
+
+impl From<Score> for PyScore {
+    fn from(inner: Score) -> Self {
+        Self {
+            inner,
+            diagnostics: Vec::new(),
+        }
+    }
 }
 
 #[pymethods]
 impl PyScore {
+    /// What reading LilyPond reported, as :class:`Diagnostic` objects (empty
+    /// for other sources). Not part of :meth:`to_dict` or :meth:`to_json`.
+    #[getter]
+    fn diagnostics(&self) -> Vec<PyDiagnostic> {
+        self.diagnostics.clone()
+    }
+
     /// Score title (from the MusicXML or LilyPond header).
     #[getter]
     fn title(&self) -> Option<String> {
@@ -281,11 +549,7 @@ impl PyScore {
     /// Deserialize a score from a JSON string.
     #[staticmethod]
     fn from_json(json: &str) -> PyResult<Self> {
-        guard(|| {
-            Ok(PyScore {
-                inner: ir_from_json(json)?,
-            })
-        })
+        guard(|| Ok(PyScore::from(ir_from_json::<Score>(json)?)))
     }
 
     /// Serialize the score IR to a Python dict.
@@ -305,22 +569,14 @@ impl PyScore {
             let py = dict.py();
             let json_mod = PyModule::import_bound(py, "json")?;
             let json_str: String = json_mod.call_method1("dumps", (dict,))?.extract()?;
-            Ok(PyScore {
-                inner: ir_from_json(&json_str)?,
-            })
+            Ok(PyScore::from(ir_from_json::<Score>(&json_str)?))
         })
     }
 
     /// Lift this measure-based :class:`Score` to a Layer-1 :class:`MusicDocument`
     /// (the form the ML representations consume).
     fn to_music_document(&self) -> PyResult<PyMusicDocument> {
-        guard(|| {
-            Ok({
-                PyMusicDocument {
-                    inner: ir::lift::lift_to_music(&self.inner),
-                }
-            })
-        })
+        guard(|| Ok(PyMusicDocument::from(ir::lift::lift_to_music(&self.inner))))
     }
 
     /// The score's notes as ``(onset, duration, pitch, velocity)`` tuples in time
@@ -367,10 +623,27 @@ impl PyScore {
 #[derive(Clone)]
 struct PyMusicDocument {
     inner: MusicDocument,
+    diagnostics: Vec<PyDiagnostic>,
+}
+
+impl From<MusicDocument> for PyMusicDocument {
+    fn from(inner: MusicDocument) -> Self {
+        Self {
+            inner,
+            diagnostics: Vec::new(),
+        }
+    }
 }
 
 #[pymethods]
 impl PyMusicDocument {
+    /// What reading LilyPond reported, as :class:`Diagnostic` objects (empty
+    /// for other sources). Not part of :meth:`to_json`.
+    #[getter]
+    fn diagnostics(&self) -> Vec<PyDiagnostic> {
+        self.diagnostics.clone()
+    }
+
     /// Score title (from the header).
     #[getter]
     fn title(&self) -> Option<String> {
@@ -431,22 +704,12 @@ impl PyMusicDocument {
     /// Deserialize a music document from a JSON string.
     #[staticmethod]
     fn from_json(json: &str) -> PyResult<Self> {
-        guard(|| {
-            Ok(PyMusicDocument {
-                inner: ir_from_json(json)?,
-            })
-        })
+        guard(|| Ok(PyMusicDocument::from(ir_from_json::<MusicDocument>(json)?)))
     }
 
     /// Convert this music document to a measure-based :class:`Score`.
     fn to_score(&self) -> PyResult<PyScore> {
-        guard(|| {
-            Ok({
-                PyScore {
-                    inner: ir::lower::lower_to_score(&self.inner),
-                }
-            })
-        })
+        guard(|| Ok(PyScore::from(ir::lower::lower_to_score(&self.inner))))
     }
 
     fn __repr__(&self) -> String {
@@ -462,12 +725,8 @@ impl PyMusicDocument {
 // Adapter functions
 // ---------------------------------------------------------------------------
 
-/// Map an adapter error to the appropriate Python exception: an I/O failure
-/// becomes `IOError`, every parse/validation failure becomes `ValueError`.
-///
-/// Previously the file readers mapped *all* adapter errors to `IOError`, so a
-/// malformed-but-readable file looked the same as a missing one — a batch loader
-/// wrapping reads in `except IOError` would silently swallow corrupt files.
+/// A writer's failure: I/O becomes `OSError`, anything else `ValueError`.
+/// Readers use [`read_err`].
 fn adapter_err(e: adapters::AdapterError) -> PyErr {
     let msg = e.to_string();
     match e {
@@ -484,8 +743,8 @@ fn from_musicxml(py: Python<'_>, path: &str) -> PyResult<PyScore> {
         let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
         let score = py
             .allow_threads(|| adapter.convert_file(Path::new(path)))
-            .map_err(adapter_err)?;
-        Ok(PyScore { inner: score })
+            .map_err(read_err)?;
+        Ok(PyScore::from(score))
     })
 }
 
@@ -494,10 +753,8 @@ fn from_musicxml(py: Python<'_>, path: &str) -> PyResult<PyScore> {
 fn from_musicxml_string(xml: &str) -> PyResult<PyScore> {
     guard(|| {
         let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
-        let score = adapter
-            .convert_str(xml)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyScore { inner: score })
+        let score = adapter.convert_str(xml).map_err(read_err)?;
+        Ok(PyScore::from(score))
     })
 }
 
@@ -507,94 +764,113 @@ fn parse_language(name: &str) -> PyResult<PitchLanguage> {
         .ok_or_else(|| PyValueError::new_err(format!("unknown language: {name}")))
 }
 
-/// Parse a LilyPond (``.ly``) file into a :class:`Score`.
+/// Parse a LilyPond (``.ly``) file into a :class:`Score` (its first movement).
+///
+/// ``strict=True`` raises :class:`LilyPondSyntaxError` if the reading reports
+/// an error; the diagnostics are in :attr:`Score.diagnostics` either way.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None))]
-fn from_lilypond(py: Python<'_>, path: &str, language: Option<&str>) -> PyResult<PyScore> {
+#[pyo3(signature = (path, *, language=None, strict=false))]
+fn from_lilypond(
+    py: Python<'_>,
+    path: &str,
+    language: Option<&str>,
+    strict: bool,
+) -> PyResult<PyScore> {
     guard(|| {
-        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-        if let Some(lang_str) = language {
-            adapter = adapter.with_language(parse_language(lang_str)?);
-        }
-        let score = py
-            .allow_threads(|| adapter.convert_file(Path::new(path)))
-            .map_err(adapter_err)?;
-        Ok(PyScore { inner: score })
+        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (score, diagnostics) = first_movement(&text, reading, strict)?;
+        Ok(PyScore {
+            inner: score,
+            diagnostics,
+        })
     })
 }
 
 /// Parse every movement of a LilyPond file: one :class:`Score` per ``\\score``
-/// block (a file without ``\\score`` blocks is a single movement).
+/// block (a file without ``\\score`` blocks is a single movement). Each score
+/// carries the file's diagnostics.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None))]
+#[pyo3(signature = (path, *, language=None, strict=false))]
 fn from_lilypond_movements(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
+    strict: bool,
 ) -> PyResult<Vec<PyScore>> {
     guard(|| {
-        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-        if let Some(lang_str) = language {
-            adapter = adapter.with_language(parse_language(lang_str)?);
-        }
-        let scores = py
-            .allow_threads(|| adapter.convert_file_multi(Path::new(path)))
-            .map_err(adapter_err)?;
-        Ok(scores.into_iter().map(|inner| PyScore { inner }).collect())
+        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let diagnostics = py_diagnostics(&text, &reading.diagnostics);
+        check_strict(strict, &diagnostics)?;
+        Ok(reading
+            .scores
+            .into_iter()
+            .map(|inner| PyScore {
+                inner,
+                diagnostics: diagnostics.clone(),
+            })
+            .collect())
     })
 }
 
-/// Parse a LilyPond string into a :class:`Score`.
+/// Parse a LilyPond string into a :class:`Score` (its first movement); see
+/// :func:`from_lilypond`.
 #[pyfunction]
-#[pyo3(signature = (text, *, language=None))]
-fn from_lilypond_string(text: &str, language: Option<&str>) -> PyResult<PyScore> {
+#[pyo3(signature = (text, *, language=None, strict=false))]
+fn from_lilypond_string(
+    py: Python<'_>,
+    text: &str,
+    language: Option<&str>,
+    strict: bool,
+) -> PyResult<PyScore> {
     guard(|| {
-        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-        if let Some(lang_str) = language {
-            adapter = adapter.with_language(parse_language(lang_str)?);
-        }
-        let score = adapter
-            .convert_str(text)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyScore { inner: score })
+        let (text, reading) = read_lilypond(py, Err(text), language)?;
+        let (score, diagnostics) = first_movement(&text, reading, strict)?;
+        Ok(PyScore {
+            inner: score,
+            diagnostics,
+        })
     })
 }
 
 /// Parse a LilyPond file into a :class:`MusicDocument` (Layer 1 Music tree).
 ///
-/// This preserves structural information like contexts and simultaneous blocks.
+/// This preserves structural information like contexts and simultaneous
+/// blocks. ``strict`` as in :func:`from_lilypond`.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None))]
+#[pyo3(signature = (path, *, language=None, strict=false))]
 fn from_lilypond_music(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
+    strict: bool,
 ) -> PyResult<PyMusicDocument> {
     guard(|| {
-        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-        if let Some(lang_str) = language {
-            adapter = adapter.with_language(parse_language(lang_str)?);
-        }
-        let doc = py
-            .allow_threads(|| adapter.convert_file_to_music(Path::new(path)))
-            .map_err(adapter_err)?;
-        Ok(PyMusicDocument { inner: doc })
+        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (score, diagnostics) = first_movement(&text, reading, strict)?;
+        Ok(PyMusicDocument {
+            inner: ir::lift::lift_to_music(&score),
+            diagnostics,
+        })
     })
 }
 
-/// Parse a LilyPond string into a :class:`MusicDocument` (Layer 1 Music tree).
+/// Parse a LilyPond string into a :class:`MusicDocument` (Layer 1 Music
+/// tree); see :func:`from_lilypond_music`.
 #[pyfunction]
-#[pyo3(signature = (text, *, language=None))]
-fn from_lilypond_music_string(text: &str, language: Option<&str>) -> PyResult<PyMusicDocument> {
+#[pyo3(signature = (text, *, language=None, strict=false))]
+fn from_lilypond_music_string(
+    py: Python<'_>,
+    text: &str,
+    language: Option<&str>,
+    strict: bool,
+) -> PyResult<PyMusicDocument> {
     guard(|| {
-        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
-        if let Some(lang_str) = language {
-            adapter = adapter.with_language(parse_language(lang_str)?);
-        }
-        let doc = adapter
-            .convert_str_to_music(text)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyMusicDocument { inner: doc })
+        let (text, reading) = read_lilypond(py, Err(text), language)?;
+        let (score, diagnostics) = first_movement(&text, reading, strict)?;
+        Ok(PyMusicDocument {
+            inner: ir::lift::lift_to_music(&score),
+            diagnostics,
+        })
     })
 }
 
@@ -703,7 +979,7 @@ fn flatten(
             add_markers,
         };
         let text = adapters::ly_flatten::flatten(Path::new(input), opts)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| parse_error(e.to_string()))?;
         if let Some(p) = output {
             std::fs::write(p, &text).map_err(|e| PyIOError::new_err(e.to_string()))?;
         }
@@ -716,8 +992,8 @@ fn flatten(
 fn from_abc(path: &str) -> PyResult<PyScore> {
     guard(|| {
         let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
-        let score = adapter.convert_file(Path::new(path)).map_err(adapter_err)?;
-        Ok(PyScore { inner: score })
+        let score = adapter.convert_file(Path::new(path)).map_err(read_err)?;
+        Ok(PyScore::from(score))
     })
 }
 
@@ -729,8 +1005,8 @@ fn from_abc_tunes(py: Python<'_>, path: &str) -> PyResult<Vec<PyScore>> {
         let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
         let scores = py
             .allow_threads(|| adapter.convert_file_tunes(Path::new(path)))
-            .map_err(adapter_err)?;
-        Ok(scores.into_iter().map(|inner| PyScore { inner }).collect())
+            .map_err(read_err)?;
+        Ok(scores.into_iter().map(PyScore::from).collect())
     })
 }
 
@@ -739,10 +1015,8 @@ fn from_abc_tunes(py: Python<'_>, path: &str) -> PyResult<Vec<PyScore>> {
 fn from_abc_string(text: &str) -> PyResult<PyScore> {
     guard(|| {
         let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
-        let score = adapter
-            .convert_str(text)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyScore { inner: score })
+        let score = adapter.convert_str(text).map_err(read_err)?;
+        Ok(PyScore::from(score))
     })
 }
 
@@ -772,8 +1046,8 @@ fn from_humdrum(py: Python<'_>, path: &str) -> PyResult<PyScore> {
         let adapter = adapters::humdrum_to_ir::HumdrumToIrAdapter::new();
         let score = py
             .allow_threads(|| adapter.convert_file(Path::new(path)))
-            .map_err(adapter_err)?;
-        Ok(PyScore { inner: score })
+            .map_err(read_err)?;
+        Ok(PyScore::from(score))
     })
 }
 
@@ -782,10 +1056,8 @@ fn from_humdrum(py: Python<'_>, path: &str) -> PyResult<PyScore> {
 fn from_humdrum_string(text: &str) -> PyResult<PyScore> {
     guard(|| {
         let adapter = adapters::humdrum_to_ir::HumdrumToIrAdapter::new();
-        let score = adapter
-            .convert_str(text)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyScore { inner: score })
+        let score = adapter.convert_str(text).map_err(read_err)?;
+        Ok(PyScore::from(score))
     })
 }
 
@@ -828,8 +1100,8 @@ fn from_midi_bytes(data: &[u8], quantize: Option<u32>, swing: Option<bool>) -> P
         let adapter = adapters::midi_to_ir::MidiToIrAdapter::new()
             .with_quantize(quantize)
             .with_swing(swing);
-        let score = adapter.convert_bytes(data).map_err(adapter_err)?;
-        Ok(PyScore { inner: score })
+        let score = adapter.convert_bytes(data).map_err(read_err)?;
+        Ok(PyScore::from(score))
     })
 }
 
@@ -839,8 +1111,8 @@ fn from_midi_bytes(data: &[u8], quantize: Option<u32>, swing: Option<bool>) -> P
 fn from_musicxml_bytes(data: &[u8]) -> PyResult<PyScore> {
     guard(|| {
         let adapter = adapters::mxml_to_ir::MxmlToIrAdapter::new();
-        let score = adapter.convert_bytes(data).map_err(adapter_err)?;
-        Ok(PyScore { inner: score })
+        let score = adapter.convert_bytes(data).map_err(read_err)?;
+        Ok(PyScore::from(score))
     })
 }
 
@@ -906,12 +1178,12 @@ fn dispatch_transform(
     if let Ok(s) = music.extract::<PyRef<PyScore>>() {
         let score: &Score = &s.inner;
         let inner = py.allow_threads(|| on_score(score));
-        return Ok(PyScore { inner }.into_py(py));
+        return Ok(PyScore::from(inner).into_py(py));
     }
     if let Ok(d) = music.extract::<PyRef<PyMusicDocument>>() {
         let doc: &MusicDocument = &d.inner;
         let inner = py.allow_threads(|| on_music(doc));
-        return Ok(PyMusicDocument { inner }.into_py(py));
+        return Ok(PyMusicDocument::from(inner).into_py(py));
     }
     Err(PyValueError::new_err(
         "expected a Score or MusicDocument as first argument",
@@ -1102,9 +1374,7 @@ fn from_note_array(array: PyReadonlyArray2<i32>, resolution: u16) -> PyResult<Py
             })
             .collect();
         let na = NoteArray { resolution, notes };
-        Ok(PyMusicDocument {
-            inner: representations::from_note_array(&na),
-        })
+        Ok(PyMusicDocument::from(representations::from_note_array(&na)))
     })
 }
 
@@ -1168,9 +1438,7 @@ fn from_event_sequence(
                 encode_velocity,
             };
             let na = representations::from_event_sequence(&seq);
-            PyMusicDocument {
-                inner: representations::from_note_array(&na),
-            }
+            PyMusicDocument::from(representations::from_note_array(&na))
         })
     })
 }
@@ -1222,9 +1490,7 @@ fn from_piano_roll(
             data,
         };
         let na = representations::from_piano_roll(&pr);
-        Ok(PyMusicDocument {
-            inner: representations::from_note_array(&na),
-        })
+        Ok(PyMusicDocument::from(representations::from_note_array(&na)))
     })
 }
 
@@ -1280,6 +1546,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     install_panic_hook();
     m.add("LytkError", m.py().get_type_bound::<LytkError>())?;
     m.add("InternalError", m.py().get_type_bound::<InternalError>())?;
+    m.add("ParseError", parse_error_type(m.py())?)?;
+    m.add("LilyPondSyntaxError", syntax_error_type(m.py())?)?;
+    m.add_class::<PyDiagnostic>()?;
+    m.add_function(wrap_pyfunction!(check_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(_panic_for_tests, m)?)?;
 
     // Score class

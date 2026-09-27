@@ -11,6 +11,7 @@
 //! - [`ir`] — the IR: a measure-based [`Score`] (Layer 2) and a recursive
 //!   [`MusicDocument`] music tree (Layer 1), bridged by lift/lower.
 //! - [`adapters`] — per-format readers/writers ([`ToIrAdapter`]/[`FromIrAdapter`]).
+//! - [`diagnostics`] — what a reader found wrong with its input.
 //! - [`transforms`] — composable IR passes.
 //! - [`representations`] — note-array / event-sequence / piano-roll encoders.
 //!
@@ -29,6 +30,7 @@
 //! [`MusicDocument`].
 
 pub mod adapters;
+pub mod diagnostics;
 pub mod ir;
 pub mod parser;
 pub mod representations;

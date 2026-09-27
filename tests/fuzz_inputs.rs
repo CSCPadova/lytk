@@ -435,3 +435,41 @@ fn writers_handle_zero_length_notes_and_coprime_tuplets() {
         .convert(&score)
         .expect("writes MusicXML");
 }
+
+#[test]
+fn oversized_tremolos_are_written_capped() {
+    // `:2147483648` gave 31 tremolo marks, which the LilyPond writer shifted
+    // past 32 bits (found by `downstream_survives_lilypond_shaped_input`).
+    let score = read_everywhere(r"{ \chordmode { c1:2147483648 } }");
+    IrToLyAdapter::new().convert(&score).expect("writes");
+    // A hand-made IR may carry any count.
+    let mut score = read_everywhere(r"{ c'1:32 d'1 }");
+    for part in score.parts_mut() {
+        for m in &mut part.measures {
+            for v in &mut m.voices {
+                for e in &mut v.elements {
+                    if let _core::ir::note::VoiceElement::Note(n) = e {
+                        n.tremolo_marks = u8::MAX;
+                    }
+                }
+            }
+        }
+    }
+    let doc = _core::ir::lift::lift_to_music(&score);
+    IrToLyAdapter::new().convert(&score).expect("writes");
+    IrToLyAdapter::new().convert_music(&doc).expect("writes");
+    let _ = IrToMxmlAdapter::new().convert(&score);
+    // …and as a two-note tremolo.
+    for part in score.parts_mut() {
+        for m in &mut part.measures {
+            for v in &mut m.voices {
+                for e in &mut v.elements {
+                    if let _core::ir::note::VoiceElement::Note(n) = e {
+                        n.two_note_tremolo = true;
+                    }
+                }
+            }
+        }
+    }
+    IrToLyAdapter::new().convert(&score).expect("writes");
+}

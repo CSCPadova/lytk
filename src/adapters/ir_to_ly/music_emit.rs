@@ -679,7 +679,8 @@ fn annotations_to_ly(annotations: &[Annotation]) -> String {
             Annotation::Glissando(StartStop::Start) => parts.push("\\glissando".to_string()),
             Annotation::Glissando(_) => {}
             Annotation::Tremolo { marks } => {
-                let denom = 1u32 << (marks + 2); // marks=1 → :8, marks=2 → :16, etc.
+                // marks=1 → :8, marks=2 → :16, etc.
+                let denom = 1u32 << ((*marks).min(crate::ir::note::MAX_TREMOLO_MARKS) + 2);
                 parts.push(format!(":{denom}"));
             }
             Annotation::PedalStart => parts.push("\\sustainOn".to_string()),

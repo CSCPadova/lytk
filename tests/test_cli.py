@@ -65,7 +65,7 @@ class TestEntryPoint:
         out = ok("--help").stdout
         for command in [
             "convert", "transpose", "invert", "retrograde", "change-language", "abs2rel",
-            "rel2abs", "info", "positions", "bundle", "diff", "batch", "flatten",
+            "rel2abs", "info", "positions", "bundle", "diff", "batch", "flatten", "check",
         ]:
             assert command in out
 
@@ -513,3 +513,30 @@ class TestFlatten:
         main = tmp_path / "main.ly"
         main.write_text('\\include "inc.ily"\n')
         assert "a'4" in ok("flatten", str(main), "-I", str(lib)).stdout
+
+
+class TestCheck:
+    def test_clean_file(self, simple_ly: Path):
+        assert ok("check", str(simple_ly)).stdout == ""
+
+    def test_errors_exit_one(self, tmp_path: Path):
+        bad = tmp_path / "bad.ly"
+        bad.write_text("{ c'4 >> }\n")
+        result = run("check", str(bad))
+        assert result.exit_code == 1
+        assert result.stdout == f"{bad}:1:7: error: `>>` without a matching `<<` [syntax-error]\n"
+
+    def test_semantic_warnings_exit_zero(self, tmp_path: Path):
+        path = tmp_path / "w.ly"
+        path.write_text("{ c'4 \\noSuchCommand }\n")
+        assert ok("check", str(path)).stdout == ""
+        assert "[unknown-command]" in ok("check", "--semantic", str(path)).stdout
+
+    def test_json_and_stdin(self):
+        result = run("check", "--json", "-", input="{ c'3 }\n")
+        assert result.exit_code == 0  # a semantic error needs --semantic
+        assert json.loads(result.stdout) == []
+        result = run("check", "--json", "--semantic", "-", input="{ c'3 }\n")
+        assert result.exit_code == 1
+        (row,) = json.loads(result.stdout)
+        assert row["file"] == "-" and row["code"] == "invalid-duration" and row["line"] == 1
