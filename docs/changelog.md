@@ -180,6 +180,7 @@ engineering notes are in the [development log](devlog.md).
   `\new Staff \drummode { … }`, `\new Staff \fixed c' { … }`) left its
   music to be read as a separate expression.
 - LilyPond part ids after a variable definition started at `P2`.
+- The MusicXML writer panicked on figured bass at the beat of a grace note.
 
 ## [0.2.0] - 2026-09-27
 

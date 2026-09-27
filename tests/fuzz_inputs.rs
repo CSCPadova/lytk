@@ -437,6 +437,21 @@ fn writers_handle_zero_length_notes_and_coprime_tuplets() {
 }
 
 #[test]
+fn figured_bass_at_a_grace_note_is_written() {
+    // A grace note takes no time: the MusicXML writer asked its figures for
+    // an empty range past the one it had written, and panicked.
+    let score = LyToIrAdapter::new()
+        .convert_str(
+            r"<< \new Staff { \grace c'8 d'4 e'2. } \new FiguredBass \figuremode { <6>4 <5> } >>",
+        )
+        .expect("reads");
+    let xml = IrToMxmlAdapter::new()
+        .convert(&score)
+        .expect("writes MusicXML");
+    assert_eq!(xml.matches("<figured-bass").count(), 2, "{xml}");
+}
+
+#[test]
 fn oversized_tremolos_are_written_capped() {
     // `:2147483648` gave 31 tremolo marks, which the LilyPond writer shifted
     // past 32 bits (found by `downstream_survives_lilypond_shaped_input`).

@@ -43,6 +43,12 @@ Context bodies now go through `walk_body`, which reads nested contexts and
 mode prefixes. Part ids no longer skip `P1` after a variable definition (the
 capture of a variable counted its parts).
 
+CI's fuzz job then found a panic the new figure placement exposed, not
+caused: the MusicXML writer, at a grace note (no time) right after writing
+the figures due at its beat, asked for the figures of an empty range, which
+`BTreeMap::range` refuses. `\new FiguredBass` with a grace note at a
+figure's beat hit it before.
+
 Board (d) on LilyPond 2.26.0 (count/files): `dropped-music` 0 (was 77/65),
 `unrecognized-token` 247/42 (was 437/78); the others unchanged, board (a)
 still 1 file, no file refused.

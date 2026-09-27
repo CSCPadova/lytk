@@ -249,9 +249,10 @@ impl IrToMxmlAdapter {
 
             let mut fwd_pos: i64 = 0;
             for elem in &voice.elements {
-                // Interleave figured bass into voice 1's note stream.
-                if vi == 0 {
-                    let cur_divs = fwd_pos as i32;
+                // Interleave figured bass into voice 1's note stream (a grace
+                // note takes no time: nothing new may be due).
+                let cur_divs = fwd_pos as i32;
+                if vi == 0 && cur_divs > fb_emitted_up_to {
                     for (&off, fbs) in fb_by_offset.range(fb_emitted_up_to + 1..=cur_divs) {
                         for fb in fbs {
                             elements.push(mxml::MeasureElement::FiguredBass(
