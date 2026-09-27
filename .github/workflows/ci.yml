@@ -50,6 +50,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
+  lilypond-oracle:
+    # LilyPond compiles lytk's LilyPond output to MIDI; that must match lytk's
+    # own MIDI of the same score (tests/lilypond_oracle.rs).
+    name: LilyPond oracle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lilypond
+      - run: cargo test --test lilypond_oracle -- --ignored --nocapture
+
   msrv:
     name: MSRV (rust-version in Cargo.toml)
     runs-on: ubuntu-latest

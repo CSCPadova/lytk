@@ -13,8 +13,8 @@ use crate::ir::pitch::Pitch;
 use crate::ir::score::ScoreMetadata;
 
 use super::maps::{
-    articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, ornament_to_ly, pitch_to_ly,
-    tempo_to_ly, time_to_ly,
+    articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, ornament_to_ly, partial_to_ly,
+    pitch_to_ly, tempo_to_ly, time_to_ly,
 };
 
 /// State tracked during Music tree emission.
@@ -67,10 +67,62 @@ pub(super) fn emit_music_document(
     // overridden here.)
     let _ = mode;
     let mut ctx = EmitCtx::new(lang, PitchMode::Absolute);
-    emit_music(&doc.music, &mut ctx, &mut lines);
+    match &doc.metadata.partial_duration {
+        // The opening pickup: `\partial` in the first staff.
+        Some(d) => emit_music(&with_pickup(&doc.music, d), &mut ctx, &mut lines),
+        None => emit_music(&doc.music, &mut ctx, &mut lines),
+    }
 
     lines.push(String::new());
     lines.join("\n")
+}
+
+/// The music with a `\partial` opening its first staff, after the leading
+/// `\time`/`\key`/`\clef` (a `\time` after `\partial` would reset it).
+fn with_pickup(music: &Music, d: &crate::ir::duration::Duration) -> Music {
+    fn insert(m: &mut Music, d: &crate::ir::duration::Duration) -> bool {
+        match m {
+            Music::Sequential(items) => {
+                // Before the first music, or inside it when that is itself a
+                // container (the staves of a score, a first multi-voice bar).
+                let at = items
+                    .iter()
+                    .position(|c| {
+                        !matches!(
+                            c,
+                            Music::TimeSignature(_)
+                                | Music::KeySignature(_)
+                                | Music::Clef(_)
+                                | Music::Tempo(_)
+                        )
+                    })
+                    .unwrap_or(items.len());
+                let container = items.get(at).is_some_and(|c| {
+                    matches!(
+                        c,
+                        Music::Context { .. }
+                            | Music::Simultaneous(_)
+                            | Music::Sequential(_)
+                            | Music::Variable { .. }
+                    )
+                });
+                // The music may already open with its `\partial`.
+                let has = matches!(items.get(at), Some(Music::Partial(_)));
+                if !(has || container && insert(&mut items[at], d)) {
+                    items.insert(at, Music::Partial(d.clone()));
+                }
+                true
+            }
+            Music::Simultaneous(items) => items.iter_mut().any(|c| insert(c, d)),
+            Music::Context { content, .. } | Music::Variable { content, .. } => insert(content, d),
+            _ => false,
+        }
+    }
+    let mut m = music.clone();
+    if !insert(&mut m, d) {
+        m = Music::Sequential(vec![Music::Partial(d.clone()), m]);
+    }
+    m
 }
 
 /// Emit metadata as a `\header` block.
@@ -131,14 +183,22 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
             duration,
             annotations,
         } => {
+            // Ties on every note are the chord's (`<g b>~`); on some, inside
+            // it (`<g~ b>`).
+            let tied = |a: &[Annotation]| a.contains(&Annotation::TieStart);
+            let all_tied = !pitches.is_empty() && pitches.iter().all(|(_, a)| tied(a));
             let mut pitch_strs = Vec::new();
-            for (pitch, _per_note_ann) in pitches {
+            for (pitch, per_note) in pitches {
                 let p = pitch_to_ly(pitch, ctx.lang, ctx.prev_pitch.as_ref(), ctx.mode);
-                pitch_strs.push(p);
+                let tie = if !all_tied && tied(per_note) { "~" } else { "" };
+                pitch_strs.push(format!("{p}{tie}"));
                 ctx.prev_pitch = Some(*pitch);
             }
             let d = duration_to_ly(duration);
-            let a = annotations_to_ly(annotations);
+            let mut a = annotations_to_ly(annotations);
+            if all_tied && !tied(annotations) {
+                a.push('~');
+            }
             lines.push(format!("{}<{}>{d}{a}", ctx.pad(), pitch_strs.join(" ")));
         }
         Music::Rest {
@@ -171,6 +231,9 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
         Music::Barline(barline) => {
             emit_barline(barline, ctx, lines);
         }
+        Music::Partial(d) => {
+            lines.push(format!("{}\\partial {}", ctx.pad(), partial_to_ly(d)));
+        }
         Music::Direction(dir) => {
             emit_direction(dir, ctx, lines);
         }
@@ -190,9 +253,18 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
                 ctx.indent = saved_indent;
                 lines.push(format!("{}{cmd} {inner}", ctx.pad()));
             } else {
+                // A group's notes go straight in the braces (`{ { … } }`
+                // would be a second block).
                 lines.push(format!("{}{cmd} {{", ctx.pad()));
                 ctx.indent += 1;
-                emit_music(content, ctx, lines);
+                match content.as_ref() {
+                    Music::Sequential(notes) => {
+                        for m in notes {
+                            emit_music(m, ctx, lines);
+                        }
+                    }
+                    other => emit_music(other, ctx, lines),
+                }
                 ctx.indent -= 1;
                 lines.push(format!("{}}}", ctx.pad()));
             }
@@ -262,12 +334,9 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
                 .collect();
             lines.push(format!("{}<{}>{d}", ctx.pad(), figs.join(" ")));
         }
-        Music::Harmony(harmony) => {
-            // Simplified harmony emission
-            let root = &harmony.root;
-            let root_str = root.step.to_lowercase();
-            lines.push(format!("{}{root_str}", ctx.pad()));
-        }
+        // A chord symbol belongs in a `ChordNames` context, which this
+        // writer doesn't build: inline it would be a note.
+        Music::Harmony(_) => {}
         Music::Lyric(syl) => {
             lines.push(format!("{}{}", ctx.pad(), syl.text));
         }
@@ -275,7 +344,34 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
 }
 
 /// Emit a sequential block `{ ... }`.
+/// Grace notes in a row become one group: LilyPond aborts on two grace
+/// commands in a row (`is_grace_fixup_sane`). The group keeps the first's kind.
+fn group_graces(children: &[Music]) -> Vec<Music> {
+    let mut out: Vec<Music> = Vec::with_capacity(children.len());
+    for m in children {
+        let Music::Grace { content, .. } = m else {
+            out.push(m.clone());
+            continue;
+        };
+        let notes = |c: &Music| match c {
+            Music::Sequential(v) => v.clone(),
+            other => vec![other.clone()],
+        };
+        match out.last_mut() {
+            Some(Music::Grace { content: group, .. }) => {
+                let mut all = notes(group);
+                all.extend(notes(content));
+                **group = Music::Sequential(all);
+            }
+            _ => out.push(m.clone()),
+        }
+    }
+    out
+}
+
 fn emit_sequential(children: &[Music], ctx: &mut EmitCtx, lines: &mut Vec<String>) {
+    let grouped = group_graces(children);
+    let children = grouped.as_slice();
     // For a sequential block that contains only leaf events, emit on fewer lines
     if children.is_empty() {
         lines.push(format!("{}{{ }}", ctx.pad()));
@@ -356,7 +452,7 @@ fn emit_context(
         Music::Sequential(children) => {
             lines.push(format!("{}\\new {type_name}{name_part} {{", ctx.pad()));
             ctx.indent += 1;
-            for child in children {
+            for child in &group_graces(children) {
                 emit_music(child, ctx, lines);
             }
             ctx.indent -= 1;
@@ -597,7 +693,8 @@ fn annotations_to_ly(annotations: &[Annotation]) -> String {
                 }
             }
             Annotation::Fingering(f) => parts.push(format!("-{f}")),
-            Annotation::Lyric(_) => {} // lyrics handled separately
+            Annotation::Lyric(_) => {}    // lyrics handled separately
+            Annotation::Velocity(_) => {} // performance data, no notation
             Annotation::OctaveShift(os) => {
                 let n = os.size;
                 if os.shift_type == "up" || os.shift_type == "down" {
@@ -626,6 +723,7 @@ fn is_leaf(music: &Music) -> bool {
             | Music::Clef(_)
             | Music::Tempo(_)
             | Music::Barline(_)
+            | Music::Partial(_)
     )
 }
 

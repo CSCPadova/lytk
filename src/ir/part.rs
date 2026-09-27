@@ -24,7 +24,7 @@ pub struct Part {
     pub part_id: String,
     /// MIDI instrument name.
     pub midi_instrument: String,
-    /// MIDI channel number (0-based).
+    /// MIDI channel, 1–16 as in MusicXML (`0` = not set; 10 is percussion).
     pub midi_channel: u8,
     /// MIDI program number.
     pub midi_program: u8,

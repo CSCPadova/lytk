@@ -233,6 +233,12 @@ impl IrToMxmlAdapter {
         if !note.print_object {
             attrs.print_object = Some(mdt::YesNo::No);
         }
+        // A known velocity is MusicXML's `dynamics`, a percentage of 90.
+        if let Some(v) = note.velocity {
+            attrs.dynamics = Some(mdt::NonNegativeDecimal(
+                (v as f64 / 0.9 * 100.0).round() / 100.0,
+            ));
+        }
 
         mxml::Note {
             attributes: attrs,

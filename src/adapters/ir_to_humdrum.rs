@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::ir::articulation::StartStop;
+use crate::ir::direction::{Barline, RepeatDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{Clef, ClefSign, KeySignature, TimeSignature};
 use crate::ir::note::{Note, VoiceElement};
@@ -209,13 +210,45 @@ fn emit_kern(score: &Score) -> String {
             }
         }
         if mi + 1 < measure_count {
-            out.push_str(&row(vec![format!("={}", mi + 2); n]));
+            out.push_str(&row(spines
+                .iter()
+                .map(|s| format!("={}{}", mi + 2, repeat_str(s.part, mi)))
+                .collect()));
         }
     }
 
-    out.push_str(&row(vec!["==".to_string(); n]));
+    out.push_str(&row(spines
+        .iter()
+        .map(|s| format!("=={}", repeat_str(s.part, measure_count.saturating_sub(1))))
+        .collect()));
     out.push_str(&row(vec!["*-".to_string(); n]));
     out
+}
+
+/// The repeat signs of the bar line after measure `mi`: `:|!` ends a repeat
+/// there, `!|:` starts one in the next measure.
+fn repeat_str(part: &Part, mi: usize) -> &'static str {
+    let has = |b: Option<&Option<Barline>>, dir| {
+        b.and_then(Option::as_ref)
+            .is_some_and(|b| b.repeat_direction == Some(dir))
+    };
+    let end = has(
+        part.measures.get(mi).map(|m| &m.right_barline),
+        RepeatDirection::Backward,
+    );
+    let start = has(
+        part.measures.get(mi + 1).map(|m| &m.left_barline),
+        RepeatDirection::Forward,
+    ) || has(
+        part.measures.get(mi).map(|m| &m.right_barline),
+        RepeatDirection::Forward,
+    );
+    match (end, start) {
+        (true, true) => ":|!|:",
+        (true, false) => ":|!",
+        (false, true) => "!|:",
+        (false, false) => "",
+    }
 }
 
 /// Render one voice element as a kern token (grace notes have no metrical

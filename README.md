@@ -120,8 +120,9 @@ It also inverts, reverses, changes note-name languages, compares scores
 | Humdrum `**kern` | `.krn` | ✓ | ✓ |
 
 [docs/import-export.md](docs/import-export.md) lists what each reader and
-writer keeps. MusicXML is the most complete; MIDI keeps no slurs,
-articulations or lyrics.
+writer keeps. MusicXML is the most complete. MIDI export plays a score the way
+LilyPond's own MIDI does (dynamics, articulations, grace notes, repeats, pedal,
+lyrics); slurs and ornaments are not performed.
 
 ## Not there yet
 

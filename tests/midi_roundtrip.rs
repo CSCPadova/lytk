@@ -7,7 +7,7 @@
 //! After the export-side carried-meter fix (`ir_to_midi::build_part_track` sizes
 //! every bar by the running time signature), three fixtures round-trip with a
 //! stable note-count AND pitch multiset; the remaining two are documented,
-//! gated limitations (see `fidelity.rs` and `docs/changelog.md`).
+//! gated limitations (see `fidelity.rs` and `docs/devlog.md`).
 
 mod common;
 
@@ -100,28 +100,45 @@ fn midi_drifters_do_not_panic_and_keep_notes() {
     }
 }
 
-/// Regression (review R5): overlapping same-pitch notes across voices must
-/// survive the MIDI round trip. The reader kept ONE pending note-on per
-/// (key, channel), so `<< { c1 } \\ { c2 c2 } >>` lost the whole note AND
-/// truncated the halves (piano fixtures lost up to 98 sounding notes).
+/// Regression (review R5): the reader pairs overlapping same-pitch notes
+/// first-in first-out, so a file holding `<< { c1 } \\ { c2 c2 } >>` as three
+/// overlapping notes keeps all three (it used to keep one pending note-on per
+/// key, losing the whole note and truncating the halves).
 #[test]
-fn overlapping_unison_across_voices_survives() {
+fn overlapping_unison_in_a_file_keeps_every_note() {
+    use common::smf::{build, Ev, Track};
+    let bytes = build(
+        480,
+        &[(0, Ev::Time(4, 4))],
+        &[Track::new(
+            "p",
+            0,
+            &[(0, 1920, 60, 90), (0, 960, 60, 90), (960, 1920, 60, 90)],
+        )],
+    );
+    let score = MidiToIrAdapter::new().convert_bytes(&bytes).unwrap();
+    assert_eq!(
+        pitch_multiset(&score).len(),
+        3,
+        "a unison overlap lost notes"
+    );
+}
+
+/// A channel can't sound one key twice, so the writer plays a unison as
+/// LilyPond's MIDI walker does (MuseScore's export agrees): `c'1` and `c'2`
+/// starting together are one note, and the second `c'2` re-strikes it.
+#[test]
+fn unison_across_voices_plays_as_lilypond_does() {
     use _core::adapters::ly_to_ir::LyToIrAdapter;
     use _core::adapters::ToIrAdapter;
 
     let score = LyToIrAdapter::new()
         .convert_str(r#"\score { \new Staff << { c'1 } \\ { c'2 c'2 } >> }"#)
         .unwrap();
-    assert_eq!(
-        pitch_multiset(&score).len(),
-        3,
-        "sanity: 3 notes in the source"
-    );
-
-    let after = roundtrip(&score);
-    assert_eq!(
-        pitch_multiset(&after).len(),
-        3,
-        "unison overlap must not drop notes on MIDI round-trip"
-    );
+    let bytes = IrToMidiAdapter::new().convert_bytes(&score).unwrap();
+    let notes: Vec<(u32, u32, u8)> = common::smf::notes(&bytes)
+        .iter()
+        .map(|n| (n.on, n.off, n.pitch))
+        .collect();
+    assert_eq!(notes, vec![(0, 768, 60), (768, 1536, 60)]);
 }

@@ -16,11 +16,11 @@ use crate::ir::harmony::{ChordPitch, Harmony};
 use crate::ir::language::{parse_pitch_name, PitchLanguage};
 
 use super::state::WalkState;
-use super::timeline::{Event, Timeline};
+use crate::ir::timeline::{Event, Timeline};
 
 /// Divisions per quarter note used when computing harmony offsets.
 /// Must match `FIGURED_BASS_DIVISIONS` / `DEFAULT_DIVISIONS`.
-pub(super) const HARMONY_DIVISIONS: i64 = 4;
+pub(super) const HARMONY_DIVISIONS: i64 = crate::ir::timeline::OFFSET_DIVISIONS;
 
 /// A chordmode entry with its duration, used during distribution.
 #[derive(Debug, Clone)]
@@ -32,32 +32,9 @@ pub(super) enum HarmonyEntry {
 }
 
 /// Map a LilyPond chord quality suffix (the text after `:`, e.g. `m`, `maj7`,
-/// `m7.5-`) to the IR harmony kind string. The vocabulary mirrors
-/// `harmony_kind_to_ly` in `ir_to_ly/maps.rs` so chord symbols round-trip.
+/// `m7.5-`) to the IR harmony kind string (shared with the ABC reader).
 pub(super) fn ly_quality_to_kind(suffix: &str) -> String {
-    let kind = match suffix {
-        "" => "major",
-        "m" | "min" => "minor",
-        "7" => "dominant",
-        "maj7" | "maj" | "major7" => "major-seventh",
-        "m7" | "min7" => "minor-seventh",
-        "dim" => "diminished",
-        "dim7" => "diminished-seventh",
-        "aug" => "augmented",
-        "m7.5-" | "m7-5" | "dim5m7" => "half-diminished",
-        "6" => "major-sixth",
-        "m6" | "min6" => "minor-sixth",
-        "9" => "dominant-ninth",
-        "maj9" => "major-ninth",
-        "m9" | "min9" => "minor-ninth",
-        "11" => "dominant-11th",
-        "13" => "dominant-13th",
-        "sus2" => "suspended-second",
-        "sus4" | "sus" => "suspended-fourth",
-        "5" => "power",
-        _ => "major",
-    };
-    kind.to_string()
+    crate::ir::harmony::kind_from_suffix(suffix).to_string()
 }
 
 /// Parse a pitch-name string (e.g. `c`, `cis`, `bes`, German `h`) into a

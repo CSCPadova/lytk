@@ -503,6 +503,17 @@ fn from_abc(path: &str) -> PyResult<PyScore> {
     Ok(PyScore { inner: score })
 }
 
+/// Parse every tune of an ABC file: one :class:`Score` per ``X:`` tune (the
+/// text before the first ``X:`` applies to all of them).
+#[pyfunction]
+fn from_abc_tunes(py: Python<'_>, path: &str) -> PyResult<Vec<PyScore>> {
+    let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
+    let scores = py
+        .allow_threads(|| adapter.convert_file_tunes(Path::new(path)))
+        .map_err(adapter_err)?;
+    Ok(scores.into_iter().map(|inner| PyScore { inner }).collect())
+}
+
 /// Parse an ABC notation string into a :class:`Score`.
 #[pyfunction]
 fn from_abc_string(text: &str) -> PyResult<PyScore> {
@@ -565,20 +576,25 @@ fn to_humdrum(py: Python<'_>, score: &PyScore, path: Option<&str>) -> PyResult<S
     Ok(output)
 }
 
-/// Parse a Standard MIDI File into a :class:`Score`.
+/// Parse a Standard MIDI File into a :class:`Score`. ``quantize`` (4, 8, 16
+/// or 32) is the shortest plain note value a played file is snapped to;
+/// ``swing`` reads swung eighths as straight ones marked "Swing" (``True``),
+/// never (``False``), or when a played file swings (``None``).
 #[pyfunction]
-fn from_midi(path: &str) -> PyResult<PyScore> {
+#[pyo3(signature = (path, *, quantize=None, swing=None))]
+fn from_midi(path: &str, quantize: Option<u32>, swing: Option<bool>) -> PyResult<PyScore> {
     let bytes = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    let adapter = adapters::midi_to_ir::MidiToIrAdapter::new();
-    let score = adapter.convert_bytes(&bytes).map_err(adapter_err)?;
-    Ok(PyScore { inner: score })
+    from_midi_bytes(&bytes, quantize, swing)
 }
 
 /// Parse a Standard MIDI File from in-memory ``bytes`` into a :class:`Score`
 /// (no temp file needed — for archives, HTTP responses, dataset buffers).
 #[pyfunction]
-fn from_midi_bytes(data: &[u8]) -> PyResult<PyScore> {
-    let adapter = adapters::midi_to_ir::MidiToIrAdapter::new();
+#[pyo3(signature = (data, *, quantize=None, swing=None))]
+fn from_midi_bytes(data: &[u8], quantize: Option<u32>, swing: Option<bool>) -> PyResult<PyScore> {
+    let adapter = adapters::midi_to_ir::MidiToIrAdapter::new()
+        .with_quantize(quantize)
+        .with_swing(swing);
     let score = adapter.convert_bytes(data).map_err(adapter_err)?;
     Ok(PyScore { inner: score })
 }
@@ -592,10 +608,12 @@ fn from_musicxml_bytes(data: &[u8]) -> PyResult<PyScore> {
     Ok(PyScore { inner: score })
 }
 
-/// Write a :class:`Score` to a Standard MIDI File.
+/// Write a :class:`Score` to a Standard MIDI File. Repeats are played out
+/// with their endings unless ``unfold_repeats=False``.
 #[pyfunction]
-fn to_midi(score: &PyScore, path: &str) -> PyResult<()> {
-    let adapter = adapters::ir_to_midi::IrToMidiAdapter::new();
+#[pyo3(signature = (score, path, *, unfold_repeats=true))]
+fn to_midi(score: &PyScore, path: &str, unfold_repeats: bool) -> PyResult<()> {
+    let adapter = adapters::ir_to_midi::IrToMidiAdapter::new().with_unfold_repeats(unfold_repeats);
     adapter
         .write(&score.inner, Path::new(path))
         .map_err(adapter_err)?;
@@ -616,8 +634,13 @@ fn to_mxl_bytes<'py>(py: Python<'py>, score: &PyScore) -> PyResult<Bound<'py, Py
 /// Serialize a :class:`Score` to Standard MIDI File ``bytes`` (the in-memory
 /// counterpart of :func:`to_midi`, which writes to a path).
 #[pyfunction]
-fn to_midi_bytes<'py>(py: Python<'py>, score: &PyScore) -> PyResult<Bound<'py, PyBytes>> {
-    let adapter = adapters::ir_to_midi::IrToMidiAdapter::new();
+#[pyo3(signature = (score, *, unfold_repeats=true))]
+fn to_midi_bytes<'py>(
+    py: Python<'py>,
+    score: &PyScore,
+    unfold_repeats: bool,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let adapter = adapters::ir_to_midi::IrToMidiAdapter::new().with_unfold_repeats(unfold_repeats);
     let bytes = adapter.convert_bytes(&score.inner).map_err(adapter_err)?;
     Ok(PyBytes::new_bound(py, &bytes))
 }
@@ -989,6 +1012,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(to_mxl_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc_string, m)?)?;
+    m.add_function(wrap_pyfunction!(from_abc_tunes, m)?)?;
     m.add_function(wrap_pyfunction!(from_humdrum, m)?)?;
     m.add_function(wrap_pyfunction!(from_humdrum_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_humdrum, m)?)?;

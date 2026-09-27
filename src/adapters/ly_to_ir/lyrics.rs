@@ -19,10 +19,16 @@ pub(super) fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyll
     while i < children.len() {
         let node = children[i];
         match node.kind() {
-            "symbol" => {
-                let text = state.text(node).to_string();
+            "symbol" | "string" => {
+                // A quoted syllable is taken as it is (`"0/0/1"`, `"_"`).
+                let quoted = node.kind() == "string";
+                let text = if quoted {
+                    extract_string_value(state, node)
+                } else {
+                    state.text(node).to_string()
+                };
                 // Handle `_` as melisma extender (skip)
-                if text == "_" {
+                if !quoted && text == "_" {
                     // Check for `__` (double underscore = extender line)
                     if let Some(next) = children.get(i + 1) {
                         if next.kind() == "symbol" && state.text(*next) == "_" {
@@ -106,6 +112,18 @@ pub(super) fn parse_lyric_block(state: &WalkState, block: Node) -> Vec<LyricSyll
                 if let Some(lyrics) = state.lyric_definitions.get(var_name) {
                     syllables.extend(lyrics.clone());
                 }
+            }
+            "assignment_lhs" => {
+                // `\set stanza = "1."`: the value is no syllable.
+                i += 1;
+                if children.get(i).is_some_and(|n| state.text(*n) == "=") {
+                    i += 1;
+                    if children.get(i).is_some_and(|n| state.text(*n) == "-") {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                continue;
             }
             "expression_block" => {
                 // Nested block — recurse

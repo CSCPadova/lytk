@@ -50,8 +50,10 @@ pytest tests/
 lytk is distributed on **PyPI only**; the Rust crate is the implementation, not a
 published artifact.
 
-Maintainers: bump the version in both `Cargo.toml` and `pyproject.toml`, update
-`docs/changelog.md`, then push a `v*` tag. `.github/workflows/release.yml` builds
+Maintainers: bump the version in both `Cargo.toml` and `pyproject.toml`; in
+`docs/changelog.md`, rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, add a new
+empty `[Unreleased]` above it and update the link references at the bottom;
+then push a `vX.Y.Z` tag. `.github/workflows/release.yml` builds
 the abi3 wheels and the sdist, gates on the test suite, and publishes to PyPI via
 Trusted Publishing.
 

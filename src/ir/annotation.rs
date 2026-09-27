@@ -70,4 +70,9 @@ pub enum Annotation {
     // Octave shift
     /// Ottava indication
     OctaveShift(OctaveShift),
+
+    // Performance
+    /// MIDI velocity (1–127) this note was played with, kept from a MIDI file
+    /// or a MusicXML `<note dynamics>`; wins over the dynamic in force.
+    Velocity(u8),
 }

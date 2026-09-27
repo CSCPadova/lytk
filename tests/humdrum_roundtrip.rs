@@ -93,3 +93,39 @@ fn kern_tuplets_keep_their_ratio() {
         "tuplet durations changed through **kern"
     );
 }
+
+#[test]
+fn kern_writes_repeat_barlines() {
+    // The lowering keeps volta repeats as bar lines (it used to write them
+    // out), so the kern writer must write them or a repeat plays once.
+    let before = from_xml("45a-SimpleRepeat.xml");
+    let krn = IrToHumdrumAdapter::new()
+        .convert(&before)
+        .expect("IR → kern");
+    assert!(krn.contains(":|!"), "backward repeat lost:\n{krn}");
+    let repeats = |s: &Score| {
+        s.parts()[0]
+            .measures
+            .iter()
+            .filter(|m| {
+                [&m.left_barline, &m.right_barline]
+                    .into_iter()
+                    .flatten()
+                    .any(|b| b.repeat_direction.is_some())
+            })
+            .count()
+    };
+    assert_eq!(repeats(&before), repeats(&roundtrip(&before)));
+}
+
+#[test]
+fn kern_reads_back_to_back_repeats() {
+    use _core::ir::direction::{Barline, RepeatDirection::*};
+    let krn = "**kern\n*M2/4\n4c\n4d\n=2:|!|:\n4e\n4f\n==:|!\n*-\n";
+    let score = HumdrumToIrAdapter::new().convert_str(krn).expect("kern");
+    let m = &score.parts()[0].measures;
+    let dir = |b: &Option<Barline>| b.as_ref().and_then(|b| b.repeat_direction);
+    assert_eq!(dir(&m[0].right_barline), Some(Backward));
+    assert_eq!(dir(&m[1].left_barline), Some(Forward));
+    assert_eq!(dir(&m[1].right_barline), Some(Backward));
+}

@@ -167,6 +167,11 @@ pub(super) fn convert_note(mxml_note: &mxml::Note, divisions: i64) -> Option<Not
         note.print_object = false;
     }
 
+    // `dynamics="…"`: the note's MIDI velocity as a percentage of 90.
+    if let Some(d) = &mxml_note.attributes.dynamics {
+        note.velocity = Some((d.0 * 0.9).round().clamp(1.0, 127.0) as u8);
+    }
+
     // Notations
     for notations in &mxml_note.content.notations {
         parse_notations(notations, &mut note);

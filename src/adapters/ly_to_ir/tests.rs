@@ -14,6 +14,52 @@ mod tests {
     use crate::ir::pitch::PitchStep;
 
     #[test]
+    fn variable_used_inside_relative_is_relative() {
+        // LilyPond makes a variable's pitches relative where it is used:
+        // `\relative c'' { \motif }` with `motif = { c4 e g c }` sounds
+        // C5 E5 G5 C6 (chopin_n's cadenza is written this way).
+        let src = "motif = { c4 e g c }\n\\relative c'' { \\motif d }";
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let midis: Vec<i32> = score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.pitch.midi_number()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(midis, vec![72, 76, 79, 84, 86]);
+    }
+
+    #[test]
+    fn chord_tie_ties_every_note() {
+        // `<d' fis'>2~ <d' fis'>2`: LilyPond ties both notes, not just the first.
+        let score = LyToIrAdapter::new()
+            .convert_str(r#"{ <d' fis'>2~ <d' fis'>2 }"#)
+            .unwrap();
+        let chords: Vec<&crate::ir::note::Chord> = score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Chord(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(chords.len(), 2);
+        let tied = |c: &crate::ir::note::Chord, t: StartStop| {
+            c.notes
+                .iter()
+                .all(|n| n.ties.iter().any(|x| x.tie_type == t))
+        };
+        assert!(tied(chords[0], StartStop::Start), "{:?}", chords[0]);
+        assert!(tied(chords[1], StartStop::Stop), "{:?}", chords[1]);
+    }
+
+    #[test]
     fn test_parse_simple_melody() {
         let adapter = LyToIrAdapter::new();
         let score = adapter.convert_str(r#"{ c'4 d' e' f' }"#).unwrap();
@@ -3027,6 +3073,27 @@ middle = { \inner e' f' }
             2,
             "ten eighths under 5/8 must split into exactly 2 measures"
         );
+        // LilyPond's own spelling, and back from the writer.
+        use crate::adapters::FromIrAdapter;
+        let meter = |src: &str| {
+            let score = adapter.convert_str(src).unwrap();
+            let m = &score.parts()[0].measures;
+            let ts = m[0]
+                .attributes
+                .as_ref()
+                .and_then(|a| a.time.clone())
+                .unwrap();
+            (ts.beats, ts.beat_type, m.len())
+        };
+        let src = r"{ \compoundMeter #'((3 2 8)) c'8 c' c' c' c' d'8 d' d' d' d' }";
+        assert_eq!(meter(src), ("3+2".to_string(), 8, 2));
+        let src = r"{ \compoundMeter #'((3 8) (1 4)) c'8 c' c' c' c' d'8 d' d' d' d' }";
+        assert_eq!(meter(src), ("3+2".to_string(), 8, 2));
+        let ly = crate::adapters::ir_to_ly::IrToLyAdapter::new()
+            .convert(&adapter.convert_str(src).unwrap())
+            .unwrap();
+        assert!(ly.contains(r"\compoundMeter #'((3 2 8))"), "{ly}");
+        assert_eq!(meter(&ly), ("3+2".to_string(), 8, 2));
     }
 
     #[test]
@@ -3403,5 +3470,51 @@ mod rest_only_parts {
             3,
             "all-rest score must keep every part"
         );
+    }
+}
+
+#[cfg(test)]
+mod transposition {
+    use crate::adapters::ir_to_ly::IrToLyAdapter;
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::{FromIrAdapter, ToIrAdapter};
+    use crate::ir::measure::Transpose;
+
+    fn read(src: &str) -> (Option<Transpose>, usize) {
+        let score = LyToIrAdapter::new().convert_str(src).unwrap();
+        let m = &score.parts()[0].measures;
+        let t = m[0].attributes.as_ref().and_then(|a| a.transpose);
+        let notes = m
+            .iter()
+            .flat_map(|m| &m.voices)
+            .map(|v| v.elements.len())
+            .sum();
+        (t, notes)
+    }
+
+    #[test]
+    fn a_transposing_instrument_is_read_and_written() {
+        let t = |diatonic, chromatic, octave_change| Transpose {
+            diatonic,
+            chromatic,
+            octave_change,
+        };
+        for (pitch, want) in [
+            ("bes", t(-1, -2, 0)),
+            ("f", t(-4, -7, 0)),
+            ("c''", t(0, 0, 1)),
+            ("bes,", t(-1, -2, -1)),
+        ] {
+            let src =
+                format!(r"\language nederlands {{ \transposition {pitch} c''4 d'' e'' f'' }}");
+            // The pitch is no note.
+            assert_eq!(read(&src), (Some(want), 4), "{src}");
+            assert_eq!(Transpose::from_sounding_c(&want.sounding_c()), want);
+            let ly = IrToLyAdapter::new()
+                .convert(&LyToIrAdapter::new().convert_str(&src).unwrap())
+                .unwrap();
+            assert!(ly.contains(&format!("\\transposition {pitch}\n")), "{ly}");
+            assert_eq!(read(&ly), (Some(want), 4), "{ly}");
+        }
     }
 }

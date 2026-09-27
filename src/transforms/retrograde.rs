@@ -8,6 +8,7 @@
 
 use crate::ir::annotation::Annotation;
 use crate::ir::articulation::StartStop;
+use crate::ir::duration::{Duration, Frac};
 use crate::ir::music::{Music, MusicDocument};
 use crate::ir::note::VoiceElement;
 use crate::ir::score::Score;
@@ -154,6 +155,14 @@ impl MusicTransform for Retrograde {
     fn apply_music(&self, doc: &MusicDocument) -> MusicDocument {
         let mut result = doc.clone();
         retrograde_music_node(&mut result.music);
+        // The old last bar opens the reversed music: its pickup is what the
+        // last bar lacked of a whole one.
+        if let Some(p) = &doc.metadata.partial_duration {
+            let bar = first_meter(&doc.music).map_or(Frac::from_integer(1), |t| t.beats_fraction());
+            let tail = (doc.music.written_length() - p.actual_duration()) % bar;
+            result.metadata.partial_duration =
+                (tail > Frac::from_integer(0)).then(|| Duration::new(tail));
+        }
         result
     }
 }
@@ -212,6 +221,37 @@ fn reanchor_grace_nodes(children: &mut Vec<Music>) {
     *children = out;
 }
 
+/// After reversal a `Music::Partial` trails the bar it sizes; move each one
+/// back over that bar's music to its start.
+fn reanchor_partials(children: &mut [Music]) {
+    for i in 0..children.len() {
+        if let Music::Partial(d) = &children[i] {
+            let want = d.actual_duration();
+            let (mut j, mut got) = (i, Frac::from_integer(0));
+            while j > 0
+                && got < want
+                && !matches!(children[j - 1], Music::Barline(_) | Music::Partial(_))
+            {
+                got += children[j - 1].written_length();
+                children.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+    }
+}
+
+/// The first time signature in the music.
+fn first_meter(m: &Music) -> Option<&crate::ir::measure::TimeSignature> {
+    match m {
+        Music::TimeSignature(t) => Some(t),
+        Music::Sequential(items) | Music::Simultaneous(items) => items.iter().find_map(first_meter),
+        Music::Context { content, .. }
+        | Music::Variable { content, .. }
+        | Music::Tuplet { content, .. } => first_meter(content),
+        _ => None,
+    }
+}
+
 /// Recursively reverse Sequential children in a Music tree.
 fn retrograde_music_node(music: &mut Music) {
     match music {
@@ -222,10 +262,20 @@ fn retrograde_music_node(music: &mut Music) {
                 .iter()
                 .position(|c| !is_attribute_event(c))
                 .unwrap_or(children.len());
-            children[split..].reverse();
             let mut tail: Vec<Music> = children.split_off(split);
+            // So does the closing bar line (`|]`).
+            let closing = tail.len()
+                - tail
+                    .iter()
+                    .rev()
+                    .take_while(|c| matches!(c, Music::Barline(_)))
+                    .count();
+            let end = tail.split_off(closing);
+            tail.reverse();
             reanchor_grace_nodes(&mut tail);
+            reanchor_partials(&mut tail);
             children.extend(tail);
+            children.extend(end);
             for child in children {
                 retrograde_music_node(child);
             }

@@ -314,3 +314,332 @@ fn abc_grace_notes_do_not_move_the_bar_clock() {
         "expected one bar line:\n{out}"
     );
 }
+
+// ---- Bars through the Score path (the lowering) ----
+
+/// A pickup is a short first bar, and no note is copied into two bars (the
+/// old lowering re-barred from 0 and duplicated notes crossing its grid).
+#[test]
+fn pickup_bar_is_short_and_no_note_is_duplicated() {
+    use _core::ir::note::VoiceElement;
+    let score = AbcToIrAdapter::new()
+        .convert_str("X:1\nM:4/4\nL:1/8\nK:G\nD|G2A2 B4|c8|]\n")
+        .unwrap();
+    let part = &score.parts()[0];
+    let notes = |m: &_core::ir::measure::Measure| {
+        m.voices
+            .iter()
+            .flat_map(|v| &v.elements)
+            .filter(|e| matches!(e, VoiceElement::Note(_)))
+            .count()
+    };
+    assert_eq!(part.measures.len(), 3);
+    assert!(part.measures[0].implicit, "the D is a pickup");
+    assert_eq!(
+        part.measures.iter().map(notes).collect::<Vec<_>>(),
+        vec![1, 3, 1]
+    );
+}
+
+/// Repeat bar lines land on the right side of their bars, so MusicXML and
+/// LilyPond output keep the repeat.
+#[test]
+fn repeat_bar_lines_open_and_close_their_bars() {
+    use _core::ir::direction::RepeatDirection;
+    let score = AbcToIrAdapter::new()
+        .convert_str(&read_abc("repeats.abc"))
+        .unwrap();
+    let m = &score.parts()[0].measures;
+    assert_eq!(
+        m[0].left_barline.as_ref().and_then(|b| b.repeat_direction),
+        Some(RepeatDirection::Forward)
+    );
+    assert_eq!(
+        m[m.len() - 1]
+            .right_barline
+            .as_ref()
+            .and_then(|b| b.repeat_direction),
+        Some(RepeatDirection::Backward)
+    );
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(xml.contains(r#"<repeat direction="forward"/>"#), "{xml}");
+    assert!(xml.contains(r#"<repeat direction="backward"/>"#), "{xml}");
+}
+
+/// Endings `[1` / `[2` are endings, not chords: read, barred and lifted back
+/// into a repeat, the tune plays C D E F, C D G A.
+#[test]
+fn endings_are_read_as_endings() {
+    let score = AbcToIrAdapter::new()
+        .convert_str("X:1\nM:2/4\nL:1/4\nK:C\n|:C D|[1 E F:|[2 G A|]\n")
+        .unwrap();
+    let lifted = _core::ir::lift::lift_to_music(&score);
+    let played: Vec<i32> = _core::representations::to_note_array(&lifted, 480)
+        .notes
+        .iter()
+        .map(|n| n.pitch as i32)
+        .collect();
+    assert_eq!(played, vec![60, 62, 64, 65, 60, 62, 67, 69]);
+}
+
+/// ABC bar lines are real bar lines: a bar longer or shorter than its meter
+/// keeps its length (a bar check in LilyPond only checks; here the bar line
+/// is where the bar ends).
+#[test]
+fn irregular_bars_keep_their_length() {
+    use _core::ir::duration::Frac;
+    let lengths = |abc: &str| -> Vec<Frac> {
+        let score = AbcToIrAdapter::new().convert_str(abc).unwrap();
+        score.parts()[0]
+            .measures
+            .iter()
+            .map(|m| {
+                m.voices
+                    .iter()
+                    .filter(|v| v.number == 1)
+                    .flat_map(|v| &v.elements)
+                    .map(|e| e.metric_duration())
+                    .sum()
+            })
+            .collect()
+    };
+    let q = |n| Frac::new(n, 4);
+    // An overfull first bar, then a short bar mid-piece.
+    assert_eq!(
+        lengths("X:1\nM:4/4\nL:1/4\nK:C\nC D E F G|A B c d|e f|g a b c'|]\n"),
+        vec![q(5), q(4), q(2), q(4)]
+    );
+    // Without a meter each bar is as long as its music, and nothing is tied.
+    assert_eq!(
+        lengths("X:1\nM:none\nL:1/4\nK:C\nC3 D3 E2|F2|\n"),
+        vec![q(8), q(2)]
+    );
+    // A meter change at a bar line is not an irregular bar.
+    assert_eq!(
+        lengths("X:1\nM:4/4\nL:1/4\nK:C\nC D E F|[M:3/4] G A B|c d e|]\n"),
+        vec![q(4), q(3), q(3)]
+    );
+}
+
+/// Every tune of a file, each read on its own; the file header (before the
+/// first `X:`) applies to all of them.
+#[test]
+fn every_tune_of_a_file() {
+    use _core::ir::note::VoiceElement;
+    let text = "%%propagate-accidentals pitch\n\nX:1\nK:C\n^C c|\n\nFree text.\n\nX:2\nT:Two\nK:G\nF G A|\n";
+    let tunes = AbcToIrAdapter::new().convert_str_tunes(text).unwrap();
+    assert_eq!(tunes.len(), 2);
+    let pitches = |s: &_core::ir::score::Score| -> Vec<i32> {
+        s.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.pitch.midi_number()),
+                _ => None,
+            })
+            .collect()
+    };
+    // `pitch` propagation from the file header: the c is sharp too.
+    assert_eq!(pitches(&tunes[0]), vec![61, 73]);
+    assert_eq!(pitches(&tunes[1]), vec![66, 67, 69]);
+    assert_eq!(tunes[1].metadata.title.as_deref(), Some("Two"));
+    // Without X: the text is one tune.
+    assert_eq!(
+        AbcToIrAdapter::new()
+            .convert_str_tunes("K:C\nC|\n")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// What a score plays, repeats unfolded.
+fn played(score: &_core::ir::score::Score) -> Vec<i32> {
+    _core::representations::to_note_array(&_core::ir::lift::lift_to_music(score), 480)
+        .notes
+        .iter()
+        .map(|n| n.pitch as i32)
+        .collect()
+}
+
+fn via_abc(score: &_core::ir::score::Score) -> _core::ir::score::Score {
+    let abc = IrToAbcAdapter::new()
+        .convert_music(&_core::ir::lift::lift_to_music(score))
+        .unwrap();
+    AbcToIrAdapter::new()
+        .convert_str(&abc)
+        .unwrap_or_else(|e| panic!("{e}\n{abc}"))
+}
+
+/// Repeats play in the right order, read and after a trip through the writer:
+/// a `|:` right after an ending, `::`, an ending the tune ends in, a last
+/// ending closed by a plain bar line.
+#[test]
+fn repeat_structures_play_in_order() {
+    let (c, d, e, f, g, a, b, c2) = (60, 62, 64, 65, 67, 69, 71, 72);
+    for (abc, want) in [
+        (
+            "X:1\nM:2/4\nL:1/4\nK:C\n|:C D|1 E F:|2 G A|\n|:B c:|\n",
+            vec![c, d, e, f, c, d, g, a, b, c2, b, c2],
+        ),
+        (
+            "X:1\nM:2/4\nL:1/4\nK:C\n|:C D::E F:|\n",
+            vec![c, d, c, d, e, f, e, f],
+        ),
+        (
+            "X:1\nM:2/4\nL:1/4\nK:C\n|:C D|1 E F:|2 G A|\n",
+            vec![c, d, e, f, c, d, g, a],
+        ),
+        (
+            "X:1\nM:2/4\nL:1/4\nK:C\n|:C D|1 E F:|2 G A||B c|]\n",
+            vec![c, d, e, f, c, d, g, a, b, c2],
+        ),
+        // No `|:`: the repeat goes back to the start.
+        (
+            "X:1\nM:2/4\nL:1/4\nK:C\nC D|1 E F:|2 G A|]\n",
+            vec![c, d, e, f, c, d, g, a],
+        ),
+    ] {
+        let score = AbcToIrAdapter::new().convert_str(abc).unwrap();
+        assert_eq!(played(&score), want, "read: {abc}");
+        assert_eq!(played(&via_abc(&score)), want, "written: {abc}");
+    }
+    // An ending the tune ends in is stopped (MusicXML needs the stop).
+    let score = AbcToIrAdapter::new()
+        .convert_str("X:1\nM:2/4\nL:1/4\nK:C\n|:C D|1 E F:|2 G A\n")
+        .unwrap();
+    let last = score.parts()[0].measures.last().unwrap();
+    let stop = last
+        .right_barline
+        .as_ref()
+        .and_then(|b| b.ending_type.clone());
+    assert_eq!(stop.as_deref(), Some("stop"));
+}
+
+/// A repeat read from MusicXML — a backward repeat on a final-style bar line,
+/// five times through — plays the same after a trip through ABC.
+#[test]
+fn musicxml_repeats_play_the_same_in_abc() {
+    use _core::adapters::mxml_to_ir::MxmlToIrAdapter;
+    let src = std::fs::read_to_string("tests/fixtures/xml/45a-SimpleRepeat.xml").unwrap();
+    let score = MxmlToIrAdapter::new().convert_str(&src).unwrap();
+    assert_eq!(played(&via_abc(&score)), played(&score));
+}
+
+/// A bar longer than the meter stays one bar through the Music-tree writer.
+#[test]
+fn irregular_bars_are_written_whole() {
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\ncdef|gabc'd'|c'4|]\n";
+    let doc = AbcToIrAdapter::new().convert_str_to_music(abc).unwrap();
+    let out = IrToAbcAdapter::new().convert_music(&doc).unwrap();
+    let bars = |s: &str| {
+        let score = AbcToIrAdapter::new().convert_str(s).unwrap();
+        score.parts()[0].measures.len()
+    };
+    assert_eq!(bars(&out), bars(abc), "{out}");
+}
+
+/// A bar's inner voices are written as `&` layers, spacers as `x`, and a note
+/// across a bar line is tied over it.
+#[test]
+fn writer_keeps_inner_voices_spacers_and_overflow() {
+    use _core::ir::duration::{Duration, Frac};
+    use _core::ir::measure::TimeSignature;
+    use _core::ir::pitch::{Pitch, PitchStep};
+    // Two voices in a bar, and a skip.
+    let abc = "X:1\nM:2/4\nL:1/4\nK:C\nc d & E F|x G|\n";
+    let score = AbcToIrAdapter::new().convert_str(abc).unwrap();
+    let out = IrToAbcAdapter::new()
+        .convert_music(&_core::ir::lift::lift_to_music(&score))
+        .unwrap();
+    assert!(out.contains('&') && out.contains('x'), "{out}");
+    let back = AbcToIrAdapter::new().convert_str(&out).unwrap();
+    assert_eq!(played(&back), played(&score), "{out}");
+    // D is a half note starting on beat 2 of a 2/4 bar.
+    let note = |step, q| Music::Note {
+        pitch: Pitch::new(step, 4),
+        duration: Duration::new(Frac::new(q, 4)),
+        annotations: Vec::new(),
+    };
+    let doc = MusicDocument {
+        metadata: Default::default(),
+        music: Music::Sequential(vec![
+            Music::TimeSignature(TimeSignature {
+                beats: "2".to_string(),
+                beat_type: 4,
+                symbol: None,
+            }),
+            note(PitchStep::C, 1),
+            note(PitchStep::D, 2),
+            note(PitchStep::E, 1),
+        ]),
+    };
+    let out = IrToAbcAdapter::new().convert_music(&doc).unwrap();
+    assert!(out.contains("D2- | D2"), "{out}");
+}
+
+/// Review findings on the reader: `Z2` is two bars; a byte-order mark, a
+/// draft tune without `K:`, an overflowing meter and `L:0` don't break it.
+#[test]
+fn reader_edge_cases() {
+    let score = AbcToIrAdapter::new()
+        .convert_str("X:1\nM:4/4\nL:1/4\nK:C\nZ2|G4|\n")
+        .unwrap();
+    assert_eq!(score.parts()[0].measures.len(), 3);
+    let tunes = AbcToIrAdapter::new()
+        .convert_str_tunes("\u{FEFF}X:1\nT:A\nK:C\nABC|\n\nX:2\nT:B\nK:G\nGAB|\n\nX:3\nT:draft\n")
+        .unwrap();
+    let titles: Vec<_> = tunes.iter().map(|t| t.metadata.title.clone()).collect();
+    assert_eq!(titles, [Some("A".to_string()), Some("B".to_string())]);
+    for abc in [
+        "X:1\nM:4294967295+1/4\nK:C\nC|\n",
+        "X:1\nL:0\nK:C\n[CE]|\n",
+        "X:1\nK:C\n[L:0/4][CE]|\n",
+    ] {
+        assert!(AbcToIrAdapter::new().convert_str(abc).is_ok(), "{abc}");
+    }
+}
+
+/// Review findings on the fixes: a lone ending still repeats; a pickup is
+/// not applied twice; a bar line at the very start doesn't close bar 1.
+#[test]
+fn lone_endings_pickups_and_leading_bar_lines() {
+    let (a, b, c) = (69, 71, 72);
+    let score = AbcToIrAdapter::new()
+        .convert_str("X:1\nM:1/4\nL:1/4\nK:C\n|: A |1 B :| c |]\n")
+        .unwrap();
+    assert_eq!(played(&score), vec![a, b, a, c]);
+    assert_eq!(played(&via_abc(&score)), vec![a, b, a, c]);
+
+    use _core::transforms::retrograde::Retrograde;
+    use _core::transforms::MusicTransform;
+    let doc = AbcToIrAdapter::new()
+        .convert_str_to_music("X:1\nM:4/4\nL:1/4\nK:C\nC | D E F G | A B |]\n")
+        .unwrap();
+    let out = IrToAbcAdapter::new()
+        .convert_music(&Retrograde.apply_music(&doc))
+        .unwrap();
+    let body = out.lines().last().unwrap();
+    let notes = |s: &str| {
+        s.split_whitespace()
+            .filter(|t| t.starts_with(|c: char| c.is_ascii_alphabetic()))
+            .count()
+    };
+    let first_bar = body.split('|').find(|s| notes(s) > 0).unwrap();
+    assert_eq!(notes(first_bar), 2, "{out}");
+
+    let score = AbcToIrAdapter::new()
+        .convert_str("X:1\nM:4/4\nL:1/4\nK:C\n[| C D E F | G A B c |]\n")
+        .unwrap();
+    let first = &score.parts()[0].measures[0];
+    assert!(
+        first
+            .right_barline
+            .as_ref()
+            .is_none_or(|b| b.style == _core::ir::direction::BarlineType::Regular),
+        "{:?}",
+        first.right_barline
+    );
+}

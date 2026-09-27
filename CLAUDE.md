@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Latest changes: look at the file docs/changelog.md to know about latest activity on the codebase.
+Latest changes: `docs/changelog.md` is the release history (Keep a Changelog); `docs/devlog.md` has the dated engineering notes, newest first.
 
-**Development plan and roadmap:** See [`docs/roadmap.md`](docs/roadmap.md) for the full epic/task breakdown, implementation sequence, and key decisions. After an epic/task has been completed update the roadmap file and write the latest changes to the [changelog file](docs/changelog.md), documenting what has been done and what to do next.
+**Development plan and roadmap:** See [`docs/roadmap.md`](docs/roadmap.md) for the full epic/task breakdown, implementation sequence, and key decisions. After an epic/task has been completed update the roadmap file, add each user-visible change as a line under `[Unreleased]` in the [changelog](docs/changelog.md) (Added / Changed / Fixed / Removed), and write the detailed notes — what was done and what to do next — at the top of the [development log](docs/devlog.md).
 
 ## Project
 
@@ -60,7 +60,7 @@ Six layers:
    - `ir_to_ly/` (~3400 lines) — IR to LilyPond emitter. Handles multi-staff piano scores, voice filtering, relative pitch mode
    - `ir_to_mxml/` — IR to MusicXML writer using `musicxml` crate (struct construction + serialization). Native MXL support.
    - `ly_flatten.rs` — `\include` expansion
-   - `midi_to_ir.rs` / `ir_to_midi.rs` — MIDI I/O via `midly`
+   - `midi_to_ir/` / `ir_to_midi.rs` — MIDI I/O via `midly`. The reader quantizes positions (`quantize.rs`: notation files on an exact grid per beat, tuplets, grace notes; played files by a Viterbi search in `quantize/played.rs`, beats tracked in `beats.rs` when the playing drifts), splits one-track pianos into hands, straightens swing, separates voices (`voices.rs`) and bars on the shared `Timeline`/`Grid`; the writer plays like LilyPond's performers
    - `abc_to_ir.rs` / `ir_to_abc.rs` — ABC notation (Layer-1 Music tree)
    - `humdrum_to_ir.rs` / `ir_to_humdrum.rs` — Humdrum `**kern` (Layer-1 Music tree; spine rearrangement `*^`/`*v` unsupported → clear error)
    - Traits: `ToIrAdapter` (parse → Score), `FromIrAdapter` (Score → emit), `ToMusicAdapter` (parse → MusicDocument), `FromMusicAdapter` (MusicDocument → emit)

@@ -9,8 +9,6 @@ mod tests {
     use crate::ir::pitch::{Pitch, PitchStep};
     use crate::ir::score::*;
 
-    use super::super::build::compute_measure_boundaries;
-
     fn c4_quarter() -> Music {
         Music::Note {
             pitch: Pitch::new(PitchStep::C, 4),
@@ -292,16 +290,18 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_measure_boundaries_default() {
-        let boundaries = compute_measure_boundaries(&[], Frac::new(2, 1), None);
-        // 2 whole notes in 4/4 = 2 measures
-        // Expected boundaries: [(0, Some(4/4)), (1, None), (2, None)]
-        assert!(
-            boundaries.len() >= 3,
-            "got {} boundaries: {:?}",
-            boundaries.len(),
-            boundaries
-        );
+    fn two_whole_notes_in_four_four_are_two_bars() {
+        let score = lower_music_to_score(&Music::Sequential(vec![
+            Music::TimeSignature(TimeSignature::default()),
+            Music::Note {
+                pitch: Pitch::new(PitchStep::C, 4),
+                duration: Duration::new(Frac::new(2, 1)),
+                annotations: vec![],
+            },
+        ]));
+        // A breve in 4/4 is two whole notes tied over the bar line.
+        let bars = &score.parts()[0].measures;
+        assert_eq!(bars.len(), 2);
     }
 
     #[test]

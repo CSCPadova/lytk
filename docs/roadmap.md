@@ -17,7 +17,7 @@ crate. Test counts: 998 Rust + 184 Python.
 
 ## Previous status (2026-09-24, second pass)
 
-**Pre-release work for 0.1.0** (details in `docs/changelog.md`):
+**Pre-release work for 0.1.0** (details in `docs/devlog.md`):
 
 - **Epic H done (EHT1–EHT3, EHT5).** The LilyPond reader no longer builds
   measures while walking. Music is placed at absolute positions in voice lanes
@@ -47,7 +47,7 @@ Test counts: 1046 Rust + 141 Python green; clippy clean on 1.90 and 1.98.
 
 ## Previous status (2026-09-24)
 
-**0.1.0 preview release prep** (details in `docs/changelog.md`). The first public
+**0.1.0 preview release prep** (details in `docs/devlog.md`). The first public
 release ships as **0.1.0**, before the P-epics below; `v1.0.0` stays gated on them.
 
 - **CI was red on master since 2026-06-18** (5 pushes), from three independent
@@ -71,7 +71,7 @@ Test counts: 1025 Rust + 141 Python green; clippy clean on 1.90 and 1.98.
 
 ## Previous status (2026-09-20)
 
-**Conversion/augmentation audit + DLPack** (details in `docs/changelog.md`).
+**Conversion/augmentation audit + DLPack** (details in `docs/devlog.md`).
 Exercised all 36 format pairs and every transform end to end.
 
 - **Three silent conversion bugs fixed**: ABC dropped tuplets on read *and*
@@ -99,7 +99,7 @@ Test counts: 1025 Rust + 141 Python green; clippy clean.
 
 ## Previous status (2026-09-20)
 
-**PyPI release preparation + DL data loaders** (details in `docs/changelog.md`).
+**PyPI release preparation + DL data loaders** (details in `docs/devlog.md`).
 lytk is distributed as a **Python package only** — the Rust crate is the
 implementation, not a published artifact, so the layout keeps the standard maturin
 naming (`[lib] name = "_core"` → the `lytk._core` module).
@@ -134,7 +134,7 @@ checkpoint); clippy clean. **Not tagged** — see Epic G EGT5.
 
 ## Previous status (2026-06-18)
 
-Four landings + a reconciliation (details in `docs/changelog.md`):
+Four landings + a reconciliation (details in `docs/devlog.md`):
 - **MIDI instrument preservation** — instrument identity (GM name ↔ 0-indexed
   program) now survives ly ↔ musicxml ↔ midi via a shared GM table
   (`src/adapters/gm.rs`). Fixes ly→musicxml dropping the program and the
@@ -321,7 +321,7 @@ landed on the hardening branch, the fifth is the ABC multi-voice feature):**
 - ✅ midi→ly **tuplet duration** loss — **Phase 3c**: `ir_to_ly/emit.rs` wraps duration-ratio tuplets (no `TupletDisplay`) in `\tuplet a/b { … }`
 - ✅ xml→ly **repeat-from-the-top** note loss — **Phase 3b**: `ir_to_ly/emit.rs` repeat-brace depth tracking (backward-only / forward-only repeats balanced)
 - ✅ ly→midi **grace notes** steal metrical time — **Phase 3d**: `ir_to_midi` emits a short grace at the current tick without advancing the voice clock
-- ✅ ABC **multi-voice (`V:`)** — **2026-06-18**: `V:` voices parsed/emitted per ABC 2.1 §4.1; →ABC is now lossless for polyphony (each voice a Staff/Part). See changelog.
+- ✅ ABC **multi-voice (`V:`)** — **2026-06-18**: `V:` voices parsed/emitted per ABC 2.1 §4.1; →ABC is now lossless for polyphony (each voice a Staff/Part). See the devlog.
 
 ### Epic C: Semantic Round-Trip Test Bar (quality gate)
 
@@ -333,12 +333,12 @@ landed on the hardening branch, the fifth is the ABC multi-voice feature):**
 
 Scoreboard at completion: **XML→IR→XML 152/152** (note-count & pitch-multiset); **LY→IR→LY 33/35** (only example.ly/example2.ly drift, +9 notes — complex multi-voice). Building the scoreboard surfaced and fixed two real CLI LY→LY bugs: top-level `parallel_music`/`named_context` weren't parsed (re-parse yielded 0 notes), and the Music-path emitter emitted relative octave marks without a `\relative` wrapper (now emits absolute).
 
-**Update 2026-06-12:** scoreboard now **LY→IR→LY 35/35** — the example.ly/example2.ly drift was `\addlyrics` inside `<< … >>` being parsed as music (lyric syllables became phantom notes); fixed along with the pedal.ly bar-58 PianoStaff time-signature unification and 12 further conversion bugs (see changelog).
+**Update 2026-06-12:** scoreboard now **LY→IR→LY 35/35** — the example.ly/example2.ly drift was `\addlyrics` inside `<< … >>` being parsed as music (lyric syllables became phantom notes); fixed along with the pedal.ly bar-58 PianoStaff time-signature unification and 12 further conversion bugs (see the devlog).
 
 **Update 2026-06-13:** the 5 confirmed-but-open bugs are now all fixed — Score-path `\repeat volta N` count (via `Barline.repeat_times`), two-note tremolo emission (`\repeat tremolo`), multi-staff lyrics referencing, cross-staff voice duplication, and the MIDI conductor track reading only part[0]. 797 Rust tests green. Only `\change Staff` cross-staff beaming remains as a known notation gap.
 
 **Update 2026-06-14 (piano fidelity):** deep pass on the hardest piano fixtures.
-- **pedal.ly** — the sustain pedal now renders *below* the left-hand staff in MuseScore: empty staff bars carry an invisible anchor rest, and `\sustainOn`/`Off` attach at the note onset (LY post-event semantics). See changelog.
+- **pedal.ly** — the sustain pedal now renders *below* the left-hand staff in MuseScore: empty staff bars carry an invisible anchor rest, and `\sustainOn`/`Off` attach at the note onset (LY post-event semantics). See the devlog.
 - **chopin_n.ly** — was 121/181 bars wrong; the **whole main body (bars 1–69) is now bar-for-bar correct** and renders like the LilyPond reference. Fixed: tuplet chords scaling inner notes (+ nested-tuplet product), `q` chord-repetition, tie-stop resolution, per-voice slur numbering, `\partial` pickup preserved through the variable/time-change resplit, fingered chords inside grace blocks, and `\repeat unfold N` (was emitted once). **Update 2026-06-15 — end cadenza + Agitato now fixed (Epic H):** the whole fixture
 now converts correctly. The post-Agitato RH/LH drift is gone (`disambiguate_colliding
 _voice_numbers` + the `\tuplet 3/2 4 {…}` group-duration parse fix — the real cause of
@@ -383,7 +383,7 @@ not structural.
 | EGT2 | Python wrappers for ABC + representations | ✅ Bound ABC in PyO3 (`from_abc`, `from_abc_string`, `to_abc` — emit lifts Score→Music internally); re-exported in `__init__.py`; `.abc` added to the Python CLI (read/write/info, `-f abc`). Representations already exposed + re-exported. 5 ABC pytests |
 | EGT3 | maturin GitHub Actions wheel matrix (Linux/macOS/Windows, abi3) | ✅ `.github/workflows/release.yml`: abi3 wheels (Linux x86_64+aarch64, macOS x86_64+arm64, Windows x64) + sdist via `PyO3/maturin-action`, publish-to-PyPI job (Trusted Publishing/OIDC) gated on a `v*` tag |
 | EGT4 | `pyproject.toml` metadata, README quickstart, finalize `import-export.md` matrix | ✅ `pyproject.toml`: `license = "GPL-2.0-or-later"` (matches the repo LICENSE) + classifiers, keywords, URLs, `torch`/`tensorflow` extras (verified in the built wheel METADATA). README Python quickstart expanded (ABC, representations, MIDI, extras). `import-export.md`: top-level format matrix + real ABC section + `\cadenzaOn/Off` updated |
-| EGT5 | Tag a release; update roadmap (Completed) + changelog | 🟡 First public release is **0.1.0** (preview, version set 2026-09-24); push `v0.1.0` once the PyPI Trusted Publisher + `pypi` environment exist. `v1.0.0` waits for the P-epics |
+| EGT5 | Tag a release; update roadmap (Completed) + changelog | ✅ `v0.1.0` tagged 2026-09-25, the first public release (preview). `v1.0.0` waits for the P-epics |
 | EGT6 | Standard maturin layout retained | ✅ Distribution is PyPI-only, so the crate keeps the conventional maturin naming (`[lib] name = "_core"`, `module-name = "lytk._core"`) and pyo3/numpy stay unconditional — a feature toggling them would be a switch with one position. The bindings did move out of `src/lib.rs` (1002 → 52 lines) into `src/python.rs`, which scoped the pyo3 `useless_conversion` allow and exposed 4 real lint hits in `ly_to_ir` (fixed) |
 | EGT7 | Third-party licence compliance | ✅ The vendored tree-sitter-lilypond parser in `src/tree-sitter/` shipped inside the wheel with no licence text — MIT requires the notice to travel with it. Verbatim upstream notice added at `src/tree-sitter/LICENSE` (© Nathan Whetsell) + provenance `README.md`, and added to `license-files` (confirmed present in the built wheel and sdist) |
 | EGT8 | Public-repo hygiene | ✅ `CONTRIBUTING.md`, `SECURITY.md` (parser threat model), README badges + extras matrix + data-loader section; removed the reference table pointing at a dozen directories absent from the repo, the stale "Humdrum not implemented" claim, stale test counts, and `ruff` commands for tooling configured nowhere. `rust-version = "1.85"` + MSRV CI job (the sdist compiles on the user's toolchain). Fixed a latent `release.yml` failure: the test gate lacked the `pip` upgrade needed for PEP 735 groups |
@@ -515,13 +515,91 @@ non-regressive subset of the rework landed (all 872 tests green at each step):
 
 ---
 
+## Epic I — MIDI and ABC conversion repair (2026-09-25 – 2026-09-27, ✅ released in v0.2.0)
+
+The ABC and MIDI round trips passed while real conversions were wrong: every
+check compared lytk's reader with lytk's own writer, so shared mistakes
+cancelled out. The ABC reader ignored the key signature; the ABC writer
+never wrote naturals; the MIDI reader drifted, dropped meters and keys, and
+filled legato input with 64th rests; the MIDI writer padded pickups with
+silence and ignored MusicXML dynamics. Epic I measures against independent
+references first, then fixes each direction. References (clean-room, GPL
+sources read, never copied): ABC 2.1 for ABC; MuseScore's import pipeline for
+MIDI import; LilyPond's performers for MIDI export, with the `lilypond`
+binary as the oracle.
+
+| Task | Description | Status |
+|------|-------------|--------|
+| I0 | Measurement: ABC 2.1 oracle + writer/reader boards (`tests/abc_standard.rs`), MIDI source-truth / LilyPond-parity / synthetic / corpus / quality boards (`tests/midi_truth.rs`), bar structure on every fidelity board, `lilypond` oracle test + CI job, MIDI/ABC benchmarks | ✅ |
+| IA1 | ABC pitches: key signatures (modes, `exp`, explicit accidentals) and bar-scoped accidentals on read; unambiguous accidentals and every key name on write; `w:` lines, several tunes, `M:` bounds | ✅ 2026-09-25 (+ 20 fixes from a 67-agent adversarial review: chord/tuplet ties, tied accidentals, `-8` clefs, blank lines, …) |
+| IB | MIDI writer: bar times from actual bar lengths (pickups, cadenzas), exact tuplet ticks, unrolled repeats, LilyPond's dynamics table + hairpins + articulations + grace timing, channel fixes, CC64 pedal, lyrics, `<transpose>`; per-note velocity in the IR | ✅ 2026-09-25: matches LilyPond's MIDI on 7,998/7,998 onsets+pitches and 7,995 note-offs |
+| IL | One bar-splitter: the lowering (Layer 1 → Layer 2) moves onto the positioned `Timeline`/`Grid`; metric duration splitter; `Music::Partial` for irregular bars; volta repeats kept instead of unfolded | ✅ 2026-09-25: notes tied over bar lines instead of copied, ABC repeats/endings/pickups kept; XML→ABC bars 126 → 135, XML→KRN 119 → 133. Beams/stems move to `src/ir/` and `Grid` with an explicit end: moved to IC |
+| IA2 | ABC durations: broken rhythm, `Z`/`X` bar rests, `x` skips, inline `[V:]`, per-voice `L:`/`M:`, `&` overlays, compound-meter tuplets, additive meters | ✅ 2026-09-25 (+ irregular bars kept, from IA3; kern repeat signs) |
+| IA4 | ABC content: decorations, chord symbols, annotations, slurs, tempo, lyrics, both ways; several tunes per file (`from_abc_tunes`) | ✅ 2026-09-25 |
+| IA3 | ABC structure: on write, overflow ties, `x` spacers and inner voices (as `&` layers); lift keeps irregular bars | ✅ 2026-09-25 (irregular bars on read in IA2; repeats, endings and pickups in IL). ABC writer board 148/158, 212 notes misread (from 6,702 at IA1) |
+| IC | MIDI reader for notation-exported MIDI: grid re-anchored at meter changes, quantization on absolute positions with tuplet detection, voice separation, piano staves, drums, pedal, lyrics | ✅ 2026-09-25: LilyPond sources 7,938/8,107 onsets (from 6,135), 7,387 with duration (from 5,535), all 18 time and 7 key signatures; synthetic cases 16/16; `from_midi` 10.9 ms (1.3× the old reader) |
+| ID | MIDI reader for performed MIDI: this is PE-Epic P9 (T9.1–T9.9) | ✅ 2026-09-27: Viterbi onset quantizer, beat tracking (drift, rubato, late start), hand-split cost model, swing, played staccato; follow-ups: tempo induction far from the file's tempo, uneven chord releases, low-PPQ and mixed exact/played files |
+
+Baselines measured at I0 (2026-09-25):
+- ABC writer vs the standard: 121/158 sources with right pitches, 119/158
+  with right notes under both accidental rules; 7,285 of 20,809 source notes
+  misread. ABC reader: 2/4 fixtures read as the standard reads them.
+- MIDI reader vs LilyPond sources: 6,116/8,120 notes by onset+pitch,
+  5,511/8,120 with duration; 15/18 time and 5/7 key signatures in place; 0/5
+  bar structures right. Synthetic cases: 7/15 read as written.
+- MIDI writer vs LilyPond's MIDI: 4,717/7,998 notes on onset+pitch, 49 with
+  velocity. MusicXML corpus → MIDI → IR: 121/142 notes, 88/142 bars.
+- `lilypond` compiling lytk's LilyPond (2.22.1 locally): 139/148 fixtures
+  compile; its MIDI matches lytk's on 5,939/9,401 onsets. Not compiling:
+  additive meters (`\time 3+2/8`), two invalid durations (chopin_n, 75a) and
+  three grace-note fixtures — LilyPond-writer bugs found by the oracle.
+- Benchmarks (release, chopin_n): `from_midi` 8.5 ms, `to_midi` 2.4 ms,
+  `to_abc` 1.5 ms, `from_abc` 0.35 ms.
+
+After IA1 + IB: ABC writer 139/158 right pitches, 138/158 right notes,
+6,702 notes misread (repeats and inner voices still dropped: IA3); ABC reader
+3/4 fixtures. LilyPond parity 7,998/7,998 onsets, 7,995 note-offs, 4,319
+velocities (the rest: LilyPond ignores dynamics in another voice or a
+`Dynamics` context, and example2 removes its `Dynamic_performer`; lytk plays
+them, as MuseScore and a player would). MusicXML corpus → MIDI → IR 113/142
+(planned drop from 121: grace, staccato, transposition now played; the reader
+learns to undo them in IC). `lilypond` oracle 6,371/9,401 onsets.
+
+Follow-ups the oracles found outside IA1/IB (LilyPond writer and reader):
+- `ir_to_ly`: `\time 3+2/8` is not LilyPond 2.22 syntax (11c–11f); invalid
+  durations in chopin_n and 75a; three grace-note fixtures (24a, 24e, 61f)
+  make LilyPond write no MIDI; chord names are performed as notes (71a–g);
+  `\transposition` not written for transposing instruments (72a–d); pedal
+  and example2 `.ly` output plays differently from the source.
+- `ly_to_ir`: `\set tieWaitForNote = ##t` ties (3 notes in chopin_n);
+  `\relative` applied to a variable reached through a non-block argument.
+- ~~`lift`: a repeat with no forward repeat barline (45b) is not rebuilt~~ ✅
+  (phase L review).
+- ABC `[1,2` / `[1-3` endings keep only their first number: `Barline` needs a
+  list of ending numbers (MusicXML `number="1, 2"`).
+- `**kern` writes no endings (`*>` expansion lists).
+- ~~`lift` produces no `Music::Partial` for a mid-piece irregular bar~~ ✅
+  (IA3); the lowering drops part-group names.
+- The ABC reader's own Music tree keeps repeats as bar lines (a score and
+  its lift rebuild `Music::Repeat`), so `convert_str_to_music` note arrays
+  don't unfold them.
+- The LilyPond reader loses the notes of a grace group written with nested
+  braces (`\grace { { a16 b } }`); the writers no longer produce it.
+- ABC has no repeat count: repeats of three or more passes are written out.
+- MIDI reader (after IC): an accent (+20) in a LilyPond-played file changes
+  the velocity band for one note and adds a dynamic mark; chopin_n's
+  cadenza (irregular tuplets in free time) doesn't read back exactly; a
+  staccato is only recognised when played 4 louder.
+
+---
+
 ## Humdrum (`**kern`) support — 2026-07-10 ✅
 
 New `humdrum_to_ir`/`ir_to_humdrum` adapter pair (Layer-1, ABC-shaped), all
 surfaces wired (CLI `.krn`, Python `from_humdrum`/`to_humdrum`, batch, fuzz
 net). music21 kern corpus: 1325/1328 round-trip cleanly; spine rearrangement
 (`*^`/`*v`) is a documented clear error. `lower_to_score` now honours
-`metadata.partial_duration` (anacrusis). Details in the changelog.
+`metadata.partial_duration` (anacrusis). Details in the devlog.
 
 ---
 
@@ -530,7 +608,7 @@ net). music21 kern corpus: 1325/1328 round-trip cleanly; spine rearrangement
 A multi-agent audit + empirical round-trip sweep (313 MusicXML files incl. the
 159-file LilyPond acid corpus, 35 .ly fixtures, 52 MIDI cases) found zero
 crashes but a set of **silent data-loss and correctness defects**. Full detail
-with evidence in `docs/changelog.md` (2026-07-10 entry). Priority order:
+with evidence in `docs/devlog.md` (2026-07-10 entry). Priority order:
 
 | # | Area | Defect | Sev |
 |---|---|---|---|
@@ -653,17 +731,19 @@ P7** → **P6, P8** → **P9**; **P12** enforced throughout.
 ### PE-Epic P9 — MIDI reconstruction (study-then-reimplement) *(item 14)*
 Depends on P6 (tuplets) + P8 (percussion). Study MuseScore `importmidi_*` for the
 approach; write lytk's own. Each sub-task is independently SMF-fixture-testable.
+Scheduled as Epic I's last phase (ID), after the reader rework for
+notation-exported MIDI (IC).
 | Task | Description | Status |
 |------|-------------|--------|
-| T9.1 | Configurable quantization grid | ⬜ |
-| T9.2 | Clef guessing (pitch centroid) | ⬜ |
-| T9.3 | Voice separation (≤4 voices) | ⬜ |
-| T9.4 | Tuplet detection (emits P6 tuplets) | ⬜ |
-| T9.5 | L/R hand split (piano) | ⬜ |
-| T9.6 | Drum mapping (ch-10 → P8 percussion) | ⬜ |
-| T9.7 | Swing detection/normalization | ⬜ |
-| T9.8 | Lyrics/karaoke extraction | ⬜ |
-| T9.9 | Articulation inference (gate-time → staccato) | ⬜ |
+| T9.1 | Configurable quantization grid | ✅ `MidiToIrAdapter::with_quantize`, `from_midi(…, quantize=16)` (played files) |
+| T9.2 | Clef guessing (pitch centroid) | ✅ (IC) |
+| T9.3 | Voice separation (≤4 voices) | ✅ (IC) |
+| T9.4 | Tuplet detection (emits P6 tuplets) | ✅ exported files: 3/5/6/7/10/12 a beat (IC); played files: triplets by a Viterbi search over plain and triplet points, two onsets off the 16th grid a beat (ID) |
+| T9.5 | L/R hand split (piano) | ✅ MuseScore's cost model (hand span, textures, a busy hand) as a Viterbi over chord cuts, plus a movement cost (ID) |
+| T9.6 | Drum mapping (ch-10 → P8 percussion) | ✅ percussion part and clef; hits held to the next (IC/ID) |
+| T9.7 | Swing detection/normalization | ✅ swung eighths (3:2 to 2:1) straightened and marked "Swing", in played files by the beats' votes, else `swing=True`; a 3:1 shuffle reads dotted unless asked (ID) |
+| T9.8 | Lyrics/karaoke extraction | ✅ lyric events (IC), karaoke text events (ID) |
+| T9.9 | Articulation inference (gate-time → staccato) | ✅ notation files: 4 louder (LilyPond, lytk); played files: a note lengthened by 30 % or more to one written value (MuseScore's rule); legato gaps closed (ID) |
 
 ### PE-Epic P10 — Machine-readable automation outputs *(item 8)* ✅
 | Task | Description | Status |
@@ -706,6 +786,7 @@ approach; write lytk's own. Each sub-task is independently SMF-fixture-testable.
 | **10** | **H** | **Multi-voice/multi-staff bar-splitting rework (deferred bar-splitting; fixes chopin RH/LH drift + cadenza)** |
 | **11** | **P1–P12** | **Pre-1.0.0 expansion (MuseScore-comparison backlog): CLI/IO + transforms, MusicXML fidelity, IR modeling, MIDI reconstruction — see plan file** |
 | **12** | **0.1.0** | **Preview release before the remaining P-epics; then P5 → P3 → P4 → P6 → P8 → P9** |
+| **13** | **I → 0.2.0** | **MIDI and ABC conversion repair (Epic I, with P9 performed MIDI): tagged `v0.2.0` 2026-09-27** |
 
 ## Key Decisions
 

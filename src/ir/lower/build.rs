@@ -1,16 +1,23 @@
-//! Functions that build Score/Part/Measure/Voice from collected events.
+//! Build Score/Part/Measure/Voice from collected events.
+//!
+//! Each staff's timed events become a positioned [`Timeline`] (voices as
+//! lanes, everything else as events); a PianoStaff's staves fold into one
+//! multi-staff timeline; then one score-wide [`Grid`] cuts every part into
+//! measures, tying notes across bar lines — the same bar-splitter the
+//! LilyPond reader uses (`crate::ir::timeline`).
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use super::super::annotation::Annotation;
 use super::super::articulation::*;
+use super::super::direction::{Barline, BarlineType, RepeatDirection};
 use super::super::duration::Frac;
 use super::super::measure::*;
 use super::super::music::ContextType;
 use super::super::note::{Chord, Note, Rest, VoiceElement};
 use super::super::part::Part;
 use super::super::score::*;
-use super::super::voice::Voice;
+use super::super::timeline::{split_tied, Event, Grid, Timeline, OFFSET_DIVISIONS};
 use super::state::{LowerState, TimedEvent};
 
 /// Build the final Score from collected staff events.
@@ -22,367 +29,228 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
         return score;
     }
 
-    // Build parts from staves
-    let mut parts: Vec<(usize, Part)> = Vec::new();
-
-    for (i, staff) in state.staves.iter().enumerate() {
-        let mut part = Part::new(&format!("P{}", i + 1));
-        part.name = if staff.name.is_empty() {
-            format!("Part {}", i + 1)
-        } else {
-            staff.name.clone()
-        };
-
-        let partial = state
-            .metadata
-            .partial_duration
-            .as_ref()
-            .map(|d| d.actual_duration());
-        let mut measures = split_events_into_measures(&staff.events, partial);
-        if partial.is_some() {
-            if let Some(first) = measures.first_mut() {
-                first.implicit = true; // anacrusis
-            }
-        }
-        part.measures = measures;
-        parts.push((i, part));
+    let mut timelines: Vec<Timeline> = state
+        .staves
+        .iter()
+        .map(|s| staff_timeline(&s.events))
+        .collect();
+    // The opening pickup (`\partial` at the start, an ABC first bar shorter than
+    // `M:`) sizes the first bar.
+    if let Some(p) = state
+        .metadata
+        .partial_duration
+        .as_ref()
+        .map(|d| d.actual_duration())
+        .filter(|p| *p > Frac::from_integer(0))
+    {
+        timelines[0].add(Frac::from_integer(0), Event::Partial(p));
     }
 
-    // Build score children based on groups
-    let mut staff_assigned: Vec<bool> = vec![false; state.staves.len()];
+    // Each slot is a part to be: a staff, or the staves of a piano folded into
+    // its first one (`None` for the staves folded away), with its staff count.
+    let mut slots: Vec<Option<(Timeline, u8)>> =
+        timelines.into_iter().map(|tl| Some((tl, 1))).collect();
+    let mut piano_at: BTreeMap<usize, ContextType> = BTreeMap::new();
+    let mut piano_groups: Vec<&(ContextType, Option<String>, Vec<usize>)> = state
+        .groups
+        .iter()
+        .filter(|(ctx, _, idx)| {
+            matches!(ctx, ContextType::PianoStaff | ContextType::GrandStaff) && idx.len() >= 2
+        })
+        .collect();
+    // Innermost first.
+    piano_groups.sort_by_key(|(_, _, idx)| idx.len());
+    for (ctx, _, idx) in piano_groups {
+        let mut merged = Timeline::default();
+        let mut offset = 0u8;
+        let mut staves = 0u8;
+        for &i in idx {
+            let Some((tl, n)) = slots[i].take() else {
+                continue;
+            };
+            let top = tl.lanes.keys().copied().max().unwrap_or(0);
+            // A slot already folded (a piano inside a grand staff) keeps its
+            // own staves, moved down past the ones before it.
+            merged.absorb(tl.shift_staves(staves, offset));
+            offset = offset.saturating_add(top);
+            staves += n;
+        }
+        slots[idx[0]] = Some((merged, staves.max(1)));
+        piano_at.insert(idx[0], ctx.clone());
+    }
 
-    for (ctx_type, _name, staff_indices) in &state.groups {
-        if staff_indices.is_empty() {
+    let grid = Grid::build_tied(slots.iter().flatten().map(|(tl, _)| tl));
+    let mut parts: Vec<Option<ScoreChild>> = slots
+        .into_iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            let (tl, staves) = slot?;
+            let mut part = Part::new(&format!("P{}", i + 1));
+            part.name = if state.staves[i].name.is_empty() {
+                format!("Part {}", i + 1)
+            } else {
+                state.staves[i].name.clone()
+            };
+            part.staves = staves;
+            part.measures = split_tied(tl, &grid, OFFSET_DIVISIONS, OFFSET_DIVISIONS);
+            if staves > 1 {
+                if let Some(m) = part.measures.first_mut() {
+                    m.attributes.get_or_insert_with(Default::default).staves = Some(staves);
+                }
+            }
+            Some(match piano_at.get(&i) {
+                Some(ctx) => {
+                    let mut pg = PartGroup::new(match ctx {
+                        ContextType::GrandStaff => "GrandStaff",
+                        _ => "PianoStaff",
+                    });
+                    pg.bracket = "brace".to_string();
+                    pg.children.push(ScoreChild::Part(part));
+                    ScoreChild::PartGroup(pg)
+                }
+                None => ScoreChild::Part(part),
+            })
+        })
+        .collect();
+
+    // StaffGroup / ChoirStaff brackets, outermost only, in staff order.
+    let brackets: Vec<(usize, usize, &ContextType)> = state
+        .groups
+        .iter()
+        .filter(|(ctx, _, idx)| {
+            matches!(ctx, ContextType::StaffGroup | ContextType::ChoirStaff) && !idx.is_empty()
+        })
+        .map(|(ctx, _, idx)| (idx[0], idx[idx.len() - 1], ctx))
+        .collect();
+    let outermost: Vec<&(usize, usize, &ContextType)> = brackets
+        .iter()
+        .filter(|(a, b, _)| {
+            !brackets
+                .iter()
+                .any(|(c, d, _)| (c, d) != (a, b) && c <= a && b <= d)
+        })
+        .collect();
+    let mut i = 0;
+    while i < parts.len() {
+        if let Some(&&(first, last, ctx)) = outermost.iter().find(|g| g.0 == i) {
+            let mut pg = PartGroup::new(ctx.ly_name());
+            pg.children = parts[first..=last]
+                .iter_mut()
+                .filter_map(Option::take)
+                .collect();
+            score.children.push(ScoreChild::PartGroup(pg));
+            i = last + 1;
             continue;
         }
-
-        match ctx_type {
-            ContextType::PianoStaff | ContextType::GrandStaff => {
-                if staff_indices.len() >= 2 {
-                    // Multi-staff instrument: merge staves into one part
-                    let mut merged_part = parts[staff_indices[0]].1.clone();
-                    merged_part.staves = staff_indices.len() as u8;
-
-                    // Set staff numbers on voice elements
-                    for m in &mut merged_part.measures {
-                        for v in &mut m.voices {
-                            for e in &mut v.elements {
-                                set_staff_number(e, 1);
-                            }
-                        }
-                    }
-
-                    // Merge voices from other staves
-                    for (si, &staff_idx) in staff_indices.iter().enumerate().skip(1) {
-                        let staff_num = si as u8 + 1;
-                        let other = &parts[staff_idx].1;
-                        for (mi, om) in other.measures.iter().enumerate() {
-                            if mi < merged_part.measures.len() {
-                                for v in &om.voices {
-                                    let mut v2 = v.clone();
-                                    for e in &mut v2.elements {
-                                        set_staff_number(e, staff_num);
-                                    }
-                                    merged_part.measures[mi].voices.push(v2);
-                                }
-                                // Merge directions
-                                merged_part.measures[mi]
-                                    .directions
-                                    .extend(om.directions.iter().cloned());
-                            }
-                        }
-                    }
-
-                    let group_type = match ctx_type {
-                        ContextType::PianoStaff => "PianoStaff",
-                        ContextType::GrandStaff => "GrandStaff",
-                        _ => "StaffGroup",
-                    };
-                    let mut pg = PartGroup::new(group_type);
-                    pg.bracket = "brace".to_string();
-                    pg.children.push(ScoreChild::Part(merged_part));
-                    score.children.push(ScoreChild::PartGroup(pg));
-
-                    for &si in staff_indices {
-                        staff_assigned[si] = true;
-                    }
-                } else {
-                    // Single staff in group — just add as part
-                    let si = staff_indices[0];
-                    score.children.push(ScoreChild::Part(parts[si].1.clone()));
-                    staff_assigned[si] = true;
-                }
-            }
-            ContextType::StaffGroup | ContextType::ChoirStaff => {
-                let group_type = ctx_type.ly_name();
-                let mut pg = PartGroup::new(group_type);
-                for &si in staff_indices {
-                    pg.children.push(ScoreChild::Part(parts[si].1.clone()));
-                    staff_assigned[si] = true;
-                }
-                score.children.push(ScoreChild::PartGroup(pg));
-            }
-            _ => {}
+        if let Some(child) = parts[i].take() {
+            score.children.push(child);
         }
+        i += 1;
     }
 
-    // Add any unassigned staves as standalone parts
-    for (i, assigned) in staff_assigned.iter().enumerate() {
-        if !assigned {
-            score.children.push(ScoreChild::Part(parts[i].1.clone()));
-        }
-    }
-
-    // Synchronize time/key signatures across parts
+    // Every part shows the key in force (the grid already gives every part
+    // the meter).
     synchronize_attributes(&mut score);
 
     score
 }
 
-/// Set staff number on a VoiceElement.
-fn set_staff_number(elem: &mut VoiceElement, staff: u8) {
-    match elem {
-        VoiceElement::Note(n) => n.staff = staff,
-        VoiceElement::Rest(r) => r.staff = staff,
-        VoiceElement::Chord(c) => {
-            c.staff = staff;
-            for n in &mut c.notes {
-                n.staff = staff;
-            }
-        }
-    }
-}
-
-/// Split a flat list of timed events into measures based on time signatures.
-fn split_events_into_measures(
-    events: &[(Frac, TimedEvent)],
-    partial: Option<Frac>,
-) -> Vec<Measure> {
-    if events.is_empty() {
-        return Vec::new();
-    }
-
-    // First pass: collect time signature changes
-    let mut time_sig_changes: Vec<(Frac, TimeSignature)> = Vec::new();
-
-    for (time, event) in events {
-        if let TimedEvent::TimeSignature(ts) = event {
-            time_sig_changes.push((*time, ts.clone()));
-        }
-    }
-
-    // Compute measure boundaries
-    let max_time = events
-        .iter()
-        .map(|(t, e)| *t + event_duration(e))
-        .max()
-        .unwrap_or(Frac::from_integer(0));
-
-    let boundaries = compute_measure_boundaries(&time_sig_changes, max_time, partial);
-
-    if boundaries.len() < 2 {
-        // Not enough boundaries — put everything in one measure
-        let mut m = Measure::new(1);
-        let voice = events_to_voice(events, 1, Frac::from_integer(0), max_time);
-        if !voice.elements.is_empty() {
-            m.voices.push(voice);
-        }
-        apply_attributes_to_measure(&mut m, events, Frac::from_integer(0), max_time);
-        return vec![m];
-    }
-
-    // Create measures
-    let mut measures = Vec::new();
-
-    for i in 0..boundaries.len() - 1 {
-        let start = boundaries[i].0;
-        let end = boundaries[i + 1].0;
-        let measure_num = (i + 1) as u32;
-
-        let mut m = Measure::new(measure_num);
-
-        // Set time signature if it changes at this boundary
-        if let Some(ts) = &boundaries[i].1 {
-            let ma = m.attributes.get_or_insert_with(MeasureAttributes::default);
-            ma.time = Some(ts.clone());
-        }
-
-        // Collect voice-grouped events for this measure
-        let voice_events = collect_voice_events(events, start, end);
-
-        for (voice_num, v_events) in &voice_events {
-            let voice = build_voice_from_events(v_events, *voice_num);
-            if !voice.elements.is_empty() {
-                m.voices.push(voice);
-            }
-        }
-
-        // Apply non-voice attributes (key, clef, directions, figured bass, harmony, barlines)
-        apply_attributes_to_measure(&mut m, events, start, end);
-
-        measures.push(m);
-    }
-
-    measures
-}
-
-/// Measure boundary: (time, optional time signature at this boundary)
-type MeasureBoundary = (Frac, Option<TimeSignature>);
-
-/// Compute measure boundaries from time signature changes.
-pub(super) fn compute_measure_boundaries(
-    time_sig_changes: &[(Frac, TimeSignature)],
-    max_time: Frac,
-    partial: Option<Frac>,
-) -> Vec<MeasureBoundary> {
-    let zero = Frac::from_integer(0);
-    if max_time <= zero {
-        return vec![];
-    }
-
-    let mut boundaries: Vec<MeasureBoundary> = Vec::new();
-
-    // Start with default 4/4 if no time sig at t=0
-    let has_initial_ts = time_sig_changes.first().map(|(t, _)| *t) == Some(zero);
-    let initial_ts = if has_initial_ts {
-        time_sig_changes[0].1.clone()
-    } else {
-        TimeSignature::default()
-    };
-
-    let mut current_ts_frac = initial_ts.beats_fraction();
-    // Only store the time sig on the boundary if it was explicit
-    boundaries.push((
-        zero,
-        if has_initial_ts {
-            Some(initial_ts)
-        } else {
-            None
-        },
-    ));
-
-    let mut pos = zero;
-
-    // Anacrusis: the first (implicit) measure ends after the pickup, then the
-    // regular bar grid starts.
-    if let Some(p) = partial {
-        if p > zero && p < current_ts_frac {
-            boundaries.push((p, None));
-            pos = p;
-        }
-    }
-
-    // Process time signature changes in order
-    let mut ts_idx = 0;
-
-    // Skip the initial time sig change at t=0 (already handled above)
-    while ts_idx < time_sig_changes.len() && time_sig_changes[ts_idx].0 == zero {
-        ts_idx += 1;
-    }
-
-    loop {
-        let next_bar = pos + current_ts_frac;
-
-        // Check if a time sig change happens before the next natural bar
-        let next_change = time_sig_changes
-            .iter()
-            .skip(ts_idx)
-            .find(|(t, _)| *t > pos && *t <= next_bar);
-
-        if let Some((change_time, new_ts)) = next_change {
-            // change_time is in (pos, next_bar] — split the measure there.
-            boundaries.push((*change_time, Some(new_ts.clone())));
-            current_ts_frac = new_ts.beats_fraction();
-            pos = *change_time;
-            // Advance ts_idx past all changes at this position.
-            while ts_idx < time_sig_changes.len() && time_sig_changes[ts_idx].0 <= *change_time {
-                ts_idx += 1;
-            }
-        } else {
-            // No time sig change before next bar
-            if next_bar >= max_time {
-                boundaries.push((next_bar, None));
-                break;
-            }
-            boundaries.push((next_bar, None));
-            pos = next_bar;
-        }
-    }
-
-    boundaries
-}
-
-/// Group events by voice number within a time range.
-fn collect_voice_events(
-    events: &[(Frac, TimedEvent)],
-    start: Frac,
-    end: Frac,
-) -> Vec<(u8, Vec<&(Frac, TimedEvent)>)> {
-    let mut voice_map: HashMap<u8, Vec<&(Frac, TimedEvent)>> = HashMap::new();
-
-    for ev in events {
-        let voice_num = match &ev.1 {
+/// A staff's timed events as a positioned timeline: each voice's notes, rests
+/// and spacers placed as lanes, everything else as events.
+fn staff_timeline(events: &[(Frac, TimedEvent)]) -> Timeline {
+    let mut tl = Timeline::default();
+    // Onset order, keeping walk order at equal onsets (grace notes stay
+    // before their main note).
+    let mut voices: BTreeMap<u8, Vec<(Frac, VoiceElement)>> = BTreeMap::new();
+    let mut ordered: Vec<&(Frac, TimedEvent)> = events.iter().collect();
+    ordered.sort_by_key(|(t, _)| *t);
+    for (t, ev) in ordered {
+        let t = *t;
+        match ev {
             TimedEvent::Note { voice, .. }
             | TimedEvent::Chord { voice, .. }
             | TimedEvent::Rest { voice, .. }
-            | TimedEvent::Skip { voice, .. } => *voice,
-            _ => continue, // non-voice events handled separately
-        };
-
-        let ev_time = ev.0;
-        let ev_end = ev_time + event_duration(&ev.1);
-
-        // Include event if it overlaps with [start, end). Zero-duration
-        // events (grace notes) belong to the measure they start in.
-        if ev_time < end && (ev_end > start || (ev_end == start && ev_time == start)) {
-            voice_map.entry(voice_num).or_default().push(ev);
-        }
-    }
-
-    let mut result: Vec<(u8, Vec<&(Frac, TimedEvent)>)> = voice_map.into_iter().collect();
-    result.sort_by_key(|(v, _)| *v);
-    result
-}
-
-/// Get the duration of a timed event. Grace notes consume no measure time.
-fn event_duration(event: &TimedEvent) -> Frac {
-    match event {
-        TimedEvent::Note { grace, .. } | TimedEvent::Chord { grace, .. } if grace.is_some() => {
-            Frac::from_integer(0)
-        }
-        TimedEvent::Note { duration, .. }
-        | TimedEvent::Chord { duration, .. }
-        | TimedEvent::Rest { duration, .. }
-        | TimedEvent::Skip { duration, .. } => duration.actual_duration(),
-        _ => Frac::from_integer(0),
-    }
-}
-
-/// Build a Voice from a slice of already-filtered timed events.
-fn build_voice_from_events(events: &[&(Frac, TimedEvent)], voice_num: u8) -> Voice {
-    let mut voice = Voice::new(voice_num);
-
-    for ev in events {
-        let elem = timed_event_to_voice_element(&ev.1, voice_num, 1);
-        if let Some(e) = elem {
-            voice.elements.push(e);
-        }
-    }
-
-    voice
-}
-
-/// Legacy helper: build a single voice from all events in a time range.
-fn events_to_voice(events: &[(Frac, TimedEvent)], voice_num: u8, start: Frac, end: Frac) -> Voice {
-    let mut voice = Voice::new(voice_num);
-    for ev in events {
-        if ev.0 >= start && ev.0 < end {
-            if let Some(elem) = timed_event_to_voice_element(&ev.1, voice_num, 1) {
-                voice.elements.push(elem);
+            | TimedEvent::Skip { voice, .. } => {
+                if let Some(e) = timed_event_to_voice_element(ev, *voice, 1) {
+                    voices.entry(*voice).or_default().push((t, e));
+                }
             }
+            TimedEvent::TimeSignature(ts) => tl.add(t, Event::Time(ts.clone())),
+            TimedEvent::Partial(d) => tl.add(t, Event::Partial(*d)),
+            TimedEvent::KeySignature(k) => tl.add(t, Event::Key(*k)),
+            TimedEvent::Clef(c) => tl.add(t, Event::Clef(1, *c)),
+            // A lifted direction sits at its bar's start with its offset
+            // inside the bar: place it where it happens.
+            TimedEvent::Direction(d) => {
+                let mut d = d.clone();
+                let at = t + std::mem::take(&mut d.offset_frac);
+                // The staff is this timeline's (a lifted direction still names
+                // the staff of the part it came from).
+                d.staff = 0;
+                tl.add(at, Event::Direction(d));
+            }
+            TimedEvent::Barline(b) => {
+                for ev in barline_events(b) {
+                    // Nothing closes at the very start: a bar line there
+                    // opens the first bar (`[|` at the head of a tune).
+                    let ev = match ev {
+                        Event::RightBarline(mut b) if t == Frac::from_integer(0) => {
+                            b.location = "left".to_string();
+                            Event::LeftBarline(b)
+                        }
+                        other => other,
+                    };
+                    tl.add(t, ev);
+                }
+            }
+            TimedEvent::FiguredBass(fb) => tl.add(t, Event::FiguredBass(fb.clone())),
+            TimedEvent::Harmony(h) => tl.add(t, Event::Harmony(h.clone())),
         }
     }
-    voice
+    for (voice, elems) in voices {
+        tl.place_voice(voice, &elems);
+    }
+    tl
+}
+
+/// A bar line opens the bar starting at its position when it starts a repeat
+/// or an ending (or says so); any other closes the bar ending there. One that
+/// does both — `::`, or a `|:` that also ends an ending — becomes a closing
+/// bar line and an opening one.
+fn barline_events(b: &Barline) -> Vec<Event> {
+    use BarlineType::{Regular, RepeatBackward, RepeatBoth, RepeatForward};
+    let forward = matches!(b.style, RepeatForward | RepeatBoth)
+        || b.repeat_direction == Some(RepeatDirection::Forward);
+    let backward = matches!(b.style, RepeatBackward | RepeatBoth)
+        || b.repeat_direction == Some(RepeatDirection::Backward);
+    let stops = matches!(b.ending_type.as_deref(), Some("stop" | "discontinue"));
+    let left = |mut b: Barline| {
+        b.location = "left".to_string();
+        Event::LeftBarline(b)
+    };
+    let right = |mut b: Barline| {
+        b.location = "right".to_string();
+        Event::RightBarline(b)
+    };
+    if forward && (backward || stops) {
+        let mut close = b.clone();
+        close.style = if backward { RepeatBackward } else { Regular };
+        close.repeat_direction = backward.then_some(RepeatDirection::Backward);
+        close.repeat_times = None;
+        let open = Barline {
+            style: RepeatForward,
+            repeat_direction: Some(RepeatDirection::Forward),
+            repeat_times: b.repeat_times,
+            ..Barline::default()
+        };
+        return vec![right(close), left(open)];
+    }
+    let opens = b.location == "left" || b.ending_type.as_deref() == Some("start") || forward;
+    vec![if opens {
+        left(b.clone())
+    } else {
+        right(b.clone())
+    }]
 }
 
 /// Convert a TimedEvent to a VoiceElement.
@@ -527,51 +395,7 @@ fn apply_single_annotation(note: &mut Note, ann: &Annotation) {
         }),
         Annotation::Lyric(l) => note.lyrics.push(l.clone()),
         Annotation::OctaveShift(_) => {} // handled at direction level
-    }
-}
-
-/// Apply non-voice attributes (key, clef, directions, etc.) to a measure.
-fn apply_attributes_to_measure(
-    measure: &mut Measure,
-    events: &[(Frac, TimedEvent)],
-    start: Frac,
-    end: Frac,
-) {
-    for (time, event) in events {
-        if *time < start || *time >= end {
-            continue;
-        }
-        match event {
-            TimedEvent::KeySignature(ks) => {
-                let ma = measure
-                    .attributes
-                    .get_or_insert_with(MeasureAttributes::default);
-                ma.key = Some(*ks);
-            }
-            TimedEvent::Clef(clef) => {
-                let ma = measure
-                    .attributes
-                    .get_or_insert_with(MeasureAttributes::default);
-                ma.clefs.insert(1, *clef); // default to staff 1
-            }
-            TimedEvent::Direction(dir) => {
-                measure.directions.push(*dir.clone());
-            }
-            TimedEvent::Barline(barline) => {
-                if barline.location == "left" {
-                    measure.left_barline = Some(barline.clone());
-                } else {
-                    measure.right_barline = Some(barline.clone());
-                }
-            }
-            TimedEvent::FiguredBass(fb) => {
-                measure.figured_bass.push(fb.clone());
-            }
-            TimedEvent::Harmony(h) => {
-                measure.harmonies.push(h.clone());
-            }
-            _ => {}
-        }
+        Annotation::Velocity(v) => note.velocity = Some(*v),
     }
 }
 

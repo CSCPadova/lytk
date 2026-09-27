@@ -156,6 +156,13 @@ impl PyNote {
         self.inner.is_grace
     }
 
+    /// The MIDI velocity (1–127) the note was played with, when known (from a
+    /// MIDI file or a MusicXML ``dynamics`` attribute); ``None`` otherwise.
+    #[getter]
+    fn velocity(&self) -> Option<u8> {
+        self.inner.velocity
+    }
+
     /// Tie events on this note, as ``"start"`` / ``"stop"`` / ``"continue"``.
     #[getter]
     fn ties(&self) -> Vec<String> {

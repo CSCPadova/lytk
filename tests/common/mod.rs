@@ -8,6 +8,9 @@
 
 #![allow(dead_code)] // helpers are shared across test binaries; not all are used by each
 
+pub mod abc_oracle;
+pub mod smf;
+
 use _core::adapters::ir_to_ly::IrToLyAdapter;
 use _core::adapters::ir_to_mxml::IrToMxmlAdapter;
 use _core::adapters::ly_to_ir::LyToIrAdapter;
@@ -198,4 +201,130 @@ pub fn part_measure_durations(score: &Score, part_idx: usize) -> Vec<(i64, i64)>
             (*total.numer(), *total.denom())
         })
         .collect()
+}
+
+/// Score-wide bar structure: for each bar index, the longest bar across parts.
+/// A bar's length is its longest voice (grace notes excluded), or the time
+/// signature in force when the bar is empty. Robust to parts being split or
+/// merged by a conversion (a piano part read back as two ABC voices).
+pub fn bar_lengths(score: &Score) -> Vec<_core::ir::duration::Frac> {
+    use _core::ir::duration::Frac;
+    let mut out: Vec<Frac> = Vec::new();
+    for part in score.parts() {
+        let mut meter = Frac::new(1, 1);
+        for (i, m) in part.measures.iter().enumerate() {
+            if let Some(ts) = m.attributes.as_ref().and_then(|a| a.time.as_ref()) {
+                meter = ts.beats_fraction();
+            }
+            let content = m
+                .voices
+                .iter()
+                .map(|v| {
+                    v.elements
+                        .iter()
+                        .filter(|e| !is_grace(e))
+                        .map(element_duration)
+                        .fold(Frac::from_integer(0), |a, d| a + d)
+                })
+                .max()
+                .unwrap_or_else(|| Frac::from_integer(0));
+            let len = if content > Frac::from_integer(0) {
+                content
+            } else {
+                meter
+            };
+            if i < out.len() {
+                out[i] = out[i].max(len);
+            } else {
+                out.push(len);
+            }
+        }
+    }
+    out
+}
+
+/// Whether every part has the same number of bars.
+pub fn equal_bar_counts(score: &Score) -> bool {
+    let mut counts = score.parts().into_iter().map(|p| p.measures.len());
+    let first = counts.next();
+    counts.all(|c| Some(c) == first)
+}
+
+pub fn is_grace(e: &VoiceElement) -> bool {
+    match e {
+        VoiceElement::Note(n) => n.is_grace,
+        VoiceElement::Chord(c) => c.notes.first().is_some_and(|n| n.is_grace),
+        VoiceElement::Rest(_) => false,
+    }
+}
+
+pub fn element_duration(e: &VoiceElement) -> _core::ir::duration::Frac {
+    match e {
+        VoiceElement::Note(n) => n.duration.actual_duration(),
+        VoiceElement::Rest(r) => r.duration.actual_duration(),
+        VoiceElement::Chord(c) => c.duration.actual_duration(),
+    }
+}
+
+/// Size of the multiset intersection of two sorted-or-not lists.
+pub fn common_count<T: Ord + Clone>(a: &[T], b: &[T]) -> usize {
+    let (mut a, mut b) = (a.to_vec(), b.to_vec());
+    a.sort();
+    b.sort();
+    let (mut i, mut j, mut n) = (0, 0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                n += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    n
+}
+
+/// A whole-note position in note-signature steps (480 per quarter), rounded
+/// like the note array.
+pub fn steps(t: _core::ir::duration::Frac) -> u32 {
+    let scaled = t * _core::ir::duration::Frac::from_integer(1920);
+    let (num, den) = (*scaled.numer(), *scaled.denom());
+    ((num * 2 + den) / (den * 2)).max(0) as u32
+}
+
+// ---------------------------------------------------------------------------
+// Quiet panics
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with this thread's panic messages silenced (boards convert many
+/// fixtures and report failures themselves). Other threads — other tests in
+/// the same binary — still print theirs.
+pub fn quiet<T>(f: impl FnOnce() -> T) -> T {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !QUIET.with(std::cell::Cell::get) {
+                default(info);
+            }
+        }));
+    });
+    let was = QUIET.with(|q| q.replace(true));
+    let r = f();
+    QUIET.with(|q| q.set(was));
+    r
+}
+
+/// Run a conversion that may panic: `None` for a panic or a `None` result,
+/// with the panic message silenced.
+pub fn safe<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
+    quiet(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)))
+        .ok()
+        .flatten()
 }

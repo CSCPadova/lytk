@@ -12,8 +12,8 @@ use crate::ir::score::{PageLayout, Score, ScoreMetadata};
 use crate::ir::Part;
 
 use super::chord_mode::HarmonyEntry;
-use super::timeline::{Event, Timeline};
 use super::{apply_tuplet_ratio, beam_level_for_duration, find_relative_octave, FiguredBassEntry};
+use crate::ir::timeline::{Event, Timeline};
 
 /// A part under construction: its metadata, and its music as a [`Timeline`]
 /// (measures are made only when the score is assembled).
@@ -42,6 +42,9 @@ pub(super) enum VarDef {
         len: Frac,
         main_lane: u8,
         voices: Vec<String>,
+        /// Byte range of the `{ … }` block that defines it, so a reference
+        /// inside `\relative` can read it again there (see `resolve_variable`).
+        block: Option<(usize, usize)>,
     },
     /// Variable contained `\figuremode { ... }` — stores flat stream of entries.
     FiguredBass(Vec<FiguredBassEntry>),
@@ -50,6 +53,14 @@ pub(super) enum VarDef {
 /// State accumulated while walking tree-sitter nodes.
 pub(super) struct WalkState<'src> {
     pub(super) source: &'src str,
+    /// Root of the syntax tree being walked (variables are read again from it).
+    pub(super) root: Option<Node<'src>>,
+    /// Nesting of variables being read again, against self-reference.
+    pub(super) var_depth: u8,
+    /// Nesting of `\relative { … }` blocks being walked. Unlike `in_relative`
+    /// (which can stay set after a `\relative` for the music that follows),
+    /// this is exact: it is what decides whether a variable is read again.
+    pub(super) relative_depth: u32,
     pub(super) language: PitchLanguage,
     pub(super) mode: PitchMode,
 
@@ -167,6 +178,9 @@ impl<'src> WalkState<'src> {
             prev_pitch: None,
             relative_ref: None,
             in_relative: false,
+            root: None,
+            var_depth: 0,
+            relative_depth: 0,
             pending_arpeggio_type: None,
             pending_glissando_style: None,
             pending_slide: false,
@@ -372,6 +386,32 @@ impl<'src> WalkState<'src> {
 
     /// Resolve a variable reference at the current position.
     pub(super) fn resolve_variable(&mut self, name: &str) -> bool {
+        // `\relative` applies to a variable's music where it is used: LilyPond
+        // substitutes the variable, then makes the pitches relative. A block
+        // written with plain pitches (`cadenza = { fis2 … }` used in
+        // `\relative c'' { \cadenza }`) is therefore read again here, in the
+        // relative context, rather than spliced as read at its definition.
+        if self.relative_depth > 0 && self.var_depth < 16 {
+            if let Some(VarDef::Music {
+                block: Some((start, end)),
+                ..
+            }) = self.definitions.get(name)
+            {
+                let (start, end) = (*start, *end);
+                let node = self
+                    .root
+                    .and_then(|r| r.descendant_for_byte_range(start, end));
+                let node = std::iter::successors(node, |n| n.parent()).find(|n| {
+                    n.kind() == "expression_block" && (n.start_byte(), n.end_byte()) == (start, end)
+                });
+                if let Some(block) = node {
+                    self.var_depth += 1;
+                    super::music::walk_music_block(self, block);
+                    self.var_depth -= 1;
+                    return true;
+                }
+            }
+        }
         // Positioned music is spliced straight from the definition, without
         // copying it first.
         if let Some(VarDef::Music { len, main_lane, .. }) = self.definitions.get(name) {

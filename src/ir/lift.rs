@@ -16,6 +16,7 @@ use super::annotation::Annotation;
 use super::articulation::*;
 use super::direction::{Barline, BarlineType, Direction, RepeatDirection};
 use super::duration::{Duration, Frac};
+use super::harmony::Harmony;
 use super::measure::{KeySignature, Measure, TimeSignature};
 use super::music::{ContextType, Music, MusicDocument, RepeatType};
 use super::note::{Note, VoiceElement};
@@ -147,13 +148,17 @@ fn lift_measures(measures: &[Measure], staff: Option<u8>) -> Music {
     let mut prev_key: Option<KeySignature> = None;
 
     let mut i = 0;
+    // Where a repeat without a forward repeat sign goes back to: the start, a
+    // finished repeat, a thick bar line.
+    let mut section = true;
     while i < measures.len() {
         // Reconstruct `\repeat volta` groups from repeat barlines + volta endings.
-        if is_repeat_forward(&measures[i]) {
+        if is_repeat_forward(&measures[i]) || (section && implied_repeat(&measures[i..])) {
             let (repeat, next) =
                 lift_repeat_group(measures, i, staff, &mut prev_time, &mut prev_key);
             events.push(repeat);
             i = next;
+            section = true;
             continue;
         }
         lift_one_measure(
@@ -163,7 +168,9 @@ fn lift_measures(measures: &[Measure], staff: Option<u8>) -> Music {
             &mut prev_time,
             &mut prev_key,
             false,
+            (i == 0, i + 1 == measures.len()),
         );
+        section = ends_section(&measures[i]);
         i += 1;
     }
 
@@ -179,6 +186,29 @@ fn is_structural_repeat_barline(b: &Barline) -> bool {
             b.style,
             BarlineType::RepeatForward | BarlineType::RepeatBackward | BarlineType::RepeatBoth
         )
+}
+
+/// A thick bar line (or a finished repeat) closes a section.
+fn ends_section(m: &Measure) -> bool {
+    is_repeat_backward(m)
+        || m.right_barline
+            .as_ref()
+            .is_some_and(|b| matches!(b.style, BarlineType::Double | BarlineType::Final))
+}
+
+/// Whether a repeat starts at `ms[0]` without a forward repeat sign: a
+/// backward repeat or an ending comes before any forward repeat or thick bar
+/// line (ABC `C D|1 E F:|2 G A|]`, MusicXML with only a backward repeat).
+fn implied_repeat(ms: &[Measure]) -> bool {
+    for (k, m) in ms.iter().enumerate() {
+        if k > 0 && (is_repeat_forward(m) || ends_section(&ms[k - 1])) {
+            return false;
+        }
+        if (k > 0 && is_alternative_start(m)) || is_repeat_backward(m) {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_repeat_forward(m: &Measure) -> bool {
@@ -207,10 +237,22 @@ fn is_alternative_start(m: &Measure) -> bool {
         .is_some_and(|b| b.ending_type.as_deref() == Some("start"))
 }
 
+/// An ending closes here (`discontinue` is a closed ending drawn open).
 fn is_alternative_stop(m: &Measure) -> bool {
     m.right_barline
         .as_ref()
-        .is_some_and(|b| b.ending_type.as_deref() == Some("stop"))
+        .is_some_and(|b| matches!(b.ending_type.as_deref(), Some("stop" | "discontinue")))
+}
+
+/// How many times a repeat plays, from its forward sign or else the backward
+/// one (MusicXML puts `times=` on the backward repeat).
+fn repeat_times(m: &Measure, forward: bool) -> Option<u16> {
+    let b = if forward {
+        m.left_barline.as_ref()
+    } else {
+        m.right_barline.as_ref()
+    };
+    b.and_then(|b| b.repeat_times).map(u16::from)
 }
 
 /// A measure with no musical content that only carries a backward-repeat barline —
@@ -233,6 +275,7 @@ fn lift_one_measure(
     prev_time: &mut Option<TimeSignature>,
     prev_key: &mut Option<KeySignature>,
     in_repeat: bool,
+    (first, last): (bool, bool),
 ) {
     if let Some(ref attrs) = measure.attributes {
         if let Some(ref ts) = attrs.time {
@@ -254,13 +297,55 @@ fn lift_one_measure(
         }
     }
 
-    for dir in measure
+    // A bar that isn't as long as its meter (an ABC bar line is where a bar
+    // ends; MusicXML measures can be irregular) says how long it is. Not the
+    // opening pickup (that is `partial_duration`), a short last bar (the
+    // music just ends there) or a cadenza.
+    let len: Frac = measure
+        .voices
+        .iter()
+        .map(|v| v.elements.iter().map(VoiceElement::metric_duration).sum())
+        .max()
+        .unwrap_or_else(|| Frac::from_integer(0));
+    if let Some(meter) = prev_time.as_ref().map(TimeSignature::beats_fraction) {
+        let pickup = first && measure.implicit;
+        let ending = last && len < meter;
+        if len > Frac::from_integer(0)
+            && len != meter
+            && !measure.senza_misura
+            && !pickup
+            && !ending
+        {
+            events.push(Music::Partial(Duration::new(len)));
+        }
+    }
+
+    // Directions and chord symbols, where they happen in the bar: woven into
+    // the (first) voice at their offsets.
+    let mut marks: Vec<(Frac, Music)> = measure
         .directions
         .iter()
         .filter(|d| on_staff(staff, d.staff))
-    {
-        events.push(lift_direction(dir));
+        .map(|d| {
+            let mut d = d.clone();
+            let at = std::mem::take(&mut d.offset_frac);
+            (at, lift_direction(&d))
+        })
+        .collect();
+    if staff.is_none_or(|s| s == 1) {
+        marks.extend(measure.harmonies.iter().map(|h| {
+            let per_whole = 4 * super::timeline::OFFSET_DIVISIONS;
+            let at = Frac::new(h.offset.max(0) as i64, per_whole);
+            (
+                at,
+                Music::Harmony(Harmony {
+                    offset: 0,
+                    ..h.clone()
+                }),
+            )
+        }));
     }
+    marks.sort_by_key(|m| m.0);
 
     let voices: Vec<_> = measure
         .voices
@@ -277,18 +362,28 @@ fn lift_one_measure(
                 .map(|v| v.elements.iter().map(VoiceElement::metric_duration).sum())
                 .max()
                 .unwrap_or_else(|| Frac::from_integer(0));
+            let mut filler = Vec::new();
             if fill > Frac::from_integer(0) {
-                events.push(Music::Skip {
+                filler.push(Music::Skip {
                     duration: Duration::new(fill),
                 });
             }
+            events.extend(weave(filler, marks));
         }
-        [] => {}
-        [voice] => events.extend(lift_voice_elements(&voice.elements)),
+        [] => events.extend(marks.into_iter().map(|m| m.1)),
+        [voice] => events.extend(weave(lift_voice_elements(&voice.elements), marks)),
         _ => events.push(Music::Simultaneous(
             voices
                 .iter()
-                .map(|v| Music::Sequential(lift_voice_elements(&v.elements)))
+                .enumerate()
+                .map(|(k, v)| {
+                    let marks = if k == 0 {
+                        std::mem::take(&mut marks)
+                    } else {
+                        Vec::new()
+                    };
+                    Music::Sequential(weave(lift_voice_elements(&v.elements), marks))
+                })
                 .collect(),
         )),
     }
@@ -315,11 +410,7 @@ fn lift_repeat_group(
 
     // Repeat count from the forward barline (`\repeat volta N` / `times="N"`),
     // falling back to 2 when unspecified.
-    let times = measures[start]
-        .left_barline
-        .as_ref()
-        .and_then(|bl| bl.repeat_times)
-        .map(|t| t as u16);
+    let mut times = repeat_times(&measures[start], true);
 
     // Body: from the forward-repeat measure up to (but not including) the first
     // alternative, or up to and including a measure that closes with a backward
@@ -329,14 +420,15 @@ fn lift_repeat_group(
         if i != start && is_alternative_start(m) {
             break;
         }
-        lift_one_measure(m, staff, &mut body_events, prev_time, prev_key, true);
+        let ends = (i == 0, i + 1 == measures.len());
+        lift_one_measure(m, staff, &mut body_events, prev_time, prev_key, true, ends);
         let closed = is_repeat_backward(m);
         i += 1;
         if closed {
             // Plain repeat, no alternatives.
             let repeat = Music::Repeat {
                 repeat_type: RepeatType::Volta,
-                count: times.unwrap_or(2),
+                count: times.or(repeat_times(m, false)).unwrap_or(2),
                 body: Box::new(Music::Sequential(body_events)),
                 alternatives: Vec::new(),
             };
@@ -349,18 +441,40 @@ fn lift_repeat_group(
 
     // Alternatives: each runs from a start-ending measure to its stop-ending measure.
     let mut alternatives: Vec<Music> = Vec::new();
-    while i < measures.len() && is_alternative_start(&measures[i]) {
+    // The last ending closed with a repeat sign: the pass after it skips it.
+    let mut repeats_after = false;
+    // An ending that opens a repeat starts that repeat instead (45e's
+    // `[2 |:`), once the first ending closed this one.
+    while i < measures.len()
+        && is_alternative_start(&measures[i])
+        && !(repeats_after && is_repeat_forward(&measures[i]))
+    {
         let mut alt_events: Vec<Music> = Vec::new();
         loop {
             let m = &measures[i];
             let stops = is_alternative_stop(m);
-            lift_one_measure(m, staff, &mut alt_events, prev_time, prev_key, true);
+            repeats_after = is_repeat_backward(m);
+            if repeats_after {
+                times = times.or(repeat_times(m, false));
+            }
+            let ends = (i == 0, i + 1 == measures.len());
+            lift_one_measure(m, staff, &mut alt_events, prev_time, prev_key, true, ends);
             i += 1;
-            if stops || i >= measures.len() || is_alternative_start(&measures[i]) {
+            // An ending also ends where a new repeat starts.
+            if stops
+                || i >= measures.len()
+                || is_alternative_start(&measures[i])
+                || is_repeat_forward(&measures[i])
+            {
                 break;
             }
         }
         alternatives.push(Music::Sequential(alt_events));
+    }
+    // MusicXML's `|: A |1 B :| C` plays A B A C: in the IR's (LilyPond's)
+    // terms, an empty last alternative.
+    if repeats_after {
+        alternatives.push(Music::Sequential(Vec::new()));
     }
 
     // Drop the redundant empty backward-repeat close measure, if present.
@@ -378,6 +492,26 @@ fn lift_repeat_group(
         alternatives,
     };
     (repeat, i)
+}
+
+/// A voice's music with `marks` (sorted by offset in the bar) put before the
+/// first element starting at or after each; those past the end go last.
+fn weave(music: Vec<Music>, marks: Vec<(Frac, Music)>) -> Vec<Music> {
+    if marks.is_empty() {
+        return music;
+    }
+    let mut out = Vec::with_capacity(music.len() + marks.len());
+    let mut marks = marks.into_iter().peekable();
+    let mut t = Frac::from_integer(0);
+    for m in music {
+        while let Some((_, mark)) = marks.next_if(|(at, _)| *at <= t) {
+            out.push(mark);
+        }
+        t += m.written_length();
+        out.push(m);
+    }
+    out.extend(marks.map(|m| m.1));
+    out
 }
 
 /// Convert a Direction to a Music node.
@@ -481,6 +615,9 @@ fn note_to_annotations(note: &Note) -> Vec<Annotation> {
     }
     if let Some(ref f) = note.fermata {
         anns.push(Annotation::Fermata(f.clone()));
+    }
+    if let Some(v) = note.velocity {
+        anns.push(Annotation::Velocity(v));
     }
     if note.tremolo_marks > 0 {
         anns.push(Annotation::Tremolo {
