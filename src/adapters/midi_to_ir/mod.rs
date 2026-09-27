@@ -543,19 +543,17 @@ fn left_hand(notes: &[RawNote], tol: u64) -> Vec<bool> {
     /// One cut of one chord, and along the cheapest path to it: until when
     /// each hand sounds, the range of keys it holds meanwhile, and where it
     /// last played (its centre key).
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct State {
         cost: i64,
         back: usize,
         cut: usize,
-        lh_until: u64,
-        rh_until: u64,
-        lh_held: (u8, u8),
-        rh_held: (u8, u8),
+        /// Keys each hand holds, and until when.
+        lh_held: Vec<(u8, u64)>,
+        rh_held: Vec<(u8, u64)>,
         lh_at: i64,
         rh_at: i64,
     }
-    const EMPTY: (u8, u8) = (u8::MAX, 0);
     let span = |width: i64| match width {
         ..=12 => 0,
         13..=14 => 20,
@@ -581,10 +579,8 @@ fn left_hand(notes: &[RawNote], tol: u64) -> Vec<bool> {
         cost: 0,
         back: 0,
         cut: 0,
-        lh_until: 0,
-        rh_until: 0,
-        lh_held: EMPTY,
-        rh_held: EMPTY,
+        lh_held: Vec::new(),
+        rh_held: Vec::new(),
         lh_at: 48,
         rh_at: 72,
     };
@@ -641,28 +637,34 @@ fn left_hand(notes: &[RawNote], tol: u64) -> Vec<bool> {
                 let rh_now = (cut < n).then(|| (sum[n] - sum[cut]) / (n - cut) as i64);
                 // A hand given notes: 10 if it still sounds, the reach from
                 // what it holds to them, how far it moves.
-                let hand = |until: u64, held: (u8, u8), at: i64, part: &[u8], now: Option<i64>| {
-                    let Some(now) = now else {
-                        let still = if until > on { held } else { EMPTY };
-                        return (0, still);
+                let (le, re) = ends.split_at(cut);
+                // A hand given notes: 10 if it still sounds, the reach from
+                // the keys it still holds to them, how far it moves; it then
+                // holds what still sounds and the new notes.
+                let hand =
+                    |held: &[(u8, u64)], at: i64, part: &[u8], until: &[u64], now: Option<i64>| {
+                        let mut holds: Vec<(u8, u64)> =
+                            held.iter().copied().filter(|&(_, end)| end > on).collect();
+                        let Some(now) = now else {
+                            return (0, holds);
+                        };
+                        let (lo, hi) = (part[0], part[part.len() - 1]);
+                        let mut cost = (at - now).abs();
+                        if !holds.is_empty() {
+                            let a = holds.iter().map(|h| h.0).min().unwrap_or(lo).min(lo);
+                            let b = holds.iter().map(|h| h.0).max().unwrap_or(hi).max(hi);
+                            cost += 10 + span(i64::from(b - a)) - span(i64::from(hi - lo));
+                        }
+                        holds.extend(part.iter().copied().zip(until.iter().copied()));
+                        (cost, holds)
                     };
-                    let (lo, hi) = (part[0], part[part.len() - 1]);
-                    let (cost, holds) = if until > on && held != EMPTY {
-                        let (a, b) = (held.0.min(lo), held.1.max(hi));
-                        let reach = span(i64::from(b - a)) - span(i64::from(hi - lo));
-                        (10 + reach, (a, b))
-                    } else {
-                        (0, (lo, hi))
-                    };
-                    (cost + (at - now).abs(), holds)
-                };
                 let (p, best, lh_held, rh_held) = prev
                     .iter()
                     .enumerate()
                     .map(|(p, st)| {
                         let (pl, pr) = prev_keys.split_at(st.cut);
-                        let (lc, lh_held) = hand(st.lh_until, st.lh_held, st.lh_at, lk, lh_now);
-                        let (rc, rh_held) = hand(st.rh_until, st.rh_held, st.rh_at, rk, rh_now);
+                        let (lc, lh_held) = hand(&st.lh_held, st.lh_at, lk, le, lh_now);
+                        let (rc, rh_held) = hand(&st.rh_held, st.rh_at, rk, re, rh_now);
                         let cost = st.cost
                             + similar(shape(pl), shape(lk))
                             + similar(shape(pr), shape(rk))
@@ -670,21 +672,17 @@ fn left_hand(notes: &[RawNote], tol: u64) -> Vec<bool> {
                             + rc;
                         (p, cost, lh_held, rh_held)
                     })
-                    .fold((0, i64::MAX, EMPTY, EMPTY), |acc, x| {
+                    .fold((0, i64::MAX, Vec::new(), Vec::new()), |acc, x| {
                         if x.1 < acc.1 {
                             x
                         } else {
                             acc
                         }
                     });
-                let lh_end = if cut > 0 { pre[cut].1 } else { 0 };
-                let rh_end = if cut < n { suf[cut].1 } else { 0 };
                 State {
                     cost: best + local,
                     back: p,
                     cut,
-                    lh_until: prev[p].lh_until.max(lh_end),
-                    rh_until: prev[p].rh_until.max(rh_end),
                     lh_held,
                     rh_held,
                     lh_at: lh_now.unwrap_or(prev[p].lh_at),
@@ -702,7 +700,7 @@ fn left_hand(notes: &[RawNote], tol: u64) -> Vec<bool> {
     };
     let mut k = (0..last.len()).fold(0, |b, s| if last[s].cost < last[b].cost { s } else { b });
     for (c, states) in chords.iter().zip(&table).rev() {
-        let st = states[k];
+        let st = &states[k];
         for &i in &order[c.start..c.start + st.cut] {
             left[i] = true;
         }
@@ -1957,6 +1955,38 @@ mod tests {
     }
 
     #[test]
+    fn a_lilypond_run_ends_where_notes_join() {
+        // `{ c'8 r8 d'4 e'2 | f'1\mf }` at 60 bpm: no dynamic is 90, mf 86.
+        // c' is no staccato: d' and e' are joined, no run of staccatos.
+        let mut conductor = vec![meter(0, 4, 2)];
+        conductor.push((
+            0,
+            [vec![0xff, 1, 17], b"creator: LilyPond".to_vec()].concat(),
+        ));
+        conductor.push((0, vec![0xff, 0x51, 3, 0x0f, 0x42, 0x40]));
+        let notes = [
+            (0, 240, 60, 90),
+            (480, 960, 62, 90),
+            (960, 1920, 64, 90),
+            (1920, 3840, 65, 86),
+        ];
+        let got = staccatos(&read_bytes(&smf_events(vec![
+            conductor,
+            track("p", 0, &notes),
+        ])));
+        assert!(got.iter().all(|n| !n.1), "{got:?}");
+    }
+
+    #[test]
+    fn a_tap_on_the_beat_is_a_staccato() {
+        let got = staccatos(&read_bytes(&smf_events(vec![
+            vec![meter(0, 4, 2)],
+            track("p", 0, &[(0, 25, 60, 80), (967, 1440, 62, 80)]),
+        ])));
+        assert_eq!(got.iter().map(|n| n.1).collect::<Vec<_>>(), [true, false]);
+    }
+
+    #[test]
     fn a_merged_fifth_voice_keeps_its_length() {
         // Five notes struck together, four voices busy: G3 (sounding 950
         // ticks) joins the shortest one's chord; it is no staccato.
@@ -2177,6 +2207,29 @@ mod tests {
         ];
         let (staves, rh, _) = staff_keys(&notes, 3);
         assert_eq!((staves, rh), (2, vec![74, 76]));
+    }
+
+    #[test]
+    fn a_legato_line_keeps_to_its_hand() {
+        // Left-hand eighths over two octaves, each held into the next.
+        let jit = [0u32, 7, 3, 11, 5, 9, 2, 6];
+        let mut notes = vec![];
+        for b in 0..2u32 {
+            for (i, k) in [36u8, 43, 52, 55, 60, 55, 52, 43].into_iter().enumerate() {
+                let on = b * 1920 + i as u32 * 240 + jit[i];
+                notes.push((on, on + 255, k, 70));
+            }
+            for (i, k) in [[76u8, 77, 79, 76], [74, 72, 71, 72]][b as usize]
+                .into_iter()
+                .enumerate()
+            {
+                let on = b * 1920 + i as u32 * 480 + jit[(i + 3) % 8];
+                notes.push((on, on + 440, k, 85));
+            }
+        }
+        let (staves, rh, lh) = staff_keys(&notes, 4);
+        assert_eq!((staves, lh), (2, vec![36, 43, 52, 55, 60]));
+        assert_eq!(rh, [71, 72, 74, 76, 77, 79]);
     }
 
     #[test]

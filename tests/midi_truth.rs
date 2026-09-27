@@ -50,8 +50,8 @@ const PARITY_ON: usize = 7998;
 const PARITY_ON_OFF: usize = 7995;
 const PARITY_FULL: usize = 4319;
 /// Synthetic cases read exactly as written (notes; bar structure).
-const SYNTH_NOTES: usize = 51;
-const SYNTH_BARS: usize = 51;
+const SYNTH_NOTES: usize = 59;
+const SYNTH_BARS: usize = 59;
 /// MusicXML corpus → MIDI → IR: note signature and bar structure kept.
 ///
 /// The one planned drop (121 → 113, epic I phase B): the writer now plays as
@@ -75,12 +75,14 @@ const CORPUS_BARS: usize = 120;
 /// D review: the rhythm cases write rests, and a gap of exactly a third of a
 /// note (a dotted quarter and an eighth rest) is a rest again — the fixture
 /// MIDIs' durations rose with it (TRUTH_FULL 7392 → 7404); then 2478 once
-/// runs of LilyPond staccatos were found (TRUTH_FULL 7464).
-const QUALITY_MAX_RESTS: usize = 2478;
+/// runs of LilyPond staccatos were found (TRUTH_FULL 7464); 2485 with the
+/// verification's rhythm cases (7 written rests); 2486 when runs stopped at
+/// joined notes (one note of chopin_n's re-read, see fidelity.rs).
+const QUALITY_MAX_RESTS: usize = 2486;
 const QUALITY_MAX_ODD_DURATIONS: usize = 0;
 const QUALITY_MAX_VOICES: usize = 4;
 /// … and this may only rise: imports whose parts all have the same bar count.
-const QUALITY_EQUAL_BARS: usize = 56;
+const QUALITY_EQUAL_BARS: usize = 64;
 
 /// (LilyPond source, movement, LilyPond-rendered MIDI).
 const PAIRS: [(&str, usize, &str); 5] = [
@@ -833,6 +835,8 @@ fn cases() -> Vec<Case> {
     // hits after rests, long syncopations, an anticipation, a dotted quarter
     // and a rest (each played within 7 ticks).
     let five = [(0, Ev::Time(5, 4))];
+    let compound = [(0, Ev::Time(6, 8))];
+    let pickup_three_eighths = [(0, Ev::Time(3, 8)), (720, Ev::Time(4, 4))];
     /// (name, meter, played (on, off, key), written notes, bar lengths)
     type Rhythm<'a> = (
         &'static str,
@@ -923,6 +927,94 @@ fn cases() -> Vec<Case> {
                 (1920, 1920, 65),
             ],
             bars(&[(2, q(1, 1))]),
+        ),
+        (
+            "c4. r8 at a 90 % gate",
+            &four,
+            vec![
+                (0, 648, 60),
+                (967, 1420, 62),
+                (1447, 1880, 64),
+                (1925, 3800, 65),
+            ],
+            vec![
+                (0, 720, 60),
+                (960, 480, 62),
+                (1440, 480, 64),
+                (1920, 1920, 65),
+            ],
+            bars(&[(2, q(1, 1))]),
+        ),
+        (
+            "6/8: c4. r4. | d4. r4. | e2.",
+            &compound,
+            vec![(0, 648, 60), (1447, 2095, 62), (2887, 4200, 64)],
+            vec![(0, 720, 60), (1440, 720, 62), (2880, 1440, 64)],
+            bars(&[(3, q(3, 4))]),
+        ),
+        (
+            "c1 | r8 d4 r2 r8 | e1",
+            &four,
+            vec![(0, 1880, 60), (2167, 2600, 62), (3845, 5700, 64)],
+            vec![(0, 1920, 60), (2160, 480, 62), (3840, 1920, 64)],
+            bars(&[(3, q(1, 1))]),
+        ),
+        (
+            "16ths, then a bar arrived late",
+            &four,
+            vec![
+                (0, 1400, 60),
+                (1440, 1540, 62),
+                (1566, 1660, 64),
+                (1676, 1780, 65),
+                (1806, 1900, 67),
+                (1970, 3800, 72),
+            ],
+            vec![
+                (0, 1440, 60),
+                (1440, 120, 62),
+                (1560, 120, 64),
+                (1680, 120, 65),
+                (1800, 120, 67),
+                (1920, 1920, 72),
+            ],
+            bars(&[(2, q(1, 1))]),
+        ),
+        (
+            "halves at an 80 % gate",
+            &four,
+            vec![
+                (0, 768, 60),
+                (967, 1735, 62),
+                (1915, 2683, 64),
+                (2886, 3654, 65),
+            ],
+            vec![
+                (0, 960, 60),
+                (960, 960, 62),
+                (1920, 960, 64),
+                (2880, 960, 65),
+            ],
+            bars(&[(2, q(1, 1))]),
+        ),
+        (
+            "pickup c4., first note late",
+            &pickup_three_eighths,
+            vec![
+                (1, 684, 60),
+                (1207, 1650, 62),
+                (1687, 2130, 64),
+                (2167, 2600, 65),
+                (2647, 4500, 67),
+            ],
+            vec![
+                (0, 720, 60),
+                (1200, 480, 62),
+                (1680, 480, 64),
+                (2160, 480, 65),
+                (2640, 1920, 67),
+            ],
+            vec![q(3, 8), q(1, 1), q(1, 1)],
         ),
     ];
     for (name, meter, played, written, bar_lens) in rhythms {
@@ -1155,6 +1247,48 @@ fn cases() -> Vec<Case> {
             .map(|i| (i * 480, 480, scale[(i % 8) as usize] as i32))
             .collect(),
         bars: bars(&[(4, q(1, 1))]),
+    });
+
+    // The same at 120 a quarter (gaps 120 + 4i, a tick or two uneven).
+    let mut at = 0u32;
+    let uneven = [0i32, 1, -1, 2, -2, 1, 3, -1, 2, -3, 1, -2, 3, -1, 2, 1];
+    let low120: Vec<_> = (0..16u32)
+        .map(|i| {
+            let on = (at as i32 + uneven[i as usize]) as u32;
+            let n = (on, on + (120 + 4 * i) * 9 / 10, scale[(i % 8) as usize], 85);
+            at += 120 + 4 * i;
+            n
+        })
+        .collect();
+    out.push(Case {
+        name: "rubato at 120 ppq",
+        bytes: smf::build(120, &four, &[Track::new("p", 0, &low120)]),
+        notes: (0..16u32)
+            .map(|i| (i * 480, 480, scale[(i % 8) as usize] as i32))
+            .collect(),
+        bars: bars(&[(4, q(1, 1))]),
+    });
+
+    // Notation at 96 a quarter: a quintuplet's points (19.2 ticks apart)
+    // rounded to whole ticks.
+    let mut quint96: Vec<(u32, u32, u8, u8)> = [0u32, 19, 38, 58, 77]
+        .iter()
+        .zip([19u32, 38, 58, 77, 96])
+        .enumerate()
+        .map(|(i, (&a, b))| (a, b, scale[i], 90))
+        .collect();
+    quint96.push((96, 384, 72, 90));
+    out.push(Case {
+        name: "quintuplet at 96 ppq",
+        bytes: smf::build(96, &four, &[Track::new("p", 0, &quint96)]),
+        notes: {
+            let mut n: Vec<_> = (0..5u32)
+                .map(|i| (i * 96, 96, scale[i as usize] as i32))
+                .collect();
+            n.push((480, 1440, 72));
+            n
+        },
+        bars: bars(&[(1, q(1, 1))]),
     });
 
     // A first note a 16th after the bar line keeps its rest.

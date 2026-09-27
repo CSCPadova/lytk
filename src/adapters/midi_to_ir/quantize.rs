@@ -67,6 +67,17 @@ impl Bars {
         anchor + len * ((p - anchor) / len).floor()
     }
 
+    /// The beat at `p`: the dotted beat of a compound meter (6/8, 9/8,
+    /// 12/8), else the meter's beat value.
+    pub(super) fn beat_at(&self, p: Frac) -> Frac {
+        let k = self.changes.partition_point(|(a, _)| *a <= p).max(1) - 1;
+        match self.meters.get(k) {
+            Some(&(n, d)) if n % 3 == 0 && n >= 6 => Frac::new(3, i64::from(d.max(1))),
+            Some(&(_, d)) => Frac::new(1, i64::from(d.max(1))),
+            None => Frac::new(1, 4),
+        }
+    }
+
     /// End of the bar holding `p` (a meter change ends it early).
     pub(super) fn end_of(&self, p: Frac) -> Frac {
         let (_, len, next) = self.at(p);
@@ -151,12 +162,17 @@ impl Quantizer {
         self.whole / 4
     }
 
-    /// How near a grid point notation lands: two ticks, one below 240 a
-    /// quarter, none below 120 (at 96 a quarter nearly every tick is within
-    /// two of some tuplet point, so a performance would pass for notation).
+    /// How near a grid point notation lands: two ticks from 384 a quarter,
+    /// below that half a tick (a tuplet point rounded to a whole tick: at 96
+    /// or 120 a quarter nearly every tick is within a tick or two of some
+    /// tuplet point, so a performance would pass for notation).
     fn exact(&self) -> i64 {
         let ppq = self.whole / SCALE / 4;
-        SCALE * if ppq >= 240 { 2 } else { i64::from(ppq >= 120) }
+        if ppq >= 384 {
+            2 * SCALE
+        } else {
+            SCALE / 2
+        }
     }
 
     fn start_of(&self, p: i64) -> i64 {
@@ -449,8 +465,8 @@ impl Quantizer {
                     None => 1,
                 };
                 // A played note's end, where no onset is near, on the
-                // coarsest grid of steps up to half its length (a long note
-                // ends on a beat or a half beat).
+                // coarsest grid of steps up to 5/8 of its length (a half
+                // played short ends on a beat, a dotted quarter on an eighth).
                 let own = if self.exported {
                     g
                 } else {
@@ -459,7 +475,7 @@ impl Quantizer {
                         .iter()
                         .copied()
                         .filter(|&n| n <= self.finest)
-                        .find(|&n| 2 * (self.quarter() / n) <= len)
+                        .find(|&n| 8 * (self.quarter() / n) <= 5 * len)
                         .unwrap_or(self.finest)
                 };
                 let off = match self.snap_end(off, &grids, own) {

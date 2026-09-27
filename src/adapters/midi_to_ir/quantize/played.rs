@@ -7,14 +7,13 @@
 //! - Notes starting within a 64th are one cluster, placed together.
 //! - A cluster's expected value is the meter step its length is closest to
 //!   from below, at 5/4 of it (played notes run short): what sounds of it in
-//!   its bar, stretched to the next cluster but no more than doubled (a long
-//!   rest after it says nothing), and no longer than the time since the
-//!   cluster before (a 16th or more: a note soon after another may start
-//!   anywhere). A dotted length takes the step below.
+//!   its bar, and no longer than the time since the cluster before (a 16th
+//!   or more: a note soon after another may start anywhere). A dotted length
+//!   (MuseScore's 1.45–1.55 of a step) takes the step below.
 //! - Its candidate points are the plain grid (32nds, or as asked) and the
 //!   triplet grid of the beats within a beat of it. A point costs its
-//!   distance, plus a quarter of the expected value for each metric level it
-//!   is weaker than expected: a quarter played 40 ticks late stays on the
+//!   distance, plus a quarter of the expected value (a 32nd at least) for
+//!   each metric level it is weaker than expected: a quarter played 40 ticks late stays on the
 //!   beat, a note that sounds like a 16th may go to a 16th.
 //! - A beat is plain or triplet throughout, and a triplet beat needs two
 //!   onsets off the 16th grid (a quarter–eighth triplet is no evidence: it is
@@ -125,8 +124,10 @@ impl Quantizer {
             .position(|&s| 4 * s <= 5 * dur)
             .unwrap_or(steps.len() - 1);
         // A dotted length: the step below.
-        let dotted = |d: i64| 5 * d >= 7 * steps[i] && 5 * d <= 8 * steps[i];
-        if dotted(dur) && dotted(len) && i + 1 < steps.len() {
+        // (MuseScore's band: 1.45 to 1.55 of the step.)
+        let dotted = |d: i64| 20 * d >= 29 * steps[i] && 20 * d <= 31 * steps[i];
+        // (Down to 16ths: finer, jitter alone makes notes look dotted.)
+        if dotted(dur) && dotted(len) && i + 1 < steps.len() && 4 * steps[i + 1] >= self.quarter() {
             i += 1;
         }
         while steps[i] < finest && i > 0 {
@@ -194,10 +195,7 @@ impl Quantizer {
                 .map(|b| r - notes[clusters[b][0]].0)
                 .filter(|&d| d >= q / 4)
                 .unwrap_or(i64::MAX);
-            // The time to the next cluster counts too, up to twice the
-            // note's own length (a rest after it says nothing more).
-            let gap = clusters.get(c + 1).map_or(0, |n| notes[n[0]].0 - r);
-            let dur = in_bar.max(gap).min(2 * in_bar).min(since).max(1);
+            let dur = in_bar.min(since).max(1);
             let own = steps_at(r);
             let (value, want) = self.expected(in_bar, dur, own);
 
@@ -232,7 +230,7 @@ impl Quantizer {
 
             let emission = |p: i64| {
                 let weaker = (self.depth(p, steps_at(p)) - want).max(0);
-                (r - p).abs() + value / 4 * weaker
+                (r - p).abs() + (value / 4).max(q / 8) * weaker
             };
 
             // Best way to each (point, family, evidence), in that order.

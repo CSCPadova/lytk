@@ -175,13 +175,15 @@ fn hold_to_next(
     let n = voice.len();
     let raw: Vec<Frac> = voice.iter().map(|e| e.off - e.on).collect();
     // Played: a note well short of where it could end — the next onset, or
-    // the beat after its sound, within its bar — is a staccato of that
-    // length, when lengthening it adds 30 % or more (MuseScore's rule), it
-    // is then one written value, and the silence is a 32nd or more. (A
-    // release within a 64th past a beat is on it; a note let go under the
-    // pedal still sounds.)
+    // the next point of its own grid after its sound, within its bar — is a
+    // staccato of that
+    // length, when it sounds two thirds of it or less (MuseScore marks from
+    // 70 %, but on its quantized lengths; lytk has the sounding one, and a
+    // dotted quarter at a 90 % gate is 67.5 % of a half), it is then one
+    // written value, and the silence is a 32nd or more. (A release within a
+    // 64th past a beat is on it; a note let go under the pedal still
+    // sounds.)
     if !written && !percussion {
-        let beat = Frac::new(1, 4);
         let one_value = |d: Frac| {
             d > Frac::from_integer(0) && d.denom().count_ones() == 1 && matches!(d.numer(), 1 | 3)
         };
@@ -191,14 +193,29 @@ fn hold_to_next(
                 continue;
             }
             let end = (e.on + e.sounding - Frac::new(1, 64)).max(e.on);
-            let start = bars.start_of(end);
-            // (Never past the bar it starts in.)
-            let after = (start + ((end - start) / beat).ceil() * beat).min(bars.end_of(e.on));
+            // The note's own grid: the coarsest of the beat and its halves
+            // down to an eighth that its start lies on (a quarter starting
+            // off the beat goes to the next half beat, not the next beat).
+            let bar = bars.start_of(e.on);
+            let mut step = bars.beat_at(e.on);
+            for _ in 0..3 {
+                if ((e.on - bar) / step).is_integer() {
+                    break;
+                }
+                step /= 2;
+            }
+            // Its next point after the sound (after its start, at least),
+            // never past the bar it starts in.
+            let mut after = bar + ((end - bar) / step).ceil() * step;
+            if after <= e.on {
+                after += step;
+            }
+            let after = after.min(bars.end_of(e.on));
             let target = voice.get(k + 1).map_or(after, |next| after.min(next.on));
             let len = target - e.on;
             if target >= e.off
                 && one_value(len)
-                && e.sounding * Frac::from_integer(10) <= len * Frac::from_integer(7)
+                && e.sounding * Frac::from_integer(3) <= len * Frac::from_integer(2)
                 && len - e.sounding >= Frac::new(1, 32)
             {
                 voice[k].off = target;
@@ -207,28 +224,40 @@ fn hold_to_next(
         }
     }
     let loud = |e: &Event| e.notes.iter().map(|x| x.1 as i32).max().unwrap_or(0);
-    // 4 louder than the nearest note either side that isn't as loud (in a
-    // run of staccatos, the note before or after the run).
-    let played_staccato = |voice: &[Event], k: usize| {
-        let me = loud(&voice[k]);
-        let other = |mut j: Option<usize>, step: fn(usize) -> Option<usize>| {
-            while let Some(i) = j.filter(|&i| i < voice.len()) {
-                if loud(&voice[i]) != me {
-                    return Some(loud(&voice[i]));
-                }
-                j = step(i);
-            }
+    // 4 louder than the nearest note either side that isn't as loud, over a
+    // run of as loud notes each followed by a rest (a run of staccatos) —
+    // found in one pass each way.
+    let detached = |j: usize| voice.get(j + 1).is_none_or(|next| next.on > voice[j].off);
+    let mut before: Vec<Option<i32>> = vec![None; n];
+    for k in 1..n {
+        let (me, j) = (loud(&voice[k]), k - 1);
+        before[k] = if loud(&voice[j]) != me {
+            Some(loud(&voice[j]))
+        } else if detached(j) {
+            before[j]
+        } else {
             None
         };
+    }
+    let mut after: Vec<Option<i32>> = vec![None; n];
+    for k in (0..n.saturating_sub(1)).rev() {
+        let (me, j) = (loud(&voice[k]), k + 1);
+        after[k] = if loud(&voice[j]) != me {
+            Some(loud(&voice[j]))
+        } else if detached(j) {
+            after[j]
+        } else {
+            None
+        };
+    }
+    let played_staccato = |voice: &[Event], k: usize| {
+        let me = loud(&voice[k]);
         written
             && raw[k] <= half_second(voice[k].on)
-            && [
-                other(k.checked_sub(1), |i| i.checked_sub(1)),
-                other(Some(k + 1), |i| i.checked_add(1)),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|o| me == o + 4)
+            && [before[k], after[k]]
+                .into_iter()
+                .flatten()
+                .any(|o| me == o + 4)
     };
     for k in 0..n.saturating_sub(1) {
         let (len, gap) = (raw[k], voice[k + 1].on - voice[k].off);
@@ -236,8 +265,10 @@ fn hold_to_next(
         if gap <= Frac::from_integer(0) || voice[k].staccato {
             continue;
         }
-        // (Under a third: a dotted quarter and an eighth rest stay.)
-        let legato = gap * Frac::from_integer(3) < len;
+        // (Under a third: a dotted quarter and an eighth rest stay; and in
+        // played music a 16th at most: a whole note and an eighth rest stay.
+        // LilyPond plays a portato half short by an eighth.)
+        let legato = gap * Frac::from_integer(3) < len && (written || gap <= Frac::new(1, 16));
         let staccato = gap <= len && played_staccato(voice, k);
         if percussion || legato || staccato {
             let next = voice[k + 1].on;

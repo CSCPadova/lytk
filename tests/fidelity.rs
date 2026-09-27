@@ -96,7 +96,13 @@ const ABC_DUR_BASELINE: usize = 4;
 // notes were recognised only at LilyPond's exact 9/40 lengths).
 const MIDI_NOTES_BASELINE: usize = 5;
 const MIDI_PITCHES_BASELINE: usize = 5;
-const MIDI_DUR_BASELINE: usize = 5;
+// Documented drop (2026-09-27, 5 → 4): in a fast run of chopin_n, one note's
+// staccato was found by a run search that crossed joined notes (the bug the
+// phase D check reported as N2). The search now stops at a joined note; the
+// first reading is unchanged against the LilyPond source (TRUTH_FULL in
+// midi_truth.rs), but lytk's MIDI of it plays the note before joined, so
+// the re-read reads that one note as a 32nd and a rest.
+const MIDI_DUR_BASELINE: usize = 4;
 
 // Epic I phase L (2026-09-25): the Layer-1 lowering now bars music on the
 // same score-wide grid as the LilyPond reader, ties notes across bar lines

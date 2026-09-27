@@ -39,9 +39,11 @@ pub(super) fn drifting_beats(onsets: &[u64], ppq: u64) -> Option<Vec<u64>> {
                 t
             }
             // Missed: back at the file's tempo ("a tempo" after a
-            // ritardando), or on as predicted.
+            // ritardando) when the file's next beat is played too, or on as
+            // predicted (a beat with no note of its own, an off-beat near
+            // the file's beat, the last beat).
             None => match near(beat + p0, p0) {
-                Some(t) if period != p0 => {
+                Some(t) if period != p0 && near(t + p0, p0).is_some() => {
                     period = p0;
                     t
                 }
@@ -131,7 +133,25 @@ mod tests {
         for onsets in [trips, swung] {
             let beats = drifting_beats(&onsets, 480).expect("tracked");
             assert_eq!(&beats[..16], &starts[..]);
+            // The last beat's notes stay in it.
+            let last = onsets[onsets.len() - 1];
+            assert!(onto_grid(last, &beats, 480) < 16 * 480, "{beats:?}");
         }
+    }
+
+    #[test]
+    fn a_missing_beat_while_slow_is_no_a_tempo() {
+        // A ritardando into a steady 600, and beat 13 has no onset (a tied
+        // 16th): 6990 is no beat, the tempo stays slow.
+        let onsets = [
+            0u64, 480, 960, 1440, 1920, 2430, 2970, 3540, 4140, 4740, 5340, 5940, 6540, 6990, 7740,
+            8340, 8940, 9540, 10140, 10740, 11340,
+        ];
+        let beats = drifting_beats(&onsets, 480).expect("it drifts");
+        let at = |t: u64| onto_grid(t, &beats, 480);
+        assert_eq!(at(7740), 14 * 480, "{beats:?}");
+        assert_eq!(at(11340), 20 * 480);
+        assert!(at(6990) > 12 * 480 && at(6990) < 13 * 480);
     }
 
     #[test]

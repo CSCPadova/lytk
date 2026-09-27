@@ -97,13 +97,46 @@ finding; 24 findings stood). Fixed, test-first (the board grew to 51 cases):
   5-/10-tuplets unless `swing=True`; the hand search keeps one path's hand
   state per cut (approximate, as MuseScore's).
 
+**Verification of the review fixes** (read-only, a skeptic per claim; 17
+claims stood, most of them in the fixes themselves). Fixed, test-first
+(board 59 cases):
+- The a-tempo fallback now needs the file's next beat played too (it took
+  off-beats as beats while the performer was still slow, and the last beat
+  of slow files).
+- Exactness: 2 ticks from 384 a quarter, half a tick below (at 120 a
+  quarter one tick still passed performances for notation; at 96, rounded
+  quintuplet points must still count).
+- Hands hold keys, not a range: each state keeps the keys still sounding
+  (a legato line's union of keys threw notes to the other hand).
+- Search: the gap to the next note no longer counts (a rest after a note
+  pulled it to the downbeat); MuseScore's dotted band (1.45–1.55), and only
+  down to 16ths; a level weaker than expected costs a quarter of the value,
+  a 32nd at least (a whole note 50 ticks late after 16ths went to a 32nd).
+  Ends snap to steps up to 5/8 of a note (halves at 80 % are halves).
+- Played staccato: two thirds or less of its new length (a dotted quarter
+  at a 90 % gate is no staccato half); the target is the next point of the
+  note's own grid (the beat, or its half, quarter or eighth its start lies
+  on; the 6/8 beat is a dotted quarter); a tap on a beat still reaches the
+  next point; a played legato gap is a 16th at most (a whole note and an
+  eighth rest stay).
+- LilyPond staccato runs pass only over detached notes (an unmarked note
+  before an \mf was marked), found in two linear passes (it was quadratic).
+  Documented drop: MIDI → IR → MIDI → IR durations 5 → 4 — one note of
+  chopin_n's re-read (see fidelity.rs); the first reading is unchanged
+  against the source (TRUTH_FULL 7464).
+- More ceilings: after a slow ritardando, eighths a tempo can lock as
+  triplets (both explain the onsets; nothing else tells them apart); a long
+  note starting off the beat after a long rest reads on the beat (the metric
+  prior, as MuseScore's); the waltz split still errs once the right hand has
+  let its note go (MuseScore's terms: hands ending together, one-note
+  melodies).
+
 **Next:**
 - Tempo induction for a performance far from the file's tempo from the
   start (beats.rs ponytail note), when a real file needs it.
-- Uneven chord releases split a chord into voices; the 2-tick exactness is
-  absolute, so 96/120 ppq played files read as notation; the first 256
-  onsets in staff order decide the whole file (a drum track can make a
-  played piano "exported").
+- Uneven chord releases split a chord into voices; the first 256 onsets in
+  staff order decide the whole file (a drum track can make a played piano
+  "exported").
 
 ## 2026-09-26 — Second review fixes; LilyPond writer against the oracle
 
