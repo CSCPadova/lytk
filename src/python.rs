@@ -886,8 +886,8 @@ fn from_lilypond(
 }
 
 /// Parse every movement of a LilyPond file: one :class:`Score` per ``\\score``
-/// block (a file without ``\\score`` blocks is a single movement). Each score
-/// carries the file's diagnostics.
+/// block and per top-level music expression, in order, as LilyPond makes a
+/// score of each. Each score carries the file's diagnostics.
 #[pyfunction]
 #[pyo3(signature = (path, *, language=None, strict=false))]
 fn from_lilypond_movements(

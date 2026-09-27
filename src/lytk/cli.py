@@ -141,8 +141,8 @@ def read_score(path: str, forced: Format | str | None = None) -> lytk.Score:
 
 
 def _read_movements(path: str, forced: Format | None) -> list[lytk.Score]:
-    """Every movement: one per ``\\score`` block of a LilyPond file, one per
-    tune of an ABC file."""
+    """Every movement: one per ``\\score`` block or top-level music expression
+    of a LilyPond file, one per tune of an ABC file."""
     if path == "-":
         return [read_score(path, forced)]
     fmt = _input_format(path, forced)

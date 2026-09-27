@@ -141,7 +141,8 @@ lyrics); slurs and ornaments are not performed.
 
 ## Not there yet
 
-- Tablature, percussion (unpitched notes) and fretboard diagrams.
+- Tablature, unpitched notes and fretboard diagrams (LilyPond drums are read
+  as their General MIDI keys on a percussion staff).
 - Performed MIDI is quantized less reliably when its tempo is far from the
   file's own, when chords are released unevenly, or at a low resolution.
 - Non-traditional key signatures, cross-staff notes (`\change Staff`), and

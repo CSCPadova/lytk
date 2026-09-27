@@ -60,14 +60,97 @@ fn parse_skip_of_length(scheme_text: &str) -> Option<&str> {
     (!var.is_empty()).then_some(var)
 }
 
-/// Walk an `expression_block` `{ ... }` containing music.
+/// Walk an `expression_block` `{ ... }` containing music, in the input mode
+/// the command before it sets: `\drummode` reads drum names, `\drums` is a
+/// drum staff of them; `\chords` and `\figures` (`\figuremode`) are chord
+/// names and figured bass, not notes; lyrics are not notes either.
 pub(super) fn walk_music_block(state: &mut WalkState, block: Node) {
     // Past a bound, re-walks (unfolds, variables) end here.
     if state.stopped() || !state.enter_block() {
         return;
     }
-    walk_block_contents(state, block);
+    let mut prev = block.prev_sibling();
+    while prev.is_some_and(|p| p.kind() == "comment") {
+        prev = prev.and_then(|p| p.prev_sibling());
+    }
+    let mode = prev
+        .filter(|p| p.kind() == "escaped_word")
+        .map(|p| state.text(p));
+    if let Some(octaves) = fixed_octaves(state, block) {
+        // `\fixed c' { … }`: absolute pitches, an octave up per mark, even
+        // inside `\relative`.
+        let saved = (state.in_relative, state.relative_depth, state.fixed_octaves);
+        state.in_relative = false;
+        state.relative_depth = 0;
+        state.fixed_octaves = octaves;
+        walk_block_contents(state, block);
+        (state.in_relative, state.relative_depth, state.fixed_octaves) = saved;
+        state.walk_depth -= 1;
+        return;
+    }
+    match mode {
+        Some("\\drums") => {
+            state.new_part("DrumStaff", "");
+            add_percussion_clef(state);
+            state.drum_mode += 1;
+            walk_block_contents(state, block);
+            state.drum_mode -= 1;
+        }
+        Some("\\drummode") => {
+            state.drum_mode += 1;
+            walk_block_contents(state, block);
+            state.drum_mode -= 1;
+        }
+        // A chord-mode variable, walked again for its notes, stays notes.
+        Some("\\chords") if state.quiet == 0 => {
+            let entries = super::chord_mode::parse_chordmode_block(state, block);
+            state.pending_harmonies.extend(entries);
+        }
+        Some("\\figures" | "\\figuremode") => {
+            let entries = super::figured_bass::parse_figuremode_block(state, block);
+            state.place_figures(entries);
+        }
+        Some("\\lyrics" | "\\lyricmode") => {}
+        // Chords in a staff are their notes, which the walk reads as roots
+        // only: no warnings about the chord names' suffixes.
+        Some("\\chordmode" | "\\chords") => {
+            state.quiet += 1;
+            walk_block_contents(state, block);
+            state.quiet -= 1;
+        }
+        _ => walk_block_contents(state, block),
+    }
     state.walk_depth -= 1;
+}
+
+/// The octaves of `\fixed <pitch>` right before `block`, if it follows one:
+/// the pitch's octave marks.
+fn fixed_octaves(state: &WalkState, block: Node) -> Option<i32> {
+    let mut marks = 0;
+    let mut at = block.prev_sibling();
+    while let Some(n) = at.filter(|n| n.kind() == "punctuation") {
+        marks += match state.text(n) {
+            "'" => 1,
+            "," => -1,
+            _ => return None,
+        };
+        at = n.prev_sibling();
+    }
+    let pitch = at.filter(|n| n.kind() == "symbol")?;
+    let fixed = pitch.prev_sibling()?;
+    (state.text(fixed) == "\\fixed").then_some(marks)
+}
+
+/// A percussion clef where the current part is (a drum staff).
+pub(super) fn add_percussion_clef(state: &mut WalkState) {
+    if let Some((sign, line, octave_change)) = parse_clef_name("percussion") {
+        let clef = Clef {
+            sign,
+            line,
+            octave_change,
+        };
+        state.add_event(Event::Clef(1, clef));
+    }
 }
 
 fn walk_block_contents(state: &mut WalkState, block: Node) {
@@ -162,6 +245,11 @@ fn walk_block_contents(state: &mut WalkState, block: Node) {
 fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) -> usize {
     let (node, prev) = (children[i], previous(children, i));
     let mut i = i + 1;
+    if prev.is_some_and(|p| state.text(p) == "\\fixed") {
+        // `\fixed`'s pitch, not a note: the block after it reads it.
+        consume_octave_marks(state, children, &mut i);
+        return i;
+    }
 
     match sym {
         "r" => {
@@ -318,6 +406,27 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 state.push_voice_element(VoiceElement::Chord(chord));
             }
         }
+        _ if state.drum_mode > 0 => match state.drum_pitch(sym) {
+            // A drum note: absolute, and outside `\relative` and `\transpose`.
+            Some(pitch) => {
+                let mut dur = consume_duration(state, children, &mut i);
+                if let Some(scale) = consume_duration_scale(state, children, &mut i) {
+                    dur.base *= scale;
+                    state.last_duration = dur.clone();
+                }
+                let tremolo = consume_tremolo(state, children, &mut i, &dur);
+                let attachments = consume_attachments(state, children, &mut i);
+                let mut note = Note::new(pitch, dur);
+                note.tremolo_marks = tremolo;
+                apply_note_attachments(state, &mut note, &attachments);
+                state.push_voice_element(note_or_pitched_rest(note, &attachments));
+            }
+            None => state.warn(
+                node,
+                "unrecognized-token",
+                format!("`{sym}` is not a drum name"),
+            ),
+        },
         _ => {
             // Try as pitch name
             if let Some((step, alter)) = parse_pitch_name(sym, state.language) {

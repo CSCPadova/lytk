@@ -56,14 +56,8 @@ fn each_code_on_its_input() {
             Warning,
             "skipped-score",
         ),
-        (
-            "{ c'1 }\n\\score { { d'1 } \\layout { } }",
-            Warning,
-            "dropped-music",
-        ),
-        ("m = { c'1 }\n\\m", Warning, "dropped-music"),
-        ("c'4 d' e'", Warning, "dropped-music"),
-        ("\\drums { bd4 sn }", Warning, "unrecognized-token"),
+        ("c'4 d' e'", Error, "syntax-error"),
+        ("\\drums { bd4 xyz }", Warning, "unrecognized-token"),
     ];
     for &(text, severity, code) in cases {
         let found = codes(text);

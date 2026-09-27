@@ -25,6 +25,7 @@ mod apply;
 mod builtins;
 mod chord_mode;
 mod consume;
+mod drums;
 mod figured_bass;
 mod lyrics;
 mod merge;
@@ -184,8 +185,8 @@ const WALK_STACK_BYTES: usize = 64 << 20;
 /// What reading LilyPond text produced.
 #[derive(Debug, Clone)]
 pub struct LyReading {
-    /// One score per movement (`\score` block); a file without `\score`
-    /// blocks is one movement.
+    /// One score per movement: each `\score` block and each top-level music
+    /// expression, in order, as LilyPond makes a score of each.
     pub scores: Vec<Score>,
     /// Syntax errors and what the walk did not read, in source order.
     pub diagnostics: Vec<Diagnostic>,
@@ -321,29 +322,15 @@ impl LyToIrAdapter {
             return Err(refused(reason));
         }
 
-        let scores = if !state.completed_scores.is_empty() {
-            // `\score` blocks were assembled as they closed (one per
-            // movement); music outside them is not read.
-            state.flush_voice();
-            if !state.parts.is_empty() {
-                diagnostics.extend(state.top_level_music.take());
-            }
-            std::mem::take(&mut state.completed_scores)
-        } else {
-            // Otherwise the file's top-level music is one implicit score.
-            let score = assemble_score(&mut state);
-            if let Some(reason) = state.over_limit.take() {
-                return Err(refused(reason));
-            }
-            let mut score = score.unwrap_or_default();
-            if score.children.is_empty() {
-                score.children.push(ScoreChild::Part(Part::new("P1")));
-            }
-            vec![score]
-        };
+        // Every movement is assembled; a file without music is one empty one.
+        let mut scores = std::mem::take(&mut state.completed_scores);
+        if scores.is_empty() {
+            let mut score = Score::default();
+            score.children.push(ScoreChild::Part(Part::new("P1")));
+            scores.push(score);
+        }
         // The book's header, last assignment first, where a movement leaves a
         // field unset.
-        let mut scores = scores;
         for score in &mut scores {
             for (key, value) in state.book_header.iter().rev() {
                 walk::set_header_field(&mut score.metadata, key, value.clone(), false);

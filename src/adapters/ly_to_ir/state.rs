@@ -205,14 +205,18 @@ pub(super) struct WalkState<'src> {
     pub(super) quiet: u32,
     /// Names assigned at the top level (`name = …`), whatever their value.
     pub(super) assigned: HashSet<String>,
-    /// Where top-level music first stands: it is dropped if the file also
-    /// has `\score` blocks.
-    pub(super) top_level_music: Option<Diagnostic>,
+    /// The top-level music expression being read, if any: LilyPond makes a
+    /// score of each, so it is a movement of its own.
+    pub(super) open_movement: Option<Node<'src>>,
+    /// Octaves `\fixed` adds to absolute pitches (`\fixed c' { c }` is c').
+    pub(super) fixed_octaves: i32,
     /// The `\score` blocks after the first, which a single-score reading drops.
     pub(super) later_movements: Vec<Diagnostic>,
     /// Fields of the top-level `\header` blocks, in order: they apply to
     /// every movement that does not set them itself.
     pub(super) book_header: Vec<(String, String)>,
+    /// Above 0 inside `\drummode` music: words are drum names.
+    pub(super) drum_mode: u32,
 }
 
 impl<'src> WalkState<'src> {
@@ -267,9 +271,11 @@ impl<'src> WalkState<'src> {
             columns: Columns::default(),
             quiet: 0,
             assigned: HashSet::new(),
-            top_level_music: None,
+            open_movement: None,
+            fixed_octaves: 0,
             later_movements: Vec::new(),
             book_header: Vec::new(),
+            drum_mode: 0,
         }
     }
 
@@ -618,6 +624,48 @@ impl<'src> WalkState<'src> {
         }
     }
 
+    /// In drum mode, the pitch whose MIDI key sounds drum `name` (`bd`,
+    /// `snare`, …), as MusicXML keeps unpitched notes on a percussion staff.
+    pub(super) fn drum_pitch(&self, name: &str) -> Option<Pitch> {
+        if self.drum_mode == 0 {
+            return None;
+        }
+        let drums = super::drums::DRUMS;
+        let &(_, octave, step, alter) = drums
+            .binary_search_by(|(n, ..)| n.cmp(&name))
+            .ok()
+            .map(|k| &drums[k])?;
+        let step = [
+            PitchStep::C,
+            PitchStep::D,
+            PitchStep::E,
+            PitchStep::F,
+            PitchStep::G,
+            PitchStep::A,
+            PitchStep::B,
+        ][step as usize];
+        Some(Pitch::with_alter(step, Ratio::from_integer(alter), octave))
+    }
+
+    /// Figured bass from the current position on (a `\figuremode` block or
+    /// variable): events, taking no time in the voice.
+    pub(super) fn place_figures(&mut self, entries: Vec<FiguredBassEntry>) {
+        if !self.spend(entries.len() as u64) {
+            return;
+        }
+        let mut at = self.pos;
+        for entry in entries {
+            match entry {
+                FiguredBassEntry::Figure(fb) => {
+                    let d = fb.duration.actual_duration();
+                    self.add_event_at(at, Event::FiguredBass(fb));
+                    at += d;
+                }
+                FiguredBassEntry::Skip(dur) => at += dur.actual_duration(),
+            }
+        }
+    }
+
     /// Resolve a variable reference at the current position.
     pub(super) fn resolve_variable(&mut self, name: &str) -> bool {
         // `\relative` applies to a variable's music where it is used: LilyPond
@@ -715,22 +763,7 @@ impl<'src> WalkState<'src> {
                 }
             }
             VarDef::Music { .. } => unreachable!("handled above"),
-            VarDef::FiguredBass(entries) => {
-                if !self.spend(entries.len() as u64) {
-                    return true;
-                }
-                let mut at = self.pos;
-                for entry in entries {
-                    match entry {
-                        FiguredBassEntry::Figure(fb) => {
-                            let d = fb.duration.actual_duration();
-                            self.add_event_at(at, Event::FiguredBass(fb));
-                            at += d;
-                        }
-                        FiguredBassEntry::Skip(dur) => at += dur.actual_duration(),
-                    }
-                }
-            }
+            VarDef::FiguredBass(entries) => self.place_figures(entries),
         }
         true
     }
@@ -759,8 +792,13 @@ impl<'src> WalkState<'src> {
                 p
             }
         } else {
-            // Absolute mode: octave marks relative to LilyPond c (octave 3 in our numbering)
-            let octave = self.bounded_octave(octave_marks.saturating_add(3));
+            // Absolute mode: octave marks relative to LilyPond c (octave 3 in
+            // our numbering), and `\fixed`'s octaves.
+            let octave = self.bounded_octave(
+                octave_marks
+                    .saturating_add(3)
+                    .saturating_add(self.fixed_octaves),
+            );
             Pitch::with_alter(step, alter, octave)
         };
         // Apply any active \transpose intervals

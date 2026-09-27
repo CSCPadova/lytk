@@ -48,8 +48,26 @@ engineering notes are in the [development log](devlog.md).
   `HeaderField` (key, value as text, character span of the whole `key = value`,
   and the `\score` block it is in), from the parse tree alone, so a field can
   be read and cut without reading the music. Rust: `ly_to_ir::header_fields`.
+- LilyPond drum mode: `\drums { bd4 sn }`, `\drummode`, `\new DrumStaff`
+  and `\new DrumVoice` read LilyPond's 128 drum names as their General MIDI
+  keys (`bd` is key 36) on a percussion staff, which MIDI export puts on
+  channel 10. A word that is no drum name is `unrecognized-token`.
+- LilyPond `\fixed c' { … }`: absolute pitches an octave up per mark of the
+  reference pitch, also inside `\relative` and in a variable.
+- LilyPond `\book` and `\bookpart`: their scores and music are movements,
+  and their `\header` is the book's.
 
 ### Changed
+
+- Each top-level LilyPond music expression is a movement, as LilyPond makes
+  a score of each: `{ c'1 } { d'1 }` is two movements, and music beside
+  `\score` blocks takes its place among them. It was dropped
+  (`dropped-music`), or merged into one movement. A music variable used at
+  the top level (`\m`) is read; it was dropped. Notes outside braces at the
+  top level (`c'4 d'`) are a `syntax-error`, as in LilyPond; they were a
+  warning.
+- The shorthands `\chords { … }`, `\figures { … }` and `\lyrics { … }` are
+  chord names, figured bass and lyrics; their contents were read as notes.
 
 - The version has one source, `Cargo.toml` (`pyproject.toml` declares it
   dynamic); the release workflow fails when the tag is not that version, and
@@ -157,6 +175,11 @@ engineering notes are in the [development log](devlog.md).
   twice, level after level) doubled its output at every level until memory
   ran out. It now stops with a `ValueError` after 10,000 includes or 64 MiB
   of output.
+- A LilyPond context whose music follows a nested `\new` or a mode
+  (`\new Staff \new Voice { … }` at the top level,
+  `\new Staff \drummode { … }`, `\new Staff \fixed c' { … }`) left its
+  music to be read as a separate expression.
+- LilyPond part ids after a variable definition started at `P2`.
 
 ## [0.2.0] - 2026-09-27
 

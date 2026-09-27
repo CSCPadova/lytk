@@ -371,8 +371,8 @@ def from_lilypond_string(
 def from_lilypond_movements(
     path: str, *, language: str | None = None, strict: bool = False
 ) -> list[Score]:
-    """Every movement of a LilyPond file: one score per ``\\score`` block,
-    each with the file's diagnostics."""
+    """Every movement of a LilyPond file: one score per ``\\score`` block and
+    per top-level music expression, each with the file's diagnostics."""
     ...
 def from_lilypond_music(
     path: str, *, language: str | None = None, strict: bool = False

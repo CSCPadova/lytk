@@ -886,15 +886,22 @@ pub(super) fn build_chord(state: &mut WalkState, chord_node: Node, dur: Duration
         let child = children[i];
         if child.kind() == "symbol" {
             let sym = state.text(child);
-            if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
+            let pitch = if state.drum_mode > 0 {
+                // A drum chord (`<bd hh>`): absolute, and no reference for
+                // `\relative`.
+                state.drum_pitch(sym).inspect(|_| i += 1)
+            } else if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
                 i += 1;
                 let octave_marks = consume_octave_marks(state, &children, &mut i);
                 let acc_display = consume_accidental_marks(state, &children, &mut i);
                 let mut pitch = state.resolve_pitch(step, alter, octave_marks);
                 pitch.accidental = acc_display;
-                if first_pitch.is_none() {
-                    first_pitch = Some(pitch);
-                }
+                first_pitch.get_or_insert(pitch);
+                Some(pitch)
+            } else {
+                None
+            };
+            if let Some(pitch) = pitch {
                 let mut note = Note::new(pitch, dur.clone());
                 // A member's own post-events: `<dis-4-!>`, `<c~ e>`.
                 let attachments = consume_attachments(state, &children, &mut i);

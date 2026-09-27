@@ -19,10 +19,18 @@ use super::text::header_block_fields;
 use crate::diagnostics::{Diagnostic, Severity};
 use crate::ir::timeline::{Event, Timeline};
 
-/// Walk the `lilypond_program` root node.
-pub(super) fn walk_program(state: &mut WalkState, root: Node) {
-    let mut cursor = root.walk();
-    let children: Vec<Node> = root.children(&mut cursor).collect();
+/// Walk the `lilypond_program` root node. Each top-level music expression
+/// and each `\score` block is a movement, in order, as LilyPond makes a score
+/// of each.
+pub(super) fn walk_program<'a>(state: &mut WalkState<'a>, root: Node<'a>) {
+    walk_top(state, root);
+    close_movement(state);
+}
+
+/// The top level, or the inside of a `\book` or `\bookpart` block.
+fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
+    let mut cursor = parent.walk();
+    let children: Vec<Node> = parent.children(&mut cursor).collect();
     let mut i = 0;
 
     while i < children.len() {
@@ -75,53 +83,18 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 }
                                 // Each \score block is its own movement, with
                                 // its own \header.
-                                state.flush_voice();
+                                close_movement(state);
                                 let saved_metadata = std::mem::take(&mut state.metadata);
-                                let saved_parts = std::mem::take(&mut state.parts);
-                                let saved_counter = state.part_counter;
-                                let saved_pending_lyrics =
-                                    std::mem::take(&mut state.pending_lyrics);
-                                let saved_added_lyrics = std::mem::take(&mut state.added_lyrics);
-                                let saved_pending_harmonies =
-                                    std::mem::take(&mut state.pending_harmonies);
-                                let saved_voice_map = std::mem::take(&mut state.voice_part_map);
-                                state.part_counter = 0;
-                                state.set_pos(Frac::from_integer(0));
-
                                 walk_score_block(state, *next);
-                                if let Some(score) = super::assemble_score(state) {
-                                    state.completed_scores.push(score);
-                                    let n = state.completed_scores.len();
-                                    if n > 1 {
-                                        state.later_movements.push(Diagnostic::at(
-                                            state.source,
-                                            node,
-                                            Severity::Warning,
-                                            "dropped-music",
-                                            format!(
-                                                "movement {n} is not read: this reading \
-                                                 takes the first movement only"
-                                            ),
-                                        ));
-                                    }
-                                }
-
-                                // Restore saved state
+                                finish_movement(state, node);
                                 state.metadata = saved_metadata;
-                                state.parts = saved_parts;
-                                state.part_counter = saved_counter;
-                                state.pending_lyrics = saved_pending_lyrics;
-                                state.added_lyrics = saved_added_lyrics;
-                                state.pending_harmonies = saved_pending_harmonies;
-                                state.voice_part_map = saved_voice_map;
-
                                 i += 1;
                             }
                         }
                     }
                     "\\relative" => {
                         // Top-level \relative c' { ... }
-                        note_top_level_music(state, node);
+                        begin_movement(state, node);
                         state.in_relative = true;
                         state.mode = PitchMode::Relative;
                         i += 1;
@@ -129,7 +102,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                         continue;
                     }
                     "\\transpose" => {
-                        note_top_level_music(state, node);
+                        begin_movement(state, node);
                         i += 1;
                         i = consume_transpose(state, &children, i);
                         continue;
@@ -170,15 +143,23 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                         i = skip_markup(state, &children, i + 1);
                         continue;
                     }
+                    "\\book" | "\\bookpart" => {
+                        // A book's scores and top-level music are movements
+                        // too, and its \header is the book's.
+                        if let Some(&next) = children.get(i + 1) {
+                            if next.kind() == "expression_block" {
+                                walk_top(state, next);
+                                i += 1;
+                            }
+                        }
+                    }
                     _ => {
-                        // Top-level escaped words we don't handle
+                        // A music variable at the top level is a music
+                        // expression (a movement); other commands aren't read.
                         let name = text.trim_start_matches('\\');
                         if state.definitions.contains_key(name) {
-                            state.warn(
-                                node,
-                                "dropped-music",
-                                format!("`{text}` at the top level is not read"),
-                            );
+                            begin_movement(state, node);
+                            state.resolve_variable(name);
                         } else {
                             state.unread_command(node, name);
                         }
@@ -186,19 +167,19 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                 }
             }
             "expression_block" => {
-                // Bare { ... } at top level: treat as a single anonymous part
-                note_top_level_music(state, node);
+                // Bare { ... } at top level: a movement of its own
+                begin_movement(state, node);
                 walk_music_block(state, node);
             }
             "parallel_music" => {
                 // Top-level `<< ... >>` (e.g. emitted multi-staff music with no
-                // explicit \score wrapper) is an implicit score. Walk it directly.
-                note_top_level_music(state, node);
+                // explicit \score wrapper) is a movement. Walk it directly.
+                begin_movement(state, node);
                 walk_parallel_music(state, node);
             }
             "named_context" => {
-                // Top-level `\new Staff { ... }` etc. — an implicit score.
-                note_top_level_music(state, node);
+                // Top-level `\new Staff { ... }` etc. — a movement.
+                begin_movement(state, node);
                 let (context, name) = extract_named_context(state, node);
                 i += 1;
                 i = walk_context_body(state, &children, i, &context, &name);
@@ -254,6 +235,22 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                     if ew == "\\lyricmode" || ew == "\\notemode" {
                                         is_lyricmode = ew == "\\lyricmode";
                                         j += 1;
+                                        continue;
+                                    }
+                                    // Read from the block, which knows its mode.
+                                    if ew == "\\drummode" || ew == "\\drums" {
+                                        j += 1;
+                                        continue;
+                                    }
+                                    if ew == "\\fixed" {
+                                        // Its pitch and marks; the block reads them.
+                                        j += 1;
+                                        while children.get(j).is_some_and(|n| {
+                                            n.kind() == "symbol"
+                                                || matches!(state.text(*n), "'" | ",")
+                                        }) {
+                                            j += 1;
+                                        }
                                         continue;
                                     }
                                     if ew == "\\relative" {
@@ -447,24 +444,52 @@ fn scheme_definitions(text: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-/// Remember where top-level music first stands: it is not read when the
-/// file also has `\score` blocks.
-fn note_top_level_music(state: &mut WalkState, node: Node) {
-    if state.top_level_music.is_none() {
-        state.top_level_music = Some(Diagnostic::at(
-            state.source,
-            node,
-            Severity::Warning,
-            "dropped-music",
-            "music outside `\\score` is not read: the file has `\\score` blocks".to_string(),
-        ));
+/// Start a movement for the top-level music expression at `node`, closing
+/// the one before it (`\addlyrics` after an expression still belongs to it).
+fn begin_movement<'a>(state: &mut WalkState<'a>, node: Node<'a>) {
+    close_movement(state);
+    state.open_movement = Some(node);
+}
+
+/// Close the top-level music expression being read, if any, into a movement.
+fn close_movement(state: &mut WalkState) {
+    if let Some(anchor) = state.open_movement.take() {
+        finish_movement(state, anchor);
     }
+}
+
+/// Assemble what was walked into a movement, and start afresh: each
+/// movement has its own parts, positions and lyrics.
+fn finish_movement(state: &mut WalkState, anchor: Node) {
+    if let Some(score) = super::assemble_score(state) {
+        state.completed_scores.push(score);
+        let n = state.completed_scores.len();
+        if n > 1 {
+            state.later_movements.push(Diagnostic::at(
+                state.source,
+                anchor,
+                Severity::Warning,
+                "dropped-music",
+                format!("movement {n} is not read: this reading takes the first movement only"),
+            ));
+        }
+    }
+    state.parts.clear();
+    state.current_voice.clear();
+    state.part_counter = 0;
+    state.pending_lyrics.clear();
+    state.added_lyrics.clear();
+    state.pending_harmonies.clear();
+    state.voice_part_map.clear();
+    let zero = Frac::from_integer(0);
+    (state.pos, state.voice_start, state.origin) = (zero, zero, zero);
+    state.metadata.partial_duration = None;
 }
 
 /// A top-level word starting the file, or following `\version "…"` (or
 /// `\include`, `\language`): text that is not LilyPond, or notes outside
-/// braces, which are not read. Elsewhere a word may be a command's argument
-/// or an assignment's value: not judged.
+/// braces, which LilyPond rejects too. Elsewhere a word may be a command's
+/// argument or an assignment's value: not judged.
 fn top_level_word(state: &mut WalkState, children: &[Node], i: usize) {
     let significant = |j: usize| (0..j).rev().find(|&k| children[k].kind() != "comment");
     let at_start = match significant(i) {
@@ -518,10 +543,11 @@ fn top_level_word(state: &mut WalkState, children: &[Node], i: usize) {
                 format!("`{text}` is not LilyPond: a bare word at the top level"),
             );
         }
-        None => state.warn(
+        // LilyPond: "syntax error, unexpected NOTENAME_PITCH".
+        None => state.error(
             children[i],
-            "dropped-music",
-            "music outside braces at the top level is not read".to_string(),
+            "syntax-error",
+            "notes outside braces: music at the top level goes in `{ }`".to_string(),
         ),
     }
 }
@@ -1075,7 +1101,7 @@ pub(super) fn walk_context_body(
 
     // Voice context: no new part — the voice's music goes into the current
     // staff (its own lane when it overlaps music already there).
-    if context == "Voice" {
+    if context == "Voice" || context == "DrumVoice" {
         i = skip_with_block(state, children, i);
         i = walk_body(state, children, i);
         if !name.is_empty() {
@@ -1238,6 +1264,9 @@ pub(super) fn walk_context_body(
             .is_some_and(|pb| pb.context == context && (name.is_empty() || pb.part.name == name));
     if !reenter {
         state.new_part(context, name);
+        if context == "DrumStaff" {
+            super::music::add_percussion_clef(state);
+        }
     }
 
     while i < children.len() {
@@ -1280,25 +1309,15 @@ pub(super) fn walk_context_body(
                         }
                     }
                     _ => {
-                        let var_name = text.trim_start_matches('\\');
-                        if state.resolve_variable(var_name) {
-                            i += 1;
-                        }
+                        i = walk_body(state, children, i);
                         break;
                     }
                 }
             }
-            "expression_block" => {
-                walk_music_block(state, node);
-                i += 1;
+            _ => {
+                i = walk_body(state, children, i);
                 break;
             }
-            "parallel_music" => {
-                walk_parallel_music(state, node);
-                i += 1;
-                break;
-            }
-            _ => break,
         }
         i += 1;
     }
@@ -1499,6 +1518,11 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
             walk_parallel_music(state, node);
             i + 1
         }
+        // `\new Staff \new Voice { … }`
+        "named_context" => {
+            let (context, name) = extract_named_context(state, node);
+            walk_context_body(state, children, i + 1, &context, &name)
+        }
         "escaped_word" => {
             let text = state.text(node).to_string();
             match text.as_str() {
@@ -1508,6 +1532,20 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
                     consume_relative(state, children, i + 1)
                 }
                 "\\transpose" => consume_transpose(state, children, i + 1),
+                // The block after a mode reads the mode itself.
+                "\\drummode" | "\\chordmode" | "\\figuremode" | "\\lyricmode" | "\\notemode"
+                | "\\drums" | "\\chords" | "\\figures" | "\\lyrics" => {
+                    walk_body(state, children, i + 1)
+                }
+                "\\fixed" => {
+                    let mut j = i + 1;
+                    while children.get(j).is_some_and(|n| {
+                        n.kind() == "symbol" || matches!(state.text(*n), "'" | ",")
+                    }) {
+                        j += 1;
+                    }
+                    walk_body(state, children, j)
+                }
                 _ if state.resolve_variable(text.trim_start_matches('\\')) => i + 1,
                 _ => i,
             }
@@ -1528,6 +1566,8 @@ fn capture_variable<R>(
     let saved_parts = std::mem::take(&mut state.parts);
     let saved_voices = std::mem::take(&mut state.voice_part_map);
     let saved_pos = (state.pos, state.voice_start, state.origin);
+    // Parts a variable defines are numbered where it is used.
+    let saved_counter = state.part_counter;
     let (old_relative, old_mode, old_ref, old_prev) = (
         state.in_relative,
         state.mode,
@@ -1546,6 +1586,7 @@ fn capture_variable<R>(
     let parts = std::mem::replace(&mut state.parts, saved_parts);
     let voices = std::mem::replace(&mut state.voice_part_map, saved_voices);
     (state.pos, state.voice_start, state.origin) = saved_pos;
+    state.part_counter = saved_counter;
     // Restore state so variable definitions don't leak context
     state.in_relative = old_relative;
     state.mode = old_mode;

@@ -2,7 +2,19 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-09-27, Epic J: J4 and J5)
+## Latest status (2026-09-27, Epic J: J6, the hunt, J7)
+
+**Epic J is done; 0.3.0 is ready to tag.** The version has one source and
+the Python tests run on 3.10–3.13 (J6). The hunt's last five areas found two
+panics, an abort and four quadratic paths, all fixed. The LilyPond reader
+now reads top-level music as LilyPond does, a movement per expression, and
+`\book`, drum mode, `\fixed` and the `\chords`/`\figures`/`\lyrics`
+shorthands (J7). Test counts: 1,143 Rust + 229 Python. Details in the
+devlog.
+
+---
+
+## Previous status (2026-09-27, Epic J: J4 and J5)
 
 **LilyPond text reads as LilyPond reads it.** Strings are decoded in every
 context (a string used to stop at its first escape), header values given as
@@ -681,8 +693,9 @@ what it drops. Principles, as in Epic I:
 | J4 | **Strings and headers.** `extract_string_value` (`consume.rs:442-451`) joins every `string_fragment` and decodes each `escape_sequence` as LilyPond's lexer does (`lily/lexer.ll`: `\n` `\t` `\\` `\'` `\"`; any other backslash is kept). One fix for all fifteen callers: headers, lyrics, `\tempo`, markup, `\with`, `\mark`, `\clef`, `\bar`, `\set`, `instrumentName`, `\lyricsto`, `\context = "…"`, `\language`. Header values given as `\markup` become their plain text, and `#"…"` becomes a string. Headers are scoped: a `\score`'s `\header` no longer leaks into the next movement, and a top-level `\header` applies to every movement. *Python:* `Score.header` / `MusicDocument.header` → `dict[str, str]` of every field, plus `MusicDocument.lyricist`; `lytk.header_fields(text) -> list[HeaderField]` (key, value, byte span, score index) from the tree, no IR, so a caller can read a field and cut it. *Writers:* the Score path writes `\header` whenever any field is set (today only for title/composer/arranger/lyricist, `ir_to_ly/mod.rs:156-159`); the Music path writes lyricist and `extra` (`music_emit.rs:129-151`); `extra` keys are written sorted, not in `HashMap` order | String round trip in every context with `\"`, `\\`, newline and non-ASCII; `texidoc` and `categories` of all 389 official snippets equal to an independent escape-aware decoder | M | ✅ 2026-09-27: `ly_to_ir/text.rs` decodes strings, `#"…"` and markup text; the 389 snippets' `texidoc` and `categories` (778 values, 108 with escapes) equal the oracle (`snippet_headers`); the string round trip covers headers, `\tempo`, `\mark`, instrument names, lyrics and markup text (`tests/ly_text.rs`). `HeaderField` spans are character offsets in Python, as `Diagnostic`'s. Also: the Score-path writer now writes note text directions (the round trip found them lost) |
 | J5 | **Pitch language.** `\include "<file>.ly"` for LilyPond's language files sets the language as `\language` does: the 11 lytk supports; `arabic.ly` → italiano; `bagpipe`, `makam`, `persian`, `turkish-makam` → `unknown-language` warning. `\language` is honoured inside `\score` and music (today top level only, `walk.rs:36-46`). An unknown name keeps the current language and warns (today it resets to Dutch, `walk.rs:41-42`) | `\include "english.ly" { cs4 d4 }` reads C♯4 D4 (today D4 only) | S | ✅ 2026-09-27: `hel-arabic.ly` joins the unreadable ones; a variable read again inside `\relative` keeps the language of its definition. On LilyPond 2.26's corpus `unrecognized-token` fell from 595 to 437 and `ignored-include` from 245 to 221 |
 | J6 | **Release hygiene.** `lytk.__version__` (`env!("CARGO_PKG_VERSION")` exported by `_core`); one version source (pyproject `dynamic = ["version"]`, or a test that `Cargo.toml` and `pyproject.toml` agree); Python CI on 3.10–3.13 (only 3.12 today; lilycorpus supports 3.10); the release workflow fails when the tag differs from the version. Docs that say the reader follows `\include` (changelog 0.1.0, SECURITY.md; CLAUDE.md done in J3, `docs/import-export.md` in J5) are corrected; so are README's pre-0.2.0 MIDI limitations, `design.md` test counts, `development.md`'s Rust CLI, `python.rs`'s "python feature" and T11.2's batch `catch_unwind` (deleted with `src/main.rs`). The upstream commit of tree-sitter-lilypond is recorded in `src/tree-sitter/README.md` | CI green on four Pythons; `import lytk; lytk.__version__ == "0.3.0"` | S | ✅ 2026-09-27: version 0.3.0 from `Cargo.toml` alone (`dynamic = ["version"]`, `uv.lock` records it dynamic), `test_version_is_the_crates`; the Python job runs on 3.10–3.13 (torch and TensorFlow on 3.12 only); the vendored grammar is upstream `b3b38a6`, whose grammar is unchanged since; `python.rs` had lost its "python feature" mention with J1 |
+| J7 | **Reading problems the hunt left open.** Each top-level music expression is a movement, as LilyPond makes a score of each (music beside `\score` was dropped, `\m` at the top level too); notes outside braces at the top level are a `syntax-error`; `\book`/`\bookpart` scores are movements; drum mode reads drum names; `\fixed`; `\chords`/`\figures`/`\lyrics` are no notes | Each rule checked against LilyPond 2.22; board (a) unchanged; `tests/ly_modes.rs` | M | ✅ 2026-09-27: `dropped-music` on the corpus 77 → 0, `unrecognized-token` 437 → 247; board (a) 1 file, 0 refused |
 
-Order: J0 → J1 + J2 → J3 → J4 + J5 → J6.
+Order: J0 → J1 + J2 → J3 → J4 + J5 → J6 → J7.
 
 ### Epic K — 0.4.0: source-level API
 
