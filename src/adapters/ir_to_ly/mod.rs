@@ -152,36 +152,7 @@ fn emit_preamble(score: &Score, version: &str, lang: PitchLanguage, lines: &mut 
     lines.push(format!("\\language \"{}\"", lang.as_str()));
     lines.push(String::new());
 
-    let meta = &score.metadata;
-    let has_header = meta.title.is_some()
-        || meta.composer.is_some()
-        || meta.arranger.is_some()
-        || meta.lyricist.is_some();
-
-    if has_header {
-        let esc = helpers::escape_ly_string;
-        lines.push("\\header {".to_string());
-        if let Some(t) = &meta.title {
-            lines.push(format!("  title = \"{}\"", esc(t)));
-        }
-        if let Some(s) = &meta.subtitle {
-            lines.push(format!("  subtitle = \"{}\"", esc(s)));
-        }
-        if let Some(c) = &meta.composer {
-            lines.push(format!("  composer = \"{}\"", esc(c)));
-        }
-        if let Some(a) = &meta.arranger {
-            lines.push(format!("  arranger = \"{}\"", esc(a)));
-        }
-        if let Some(l) = &meta.lyricist {
-            lines.push(format!("  poet = \"{}\"", esc(l)));
-        }
-        for (key, val) in &meta.extra {
-            lines.push(format!("  {key} = \"{}\"", esc(val)));
-        }
-        lines.push("}".to_string());
-        lines.push(String::new());
-    }
+    lines.extend(helpers::header_block(&score.metadata));
 
     // Paper block / page layout
     emit_paper(score, lines);

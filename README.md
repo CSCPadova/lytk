@@ -65,6 +65,8 @@ for d in lytk.check_lilypond(text, semantic=True):   # errors and warnings, in s
     print(d)                                         # 3:12: error: missing `}` [missing-token]
 score = lytk.from_lilypond("score.ly", strict=True)  # raises lytk.LilyPondSyntaxError on an error
 score.diagnostics                                    # what the reading reported, either way
+score.header                                         # every \header field, as a dict
+fields = lytk.header_fields(text)                    # …or read from the text: key, value, span
 ```
 
 A reader raises `lytk.ParseError` (a `ValueError`) when its input cannot be

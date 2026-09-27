@@ -93,6 +93,12 @@ class Score:
         """What reading LilyPond reported (empty for other sources); not part
         of ``to_dict``/``to_json``."""
         ...
+    @property
+    def header(self) -> dict[str, str]:
+        """Every header field: ``title``, ``subtitle``, ``composer``,
+        ``arranger`` and ``lyricist`` (LilyPond's ``poet``) when set, then the
+        others (``copyright``, ``opus``, ``texidoc``, …) by key."""
+        ...
     def to_json(self) -> str: ...
     @staticmethod
     def from_json(json: str) -> Score: ...
@@ -126,6 +132,12 @@ class MusicDocument:
     @property
     def diagnostics(self) -> list[Diagnostic]:
         """What reading LilyPond reported (empty for other sources)."""
+        ...
+    @property
+    def lyricist(self) -> str | None: ...
+    @property
+    def header(self) -> dict[str, str]:
+        """Every header field, as :attr:`Score.header`."""
         ...
     def notes(self, resolution: int = 480) -> list[tuple[int, int, int, int]]:
         """Notes as ``(onset, duration, pitch, velocity)`` tuples in time steps."""
@@ -304,6 +316,34 @@ class Part:
 # ``strict=True`` LilyPond readers raise LilyPondSyntaxError (a ParseError) on
 # errors. Writers (``to_*``) raise ValueError when a score cannot be written,
 # OSError when the file cannot be. Anything may raise InternalError.
+
+class HeaderField:
+    """A field of a LilyPond ``\\header`` block (see :func:`header_fields`)."""
+
+    @property
+    def key(self) -> str: ...
+    @property
+    def value(self) -> str:
+        """The value as text: strings decoded, ``\\markup`` as its words,
+        ``#"…"`` as its string."""
+        ...
+    @property
+    def start(self) -> int:
+        """Character offset: ``text[f.start:f.end]`` is the whole ``key = value``."""
+        ...
+    @property
+    def end(self) -> int: ...
+    @property
+    def score(self) -> int | None:
+        """Index of the ``\\score`` block the field is in (file order), or
+        ``None`` at the top level."""
+        ...
+
+def header_fields(text: str) -> list[HeaderField]:
+    """Every ``\\header`` field of LilyPond text, from the parse tree alone
+    (nothing is read); fields with values other than text (``##f``) are left
+    out."""
+    ...
 
 def check_lilypond(text: str, *, semantic: bool = False) -> list[Diagnostic]:
     """Diagnostics of LilyPond text, in source order: the syntax only (fast,

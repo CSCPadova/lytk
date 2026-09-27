@@ -8,6 +8,45 @@ pub(super) fn escape_ly_string(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// The `\header { … }` block of `meta`, if it has a field: the fields the IR
+/// names, then the others sorted by key, each value quoted.
+pub(super) fn header_block(meta: &crate::ir::score::ScoreMetadata) -> Vec<String> {
+    let named = [
+        ("title", &meta.title),
+        ("subtitle", &meta.subtitle),
+        ("composer", &meta.composer),
+        ("arranger", &meta.arranger),
+        ("poet", &meta.lyricist),
+    ];
+    let mut extra: Vec<(&String, &String)> = meta.extra.iter().collect();
+    extra.sort();
+    let fields: Vec<(&str, &str)> = named
+        .iter()
+        .filter_map(|(k, v)| Some((*k, v.as_deref()?)))
+        .chain(extra.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .collect();
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec!["\\header {".to_string()];
+    for (key, value) in fields {
+        // A key that is no LilyPond identifier (letters, with `-` or `_`
+        // between them) is written quoted, as LilyPond allows.
+        let plain = key
+            .split(['-', '_'])
+            .all(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphabetic()));
+        let key = if plain {
+            key.to_string()
+        } else {
+            format!("\"{}\"", escape_ly_string(key))
+        };
+        lines.push(format!("  {key} = \"{}\"", escape_ly_string(value)));
+    }
+    lines.push("}".to_string());
+    lines.push(String::new());
+    lines
+}
+
 /// Pack space-separated `tokens` into lines no longer than ~72 characters, each
 /// prefixed with `pad`, appending the lines to `lines`. Empty input is a no-op.
 pub(super) fn push_wrapped(tokens: &[String], pad: &str, lines: &mut Vec<String>) {

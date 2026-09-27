@@ -33,6 +33,7 @@ mod music;
 mod postprocess;
 mod state;
 mod syntax;
+mod text;
 mod walk;
 
 #[cfg(test)]
@@ -244,6 +245,20 @@ pub fn check(text: &str, semantic: bool) -> Vec<Diagnostic> {
     }
 }
 
+pub use text::HeaderField;
+
+/// Every `\header` field of LilyPond text, in source order, from the syntax
+/// tree alone (nothing is read): its key, its value as text (strings decoded,
+/// `\markup` as plain text, `#"…"` as the string), the byte range of `key =
+/// value` and the `\score` block it is in, by order, if any. Fields with other
+/// values (`##f`, Scheme) are left out.
+pub fn header_fields(text: &str) -> Vec<HeaderField> {
+    match LilyPondParser::new().and_then(|mut p| p.parse(text)) {
+        Ok(tree) => text::header_fields_of(text, tree.root_node()),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// LilyPond → IR adapter.
 ///
 /// Parses LilyPond source text using tree-sitter and produces an IR `Score`.
@@ -326,6 +341,14 @@ impl LyToIrAdapter {
             }
             vec![score]
         };
+        // The book's header, last assignment first, where a movement leaves a
+        // field unset.
+        let mut scores = scores;
+        for score in &mut scores {
+            for (key, value) in state.book_header.iter().rev() {
+                walk::set_header_field(&mut score.metadata, key, value.clone(), false);
+            }
+        }
         diagnostics.append(&mut state.diagnostics);
         tidy(&mut diagnostics);
         Ok(LyReading {

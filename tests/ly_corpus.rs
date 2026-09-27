@@ -16,7 +16,7 @@
 //!   (`LYTK_LILYPOND_SRC` defaults to the `lilypond/` reference checkout; CI
 //!   sparse-clones v2.26.0).
 
-use _core::adapters::ly_to_ir::{check, LyToIrAdapter};
+use _core::adapters::ly_to_ir::{check, header_fields, LyToIrAdapter};
 use _core::parser::LilyPondParser;
 use tree_sitter::Tree;
 
@@ -251,6 +251,66 @@ fn reader_board() {
         "{} valid files with errors, baseline {READER_ERROR_FILES}",
         with_errors.len()
     );
+}
+
+/// `key = "…"` of `src`, found by text search alone and decoded with
+/// LilyPond's escapes (`lily/lexer.ll`): an oracle independent of the grammar.
+fn decode_field(src: &str, key: &str) -> Option<String> {
+    let at = src.find(&format!("{key} = \""))? + key.len() + 4;
+    let mut out = String::new();
+    let mut chars = src[at..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                e @ ('\\' | '"' | '\'') => out.push(e),
+                e => {
+                    out.push('\\');
+                    out.push(e);
+                }
+            },
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+#[test]
+#[ignore = "needs LilyPond's sources (set LYTK_LILYPOND_SRC)"]
+fn snippet_headers() {
+    let Some(root) = corpus_root() else {
+        eprintln!("snippet_headers skipped: no LilyPond sources (set LYTK_LILYPOND_SRC)");
+        return;
+    };
+    let files = ly_files(&root.join("Documentation/snippets"), false);
+    assert!(files.len() >= 380, "wrong LYTK_LILYPOND_SRC?");
+    let (mut compared, mut differ) = (0, Vec::new());
+    for path in &files {
+        let src = read_lossy(path);
+        let fields = header_fields(&src);
+        for key in ["texidoc", "categories"] {
+            let expected = decode_field(&src, key);
+            let found = fields
+                .iter()
+                .find(|f| f.key == key && f.score.is_none())
+                .map(|f| f.value.clone());
+            compared += usize::from(expected.is_some());
+            if found != expected {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                differ.push(format!("{name} {key}: {found:?} != {expected:?}"));
+            }
+        }
+    }
+    println!(
+        "{compared} texidoc/categories values of {} snippets compared",
+        files.len()
+    );
+    for d in &differ {
+        println!("  differs: {d}");
+    }
+    assert!(differ.is_empty(), "{} fields differ", differ.len());
 }
 
 /// The token kinds a mutation deletes, with their board label. A token is a

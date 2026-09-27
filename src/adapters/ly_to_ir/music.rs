@@ -990,6 +990,12 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             // Text standing on its own (as a `\tempo` or `\set` value): not music.
             i = skip_markup(state, children, i);
         }
+        "\\language" => {
+            if let Some(&next) = children.get(i).filter(|n| n.kind() == "string") {
+                state.set_language(next);
+                i += 1;
+            }
+        }
         _ => {
             // Unknown escaped word — may be a variable reference or dynamic
             let var_name = text.trim_start_matches('\\');

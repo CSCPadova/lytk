@@ -177,7 +177,7 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 | Multi-voice | ✅ | `<< \\\\ >>` syntax |
 | Multi-staff | ✅ | `\new Staff`, `\new PianoStaff` |
 | Variables | ✅ | Definition + resolution |
-| `\include` | ✅ | File inlining |
+| `\include` | 🟡 | LilyPond's language files (`english.ly`, …) set the pitch language; other files are not followed (`ignored-include`: flatten first) |
 | `\transpose` | ✅ | Transposing instrument context |
 | Relative mode | ✅ | `\relative` pitch context |
 | Glissando | ✅ | `\glissando` with style override |
@@ -185,6 +185,8 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 | Slide | ✅ | Via glissando trill style |
 | Anacrusis | ✅ | `\partial` |
 | Paper block | ✅ | `\paper { }` → page layout |
+| `\header` | ✅ | Every field (`Score.header`); strings decoded as LilyPond does; `\markup` values as plain text, `#"…"` as the string; a `\score`'s header is its movement's, the top-level one every movement's |
+| `\language` | ✅ | At the top level, in `\score` and in music; an unknown name keeps the language in force |
 | `\set Staff.instrumentName` | ✅ | Part name from `\set` property |
 | `\set Staff.midiInstrument` | ✅ | MIDI instrument from `\set` property |
 | `\context Voice = "name"` | ✅ | Named voices for lyrics attachment |

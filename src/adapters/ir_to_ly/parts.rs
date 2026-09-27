@@ -210,7 +210,7 @@ pub(super) fn emit_part_variable(
 
     // MIDI instrument setting (emitted at the top of the part variable body)
     let midi_set = if !part.midi_instrument.is_empty() {
-        let name = part.midi_instrument.to_lowercase();
+        let name = super::helpers::escape_ly_string(&part.midi_instrument.to_lowercase());
         format!("  \\set Staff.midiInstrument = \"{name}\"\n")
     } else {
         String::new()

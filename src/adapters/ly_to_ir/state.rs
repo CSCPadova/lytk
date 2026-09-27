@@ -45,8 +45,9 @@ pub(super) enum VarDef {
         main_lane: u8,
         voices: Vec<String>,
         /// Byte range of the `{ … }` block that defines it, so a reference
-        /// inside `\relative` can read it again there (see `resolve_variable`).
-        block: Option<(usize, usize)>,
+        /// inside `\relative` can read it again there (see `resolve_variable`),
+        /// in the pitch language of its definition.
+        block: Option<(usize, usize, PitchLanguage)>,
     },
     /// Variable contained `\figuremode { ... }` — stores flat stream of entries.
     FiguredBass(Vec<FiguredBassEntry>),
@@ -64,6 +65,26 @@ pub(super) const MAX_WHOLE_NOTES: i64 = 100_000;
 /// with repeated relative scales. Emitters write one mark per octave, so the
 /// bound caps each note's output at about 127 marks.
 pub(super) const PITCH_OCTAVES: std::ops::RangeInclusive<i32> = -128..=127;
+/// LilyPond's language files (its `ly/` directory), and the language each
+/// sets: `arabic.ly` uses Italian note names, with accidentals of its own.
+const LANGUAGE_FILES: [(&str, PitchLanguage); 12] = [
+    ("arabic", PitchLanguage::Italiano),
+    ("catalan", PitchLanguage::Catalan),
+    ("deutsch", PitchLanguage::Deutsch),
+    ("english", PitchLanguage::English),
+    ("espanol", PitchLanguage::Espanol),
+    ("italiano", PitchLanguage::Italiano),
+    ("nederlands", PitchLanguage::Nederlands),
+    ("norsk", PitchLanguage::Norsk),
+    ("portugues", PitchLanguage::Portugues),
+    ("suomi", PitchLanguage::Suomi),
+    ("svenska", PitchLanguage::Svenska),
+    ("vlaams", PitchLanguage::Vlaams),
+];
+/// LilyPond's files of pitch names lytk cannot read (with quarter and
+/// smaller tones of their own).
+const OTHER_PITCH_NAMES: [&str; 5] = ["bagpipe", "hel-arabic", "makam", "persian", "turkish-makam"];
+
 /// Deepest the walk may recurse: music blocks inside music blocks, counting
 /// the variables read again inside `\relative`, which the syntax tree's own
 /// depth bound does not see.
@@ -188,6 +209,9 @@ pub(super) struct WalkState<'src> {
     pub(super) top_level_music: Option<Diagnostic>,
     /// The `\score` blocks after the first, which a single-score reading drops.
     pub(super) later_movements: Vec<Diagnostic>,
+    /// Fields of the top-level `\header` blocks, in order: they apply to
+    /// every movement that does not set them itself.
+    pub(super) book_header: Vec<(String, String)>,
 }
 
 impl<'src> WalkState<'src> {
@@ -243,6 +267,7 @@ impl<'src> WalkState<'src> {
             assigned: HashSet::new(),
             top_level_music: None,
             later_movements: Vec::new(),
+            book_header: Vec::new(),
         }
     }
 
@@ -300,20 +325,57 @@ impl<'src> WalkState<'src> {
         self.report(node, Severity::Error, code, message);
     }
 
-    /// A command at `node` (`\name`) that the walk does not read: warn,
-    /// unless LilyPond or the file defines it.
-    pub(super) fn unread_command(&mut self, node: Node, name: &str) {
-        if name == "include" {
-            let file = node
-                .next_sibling()
-                .filter(|n| n.kind() == "string")
+    /// `\language "name"` (`node` is the string): the pitch names from here
+    /// on. An unknown name keeps the current language, and warns.
+    pub(super) fn set_language(&mut self, node: Node) {
+        let name = super::text::string_value(self.source, node);
+        match PitchLanguage::from_str_loose(&name) {
+            Some(lang) => self.language = lang,
+            None => {
+                let current = self.language.as_str();
+                self.warn(
+                    node,
+                    "unknown-language",
+                    format!("unknown pitch language `{name}`: {current} stays"),
+                );
+            }
+        }
+    }
+
+    /// `\include` (at `node`): LilyPond's language files set the language as
+    /// `\language` does; any other file is not followed.
+    fn include(&mut self, node: Node) {
+        let file = node.next_sibling().filter(|n| n.kind() == "string");
+        let path = file.map(|n| super::text::string_value(self.source, n));
+        let stem = path
+            .as_deref()
+            .and_then(|p| p.rsplit(['/', '\\']).next())
+            .and_then(|f| f.strip_suffix(".ly"));
+        if let Some(&(_, lang)) = LANGUAGE_FILES.iter().find(|(f, _)| Some(*f) == stem) {
+            self.language = lang;
+        } else if let Some(stem) = stem.filter(|s| OTHER_PITCH_NAMES.contains(s)) {
+            self.warn(
+                node,
+                "unknown-language",
+                format!("the pitch names of `{stem}.ly` are not read"),
+            );
+        } else {
+            let shown = file
                 .map(|n| format!(" {}", self.text(n)))
                 .unwrap_or_default();
             self.warn(
                 node,
                 "ignored-include",
-                format!("`\\include{file}` is not followed: flatten the file first"),
+                format!("`\\include{shown}` is not followed: flatten the file first"),
             );
+        }
+    }
+
+    /// A command at `node` (`\name`) that the walk does not read: warn,
+    /// unless LilyPond or the file defines it.
+    pub(super) fn unread_command(&mut self, node: Node, name: &str) {
+        if name == "include" {
+            self.include(node);
         } else if !self.assigned.contains(name)
             && super::builtins::BUILTINS.binary_search(&name).is_err()
         {
@@ -559,11 +621,11 @@ impl<'src> WalkState<'src> {
             && !self.rewalking.iter().any(|n| n == name)
         {
             if let Some(VarDef::Music {
-                block: Some((start, end)),
+                block: Some((start, end, language)),
                 ..
             }) = self.definitions.get(name)
             {
-                let (start, end) = (*start, *end);
+                let (start, end, language) = (*start, *end, *language);
                 let node = self
                     .root
                     .and_then(|r| r.descendant_for_byte_range(start, end));
@@ -576,7 +638,9 @@ impl<'src> WalkState<'src> {
                 if let Some(block) = node.filter(|b| !mentions(*b, self.source, name)) {
                     self.var_depth += 1;
                     self.rewalking.push(name.to_string());
+                    let outer = std::mem::replace(&mut self.language, language);
                     super::music::walk_music_block(self, block);
+                    self.language = outer;
                     self.rewalking.pop();
                     self.var_depth -= 1;
                     return true;

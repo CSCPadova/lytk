@@ -912,6 +912,17 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
         }
     }
 
+    // Text written at the note (`^\markup { "dolce" }`)
+    for td in &note.text_directions {
+        let dir = match td.placement {
+            crate::ir::articulation::Placement::Above => '^',
+            crate::ir::articulation::Placement::Below => '_',
+            _ => '-',
+        };
+        let text = super::helpers::escape_ly_string(&td.text);
+        owned.push(format!("{dir}\\markup {{ \"{text}\" }}"));
+    }
+
     let mut result: String = parts.join("");
     for o in &owned {
         result.push_str(o);

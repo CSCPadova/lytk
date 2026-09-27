@@ -39,6 +39,13 @@ engineering notes are in the [development log](devlog.md).
 - Rust: `diagnostics::{Diagnostic, Severity}`; `LyToIrAdapter::read_str` and
   `read_file` return a `LyReading` (every movement and the diagnostics);
   `ly_to_ir::check` and `ly_to_ir::read_source`.
+- `Score.header` and `MusicDocument.header`: every header field as a dict
+  (`title`, `subtitle`, `composer`, `arranger`, `lyricist`, then the others by
+  key), and `MusicDocument.lyricist`.
+- `lytk.header_fields(text)`: every `\header` field of LilyPond text as a
+  `HeaderField` (key, value as text, character span of the whole `key = value`,
+  and the `\score` block it is in), from the parse tree alone, so a field can
+  be read and cut without reading the music. Rust: `ly_to_ir::header_fields`.
 
 ### Changed
 
@@ -53,6 +60,30 @@ engineering notes are in the [development log](devlog.md).
 - A UTF-8 byte-order mark is whitespace anywhere in LilyPond input, as in
   LilyPond; the grammar reported one past the start as a syntax error.
 - `\time 0/4` is ignored like `\time 1/0`, as LilyPond does.
+- LilyPond strings are decoded as LilyPond reads them, in every context
+  (headers, lyrics, `\tempo`, markup, `\with`, `\mark`, `\set`, context and
+  voice names, `\language`): `\"`, `\\`, `\n`, `\t` and `\'`, any other
+  backslash kept. A string used to end at its first escape:
+  `texidoc = "Some \"doc\" here"` read as `Some `.
+- A header value given as `\markup` is its plain text
+  (`composer = \markup { \bold "J. S." Bach }` is `J. S. Bach`), and `#"…"`
+  its string; both were dropped. Markup text at a note keeps its words
+  (`c4^\markup { \italic dolce }`), not only its strings.
+- Headers are scoped: a `\score`'s `\header` belongs to that movement only (it
+  leaked into the next ones), and the top-level `\header` fills every
+  movement's unset fields, wherever it stands.
+- The LilyPond writer writes every header field (it wrote none unless a
+  title, composer, arranger or poet was set), the others sorted by key and
+  quoted when they are no identifier; the Music path writes the poet and the
+  other fields too. Text directions at notes are written
+  (`^\markup { "dolce" }`); they were lost. The Music path quotes lyrics as
+  the Score path does.
+- `\include "english.ly"` and LilyPond's other language files set the pitch
+  language, as `\language` does (`arabic.ly`: Italian names); the files of
+  pitch names lytk cannot read (`makam.ly`, `persian.ly`, `bagpipe.ly`, …)
+  raise `unknown-language`. `\language` is honoured inside `\score` and
+  music, not only at the top level, and an unknown name keeps the language in
+  force instead of resetting it to Dutch.
 - The LilyPond reader refuses input past its bounds with a `ParseError` (a
   `ValueError`: "… lytk refuses input this large") instead of hanging, running out of
   memory or crashing: more than 500,000 notes, rests and chords once repeats

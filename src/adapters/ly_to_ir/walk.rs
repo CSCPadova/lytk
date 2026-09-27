@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::ir::duration::Frac;
-use crate::ir::language::{parse_pitch_name, PitchLanguage, PitchMode};
+use crate::ir::language::{parse_pitch_name, PitchMode};
 use crate::ir::pitch::Pitch;
 
 use super::chord_mode::parse_chordmode_block;
@@ -15,6 +15,7 @@ use super::merge::{assign_piano_direction_staff, part_is_dynamics_only};
 use super::modifiers::{consume_relative, consume_transpose};
 use super::music::walk_music_block;
 use super::state::{PartBuild, VarDef, WalkState};
+use super::text::header_block_fields;
 use crate::diagnostics::{Diagnostic, Severity};
 use crate::ir::timeline::{Event, Timeline};
 
@@ -36,27 +37,20 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                     }
                     "\\language" => {
                         // \language "english"
-                        if let Some(next) = children.get(i + 1) {
-                            if next.kind() == "string" {
-                                let lang_str = extract_string_value(state, *next);
-                                let lang = PitchLanguage::from_str_loose(&lang_str);
-                                if lang.is_none() {
-                                    state.warn(
-                                        *next,
-                                        "unknown-language",
-                                        format!("unknown pitch language `{lang_str}`"),
-                                    );
-                                }
-                                state.language = lang.unwrap_or(PitchLanguage::Nederlands);
-                                i += 1; // skip string
-                            }
+                        if let Some(&next) = children.get(i + 1).filter(|n| n.kind() == "string") {
+                            state.set_language(next);
+                            i += 1; // skip string
                         }
                     }
                     "\\header" => {
-                        // \header { ... }
+                        // The book's \header: every movement's, unless it
+                        // sets the field itself.
                         if let Some(next) = children.get(i + 1) {
                             if next.kind() == "expression_block" {
-                                walk_header(state, *next);
+                                let fields = header_block_fields(state.source, *next);
+                                state
+                                    .book_header
+                                    .extend(fields.into_iter().map(|f| (f.key, f.value)));
                                 i += 1;
                             }
                         }
@@ -79,8 +73,10 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                     i += 1;
                                     continue;
                                 }
-                                // Each \score block is its own movement.
+                                // Each \score block is its own movement, with
+                                // its own \header.
                                 state.flush_voice();
+                                let saved_metadata = std::mem::take(&mut state.metadata);
                                 let saved_parts = std::mem::take(&mut state.parts);
                                 let saved_counter = state.part_counter;
                                 let saved_pending_lyrics =
@@ -91,9 +87,6 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 let saved_voice_map = std::mem::take(&mut state.voice_part_map);
                                 state.part_counter = 0;
                                 state.set_pos(Frac::from_integer(0));
-                                // `\partial` is per-movement: reset so a pickup in
-                                // one \score block doesn't leak into the next.
-                                state.metadata.partial_duration = None;
 
                                 walk_score_block(state, *next);
                                 if let Some(score) = super::assemble_score(state) {
@@ -114,6 +107,7 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                 }
 
                                 // Restore saved state
+                                state.metadata = saved_metadata;
                                 state.parts = saved_parts;
                                 state.part_counter = saved_counter;
                                 state.pending_lyrics = saved_pending_lyrics;
@@ -366,8 +360,9 @@ pub(super) fn walk_program(state: &mut WalkState, root: Node) {
                                         // A `\relative` definition keeps its own
                                         // reference; a plain block is read again
                                         // where it's used inside `\relative`.
-                                        let range = (!is_relative)
-                                            .then(|| (block.start_byte(), block.end_byte()));
+                                        let range = (!is_relative).then(|| {
+                                            (block.start_byte(), block.end_byte(), state.language)
+                                        });
                                         let depth = u32::from(is_relative);
                                         // A chord-mode block, read above as
                                         // harmonies, is read as notes too.
@@ -531,53 +526,36 @@ fn top_level_word(state: &mut WalkState, children: &[Node], i: usize) {
     }
 }
 
-/// Walk a `\header { ... }` block.
+/// Walk a `\score`'s `\header { ... }` block into the movement's metadata.
 pub(super) fn walk_header(state: &mut WalkState, block: Node) {
-    let mut cursor = block.walk();
-    let children: Vec<Node> = block.children(&mut cursor).collect();
-    let mut i = 0;
+    for field in header_block_fields(state.source, block) {
+        set_header_field(&mut state.metadata, &field.key, field.value, true);
+    }
+}
 
-    while i < children.len() {
-        let node = children[i];
-        if node.kind() == "assignment_lhs" {
-            let key = {
-                // assignment_lhs has a child symbol
-                let mut c = node.walk();
-                let result = node
-                    .children(&mut c)
-                    .find(|n| n.kind() == "symbol")
-                    .map(|n| state.text(n).to_string())
-                    .unwrap_or_default();
-                result
-            };
-
-            // Skip the "=" punctuation
-            // Then find the next string value
-            let mut j = i + 1;
-            while j < children.len() {
-                let val_node = children[j];
-                if val_node.kind() == "string" {
-                    let val = extract_string_value(state, val_node);
-                    match key.as_str() {
-                        "title" => state.metadata.title = Some(val),
-                        "subtitle" => state.metadata.subtitle = Some(val),
-                        "composer" => state.metadata.composer = Some(val),
-                        "arranger" => state.metadata.arranger = Some(val),
-                        "poet" | "lyricist" => state.metadata.lyricist = Some(val),
-                        k if !k.is_empty() => {
-                            state.metadata.extra.insert(k.to_string(), val);
-                        }
-                        _ => {}
-                    }
-                    i = j;
-                    break;
-                } else if val_node.kind() == "assignment_lhs" || val_node.kind() == "}" {
-                    break;
-                }
-                j += 1;
+/// Set a header field in `meta`: the fields the IR names (`poet` is the
+/// lyricist) or one of `extra`. Unless `overwrite`, a field already set stays.
+pub(super) fn set_header_field(
+    meta: &mut crate::ir::score::ScoreMetadata,
+    key: &str,
+    value: String,
+    overwrite: bool,
+) {
+    let slot = match key {
+        "title" => &mut meta.title,
+        "subtitle" => &mut meta.subtitle,
+        "composer" => &mut meta.composer,
+        "arranger" => &mut meta.arranger,
+        "poet" | "lyricist" => &mut meta.lyricist,
+        _ => {
+            if overwrite || !meta.extra.contains_key(key) {
+                meta.extra.insert(key.to_string(), value);
             }
+            return;
         }
-        i += 1;
+    };
+    if overwrite || slot.is_none() {
+        *slot = Some(value);
     }
 }
 
@@ -620,6 +598,12 @@ pub(super) fn walk_score_block(state: &mut WalkState, block: Node) {
                             if next.kind() == "expression_block" {
                                 i += 1;
                             }
+                        }
+                    }
+                    "\\language" => {
+                        if let Some(&next) = children.get(i + 1).filter(|n| n.kind() == "string") {
+                            state.set_language(next);
+                            i += 1;
                         }
                     }
                     "\\addlyrics" => {
@@ -1537,7 +1521,7 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
 fn capture_variable<R>(
     state: &mut WalkState,
     as_parts: bool,
-    block: Option<(usize, usize)>,
+    block: Option<(usize, usize, crate::ir::language::PitchLanguage)>,
     walk: impl FnOnce(&mut WalkState) -> R,
 ) -> (VarDef, R) {
     state.flush_voice();

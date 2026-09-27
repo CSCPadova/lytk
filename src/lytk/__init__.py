@@ -5,6 +5,7 @@ from __future__ import annotations
 from lytk._core import (
     Chord,
     Diagnostic,
+    HeaderField,
     InternalError,
     LilyPondSyntaxError,
     LytkError,
@@ -37,6 +38,7 @@ from lytk._core import (
     from_musicxml_string,
     from_note_array,
     from_piano_roll,
+    header_fields,
     invert,
     retrograde,
     to_abc,
@@ -61,6 +63,8 @@ __all__ = [
     "InternalError",
     "Diagnostic",
     "check_lilypond",
+    "HeaderField",
+    "header_fields",
     "MusicDocument",
     "Score",
     # Structured note navigation (read-only Layer-2 tree)

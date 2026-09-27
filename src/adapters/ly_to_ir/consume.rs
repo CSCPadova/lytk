@@ -400,41 +400,10 @@ pub(super) fn previous<'a>(children: &[Node<'a>], i: usize) -> Option<Node<'a>> 
         .copied()
 }
 
-/// The index past a markup expression starting at `i` (just after `\markup`):
-/// markup commands with their Scheme arguments, then one block, string or
-/// word. It stops at a command that starts a new top-level construct.
-pub(super) fn skip_markup(state: &WalkState, children: &[Node], mut i: usize) -> usize {
-    while let Some(node) = children.get(i) {
-        match node.kind() {
-            "escaped_word"
-                if !matches!(
-                    state.text(*node),
-                    "\\score"
-                        | "\\book"
-                        | "\\bookpart"
-                        | "\\header"
-                        | "\\paper"
-                        | "\\layout"
-                        | "\\midi"
-                        | "\\version"
-                        | "\\include"
-                        | "\\language"
-                        | "\\markup"
-                        | "\\markuplist"
-                        | "\\new"
-                        | "\\context"
-                        | "\\relative"
-                        | "\\transpose"
-                ) =>
-            {
-                i += 1
-            }
-            "embedded_scheme" => i += 1,
-            "expression_block" | "string" | "symbol" => return i + 1,
-            _ => return i,
-        }
-    }
-    i
+/// The index past a markup expression starting at `i` (just after `\markup`);
+/// see [`super::text::markup_end`].
+pub(super) fn skip_markup(state: &WalkState, children: &[Node], i: usize) -> usize {
+    super::text::markup_end(state.source, children, i)
 }
 
 /// Get the text of a punctuation node (which may have a child).
@@ -533,32 +502,15 @@ pub(super) fn ly_number_to_beat_unit(num: &str) -> String {
     .to_string()
 }
 
-/// Extract the text content of a `string` node. Returns the unquoted value.
+/// The decoded text of a `string` node (see [`super::text::string_value`]).
 pub(super) fn extract_string_value(state: &WalkState, node: Node) -> String {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "string_fragment" {
-            return state.text(child).to_string();
-        }
-    }
-    String::new()
+    super::text::string_value(state.source, node)
 }
 
-/// Extract text content from a markup expression_block like `{ "pizz." }`.
-/// Walks children looking for string nodes and returns the concatenated text.
+/// The plain text of a markup block like `{ \italic dolce }`: its words and
+/// strings (see [`super::text::markup_text`]).
 pub(super) fn extract_markup_text(state: &WalkState, block: Node) -> String {
-    let mut result = String::new();
-    let mut cursor = block.walk();
-    for child in block.children(&mut cursor) {
-        if child.kind() == "string" {
-            let s = extract_string_value(state, child);
-            if !result.is_empty() {
-                result.push(' ');
-            }
-            result.push_str(&s);
-        }
-    }
-    result
+    super::text::markup_text(state.source, &[block])
 }
 
 /// Parse a `\with { ... }` expression block and extract known properties.
@@ -912,15 +864,10 @@ pub(super) fn parse_ly_make_moment(text: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// Extract a string from a scheme expression like `#"flute"`.
-/// Returns `None` if the expression doesn't contain a quoted string.
+/// The string of a Scheme string literal like `#"flute"`, escapes decoded;
+/// `None` for any other Scheme value.
 pub(super) fn extract_scheme_string(text: &str) -> Option<String> {
-    let inner = text.trim_start_matches('#').trim();
-    if inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2 {
-        Some(inner[1..inner.len() - 1].to_string())
-    } else {
-        None
-    }
+    super::text::scheme_string(text)
 }
 
 /// Build a Chord from a `chord` node (< ... >).

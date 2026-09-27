@@ -321,20 +321,20 @@ impl PyDiagnostic {
     }
 }
 
-/// Diagnostics for Python, their byte ranges turned into character offsets
-/// into `text` (in one pass over it).
-fn py_diagnostics(text: &str, diagnostics: &[Diagnostic]) -> Vec<PyDiagnostic> {
-    let boundary = |b: usize| {
+/// The character offset into `text` of each byte offset in `offsets`
+/// (floored to a character boundary), counted in one pass over `text`.
+fn char_offsets<'t>(
+    text: &'t str,
+    offsets: impl IntoIterator<Item = usize>,
+) -> impl Fn(usize) -> usize + 't {
+    let boundary = move |b: usize| {
         let mut b = b.min(text.len());
         while !text.is_char_boundary(b) {
             b -= 1;
         }
         b
     };
-    let mut bytes: Vec<usize> = diagnostics
-        .iter()
-        .flat_map(|d| [boundary(d.start), boundary(d.end)])
-        .collect();
+    let mut bytes: Vec<usize> = offsets.into_iter().map(boundary).collect();
     bytes.sort_unstable();
     bytes.dedup();
     let (mut chars, mut count, mut at) = (Vec::with_capacity(bytes.len()), 0, 0);
@@ -343,7 +343,13 @@ fn py_diagnostics(text: &str, diagnostics: &[Diagnostic]) -> Vec<PyDiagnostic> {
         at = b;
         chars.push(count);
     }
-    let char_at = |b: usize| chars[bytes.binary_search(&boundary(b)).unwrap_or(0)];
+    move |b| chars[bytes.binary_search(&boundary(b)).unwrap_or(0)]
+}
+
+/// Diagnostics for Python, their byte ranges turned into character offsets
+/// into `text`.
+fn py_diagnostics(text: &str, diagnostics: &[Diagnostic]) -> Vec<PyDiagnostic> {
+    let char_at = char_offsets(text, diagnostics.iter().flat_map(|d| [d.start, d.end]));
     diagnostics
         .iter()
         .map(|d| PyDiagnostic {
@@ -377,6 +383,79 @@ fn check_strict(strict: bool, diagnostics: &[PyDiagnostic]) -> PyResult<()> {
             .setattr("diagnostics", diagnostics.to_vec().into_py(py))?;
         Err(err)
     })
+}
+
+/// A field of a LilyPond ``\header`` block, from :func:`header_fields`:
+/// ``text[start:end]`` is the whole ``key = value``, and ``score`` the index
+/// of the ``\score`` block it is in (in file order), or *None*.
+#[pyclass(name = "HeaderField", module = "lytk", frozen, get_all, eq, hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PyHeaderField {
+    key: String,
+    value: String,
+    start: usize,
+    end: usize,
+    score: Option<usize>,
+}
+
+#[pymethods]
+impl PyHeaderField {
+    fn __repr__(&self) -> String {
+        format!(
+            "HeaderField({:?}, {:?}, start={}, end={}, score={:?})",
+            self.key, self.value, self.start, self.end, self.score
+        )
+    }
+}
+
+/// Every ``\header`` field of LilyPond text, in source order, from the parse
+/// tree alone (nothing is read). Values are text: strings decoded, a
+/// ``\markup`` value as its plain words, ``#"…"`` as its string; fields with
+/// other values (``##f``) are left out. ``text[f.start:f.end]`` is the whole
+/// assignment, so a field can be read and cut.
+#[pyfunction]
+fn header_fields(py: Python<'_>, text: &str) -> PyResult<Vec<PyHeaderField>> {
+    guard(|| {
+        let fields = py.allow_threads(|| adapters::ly_to_ir::header_fields(text));
+        let char_at = char_offsets(text, fields.iter().flat_map(|f| [f.start, f.end]));
+        Ok(fields
+            .into_iter()
+            .map(|f| PyHeaderField {
+                start: char_at(f.start),
+                end: char_at(f.end),
+                key: f.key,
+                value: f.value,
+                score: f.score,
+            })
+            .collect())
+    })
+}
+
+/// The header fields of `meta` as a dict: the ones the IR names, then the
+/// others sorted by key.
+fn header_dict<'py>(
+    py: Python<'py>,
+    meta: &ir::score::ScoreMetadata,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new_bound(py);
+    let named = [
+        ("title", &meta.title),
+        ("subtitle", &meta.subtitle),
+        ("composer", &meta.composer),
+        ("arranger", &meta.arranger),
+        ("lyricist", &meta.lyricist),
+    ];
+    for (key, value) in named {
+        if let Some(value) = value {
+            dict.set_item(key, value)?;
+        }
+    }
+    let mut extra: Vec<(&String, &String)> = meta.extra.iter().collect();
+    extra.sort();
+    for (key, value) in extra {
+        dict.set_item(key, value)?;
+    }
+    Ok(dict)
 }
 
 /// Read LilyPond, from a file or text, releasing the GIL: the text and the
@@ -489,6 +568,14 @@ impl PyScore {
     #[getter]
     fn lyricist(&self) -> Option<String> {
         self.inner.metadata.lyricist.clone()
+    }
+
+    /// Every header field as a dict of strings: ``title``, ``subtitle``,
+    /// ``composer``, ``arranger`` and ``lyricist`` (LilyPond's ``poet``) when
+    /// set, then the others (``copyright``, ``opus``, ``texidoc``, …) by key.
+    #[getter]
+    fn header<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        header_dict(py, &self.inner.metadata)
     }
 
     /// Active LilyPond pitch language (e.g. ``"nederlands"``), or *None*.
@@ -666,6 +753,18 @@ impl PyMusicDocument {
     #[getter]
     fn arranger(&self) -> Option<String> {
         self.inner.metadata.arranger.clone()
+    }
+
+    /// Lyricist (LilyPond ``poet``/``lyricist``).
+    #[getter]
+    fn lyricist(&self) -> Option<String> {
+        self.inner.metadata.lyricist.clone()
+    }
+
+    /// Every header field as a dict of strings (see :attr:`Score.header`).
+    #[getter]
+    fn header<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        header_dict(py, &self.inner.metadata)
     }
 
     /// Active LilyPond pitch language (e.g. ``"nederlands"``), or *None*.
@@ -1550,6 +1649,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("LilyPondSyntaxError", syntax_error_type(m.py())?)?;
     m.add_class::<PyDiagnostic>()?;
     m.add_function(wrap_pyfunction!(check_lilypond, m)?)?;
+    m.add_class::<PyHeaderField>()?;
+    m.add_function(wrap_pyfunction!(header_fields, m)?)?;
     m.add_function(wrap_pyfunction!(_panic_for_tests, m)?)?;
 
     // Score class

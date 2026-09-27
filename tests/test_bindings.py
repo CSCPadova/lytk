@@ -424,6 +424,38 @@ class TestDiagnostics:
         assert (dropped.code, dropped.line) == ("dropped-music", 2)
 
 
+class TestStringsAndHeaders:
+    """Strings decoded as LilyPond reads them, headers as dicts (Epic J4);
+    pitch-language files (J5)."""
+
+    def test_header_is_a_dict_of_every_field(self):
+        text = '\\header { title = "A \\"B\\"" composer = \\markup { \\bold "J. S." Bach } opus = "5" }\n{ c\'1 }'
+        score = lytk.from_lilypond_string(text)
+        assert score.header == {"title": 'A "B"', "composer": "J. S. Bach", "opus": "5"}
+        doc = lytk.from_lilypond_music_string('\\header { poet = "P" }\n{ c\'1 }')
+        assert (doc.lyricist, doc.header) == ("P", {"lyricist": "P"})
+
+    def test_each_movement_has_its_header(self, tmp_path):
+        path = tmp_path / "two.ly"
+        path.write_text('\\header { composer = "C" }\n\\score { \\header { piece = "I" } { c\'1 } }\n\\score { { d\'1 } }\n')
+        first, second = lytk.from_lilypond_movements(str(path))
+        assert first.header == {"composer": "C", "piece": "I"}
+        assert second.header == {"composer": "C"}
+
+    def test_header_fields_locate_each_assignment(self):
+        text = '% é\n\\header { title = "é\\"x" tagline = ##f }\n\\score { \\header { piece = "II" } { c\'1 } }'
+        fields = lytk.header_fields(text)
+        assert [(f.key, f.value, f.score) for f in fields] == [("title", 'é"x', None), ("piece", "II", 0)]
+        assert text[fields[0].start : fields[0].end] == 'title = "é\\"x"'  # character offsets
+        cut = text[: fields[0].start] + text[fields[0].end :]
+        assert [f.key for f in lytk.header_fields(cut)] == ["piece"]
+
+    def test_language_files_set_the_pitch_names(self):
+        score = lytk.from_lilypond_string('\\include "english.ly"\n{ cs\'4 }')
+        assert [n[2] for n in score.notes()] == [61]
+        assert score.diagnostics == []
+
+
 class TestPanicFirewall:
     """A Rust panic reaches Python as lytk.InternalError, never as pyo3's
     PanicException (a BaseException), and prints nothing."""

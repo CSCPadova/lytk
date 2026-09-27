@@ -3,6 +3,65 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-27 — Epic J: J4 (strings and headers) and J5 (pitch language)
+
+**J4.** `ly_to_ir/text.rs` decodes text as LilyPond's lexer does
+(`Lily_lexer::escaped_char`): a string joins its fragments and decodes `\n`,
+`\t`, `\\`, `\"`, `\'`, keeping any other backslash; `#"…"` decodes Guile's
+common escapes; markup becomes its words and strings, one space where the
+source has anything between them (`\markup { \bold "J. S." Bach }` is
+`J. S. Bach`). Every reader site goes through `extract_string_value`, so the
+fifteen callers the plan listed were fixed at once; it used to return the
+first fragment (`texidoc = "Some \"doc\" here"` read as `Some `).
+
+Headers:
+- `header_block_fields` reads a `\header` block (string, `\markup` and `#"…"`
+  values; `##f` and other Scheme left out), for both the walk and
+  `header_fields`.
+- Scoping: a `\score`'s `\header` writes the movement's metadata, which is
+  taken before the block and restored after it; top-level `\header` fields go
+  to `book_header` and fill every movement's unset fields at the end, last
+  assignment first, so a book header after the scores still applies, as in
+  LilyPond.
+- `header_fields(text)` walks the tree once, remembering the `\score` blocks it
+  passes to give each field its score index. In Python its spans are
+  character offsets, like `Diagnostic`'s (the plan said bytes; Python slices
+  strings by character).
+
+Writers: one `helpers::header_block` for both paths writes every field (the
+Score path wrote none without a title, composer, arranger or poet; the Music
+path left out the poet and the others), the others sorted by key and quoted
+when they are no LilyPond identifier. The round-trip test found note text
+directions lost by the Score-path writer: `attachments_to_ly` writes them now.
+The Music path's lyric quoting is the Score path's.
+
+Acceptance: `snippet_headers` (in the `lilypond-corpus` CI job) compares the
+`texidoc` and `categories` of the 389 snippets with a decoder that finds them
+by text search: 778 values equal, 108 of the texidocs with escapes. The string
+round trip (`tests/ly_text.rs`) puts a quote, a backslash, a newline and
+non-ASCII in headers, `\tempo`, `\mark`, instrument names, lyrics and markup
+text, and reads the written LilyPond back unchanged.
+
+**J5.** `WalkState::include` maps LilyPond's language files to their language
+(`arabic.ly`, Italian names with accidentals of its own, to Italian); the
+five files of pitch names lytk cannot read (`bagpipe`, `hel-arabic`, `makam`,
+`persian`, `turkish-makam`) raise `unknown-language`, any other file
+`ignored-include`. `set_language` serves `\language` at the top level, in
+`\score` and in music; an unknown name keeps the language in force. A music
+variable keeps the language of its definition for the re-reading inside
+`\relative`.
+
+Board (d) after both (LilyPond 2.26.0, count/files): `ignored-include`
+221/171 (was 245/192), `unknown-language` 6/6 (new: the files above),
+`unrecognized-token` 437/78 (was 595/89); the others unchanged. Board (a)
+still 1 file.
+
+Tests: 1,133 Rust, 228 Python (`TestStringsAndHeaders`).
+
+**Next**: J6 (release hygiene), then 0.3.0. J1's unfinished hunt, later. The
+reading gaps the warnings show: a music variable at the top level, `\fixed`,
+drum mode, and the headers of `\book` blocks (not read).
+
 ## 2026-09-27 — Epic J: J2 (exception hierarchy) and J3 (diagnostics, strict mode)
 
 **J2.** `ParseError(LytkError, ValueError)` and `LilyPondSyntaxError(ParseError)`
