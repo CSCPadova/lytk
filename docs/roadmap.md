@@ -4,7 +4,7 @@ Items are grouped by status. Completed items are kept for reference.
 
 ## Latest status (2026-09-27, Epic J: J6, the hunt, J7)
 
-**Epic J is done; 0.3.0 is ready to tag.** The version has one source and
+**Epic J is done and released as v0.3.0.** The version has one source and
 the Python tests run on 3.10–3.13 (J6). The hunt's last five areas found two
 panics, an abort and four quadratic paths, all fixed. The LilyPond reader
 now reads top-level music as LilyPond does, a movement per expression, and
@@ -682,7 +682,7 @@ what it drops. Principles, as in Epic I:
   default to today's behaviour, and new exceptions subclass the ones raised
   today.
 
-### Epic J — 0.3.0: trustworthy LilyPond reading
+### Epic J — 0.3.0: trustworthy LilyPond reading (✅ released in v0.3.0, 2026-09-27)
 
 | Task | Description | Acceptance | Size | Status |
 |------|-------------|------------|------|--------|
@@ -929,7 +929,7 @@ notation-exported MIDI (IC).
 | **11** | **P1–P12** | **Pre-1.0.0 expansion (MuseScore-comparison backlog): CLI/IO + transforms, MusicXML fidelity, IR modeling, MIDI reconstruction — see plan file** |
 | **12** | **0.1.0** | **Preview release before the remaining P-epics; then P5 → P3 → P4 → P6 → P8 → P9** |
 | **13** | **I → 0.2.0** | **MIDI and ABC conversion repair (Epic I, with P9 performed MIDI): tagged `v0.2.0` 2026-09-27** |
-| 14 | J → 0.3.0 | Trustworthy LilyPond reading: no panics, diagnostics + strict mode, whole strings and headers, pitch-language files |
+| **14** | **J → 0.3.0** | **Trustworthy LilyPond reading: no panics, diagnostics + strict mode, whole strings and headers, pitch-language files: tagged `v0.3.0` 2026-09-27** |
 | 15 | K → 0.4.0 | Source-level API: `\version`, includes from strings, tokens, statistics, movements |
 | 16 | L → 0.5.0 | Datasets for curated corpora: robust `FolderDataset`, records dataset, ids, Python API reference |
 | 17 | P5 → 0.6.0, then P3 → P4 → P6 → P8 → 1.0.0 | Pre-1.0 queue resumes (P5 breaks the Python API) |

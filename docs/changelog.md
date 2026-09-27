@@ -7,6 +7,16 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-27
+
+LilyPond input you can trust. Readers raise `lytk.ParseError` instead of
+crashing, `lytk.check_lilypond` and `lytk check` report diagnostics, and
+`strict=True` rejects what LilyPond rejects. Strings and headers are read
+as LilyPond reads them, pitch-language files are honoured, and top-level
+music, `\book`, drum mode and `\fixed` follow LilyPond. The inputs that made
+lytk panic, hang or run out of memory, found by fuzzing and a hunt, are
+fixed, and all of LilyPond's 2,626 regression tests and snippets are read.
+
 ### Added
 
 - `lytk.__version__`, the crate's version (`lytk --version` prints it).
@@ -467,6 +477,7 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/CSCPadova/lytk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CSCPadova/lytk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/CSCPadova/lytk/releases/tag/v0.1.0

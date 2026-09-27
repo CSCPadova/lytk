@@ -3,6 +3,16 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-27 — Release 0.3.0
+
+Epic J (J0–J7) ships as **0.3.0**. The version was already 0.3.0 in
+`Cargo.toml` since J6, its only source; `[Unreleased]` became
+`[0.3.0] - 2026-09-27` in the changelog. As for 0.2.0, the release commit
+reaches `master` through a pull request and the tag goes on the merge
+commit; the release workflow's test gate checks that the tag is the
+version. Next: Epic K (0.4.0), and lilycorpus can move to `lytk>=0.3,<0.4`
+and drop its workarounds (docs/lytk-wishlist.md there).
+
 ## 2026-09-27 — Epic J: reading problems the hunt left open (J7)
 
 The hunt's "modes" area read phantom notes: `\drums { bd4 sn }` as two
