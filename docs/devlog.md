@@ -3,6 +3,26 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-28 — Epic K: K4 (statistics) and K5 (music movements)
+
+`lytk.info(score)` is the dict `lytk info --json` printed, now built in the
+library and computed in Rust (`ir/stats.rs`). The CLI built it in Python
+through the navigation objects, one Python object per note; a corpus that
+wants statistics per record (lilycorpus's wishlist item 7) should not pay
+that. The keys the CLI printed stay as they were, and `test_info_json`
+checks the CLI prints exactly `lytk.info`. The new counts: voices (distinct
+voice numbers per part, summed over parts), bars (the longest part's),
+length in quarter notes (each bar as long as its longest voice, grace notes
+taking no time), lyric syllables, chord symbols and grace notes.
+`source_stats(text)` counts tokens by kind, with lines and error tokens
+added to what the roadmap asked for.
+
+K5's first half, single-score readers reporting the movements they drop,
+came with J3 and J7; `from_lilypond_music_movements` is the Music-tree twin
+of `from_lilypond_movements`.
+
+Tests: 1,153 Rust, 239 Python (`TestStatistics`, `test_music_movements`).
+
 ## 2026-09-28 — Epic K: K3 (tokens)
 
 `ly_to_ir/tokens.rs` walks the tree and makes a token of each leaf, and of
@@ -21,7 +41,7 @@ comment leaves its line break. Scheme's own comments stay, being part of a
 Scheme token. Scheme is not sub-tokenized: the roadmap left it optional,
 and nothing asks for it.
 
-Tests: 1,154 Rust, 236 Python (`TestTokens`).
+Tests: 1,152 Rust, 236 Python (`TestTokens`).
 
 ## 2026-09-28 — Epic K: K1 (`\version`)
 
@@ -49,7 +69,7 @@ reports an error in 2 of them, the two version tests; before K1 it found
 none. The boards ran on the 2.27.3 checkout this time (the 2.26 one was
 gone): still the one false positive (`##[ #]`).
 
-Tests: 1,150 Rust (`tests/ly_source.rs`), 234 Python (`TestLilyPondVersion`).
+Tests: 1,148 Rust (`tests/ly_source.rs`), 234 Python (`TestLilyPondVersion`).
 
 ## 2026-09-27 — Release 0.3.0
 

@@ -28,6 +28,15 @@ engineering notes are in the [development log](devlog.md).
   whitespace is in exactly one token, broken input included.
   `lytk.strip_comments(text)` removes LilyPond comments. Rust:
   `ly_to_ir::{tokenize, strip_comments, Token, TokenKind}`.
+- `lytk.info(score)`: a score's metadata and counts as a dict, the library
+  home of `lytk info --json`, which now calls it. Besides the parts and notes
+  it counts voices, bars, the length in quarter notes, lyric syllables, chord
+  symbols and grace notes, computed in Rust. `lytk.source_stats(text)`:
+  bytes, lines, tokens, comments, Scheme expressions and error tokens of
+  LilyPond text. Rust: `ir::stats::score_info`, `ly_to_ir::source_stats`.
+- `lytk.from_lilypond_music_movements(path)`: every movement of a LilyPond
+  file as a `MusicDocument`, as `from_lilypond_movements` gives them as
+  scores.
 
 ## [0.3.0] - 2026-09-27
 

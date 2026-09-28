@@ -399,6 +399,7 @@ class TestInspect:
         assert data["part_count"] == 1
         assert data["note_count"] == len(lytk.from_musicxml(str(FIXTURE_XML)).iter_parts()[0].notes)
         assert data["parts"][0]["measures"] == 28
+        assert data == lytk.info(lytk.from_musicxml(str(FIXTURE_XML)))
 
     def test_positions(self):
         data = json.loads(ok("positions", str(FIXTURE_XML)).stdout)

@@ -430,6 +430,19 @@ def strip_comments(text: str) -> str:
     stay."""
     ...
 
+def source_stats(text: str) -> dict[str, int]:
+    """Counts of LilyPond source text from its tokens: ``bytes``, ``lines``,
+    ``tokens``, ``comments``, ``scheme``, ``error_tokens``."""
+    ...
+
+def info(score: Score) -> dict[str, Any]:
+    """A score's metadata and counts, as ``lytk info --json`` prints them:
+    ``title`` … ``language``, ``lilypond_version``; ``part_count``,
+    ``note_count``, ``voice_count``, ``bar_count``, ``duration_quarters``,
+    ``lyric_count``, ``chord_symbol_count``, ``grace_note_count``; and
+    ``parts``, a dict per part."""
+    ...
+
 def check_lilypond(text: str, *, semantic: bool = False) -> list[Diagnostic]:
     """Diagnostics of LilyPond text, in source order: the syntax only (fast,
     nothing is read), or with ``semantic=True`` what a reading reports too.
@@ -456,6 +469,12 @@ def from_lilypond_movements(
 ) -> list[Score]:
     """Every movement of a LilyPond file: one score per ``\\score`` block and
     per top-level music expression, each with the file's diagnostics."""
+    ...
+def from_lilypond_music_movements(
+    path: str, *, language: str | None = None, strict: bool = False
+) -> list[MusicDocument]:
+    """Every movement of a LilyPond file as a Music tree, each with the
+    file's diagnostics."""
     ...
 def from_lilypond_music(
     path: str, *, language: str | None = None, strict: bool = False

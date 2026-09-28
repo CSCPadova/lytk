@@ -460,6 +460,13 @@ class TestStringsAndHeaders:
         cut = text[: fields[0].start] + text[fields[0].end :]
         assert [f.key for f in lytk.header_fields(cut)] == ["piece"]
 
+    def test_music_movements(self, tmp_path):
+        path = tmp_path / "two.ly"
+        path.write_text('\\version "2.24.0"\n{ c\'1 }\n\\score { { d\'1 e\'1 } }\n')
+        docs = lytk.from_lilypond_music_movements(str(path))
+        assert [len(d.notes()) for d in docs] == [1, 2]
+        assert all(d.lilypond_version == lytk.LilyPondVersion("2.24") for d in docs)
+
     def test_language_files_set_the_pitch_names(self):
         score = lytk.from_lilypond_string('\\include "english.ly"\n{ cs\'4 }')
         assert [n[2] for n in score.notes()] == [61]
@@ -539,6 +546,26 @@ class TestTokens:
 
     def test_strip_comments(self):
         assert lytk.strip_comments("c4%{x%}d4 % tail\nr4") == "c4 d4 \nr4"
+
+
+class TestStatistics:
+    """lytk.info and lytk.source_stats (Epic K4)."""
+
+    def test_counts(self):
+        score = lytk.from_lilypond_string(
+            "\\version \"2.24.0\"\n{ \\grace d''8 e''4 f'' <g'' b''> a'' | c''1 }\n\\addlyrics { la la la la la }"
+        )
+        data = lytk.info(score)
+        assert data["lilypond_version"] == "2.24.0"
+        assert (data["part_count"], data["note_count"], data["grace_note_count"]) == (1, 7, 1)
+        assert (data["bar_count"], data["duration_quarters"], data["lyric_count"]) == (2, 8.0, 5)
+        assert data["parts"][0]["notes"] == 7 and data["parts"][0]["measures"] == 2
+        two = lytk.info(lytk.from_lilypond_string("<< \\new ChordNames \\chordmode { c1 g1 } \\new Staff << { c''1 d''1 } \\\\ { c'1 d'1 } >> >>"))
+        assert (two["voice_count"], two["chord_symbol_count"], two["note_count"]) == (2, 2, 4)
+
+    def test_source_stats(self):
+        stats = lytk.source_stats("% a\n#(define x 1)\n{ c'4 %{b%} }\n")
+        assert stats == {"bytes": 32, "lines": 3, "tokens": 8, "comments": 2, "scheme": 1, "error_tokens": 0}
 
 
 class TestPanicFirewall:

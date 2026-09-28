@@ -249,7 +249,7 @@ pub fn check(text: &str, semantic: bool) -> Vec<Diagnostic> {
 }
 
 pub use text::HeaderField;
-pub use tokens::{strip_comments, tokenize, Token, TokenKind};
+pub use tokens::{source_stats, strip_comments, tokenize, SourceStats, Token, TokenKind};
 pub use version::{
     lilypond_version, set_lilypond_version, strip_lilypond_version, LilyPondVersion,
 };

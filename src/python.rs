@@ -698,6 +698,99 @@ fn strip_comments(py: Python<'_>, text: &str) -> PyResult<String> {
     })
 }
 
+/// Counts of LilyPond source text, from its tokens (:func:`tokenize`):
+/// ``bytes`` (UTF-8), ``lines``, ``tokens``, ``comments``, ``scheme``
+/// (embedded Scheme expressions) and ``error_tokens`` (text the grammar
+/// cannot tokenize).
+#[pyfunction]
+fn source_stats<'py>(py: Python<'py>, text: &str) -> PyResult<Bound<'py, PyDict>> {
+    guard(|| {
+        let s = py
+            .allow_threads(|| adapters::ly_to_ir::source_stats(text))
+            .map_err(read_err)?;
+        let dict = PyDict::new_bound(py);
+        for (key, value) in [
+            ("bytes", s.bytes),
+            ("lines", s.lines),
+            ("tokens", s.tokens),
+            ("comments", s.comments),
+            ("scheme", s.scheme),
+            ("error_tokens", s.error_tokens),
+        ] {
+            dict.set_item(key, value)?;
+        }
+        Ok(dict)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
+/// A score's metadata and counts, as ``lytk info --json`` prints them:
+/// ``title``, ``subtitle``, ``composer``, ``arranger``, ``lyricist``,
+/// ``language``, ``lilypond_version`` (strings or *None*); ``part_count``,
+/// ``note_count`` (sounding notes: chord members and grace notes each
+/// count), ``voice_count`` (distinct voices of each part, summed),
+/// ``bar_count``, ``duration_quarters`` (each bar as long as its longest
+/// voice), ``lyric_count`` (syllables), ``chord_symbol_count``,
+/// ``grace_note_count``; and ``parts``, one dict per part (``id``, ``name``,
+/// ``abbreviation``, ``measures``, ``staves``, ``midi_program``,
+/// ``midi_instrument``, ``voices``, ``notes``).
+#[pyfunction]
+fn info<'py>(py: Python<'py>, score: &PyScore) -> PyResult<Bound<'py, PyDict>> {
+    guard(|| {
+        let s = &score.inner;
+        let counts = ir::stats::score_info(s);
+        let meta = &s.metadata;
+        let dict = PyDict::new_bound(py);
+        let language = meta.pitch_language.map(|l| l.as_str().to_string());
+        for (key, value) in [
+            ("title", &meta.title),
+            ("subtitle", &meta.subtitle),
+            ("composer", &meta.composer),
+            ("arranger", &meta.arranger),
+            ("lyricist", &meta.lyricist),
+            ("language", &language),
+            ("lilypond_version", &meta.lilypond_version),
+        ] {
+            dict.set_item(key, value)?;
+        }
+        let quarters = counts.duration_quarters;
+        dict.set_item("part_count", counts.parts.len())?;
+        dict.set_item("note_count", counts.note_count)?;
+        dict.set_item("voice_count", counts.voice_count)?;
+        dict.set_item("bar_count", counts.bar_count)?;
+        dict.set_item(
+            "duration_quarters",
+            *quarters.numer() as f64 / *quarters.denom() as f64,
+        )?;
+        dict.set_item("lyric_count", counts.lyric_count)?;
+        dict.set_item("chord_symbol_count", counts.chord_symbol_count)?;
+        dict.set_item("grace_note_count", counts.grace_note_count)?;
+        let parts = s
+            .parts()
+            .into_iter()
+            .zip(&counts.parts)
+            .map(|(part, c)| {
+                let d = PyDict::new_bound(py);
+                d.set_item("id", &part.part_id)?;
+                d.set_item("name", &part.name)?;
+                d.set_item("abbreviation", &part.abbreviation)?;
+                d.set_item("measures", c.measures)?;
+                d.set_item("staves", part.staves)?;
+                d.set_item("midi_program", part.midi_program)?;
+                d.set_item("midi_instrument", &part.midi_instrument)?;
+                d.set_item("voices", c.voices)?;
+                d.set_item("notes", c.notes)?;
+                Ok(d)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        dict.set_item("parts", parts)?;
+        Ok(dict)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // PyScore — opaque wrapper for the IR Score
 // ---------------------------------------------------------------------------
@@ -1156,6 +1249,32 @@ fn from_lilypond_music(
             inner: ir::lift::lift_to_music(&score),
             diagnostics,
         })
+    })
+}
+
+/// Parse every movement of a LilyPond file into a :class:`MusicDocument`
+/// (see :func:`from_lilypond_movements`). Each carries the file's
+/// diagnostics.
+#[pyfunction]
+#[pyo3(signature = (path, *, language=None, strict=false))]
+fn from_lilypond_music_movements(
+    py: Python<'_>,
+    path: &str,
+    language: Option<&str>,
+    strict: bool,
+) -> PyResult<Vec<PyMusicDocument>> {
+    guard(|| {
+        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let diagnostics = py_diagnostics(&text, &reading.diagnostics);
+        check_strict(strict, &diagnostics)?;
+        Ok(reading
+            .scores
+            .iter()
+            .map(|score| PyMusicDocument {
+                inner: ir::lift::lift_to_music(score),
+                diagnostics: diagnostics.clone(),
+            })
+            .collect())
     })
 }
 
@@ -1882,6 +2001,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyToken>()?;
     m.add_function(wrap_pyfunction!(tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(strip_comments, m)?)?;
+    m.add_function(wrap_pyfunction!(source_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(info, m)?)?;
     m.add_function(wrap_pyfunction!(_panic_for_tests, m)?)?;
 
     // Score class
@@ -1898,6 +2019,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_movements, m)?)?;
+    m.add_function(wrap_pyfunction!(from_lilypond_music_movements, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond, m)?)?;

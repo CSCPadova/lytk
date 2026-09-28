@@ -152,9 +152,12 @@ Parts:    1
   - MusicXML Part (28 measures)
 ```
 
-`--json` prints title, subtitle, composer, arranger, lyricist, language,
-`part_count`, `note_count`, and for each part its id, name, abbreviation,
-number of measures, staves, MIDI program and MIDI instrument.
+`--json` prints `lytk.info(score)`: title, subtitle, composer, arranger,
+lyricist, language, `lilypond_version`, `part_count`, `note_count`,
+`voice_count`, `bar_count`, `duration_quarters`, `lyric_count`,
+`chord_symbol_count`, `grace_note_count`, and for each part its id, name,
+abbreviation, number of measures, staves, MIDI program, MIDI instrument,
+voices and notes.
 
 ## positions
 

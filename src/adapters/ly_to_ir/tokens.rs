@@ -144,6 +144,33 @@ pub fn strip_comments(text: &str) -> Result<String> {
     Ok(out)
 }
 
+/// Counts of LilyPond source text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStats {
+    pub bytes: usize,
+    pub lines: usize,
+    pub tokens: usize,
+    pub comments: usize,
+    /// Embedded Scheme expressions.
+    pub scheme: usize,
+    /// Text the grammar cannot tokenize.
+    pub error_tokens: usize,
+}
+
+/// The counts of `text`, from its tokens.
+pub fn source_stats(text: &str) -> Result<SourceStats> {
+    let tokens = tokenize(text)?;
+    let count = |kind| tokens.iter().filter(|t| t.kind == kind).count();
+    Ok(SourceStats {
+        bytes: text.len(),
+        lines: text.lines().count(),
+        tokens: tokens.len(),
+        comments: count(TokenKind::Comment),
+        scheme: count(TokenKind::Scheme),
+        error_tokens: count(TokenKind::Error),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +216,22 @@ mod tests {
                 ("command", "\\<"),
                 ("command", "\\!"),
             ]
+        );
+    }
+
+    #[test]
+    fn source_stats_count_tokens_by_kind() {
+        let s = source_stats("% a\n#(define x 1)\n{ c'4 %{b%} }\n").unwrap();
+        assert_eq!(
+            (
+                s.bytes,
+                s.lines,
+                s.tokens,
+                s.comments,
+                s.scheme,
+                s.error_tokens
+            ),
+            (32, 3, 8, 2, 1, 0)
         );
     }
 
