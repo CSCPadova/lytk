@@ -20,6 +20,8 @@ use _core::adapters::ly_to_ir::{check, header_fields, LyToIrAdapter};
 use _core::parser::LilyPondParser;
 use tree_sitter::Tree;
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -115,6 +117,7 @@ fn syntax_board() {
 
     let (mut total, mut flagged_files) = (0, Vec::new());
     let (mut expected, mut caught) = (0, 0);
+    let mut token_gaps = Vec::new();
     let mut times = Vec::new();
     for (name, files) in &sets {
         let start = Instant::now();
@@ -128,6 +131,10 @@ fn syntax_board() {
                 .map(|d| d.to_string())
                 .collect();
             times.push(t.elapsed());
+            if let Some(gap) = common::token_gap(&src) {
+                let rel = path.strip_prefix(&root).unwrap_or(path);
+                token_gaps.push(format!("{}: {gap}", rel.display()));
+            }
             if expects_error(&src) {
                 expected += 1;
                 caught += usize::from(!errors.is_empty());
@@ -156,6 +163,9 @@ fn syntax_board() {
         median.as_secs_f64() * 1e3
     );
     println!("files expecting an error: {expected}, a syntax error found in {caught}");
+    for gap in &token_gaps {
+        println!("  token gap: {gap}");
+    }
     for f in &flagged_files {
         println!("  error: {f}");
     }
@@ -163,6 +173,12 @@ fn syntax_board() {
         total >= SYNTAX_MIN_FILES,
         "only {total} files under {}: wrong LYTK_LILYPOND_SRC?",
         root.display()
+    );
+    // lytk.tokenize loses no text.
+    assert!(
+        token_gaps.is_empty(),
+        "{} files lose text in tokens",
+        token_gaps.len()
     );
     assert!(
         flagged_files.len() <= SYNTAX_ERROR_FILES,

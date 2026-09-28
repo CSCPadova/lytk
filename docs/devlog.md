@@ -3,6 +3,26 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-28 — Epic K: K3 (tokens)
+
+`ly_to_ir/tokens.rs` walks the tree and makes a token of each leaf, and of
+three composites kept whole: strings, embedded Scheme and quoted
+identifiers. Anonymous leaves starting with a backslash (`\<`, `\!`,
+`\(`) are commands, the other anonymous leaves punctuation. An ERROR leaf
+is an `error` token, so the tokens of broken input still cover it; MISSING
+nodes are empty and make none. The property that matters to callers such
+as lilycorpus's dedup is that nothing but whitespace is lost:
+`tests/common::token_gap` checks it on the fixtures and on broken input,
+and the syntax board on the whole corpus (0 of 2,706 files lose text).
+
+`strip_comments` keeps what LilyPond reads: a block comment between two
+tokens becomes a space (`c4%{x%}d4` is two notes in LilyPond), and a line
+comment leaves its line break. Scheme's own comments stay, being part of a
+Scheme token. Scheme is not sub-tokenized: the roadmap left it optional,
+and nothing asks for it.
+
+Tests: 1,154 Rust, 236 Python (`TestTokens`).
+
 ## 2026-09-28 — Epic K: K1 (`\version`)
 
 `ly_to_ir/version.rs` holds `LilyPondVersion` and one scan of the tree for

@@ -515,6 +515,32 @@ class TestLilyPondVersion:
         assert codes == ["invalid-version"]
 
 
+class TestTokens:
+    """Tokens and comment stripping (Epic K3)."""
+
+    def test_tokens_cover_the_text(self):
+        text = "% é\n\\relative c'' { \\time 3/4 c4 \"a \\\"b\" #(x 1) }"
+        tokens = lytk.tokenize(text)
+        assert [(t.kind, t.text) for t in tokens][:4] == [
+            ("comment", "% é"),
+            ("command", "\\relative"),
+            ("symbol", "c"),
+            ("punctuation", "'"),
+        ]
+        assert {t.kind for t in tokens} >= {"fraction", "number", "string", "scheme"}
+        for t in tokens:
+            assert text[t.start : t.end] == t.text  # character offsets
+        assert (tokens[1].line, tokens[1].column) == (2, 1)
+        leftover = text
+        for t in reversed(tokens):
+            leftover = leftover[: t.start] + leftover[t.end :]
+        assert leftover.strip() == ""
+        assert [t.kind for t in lytk.tokenize("}}} ?!")].count("punctuation") >= 3
+
+    def test_strip_comments(self):
+        assert lytk.strip_comments("c4%{x%}d4 % tail\nr4") == "c4 d4 \nr4"
+
+
 class TestPanicFirewall:
     """A Rust panic reaches Python as lytk.InternalError, never as pyo3's
     PanicException (a BaseException), and prints nothing."""

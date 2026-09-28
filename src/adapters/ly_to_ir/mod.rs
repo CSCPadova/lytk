@@ -35,6 +35,7 @@ mod postprocess;
 mod state;
 mod syntax;
 mod text;
+mod tokens;
 mod version;
 mod walk;
 
@@ -248,6 +249,7 @@ pub fn check(text: &str, semantic: bool) -> Vec<Diagnostic> {
 }
 
 pub use text::HeaderField;
+pub use tokens::{strip_comments, tokenize, Token, TokenKind};
 pub use version::{
     lilypond_version, set_lilypond_version, strip_lilypond_version, LilyPondVersion,
 };

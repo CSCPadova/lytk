@@ -633,6 +633,72 @@ fn strip_lilypond_version(py: Python<'_>, text: &str) -> PyResult<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Tokens
+// ---------------------------------------------------------------------------
+
+/// A token of LilyPond text, from :func:`tokenize`: ``kind`` is one of
+/// ``"comment"``, ``"string"``, ``"scheme"``, ``"command"``, ``"symbol"``,
+/// ``"number"``, ``"fraction"``, ``"punctuation"`` and ``"error"`` (text the
+/// grammar cannot tokenize); ``text[start:end]`` is the token (character
+/// offsets); ``line`` and ``column`` count from 1.
+#[pyclass(name = "Token", module = "lytk", frozen, get_all, eq, hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PyToken {
+    kind: &'static str,
+    text: String,
+    start: usize,
+    end: usize,
+    line: usize,
+    column: usize,
+}
+
+#[pymethods]
+impl PyToken {
+    fn __repr__(&self) -> String {
+        format!(
+            "Token({:?}, {:?}, start={}, end={}, line={}, column={})",
+            self.kind, self.text, self.start, self.end, self.line, self.column
+        )
+    }
+}
+
+/// The tokens of LilyPond text, in order, from the parse tree: strings,
+/// embedded Scheme expressions and comments whole. Whitespace is no token;
+/// every other character is in exactly one, so the tokens of broken input
+/// cover it too (as ``"error"`` tokens where needed).
+#[pyfunction]
+fn tokenize(py: Python<'_>, text: &str) -> PyResult<Vec<PyToken>> {
+    guard(|| {
+        let tokens = py
+            .allow_threads(|| adapters::ly_to_ir::tokenize(text))
+            .map_err(read_err)?;
+        let char_at = char_offsets(text, tokens.iter().flat_map(|t| [t.start, t.end]));
+        Ok(tokens
+            .into_iter()
+            .map(|t| PyToken {
+                kind: t.kind.as_str(),
+                text: text[t.start..t.end].to_string(),
+                start: char_at(t.start),
+                end: char_at(t.end),
+                line: t.line,
+                column: t.column,
+            })
+            .collect())
+    })
+}
+
+/// *text* without its LilyPond comments (``% …``, ``%{ … %}``): a block
+/// comment between two tokens becomes a space, a line comment leaves its
+/// line break. Comments inside embedded Scheme stay.
+#[pyfunction]
+fn strip_comments(py: Python<'_>, text: &str) -> PyResult<String> {
+    guard(|| {
+        py.allow_threads(|| adapters::ly_to_ir::strip_comments(text))
+            .map_err(read_err)
+    })
+}
+
+// ---------------------------------------------------------------------------
 // PyScore — opaque wrapper for the IR Score
 // ---------------------------------------------------------------------------
 
@@ -1813,6 +1879,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lilypond_version, m)?)?;
     m.add_function(wrap_pyfunction!(set_lilypond_version, m)?)?;
     m.add_function(wrap_pyfunction!(strip_lilypond_version, m)?)?;
+    m.add_class::<PyToken>()?;
+    m.add_function(wrap_pyfunction!(tokenize, m)?)?;
+    m.add_function(wrap_pyfunction!(strip_comments, m)?)?;
     m.add_function(wrap_pyfunction!(_panic_for_tests, m)?)?;
 
     // Score class

@@ -394,6 +394,42 @@ def strip_lilypond_version(text: str) -> str:
     """*text* without its ``\\version`` statements."""
     ...
 
+class Token:
+    """A token of LilyPond text (see :func:`tokenize`). Hashable."""
+
+    @property
+    def kind(self) -> str:
+        """``comment``, ``string``, ``scheme``, ``command``, ``symbol``,
+        ``number``, ``fraction``, ``punctuation`` or ``error``."""
+        ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def start(self) -> int:
+        """Character offset: ``text[t.start:t.end]`` is the token."""
+        ...
+    @property
+    def end(self) -> int: ...
+    @property
+    def line(self) -> int:
+        """1-based."""
+        ...
+    @property
+    def column(self) -> int:
+        """1-based, in characters."""
+        ...
+
+def tokenize(text: str) -> list[Token]:
+    """The tokens of LilyPond text, from the parse tree; strings, embedded
+    Scheme and comments whole. Every character but whitespace is in exactly
+    one token, ``error`` tokens holding what the grammar cannot tokenize."""
+    ...
+
+def strip_comments(text: str) -> str:
+    """*text* without its LilyPond comments; comments inside embedded Scheme
+    stay."""
+    ...
+
 def check_lilypond(text: str, *, semantic: bool = False) -> list[Diagnostic]:
     """Diagnostics of LilyPond text, in source order: the syntax only (fast,
     nothing is read), or with ``semantic=True`` what a reading reports too.

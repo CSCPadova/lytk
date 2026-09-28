@@ -21,6 +21,13 @@ engineering notes are in the [development log](devlog.md).
   An invalid `\version` is an `invalid-version` error. Rust:
   `ly_to_ir::{LilyPondVersion, lilypond_version, set_lilypond_version,
   strip_lilypond_version}` and `ScoreMetadata::lilypond_version`.
+- `lytk.tokenize(text)`: the tokens of LilyPond text from the parse tree
+  (`lytk.Token`: kind, text, character span, line, column). The kinds are
+  comment, string, scheme, command, symbol, number, fraction, punctuation,
+  and error for text the grammar cannot tokenize, so every character but
+  whitespace is in exactly one token, broken input included.
+  `lytk.strip_comments(text)` removes LilyPond comments. Rust:
+  `ly_to_ir::{tokenize, strip_comments, Token, TokenKind}`.
 
 ## [0.3.0] - 2026-09-27
 

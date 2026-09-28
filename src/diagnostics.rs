@@ -123,7 +123,7 @@ pub(crate) struct Columns {
 impl Columns {
     /// The 1-based character column of byte `start` on the line starting at
     /// byte `line_start`.
-    fn column(&mut self, source: &str, line_start: usize, start: usize) -> usize {
+    pub(crate) fn column(&mut self, source: &str, line_start: usize, start: usize) -> usize {
         if line_start != self.line_start || start < self.byte {
             (self.line_start, self.byte, self.chars) = (line_start, line_start, 0);
         }
