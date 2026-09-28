@@ -229,13 +229,17 @@ lytk flatten INPUT.ly [-o OUTPUT] [-I DIR ...] [--no-markers]
 ```
 
 Inlines every `\include`, recursively, into one self-contained file (stdout
-without `-o`). Includes are looked up next to the file that includes them, then
-with `.ly` and `.ily` appended, then in each `-I`/`--include-path` directory.
-A missing file and an include cycle are errors; the cycle is shown
-(`a.ly -> b.ly -> a.ly`).
+without `-o`). Includes are found on the parse tree, anywhere in a line and
+never in a comment or string. They are looked up next to the file that
+includes them, then with `.ly` and `.ily` appended, then in each
+`-I`/`--include-path` directory. A missing file and an include cycle are
+errors; the cycle is shown (`a.ly -> b.ly -> a.ly`). An include of one of
+LilyPond's own files (`english.ly`, `gregorian.ly`) stays as it is when no
+such file is found: LilyPond finds it in its installation.
 
-Repeated `\version` and `\language` lines are merged, keeping the last one and
-warning on stderr. More than one `\header` block is an error. Each inlined file
+Repeated `\version` lines are merged, keeping the last one and warning on
+stderr. `\language` lines and `\header` blocks all stay: each `\language`
+applies from where it stands, and LilyPond merges headers. Each inlined file
 is wrapped in `% === BEGIN INCLUDE: … ===` / `% === END INCLUDE: … ===`
 comments; `--no-markers` leaves them out.
 

@@ -37,6 +37,35 @@ engineering notes are in the [development log](devlog.md).
 - `lytk.from_lilypond_music_movements(path)`: every movement of a LilyPond
   file as a `MusicDocument`, as `from_lilypond_movements` gives them as
   scores.
+- `lytk.flatten_string(text, *, base_dir=None, include_paths=None,
+  add_markers=True)`: `flatten` for text.
+- `include_paths=` on every LilyPond reader and on `check_lilypond`: given
+  (possibly empty), `\include`s are followed, relative to the file's
+  directory, then the paths. A diagnostic in an included file is reported at
+  its `\include`, naming the file; an include not found is an
+  `ignored-include` warning. Without it, includes are still not followed.
+  Rust: `LyToIrAdapter::with_include_paths`, `read_text` and `check_str`.
+
+### Changed
+
+- `flatten` finds includes on the parse tree: anywhere in a line, never in a
+  comment or a string. It used to miss an include not at the start of a
+  line, and after a one-line `%{ … %}` it took the rest of the file for a
+  comment and followed no include in it.
+- `flatten` keeps an include of LilyPond's own files (`english.ly`,
+  `gregorian.ly`, …) as it is when no such file is found; it was a "not
+  found" error. Rust: `flatten_str` takes `Option<&Path>` for its base
+  directory, and `FlattenOpts::keep_missing` keeps any missing include.
+
+### Fixed
+
+- `flatten` kept only the last `\language` line, so music written before it
+  was read in the wrong language; every `\language` now stays.
+- `flatten` refused a file with more than one `\header` block, a top-level
+  one with a score's own included (`FlattenError::MultipleHeaders`, now
+  gone). LilyPond merges top-level headers, and so does lytk's reader.
+- The `ignored-include` warning for one of LilyPond's own files (other than a
+  language file) no longer advises flattening, which would not follow it.
 
 ## [0.3.0] - 2026-09-27
 

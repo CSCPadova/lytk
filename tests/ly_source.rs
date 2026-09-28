@@ -58,3 +58,54 @@ fn tokens_cover_every_character_of_the_fixtures() {
         assert_eq!(common::token_gap(src), None, "{src:?}");
     }
 }
+
+#[test]
+fn includes_are_followed_with_include_paths_and_diagnostics_located() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.ily"), "{ d'4 \\nosuch e'4 }\n").unwrap();
+    let main = dir.path().join("main.ly");
+    let src = "{ c'4 }\n\\include \"notes.ily\"\n{ f'4 c'3 }\n\\include \"gone.ily\"\n";
+    std::fs::write(&main, src).unwrap();
+    let located = |reading: &_core::adapters::ly_to_ir::LyReading| -> Vec<(&str, usize, String)> {
+        reading
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.line, src[d.start..d.end].to_string()))
+            .collect()
+    };
+    // Not followed by default: two warnings, two movements.
+    let plain = LyToIrAdapter::new().read_file(&main).unwrap();
+    assert_eq!(plain.scores.len(), 2);
+    let codes: Vec<&str> = plain.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(
+        codes,
+        ["ignored-include", "invalid-duration", "ignored-include"]
+    );
+    // Followed: the included music is a movement; what is wrong in it is
+    // reported at its \include, the rest where it stands in the source.
+    let reading = LyToIrAdapter::new()
+        .with_include_paths(vec![])
+        .read_file(&main)
+        .unwrap();
+    assert_eq!(reading.scores.len(), 3);
+    assert_eq!(
+        located(&reading),
+        [
+            ("unknown-command", 2, "\\include \"notes.ily\"".to_string()),
+            ("invalid-duration", 3, "3".to_string()),
+            ("ignored-include", 4, "\\include".to_string()),
+        ]
+    );
+    assert!(reading.diagnostics[0]
+        .message
+        .starts_with("in `notes.ily`: unknown command"));
+    assert!(reading.diagnostics[2]
+        .message
+        .contains("no such file in the include paths"));
+    // The check follows them too.
+    let checked = LyToIrAdapter::new()
+        .with_include_paths(vec![dir.path().to_path_buf()])
+        .check_str(src, true)
+        .unwrap();
+    assert_eq!(checked.len(), 3);
+}

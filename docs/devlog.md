@@ -3,6 +3,37 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-28 — Epic K: K2 (includes)
+
+`flatten` found includes line by line: `\include` had to start a line, and a
+line starting with `%{` switched it into a comment until a line starting
+with `%}`, so a one-line `%{ … %}` hid every include after it. It now finds
+them on the tree (`include_statements`), which also keeps them out of
+strings. An include alone on its line replaces the line, as before; one
+mid-line is spliced in on lines of its own.
+
+Two normalizations were wrong. Keeping only the last `\language` changes
+the language of the music written before it; they all stay now. Refusing
+several `\header` blocks rejected valid LilyPond: a second top-level header
+copies the first and adds to it (`get_header` in `lily/lily-parser.cc`),
+which lytk's reader already does; the error is gone. An include of one of
+LilyPond's own files failed as "not found" unless LilyPond's `ly/`
+directory was a search path; `scripts/ly_builtins.py` now also lists that
+directory (62 files, `LILYPOND_FILES`), and such an include stays as it is.
+
+The readers take `include_paths=`. They flatten with missing files kept
+(the walk warns about them, now saying they are not found), read the flat
+text, and map each diagnostic back through the pieces `flatten_mapped`
+records: text of the source keeps its place, and a diagnostic in an
+included file moves to the `\include` that brought the file in, its message
+naming it. Positions therefore always refer to the text the caller has.
+Two diagnostics of one code in one included file then share a span, and
+`into_first` keeps one of them. Without `include_paths` nothing changes:
+includes are not followed, as SECURITY.md says, which now also warns that
+an include may name any path.
+
+Tests: 1,157 Rust, 241 Python (`TestIncludes`).
+
 ## 2026-09-28 — Epic K: K4 (statistics) and K5 (music movements)
 
 `lytk.info(score)` is the dict `lytk info --json` printed, now built in the

@@ -568,6 +568,35 @@ class TestStatistics:
         assert stats == {"bytes": 32, "lines": 3, "tokens": 8, "comments": 2, "scheme": 1, "error_tokens": 0}
 
 
+class TestIncludes:
+    """flatten_string and include_paths on the readers (Epic K2)."""
+
+    def test_flatten_string(self, tmp_path):
+        (tmp_path / "part.ily").write_text("d'4\n")
+        text = "%{ x %}\n{ c'4 \\include \"part.ily\" e'4 }\n\\include \"english.ly\"\n"
+        flat = lytk.flatten_string(text, base_dir=str(tmp_path), add_markers=False)
+        assert flat == "%{ x %}\n{ c'4 \nd'4\n e'4 }\n\\include \"english.ly\"\n"
+        assert lytk.flatten_string(text, include_paths=[str(tmp_path)]).count("BEGIN INCLUDE") == 1
+        with pytest.raises(lytk.ParseError):
+            lytk.flatten_string('\\include "gone.ily"')
+
+    def test_readers_follow_includes_when_given_paths(self, tmp_path):
+        (tmp_path / "notes.ily").write_text("{ d'4 \\nosuch e'4 }\n")
+        main = tmp_path / "main.ly"
+        main.write_text('\\include "notes.ily"\n{ c\'3 }\n')
+        assert len(lytk.from_lilypond_movements(str(main))) == 1
+        followed = lytk.from_lilypond_movements(str(main), include_paths=[])
+        assert len(followed) == 2
+        first = lytk.from_lilypond(str(main), include_paths=[])
+        assert [(d.code, d.line) for d in first.diagnostics] == [("unknown-command", 1), ("dropped-music", 2), ("invalid-duration", 2)]
+        assert first.diagnostics[0].message.startswith("in `notes.ily`")
+        text = main.read_text()
+        codes = [d.code for d in lytk.check_lilypond(text, semantic=True, include_paths=[str(tmp_path)])]
+        assert codes == ["unknown-command", "invalid-duration"]
+        score = lytk.from_lilypond_string(text, include_paths=[str(tmp_path)])
+        assert len(score.notes()) == 2
+
+
 class TestPanicFirewall:
     """A Rust panic reaches Python as lytk.InternalError, never as pyo3's
     PanicException (a BaseException), and prints nothing."""

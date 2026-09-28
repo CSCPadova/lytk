@@ -178,7 +178,7 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 | Multi-staff | ✅ | `\new Staff`, `\new PianoStaff` |
 | Variables | ✅ | Definition + resolution |
 | Movements | ✅ | Each `\score` block and each top-level music expression (`{ }`, `<< >>`, `\new Staff`, `\relative`, a music variable), in order, as LilyPond makes a score of each; `\book`/`\bookpart` scores and music too, their `\header` the book's |
-| `\include` | 🟡 | LilyPond's language files (`english.ly`, …) set the pitch language; other files are not followed (`ignored-include`: flatten first) |
+| `\include` | ✅ | LilyPond's language files (`english.ly`, …) set the pitch language. Other files are followed with `include_paths=` (the file's directory, then the paths; a diagnostic in an included file is reported at its `\include`); without it they are not (`ignored-include`) |
 | `\transpose` | ✅ | Transposing instrument context |
 | Relative mode | ✅ | `\relative` pitch context |
 | `\fixed` | ✅ | Absolute pitches an octave up per mark of the reference, also inside `\relative` |
@@ -223,7 +223,7 @@ A warning is input lytk reads around.
 | `invalid-version` | error | `\version` without a quoted string after it, or with no version LilyPond 2.24 accepts (`"2.x"`; `"2.25"`, which leaves out the patch of a development release) |
 | `unknown-command` | warning | A command neither LilyPond 2.26 nor the file defines (a typo, or one from an include) |
 | `unrecognized-token` | warning | A word in music that is no note name in the current language, or no drum name in drum mode |
-| `ignored-include` | warning | `\include`: the reader does not follow includes; flatten the file first |
+| `ignored-include` | warning | `\include` of a file not read: includes are not followed without `include_paths`; with them, the file is not found; LilyPond's own files other than the language files are not read |
 | `unknown-language` | warning | `\language` with a name lytk does not know |
 | `dropped-music` | warning | The movements after the first, from a reader that takes one (`from_lilypond`, `convert_str`) |
 | `skipped-score` | warning | A `\score` with `\midi` and no `\layout` |

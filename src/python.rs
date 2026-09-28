@@ -3,7 +3,7 @@
 //! Every function and method here that reads, writes or transforms music runs
 //! inside [`guard`], so a Rust panic reaches Python as `lytk.InternalError`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use std::borrow::Cow;
 
@@ -466,22 +466,30 @@ fn header_dict<'py>(
 }
 
 /// Read LilyPond, from a file or text, releasing the GIL: the text and the
-/// reading.
+/// reading. With *include_paths*, includes are followed (relative to a
+/// file's directory, then the paths).
 fn read_lilypond(
     py: Python<'_>,
     source: Result<&str, &str>,
     language: Option<&str>,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<(String, adapters::ly_to_ir::LyReading)> {
     let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
     if let Some(lang_str) = language {
         adapter = adapter.with_language(parse_language(lang_str)?);
     }
+    if let Some(paths) = include_paths {
+        adapter = adapter.with_include_paths(paths.into_iter().map(PathBuf::from).collect());
+    }
     py.allow_threads(|| {
-        let text = match source {
-            Ok(path) => Cow::Owned(adapters::ly_to_ir::read_source(Path::new(path))?),
-            Err(text) => Cow::Borrowed(text),
+        let (text, base_dir) = match source {
+            Ok(path) => (
+                Cow::Owned(adapters::ly_to_ir::read_source(Path::new(path))?),
+                Path::new(path).parent(),
+            ),
+            Err(text) => (Cow::Borrowed(text), None),
         };
-        let reading = adapter.read_str(&text)?;
+        let reading = adapter.read_text(&text, base_dir)?;
         Ok((text.into_owned(), reading))
     })
     .map_err(read_err)
@@ -504,11 +512,25 @@ fn first_movement(
 /// (fast, nothing is read); with ``semantic=True`` also what a reading
 /// reports: invalid durations and ratios, unknown commands, input it does not
 /// read. Input too large to read is an error here, not an exception.
+/// *include_paths* follows includes as the readers do (see
+/// :func:`from_lilypond`); an included file that cannot be read raises
+/// ``OSError``.
 #[pyfunction]
-#[pyo3(signature = (text, *, semantic=false))]
-fn check_lilypond(py: Python<'_>, text: &str, semantic: bool) -> PyResult<Vec<PyDiagnostic>> {
+#[pyo3(signature = (text, *, semantic=false, include_paths=None))]
+fn check_lilypond(
+    py: Python<'_>,
+    text: &str,
+    semantic: bool,
+    include_paths: Option<Vec<String>>,
+) -> PyResult<Vec<PyDiagnostic>> {
     guard(|| {
-        let diagnostics = py.allow_threads(|| adapters::ly_to_ir::check(text, semantic));
+        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+        if let Some(paths) = include_paths {
+            adapter = adapter.with_include_paths(paths.into_iter().map(PathBuf::from).collect());
+        }
+        let diagnostics = py
+            .allow_threads(|| adapter.check_str(text, semantic))
+            .map_err(read_err)?;
         Ok(py_diagnostics(text, &diagnostics))
     })
 }
@@ -1166,16 +1188,22 @@ fn parse_language(name: &str) -> PyResult<PitchLanguage> {
 ///
 /// ``strict=True`` raises :class:`LilyPondSyntaxError` if the reading reports
 /// an error; the diagnostics are in :attr:`Score.diagnostics` either way.
+/// With *include_paths* (a list of directories, possibly empty),
+/// ``\\include``\ s are followed: relative to the file's directory (for a
+/// string reader, only the paths), then the paths. An include not found is an
+/// ``ignored-include`` warning; a diagnostic in an included file is reported
+/// at its ``\\include``. Without it, includes are not read.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None, strict=false))]
+#[pyo3(signature = (path, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<PyScore> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (text, reading) = read_lilypond(py, Ok(path), language, include_paths)?;
         let (score, diagnostics) = first_movement(&text, reading, strict)?;
         Ok(PyScore {
             inner: score,
@@ -1188,15 +1216,16 @@ fn from_lilypond(
 /// block and per top-level music expression, in order, as LilyPond makes a
 /// score of each. Each score carries the file's diagnostics.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None, strict=false))]
+#[pyo3(signature = (path, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_movements(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<Vec<PyScore>> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (text, reading) = read_lilypond(py, Ok(path), language, include_paths)?;
         let diagnostics = py_diagnostics(&text, &reading.diagnostics);
         check_strict(strict, &diagnostics)?;
         Ok(reading
@@ -1213,15 +1242,16 @@ fn from_lilypond_movements(
 /// Parse a LilyPond string into a :class:`Score` (its first movement); see
 /// :func:`from_lilypond`.
 #[pyfunction]
-#[pyo3(signature = (text, *, language=None, strict=false))]
+#[pyo3(signature = (text, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_string(
     py: Python<'_>,
     text: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<PyScore> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Err(text), language)?;
+        let (text, reading) = read_lilypond(py, Err(text), language, include_paths)?;
         let (score, diagnostics) = first_movement(&text, reading, strict)?;
         Ok(PyScore {
             inner: score,
@@ -1235,15 +1265,16 @@ fn from_lilypond_string(
 /// This preserves structural information like contexts and simultaneous
 /// blocks. ``strict`` as in :func:`from_lilypond`.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None, strict=false))]
+#[pyo3(signature = (path, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_music(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<PyMusicDocument> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (text, reading) = read_lilypond(py, Ok(path), language, include_paths)?;
         let (score, diagnostics) = first_movement(&text, reading, strict)?;
         Ok(PyMusicDocument {
             inner: ir::lift::lift_to_music(&score),
@@ -1256,15 +1287,16 @@ fn from_lilypond_music(
 /// (see :func:`from_lilypond_movements`). Each carries the file's
 /// diagnostics.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None, strict=false))]
+#[pyo3(signature = (path, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_music_movements(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<Vec<PyMusicDocument>> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (text, reading) = read_lilypond(py, Ok(path), language, include_paths)?;
         let diagnostics = py_diagnostics(&text, &reading.diagnostics);
         check_strict(strict, &diagnostics)?;
         Ok(reading
@@ -1281,15 +1313,16 @@ fn from_lilypond_music_movements(
 /// Parse a LilyPond string into a :class:`MusicDocument` (Layer 1 Music
 /// tree); see :func:`from_lilypond_music`.
 #[pyfunction]
-#[pyo3(signature = (text, *, language=None, strict=false))]
+#[pyo3(signature = (text, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_music_string(
     py: Python<'_>,
     text: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<PyMusicDocument> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Err(text), language)?;
+        let (text, reading) = read_lilypond(py, Err(text), language, include_paths)?;
         let (score, diagnostics) = first_movement(&text, reading, strict)?;
         Ok(PyMusicDocument {
             inner: ir::lift::lift_to_music(&score),
@@ -1418,14 +1451,53 @@ fn flatten(
                 .map(std::path::PathBuf::from)
                 .collect(),
             add_markers,
+            ..Default::default()
         };
-        let text = adapters::ly_flatten::flatten(Path::new(input), opts)
-            .map_err(|e| parse_error(e.to_string()))?;
+        let text = adapters::ly_flatten::flatten(Path::new(input), opts).map_err(flatten_error)?;
         if let Some(p) = output {
             std::fs::write(p, &text).map_err(|e| PyIOError::new_err(e.to_string()))?;
         }
         Ok(text)
     })
+}
+
+/// Expand the ``\\include`` directives of LilyPond *text*: relative ones
+/// against *base_dir* (when given), then *include_paths*. Includes are found
+/// on the parse tree (anywhere in a line, never in a comment or string).
+/// Raises :class:`ParseError` for a file not found (LilyPond's own, such as
+/// ``english.ly``, stay as they are), a circular include, or an expansion
+/// past the bounds; ``OSError`` for a file that cannot be read.
+#[pyfunction]
+#[pyo3(signature = (text, *, base_dir=None, include_paths=None, add_markers=true))]
+fn flatten_string(
+    py: Python<'_>,
+    text: &str,
+    base_dir: Option<&str>,
+    include_paths: Option<Vec<String>>,
+    add_markers: bool,
+) -> PyResult<String> {
+    guard(|| {
+        let opts = adapters::ly_flatten::FlattenOpts {
+            include_paths: include_paths
+                .unwrap_or_default()
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            add_markers,
+            ..Default::default()
+        };
+        py.allow_threads(|| adapters::ly_flatten::flatten_str(text, base_dir.map(Path::new), opts))
+            .map_err(flatten_error)
+    })
+}
+
+/// A flatten failure: ``OSError`` for a file that cannot be read, else
+/// :class:`ParseError`.
+fn flatten_error(e: adapters::ly_flatten::FlattenError) -> PyErr {
+    match e {
+        adapters::ly_flatten::FlattenError::Io { .. } => PyIOError::new_err(e.to_string()),
+        e => parse_error(e.to_string()),
+    }
 }
 
 /// Parse an ABC notation (``.abc``) file into a :class:`Score`.
@@ -2025,6 +2097,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(to_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(flatten, m)?)?;
+    m.add_function(wrap_pyfunction!(flatten_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_musicxml, m)?)?;
     m.add_function(wrap_pyfunction!(to_mxl_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc, m)?)?;

@@ -2,7 +2,22 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-09-27, Epic J: J6, the hunt, J7)
+## Latest status (2026-09-28, Epic K)
+
+**Epic K is done; 0.4.0 is ready to tag.** LilyPond source can be inspected
+and edited without reading the music: its `\version` (K1:
+`lytk.LilyPondVersion`, `lilypond_version`, `set_`/`strip_lilypond_version`,
+`version=` on the writers, the `invalid-version` error), its tokens (K3:
+`lytk.tokenize`, `strip_comments`) and its statistics (K4: `lytk.info`,
+`source_stats`). Includes (K2) are found on the tree, `flatten_string`
+flattens text, and every reader follows includes when given
+`include_paths=`, with diagnostics pointing into the caller's text.
+`from_lilypond_music_movements` (K5) completes the movement readers. Test
+counts: 1,157 Rust + 241 Python. Details in the devlog.
+
+---
+
+## Previous status (2026-09-27, Epic J: J6, the hunt, J7)
 
 **Epic J is done and released as v0.3.0.** The version has one source and
 the Python tests run on 3.10–3.13 (J6). The hunt's last five areas found two
@@ -697,12 +712,12 @@ what it drops. Principles, as in Epic I:
 
 Order: J0 → J1 + J2 → J3 → J4 + J5 → J6 → J7.
 
-### Epic K — 0.4.0: source-level API
+### Epic K — 0.4.0: source-level API (✅ 2026-09-28, to be released as v0.4.0)
 
 | Task | Description | Size | Status |
 |------|-------------|------|--------|
 | K1 | **`\version`.** Keep it in `ScoreMetadata` and expose it as `Score.lilypond_version`. `lytk.lilypond_version(text)` reads it from the tree (a commented-out one does not count). `set_lilypond_version(text, v)` and `strip_lilypond_version(text)` edit by span. A `LilyPondVersion` type compares numerically (`2.24` == `2.24.0`). `to_lilypond(…, version=)` and `to_lilypond_music(…, version=)` expose `IrToLyAdapter::with_version`: Python always gets `\version "2.24.0"` today (`python.rs:398, 421`). No convert-ly wrapper | S | ✅ 2026-09-28: `ly_to_ir/version.rs`, one scan of the tree for the reader, the syntax check and the three text functions; LilyPond 2.24's rules (`parse-lily-version`: `x.y` only for an even `y`, a free fourth part); a new `invalid-version` error, as LilyPond's lexer rejects both a bad string and a missing one. The writers keep writing 2.24.0 unless told: their syntax is 2.24's, whatever the source's version |
-| K2 | **Includes.** Bind `flatten_string(text, *, base_dir=None, include_paths=(), add_markers=True)` (Rust `flatten_str` exists, `ly_flatten.rs:100-107`). Add `include_paths=` on the readers: given, they flatten first and report unresolved includes as `ignored-include`; not given, includes stay unfollowed, as SECURITY.md should say. Find includes on the tree instead of line by line: this catches includes not at the start of a line and fixes the one-line `%{ %}` that leaves flatten "inside a comment" and the false `MultipleHeaders` for a top-level plus a per-score `\header` | M | ⬜ |
+| K2 | **Includes.** Bind `flatten_string(text, *, base_dir=None, include_paths=(), add_markers=True)` (Rust `flatten_str` exists, `ly_flatten.rs:100-107`). Add `include_paths=` on the readers: given, they flatten first and report unresolved includes as `ignored-include`; not given, includes stay unfollowed, as SECURITY.md should say. Find includes on the tree instead of line by line: this catches includes not at the start of a line and fixes the one-line `%{ %}` that leaves flatten "inside a comment" and the false `MultipleHeaders` for a top-level plus a per-score `\header` | M | ✅ 2026-09-28: `include_paths=` on every reader and on `check_lilypond`; flatten records where each piece of its output comes from, so diagnostics point into the caller's text (in an included file: at its `\include`, naming it). `MultipleHeaders` is gone altogether, since LilyPond merges top-level headers (`get_header`, `lily/lily-parser.cc`). Also fixed: flatten kept only the last `\language`, which changes the pitch names before it; an include of LilyPond's own files (`english.ly`, generated list of its `ly/` directory) is kept instead of failing |
 | K3 | **Tokens.** `lytk.tokenize(text) -> list[Token]` (kind: comment, string, scheme, command, symbol, number, fraction, punctuation; text; byte span; line; column) from the tree's leaves; `lytk.strip_comments(text)`. Scheme can be sub-tokenized with the compiled but unused `LANGUAGE_LILYPOND_SCHEME` | S | ✅ 2026-09-28: `ly_to_ir/tokens.rs`; strings, Scheme and quoted identifiers whole, `\<`-style marks are commands, and an `error` kind for text the grammar cannot tokenize, so tokens lose nothing but whitespace (checked on the fixtures, broken input, and the 2,706 files of the corpus board). Offsets are characters in Python. Scheme is not sub-tokenized: nothing asks for it yet |
 | K4 | **Statistics.** `lytk.info(score) -> dict` becomes the library home of `lytk info --json` (moved from `cli.py:484-529`; the CLI calls it), plus voices, total bars, duration in quarters, lyrics, chord symbols and grace notes. `lytk.source_stats(text)` from tokens: comments, Scheme expressions, bytes, tokens | S | ✅ 2026-09-28: counted in Rust (`ir/stats.rs`) instead of through the navigation objects, so a corpus pays microseconds a score; the CLI's keys stay, the new ones are added; `source_stats` also gives lines and error tokens |
 | K5 | **Movements.** Single-score readers report what they drop (`dropped-music`, from J3); add `from_lilypond_music_movements` for Layer-1 users (the datasets) | S | ✅ 2026-09-28: the first half came with J3 and J7 |

@@ -87,15 +87,21 @@ def main(repo: str, tag: str) -> None:
     write_drums(repo, tag)
     names = sorted(names)
     rows = "\n".join(f'    "{n.replace(chr(92), chr(92) * 2)}",' for n in names)
+    # The files an `\include` finds in LilyPond's own `ly/` directory.
+    shipped = sorted(p.removeprefix("ly/") for p in files(repo, tag, "ly", ".ly"))
+    shipped_rows = "\n".join(f'    "{n}",' for n in shipped)
     with open("src/adapters/ly_to_ir/builtins.rs", "w") as out:
         out.write(
             f"//! The commands LilyPond {tag.lstrip('v')} defines, without their backslash:\n"
             "//! lexer keywords, the identifiers of its `ly/` init files and its markup\n"
-            f"//! commands ({len(names)}). Generated: `python3 scripts/ly_builtins.py lilypond {tag}`.\n\n"
+            f"//! commands ({len(names)}); and the files of its `ly/` directory ({len(shipped)}).\n"
+            f"//! Generated: `python3 scripts/ly_builtins.py lilypond {tag}`.\n\n"
             "/// Sorted, for binary search.\n"
-            f"pub(super) const BUILTINS: &[&str] = &[\n{rows}\n];\n"
+            f"pub(super) const BUILTINS: &[&str] = &[\n{rows}\n];\n\n"
+            "/// Files LilyPond itself provides to `\\include`, sorted.\n"
+            f"pub(crate) const LILYPOND_FILES: &[&str] = &[\n{shipped_rows}\n];\n"
         )
-    print(len(names), "commands")
+    print(len(names), "commands,", len(shipped), "files")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from lytk._core import (
     check_lilypond,
     compute_metrics,
     flatten,
+    flatten_string,
     from_abc,
     from_abc_string,
     from_abc_tunes,
@@ -121,6 +122,7 @@ __all__ = [
     "to_humdrum",
     # LilyPond \include flattening
     "flatten",
+    "flatten_string",
     # Transforms
     "transpose",
     "transpose_interval",

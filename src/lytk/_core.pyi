@@ -443,11 +443,14 @@ def info(score: Score) -> dict[str, Any]:
     ``parts``, a dict per part."""
     ...
 
-def check_lilypond(text: str, *, semantic: bool = False) -> list[Diagnostic]:
+def check_lilypond(
+    text: str, *, semantic: bool = False, include_paths: list[str] | None = None
+) -> list[Diagnostic]:
     """Diagnostics of LilyPond text, in source order: the syntax only (fast,
     nothing is read), or with ``semantic=True`` what a reading reports too.
     Never raises for bad input: input too large to read is a ``too-large``
-    error."""
+    error. *include_paths* follows includes as the readers do; an included
+    file that cannot be read raises ``OSError``."""
     ...
 
 def from_musicxml(path: str) -> Score: ...
@@ -456,31 +459,58 @@ def from_musicxml_bytes(data: bytes) -> Score:
     """Parse MusicXML or compressed MXL from in-memory bytes."""
     ...
 def from_lilypond(
-    path: str, *, language: str | None = None, strict: bool = False
+    path: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> Score:
     """The first movement; ``strict=True`` raises LilyPondSyntaxError on an
-    error. The diagnostics are in ``Score.diagnostics`` either way."""
+    error. The diagnostics are in ``Score.diagnostics`` either way. With
+    *include_paths*, ``\\include``\ s are followed (the file's directory,
+    then the paths); a diagnostic in an included file is reported at its
+    ``\\include``, and one not found is an ``ignored-include`` warning."""
     ...
 def from_lilypond_string(
-    text: str, *, language: str | None = None, strict: bool = False
+    text: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> Score: ...
 def from_lilypond_movements(
-    path: str, *, language: str | None = None, strict: bool = False
+    path: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> list[Score]:
     """Every movement of a LilyPond file: one score per ``\\score`` block and
     per top-level music expression, each with the file's diagnostics."""
     ...
 def from_lilypond_music_movements(
-    path: str, *, language: str | None = None, strict: bool = False
+    path: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> list[MusicDocument]:
     """Every movement of a LilyPond file as a Music tree, each with the
     file's diagnostics."""
     ...
 def from_lilypond_music(
-    path: str, *, language: str | None = None, strict: bool = False
+    path: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> MusicDocument: ...
 def from_lilypond_music_string(
-    text: str, *, language: str | None = None, strict: bool = False
+    text: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> MusicDocument: ...
 def to_lilypond(
     score: Score,
@@ -502,6 +532,18 @@ def to_lilypond_music(
 def to_musicxml(score: Score, path: str | None = None) -> str: ...
 def to_mxl_bytes(score: Score) -> bytes:
     """Serialize a score to compressed MusicXML (a ZIP archive)."""
+    ...
+def flatten_string(
+    text: str,
+    *,
+    base_dir: str | None = None,
+    include_paths: list[str] | None = None,
+    add_markers: bool = True,
+) -> str:
+    """Expand the ``\\include`` directives of LilyPond text (relative ones
+    against *base_dir*, then *include_paths*), found on the parse tree.
+    ParseError for a missing file (LilyPond's own, like ``english.ly``, stay
+    as they are), a circular include or an expansion past the bounds."""
     ...
 def flatten(
     input: str,

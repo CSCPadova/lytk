@@ -18,8 +18,15 @@
 //! | Command      | Behaviour                                      |
 //! |--------------|------------------------------------------------|
 //! | `\version`   | Last occurrence kept; earlier ones removed; warning emitted if multiple |
-//! | `\language`  | Last occurrence kept; earlier ones removed; warning emitted if multiple |
-//! | `\header`    | Multiple blocks are an **error** |
+//!
+//! `\language` lines all stay (each applies from where it stands), and so do
+//! several `\header` blocks (LilyPond merges them).
+//!
+//! # Finding includes
+//! Includes are found on the syntax tree: anywhere in a line, never in a
+//! comment or a string. An include of a file not found is an error, except
+//! for LilyPond's own files (`english.ly`, `gregorian.ly`), which LilyPond
+//! finds in its installation, and with [`FlattenOpts::keep_missing`].
 //!
 //! # Output markers
 //! When `FlattenOpts::add_markers` is `true` (the default), each included file
@@ -54,6 +61,11 @@ pub struct FlattenOpts {
     /// Wrap each inlined file with `% === BEGIN/END INCLUDE: … ===` comment
     /// markers. Defaults to `true`.
     pub add_markers: bool,
+
+    /// Keep an `\include` of a file not found as it is, instead of failing
+    /// with [`FlattenError::NotFound`]. An include of one of LilyPond's own
+    /// files (`english.ly`) is kept either way. Defaults to `false`.
+    pub keep_missing: bool,
 }
 
 impl Default for FlattenOpts {
@@ -61,6 +73,7 @@ impl Default for FlattenOpts {
         Self {
             include_paths: Vec::new(),
             add_markers: true,
+            keep_missing: false,
         }
     }
 }
@@ -81,9 +94,6 @@ pub enum FlattenError {
     #[error("circular include detected: {chain}")]
     Circular { chain: String },
 
-    #[error("multiple \\header blocks found in flattened output")]
-    MultipleHeaders,
-
     #[error("{0}; lytk refuses input this large")]
     TooLarge(String),
 }
@@ -95,28 +105,59 @@ pub enum FlattenError {
 /// Flatten a LilyPond file at `path`, expanding all `\include` directives
 /// recursively and returning the combined text.
 ///
-/// Warnings about duplicate `\version` or `\language` directives are written
-/// to `stderr`.
+/// Warnings about duplicate `\version` directives are written to `stderr`.
 pub fn flatten(path: &Path, opts: FlattenOpts) -> Result<String, FlattenError> {
     let src = read_file(path)?;
     let base_dir = path.parent().unwrap_or(Path::new("."));
-    flatten_str(&src, base_dir, opts)
+    flatten_str(&src, Some(base_dir), opts)
 }
 
 /// Flatten LilyPond source text `src`, resolving relative `\include` paths
-/// against `base_dir`.
+/// against `base_dir` (when given) and then `opts.include_paths`.
 ///
 /// This is the lower-level entry point; use [`flatten`] when working with
 /// files on disk.
-pub fn flatten_str(src: &str, base_dir: &Path, opts: FlattenOpts) -> Result<String, FlattenError> {
+pub fn flatten_str(
+    src: &str,
+    base_dir: Option<&Path>,
+    opts: FlattenOpts,
+) -> Result<String, FlattenError> {
+    let (expanded, _) = flatten_mapped(src, base_dir, &opts)?;
+    normalize(expanded)
+}
+
+/// Where the text from an offset of the flattened output on comes from: the
+/// source itself, from a byte offset on; or the expansion of the `\include`
+/// statement at a byte range of the source, naming the file.
+#[derive(Debug, Clone)]
+pub(crate) enum Origin {
+    Source(usize),
+    Include {
+        statement: std::ops::Range<usize>,
+        path: String,
+    },
+}
+
+/// The pieces of a flattened text, in order: where each starts in the output,
+/// and where it comes from. A piece runs to the next one's start.
+pub(crate) type SourceMap = Vec<(usize, Origin)>;
+
+/// `src` with its includes expanded (no normalization), and where each piece
+/// of the result comes from.
+pub(crate) fn flatten_mapped(
+    src: &str,
+    base_dir: Option<&Path>,
+    opts: &FlattenOpts,
+) -> Result<(String, SourceMap), FlattenError> {
     let mut ctx = ExpandCtx {
-        opts: &opts,
+        opts,
         ancestors: Vec::new(),
         includes: 0,
         bytes: src.len(),
     };
-    let expanded = expand(src, base_dir, &mut ctx)?;
-    normalize(expanded)
+    let mut map = SourceMap::new();
+    let expanded = expand(src, base_dir, &mut ctx, Some(&mut map))?;
+    Ok((expanded, map))
 }
 
 // ---------------------------------------------------------------------------
@@ -133,116 +174,160 @@ struct ExpandCtx<'a> {
     bytes: usize,
 }
 
-fn expand(src: &str, base_dir: &Path, ctx: &mut ExpandCtx<'_>) -> Result<String, FlattenError> {
-    let mut out = String::with_capacity(src.len());
-    let mut in_block_comment = false;
-
-    for line in src.lines() {
-        let trimmed = line.trim_start();
-
-        // Track block comments: %{ ... %}
-        // LilyPond requires %{ and %} to appear as the only non-whitespace
-        // content on a line at the outermost level.
-        if trimmed.starts_with("%{") {
-            in_block_comment = true;
-            out.push_str(line);
-            out.push('\n');
+/// The `\include "…"` statements of `src`, from its syntax tree (so not in
+/// comments or strings): each statement's byte range and its path, the text
+/// between the quotes, as LilyPond's lexer takes it (no escapes).
+fn include_statements(src: &str) -> Result<Vec<(std::ops::Range<usize>, String)>, FlattenError> {
+    let tree = crate::parser::LilyPondParser::new()
+        .and_then(|mut p| p.parse(src))
+        .map_err(|e| FlattenError::TooLarge(e.to_string()))?;
+    let mut out = Vec::new();
+    let mut cursor = tree.walk();
+    loop {
+        let node = cursor.node();
+        if node.kind() == "escaped_word" && &src[node.byte_range()] == "\\include" {
+            let string = node.next_sibling().filter(|n| n.kind() == "string");
+            if let Some(string) = string {
+                let raw = &src[string.byte_range()];
+                let path = raw.trim_start_matches('"').trim_end_matches('"');
+                if !path.is_empty() {
+                    out.push((node.start_byte()..string.end_byte(), path.to_string()));
+                }
+            }
+        }
+        if cursor.goto_first_child() {
             continue;
         }
-        if trimmed.starts_with("%}") {
-            in_block_comment = false;
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-
-        // Inside block comment or line comment — pass through unchanged.
-        if in_block_comment || trimmed.starts_with('%') {
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-
-        // Try to match \include "path"
-        if let Some(raw_path) = parse_include_directive(trimmed) {
-            let resolved = resolve_include(raw_path, base_dir, ctx.opts)?;
-            let canonical = canonicalize(&resolved)?;
-
-            // Circular dependency check
-            if ctx.ancestors.contains(&canonical) {
-                let mut chain: Vec<String> = ctx
-                    .ancestors
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect();
-                chain.push(canonical.display().to_string());
-                return Err(FlattenError::Circular {
-                    chain: chain.join(" -> "),
-                });
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return Ok(out);
             }
-
-            let inc_src = read_file(&resolved)?;
-            ctx.includes += 1;
-            ctx.bytes += inc_src.len() + 2 * raw_path.len();
-            if ctx.includes > MAX_INCLUDES {
-                return Err(FlattenError::TooLarge(format!(
-                    "the includes expand more than {MAX_INCLUDES} times"
-                )));
-            }
-            if ctx.bytes > MAX_OUTPUT_BYTES {
-                return Err(FlattenError::TooLarge(format!(
-                    "the flattened source exceeds {} MiB",
-                    MAX_OUTPUT_BYTES >> 20
-                )));
-            }
-            let inc_base = resolved.parent().unwrap_or(Path::new("."));
-
-            ctx.ancestors.push(canonical.clone());
-            let inner = expand(&inc_src, inc_base, ctx)?;
-            ctx.ancestors.pop();
-
-            if ctx.opts.add_markers {
-                out.push_str(&format!("% === BEGIN INCLUDE: {} ===\n", raw_path));
-                out.push_str(inner.trim_end_matches('\n'));
-                out.push('\n');
-                out.push_str(&format!("% === END INCLUDE: {} ===\n", raw_path));
-            } else {
-                out.push_str(&inner);
-            }
-        } else {
-            out.push_str(line);
-            out.push('\n');
         }
     }
+}
 
+/// The part of `src` an expansion replaces: the whole line when the
+/// statement stands alone on it, else the statement itself.
+fn replaced_span(src: &str, statement: &std::ops::Range<usize>) -> (usize, usize, bool) {
+    let line_start = src[..statement.start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = src[statement.end..]
+        .find('\n')
+        .map_or(src.len(), |i| statement.end + i + 1);
+    let alone = src[line_start..statement.start].trim().is_empty()
+        && src[statement.end..line_end].trim().is_empty();
+    if alone {
+        (line_start, line_end, true)
+    } else {
+        (statement.start, statement.end, false)
+    }
+}
+
+/// Whether `raw` names a file of LilyPond's own `ly/` directory, which
+/// LilyPond finds when nothing else does (`english.ly`, `gregorian.ly`).
+fn is_lilypond_file(raw: &str) -> bool {
+    super::ly_to_ir::LILYPOND_FILES.binary_search(&raw).is_ok()
+}
+
+fn expand(
+    src: &str,
+    base_dir: Option<&Path>,
+    ctx: &mut ExpandCtx<'_>,
+    mut map: Option<&mut SourceMap>,
+) -> Result<String, FlattenError> {
+    let mut out = String::with_capacity(src.len());
+    let mut at = 0;
+    for (statement, raw_path) in include_statements(src)? {
+        let resolved = match resolve_include(&raw_path, base_dir, ctx.opts) {
+            Ok(resolved) => resolved,
+            // Kept as written: LilyPond's own files, and missing files when
+            // asked (the readers warn about them).
+            Err(FlattenError::NotFound(_))
+                if ctx.opts.keep_missing || is_lilypond_file(&raw_path) =>
+            {
+                continue
+            }
+            Err(e) => return Err(e),
+        };
+        let canonical = canonicalize(&resolved)?;
+
+        // Circular dependency check
+        if ctx.ancestors.contains(&canonical) {
+            let mut chain: Vec<String> = ctx
+                .ancestors
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            chain.push(canonical.display().to_string());
+            return Err(FlattenError::Circular {
+                chain: chain.join(" -> "),
+            });
+        }
+
+        let inc_src = read_file(&resolved)?;
+        ctx.includes += 1;
+        ctx.bytes += inc_src.len() + 2 * raw_path.len();
+        if ctx.includes > MAX_INCLUDES {
+            return Err(FlattenError::TooLarge(format!(
+                "the includes expand more than {MAX_INCLUDES} times"
+            )));
+        }
+        if ctx.bytes > MAX_OUTPUT_BYTES {
+            return Err(FlattenError::TooLarge(format!(
+                "the flattened source exceeds {} MiB",
+                MAX_OUTPUT_BYTES >> 20
+            )));
+        }
+        let inc_base = resolved.parent().unwrap_or(Path::new("."));
+
+        ctx.ancestors.push(canonical);
+        let inner = expand(&inc_src, Some(inc_base), ctx, None)?;
+        ctx.ancestors.pop();
+
+        let (cut_start, cut_end, alone) = replaced_span(src, &statement);
+        if let Some(map) = map.as_deref_mut() {
+            map.push((out.len(), Origin::Source(at)));
+        }
+        out.push_str(&src[at..cut_start]);
+        if let Some(map) = map.as_deref_mut() {
+            let path = raw_path.clone();
+            map.push((out.len(), Origin::Include { statement, path }));
+        }
+        if !alone && !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if ctx.opts.add_markers {
+            out.push_str(&format!("% === BEGIN INCLUDE: {raw_path} ===\n"));
+        }
+        out.push_str(inner.trim_end_matches('\n'));
+        out.push('\n');
+        if ctx.opts.add_markers {
+            out.push_str(&format!("% === END INCLUDE: {raw_path} ===\n"));
+        }
+        at = cut_end;
+    }
+    if let Some(map) = map {
+        map.push((out.len(), Origin::Source(at)));
+    }
+    out.push_str(&src[at..]);
     Ok(out)
 }
 
-/// Extract the path string from a `\include "path"` directive line.
-/// Returns `None` if the line does not match.
-fn parse_include_directive(line: &str) -> Option<&str> {
-    let rest = line.strip_prefix(r"\include")?;
-    let rest = rest.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    let path = &rest[..end];
-    if path.is_empty() {
-        None
-    } else {
-        Some(path)
-    }
-}
-
-/// Resolve an include path relative to `base_dir`, with extension fallback
-/// (`.ly` then `.ily`) and additional search paths.
+/// Resolve an include path relative to `base_dir`, then to the include
+/// paths, with extension fallback (`.ly` then `.ily`). An absolute path is
+/// taken as it is.
 fn resolve_include(
     raw: &str,
-    base_dir: &Path,
+    base_dir: Option<&Path>,
     opts: &FlattenOpts,
 ) -> Result<PathBuf, FlattenError> {
-    // Build candidate paths in order: base_dir first, then include_paths.
-    let search_dirs =
-        std::iter::once(base_dir).chain(opts.include_paths.iter().map(PathBuf::as_path));
+    let search_dirs: Vec<&Path> = if Path::new(raw).is_absolute() {
+        vec![Path::new("")]
+    } else {
+        base_dir
+            .into_iter()
+            .chain(opts.include_paths.iter().map(PathBuf::as_path))
+            .collect()
+    };
 
     for dir in search_dirs {
         let base = dir.join(raw);
@@ -310,20 +395,13 @@ fn dedup_keep_last(
     }
 }
 
-/// Run deduplication and validation on the fully-expanded text.
+/// Keep one `\version` line, the last, in the fully expanded text.
+/// `\language` lines all stay: each applies from where it stands. Several
+/// `\header` blocks are fine too: LilyPond merges them.
 fn normalize(text: String) -> Result<String, FlattenError> {
     let lines: Vec<&str> = text.lines().collect();
-
-    // Phase A & B: for \version and \language, keep only the last occurrence.
     let mut remove: std::collections::HashSet<usize> = std::collections::HashSet::new();
     dedup_keep_last(&lines, is_version_line, "\\version", &mut remove);
-    dedup_keep_last(&lines, is_language_line, "\\language", &mut remove);
-
-    // Phase C: count \header blocks using brace depth tracking.
-    let header_count = count_header_blocks(&lines);
-    if header_count > 1 {
-        return Err(FlattenError::MultipleHeaders);
-    }
 
     // Reconstruct the text, skipping removed lines.
     let mut out = String::with_capacity(text.len());
@@ -340,52 +418,6 @@ fn normalize(text: String) -> Result<String, FlattenError> {
 fn is_version_line(line: &str) -> bool {
     let t = line.trim_start();
     t.starts_with(r#"\version ""#)
-}
-
-fn is_language_line(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with(r#"\language ""#)
-}
-
-/// Count top-level `\header { ... }` blocks in the flattened output.
-/// Uses brace-depth tracking; assumes `\header` is not nested inside another
-/// block context (which matches typical LilyPond score structure).
-fn count_header_blocks(lines: &[&str]) -> usize {
-    let mut count = 0usize;
-    let mut depth = 0i32;
-    let mut in_header = false;
-
-    for line in lines {
-        let trimmed = line.trim_start();
-
-        // Skip line comments
-        if trimmed.starts_with('%') {
-            continue;
-        }
-
-        if !in_header && trimmed.starts_with(r"\header") {
-            in_header = true;
-            count += 1;
-        }
-
-        if in_header {
-            for ch in line.chars() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth <= 0 {
-                            depth = 0;
-                            in_header = false;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    count
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +445,7 @@ mod tests {
         let src = r#"\version "2.24.0"
 { c' d' e' f' }
 "#;
-        let result = flatten_str(src, Path::new("."), FlattenOpts::default()).unwrap();
+        let result = flatten_str(src, Some(Path::new(".")), FlattenOpts::default()).unwrap();
         assert!(result.contains(r#"\version "2.24.0""#));
         assert!(result.contains("c' d' e' f'"));
     }
@@ -488,6 +520,7 @@ mod tests {
         let opts = FlattenOpts {
             include_paths: vec![lib_dir.path().to_path_buf()],
             add_markers: false,
+            ..Default::default()
         };
         let result = flatten(&dir.path().join("main.ly"), opts).unwrap();
         assert!(result.contains("e'"));
@@ -591,7 +624,7 @@ mod tests {
         let src = r#"\version "2.24.0"
 { c' }
 "#;
-        let result = flatten_str(src, Path::new("."), FlattenOpts::default()).unwrap();
+        let result = flatten_str(src, Some(Path::new(".")), FlattenOpts::default()).unwrap();
         assert_eq!(
             result.matches(r#"\version"#).count(),
             1,
@@ -606,23 +639,23 @@ mod tests {
 \version "2.24.0"
 { d' }
 "#;
-        let result = flatten_str(src, Path::new("."), FlattenOpts::default()).unwrap();
+        let result = flatten_str(src, Some(Path::new(".")), FlattenOpts::default()).unwrap();
         assert_eq!(result.matches(r#"\version"#).count(), 1);
         assert!(result.contains(r#"\version "2.24.0""#));
         assert!(!result.contains(r#"\version "2.22.0""#));
     }
 
     #[test]
-    fn test_duplicate_language_last_wins() {
+    fn test_every_language_stays() {
+        // Each applies from where it stands: dropping the first would read
+        // `c'` in German.
         let src = r#"\language "english"
-{ c' }
+{ cs' }
 \language "deutsch"
-{ d' }
+{ cis' }
 "#;
-        let result = flatten_str(src, Path::new("."), FlattenOpts::default()).unwrap();
-        assert_eq!(result.matches(r#"\language"#).count(), 1);
-        assert!(result.contains(r#"\language "deutsch""#));
-        assert!(!result.contains(r#"\language "english""#));
+        let result = flatten_str(src, Some(Path::new(".")), FlattenOpts::default()).unwrap();
+        assert_eq!(result, src);
     }
 
     #[test]
@@ -632,18 +665,16 @@ mod tests {
 }
 { c' }
 "#;
-        let result = flatten_str(src, Path::new("."), FlattenOpts::default());
+        let result = flatten_str(src, Some(Path::new(".")), FlattenOpts::default());
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_multiple_headers_error() {
-        let src = r#"\header { title = "A" }
-\header { title = "B" }
-{ c' }
-"#;
-        let err = flatten_str(src, Path::new("."), FlattenOpts::default()).unwrap_err();
-        assert!(matches!(err, FlattenError::MultipleHeaders));
+    fn test_several_headers_stay() {
+        // LilyPond merges top-level headers; a score's own is its own.
+        let src = "\\header { title = \"A\" }\n\\header { composer = \"B\" }\n\\score { \\header { piece = \"I\" } { c' } }\n";
+        let result = flatten_str(src, Some(Path::new(".")), FlattenOpts::default()).unwrap();
+        assert_eq!(result, src);
     }
 
     // -----------------------------------------------------------------------
@@ -656,7 +687,7 @@ mod tests {
 { c' }
 "#;
         // No file foo.ly exists — should not error because the include is commented out.
-        let result = flatten_str(src, Path::new("."), FlattenOpts::default());
+        let result = flatten_str(src, Some(Path::new(".")), FlattenOpts::default());
         assert!(result.is_ok());
         let text = result.unwrap();
         assert!(!text.contains("BEGIN INCLUDE"));
@@ -665,9 +696,60 @@ mod tests {
     #[test]
     fn test_include_in_block_comment_skipped() {
         let src = "%{\n\\include \"foo.ly\"\n%}\n{ c' }\n";
-        let result = flatten_str(src, Path::new("."), FlattenOpts::default());
+        let result = flatten_str(src, Some(Path::new(".")), FlattenOpts::default());
         assert!(result.is_ok());
         let text = result.unwrap();
         assert!(!text.contains("BEGIN INCLUDE"));
+    }
+
+    #[test]
+    fn test_includes_are_found_on_the_tree() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "part.ily", "d'4\n");
+        let opts = || FlattenOpts {
+            add_markers: false,
+            ..Default::default()
+        };
+        // Mid-line, and after a one-line block comment (which left the line
+        // scanner "inside a comment" for the rest of the file).
+        let src = "%{ note %}\n{ c'4 \\include \"part.ily\" e'4 }\n";
+        let result = flatten_str(src, Some(dir.path()), opts()).unwrap();
+        assert_eq!(result, "%{ note %}\n{ c'4 \nd'4\n e'4 }\n");
+        // Not in a string, and a commented one is not followed.
+        let src = "{ c'4^\"\\\\include \\\"x.ly\\\"\" } % \\include \"y.ly\"\n";
+        assert_eq!(flatten_str(src, Some(dir.path()), opts()).unwrap(), src);
+    }
+
+    #[test]
+    fn test_lilypond_files_and_missing_ones_are_kept() {
+        let src = "\\include \"english.ly\"\n{ cs'4 }\n";
+        assert_eq!(flatten_str(src, None, FlattenOpts::default()).unwrap(), src);
+        let src = "\\include \"lib.ily\"\n{ c'4 }\n";
+        assert!(matches!(
+            flatten_str(src, None, FlattenOpts::default()),
+            Err(FlattenError::NotFound(_))
+        ));
+        let keep = FlattenOpts {
+            keep_missing: true,
+            ..Default::default()
+        };
+        assert_eq!(flatten_str(src, None, keep).unwrap(), src);
+    }
+
+    #[test]
+    fn test_the_map_tells_where_each_piece_comes_from() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "part.ily", "d'4\n");
+        let src = "{ c'4 }\n\\include \"part.ily\"\n{ e'4 }\n";
+        let opts = FlattenOpts {
+            add_markers: false,
+            ..Default::default()
+        };
+        let (out, map) = flatten_mapped(src, Some(dir.path()), &opts).unwrap();
+        assert_eq!(out, "{ c'4 }\nd'4\n{ e'4 }\n");
+        let starts: Vec<usize> = map.iter().map(|(at, _)| *at).collect();
+        assert_eq!(starts, [0, 8, 12]);
+        assert!(matches!(map[1].1, Origin::Include { ref statement, .. } if statement == &(8..27)));
+        assert!(matches!(map[2].1, Origin::Source(28)));
     }
 }
