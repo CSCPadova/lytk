@@ -399,8 +399,14 @@ class Token:
 
     @property
     def kind(self) -> str:
-        """``comment``, ``string``, ``scheme``, ``command``, ``symbol``,
-        ``number``, ``fraction``, ``punctuation`` or ``error``."""
+        """``comment``, ``string``, ``command``, ``symbol``, ``number``,
+        ``fraction``, ``punctuation``, ``scheme`` (the ``#`` or ``$`` that
+        starts embedded Scheme), ``boolean``, ``character``, ``keyword``
+        (Scheme's) or ``error``."""
+        ...
+    @property
+    def scheme(self) -> bool:
+        """Whether the token is Scheme rather than LilyPond."""
         ...
     @property
     def text(self) -> str: ...
@@ -420,14 +426,14 @@ class Token:
         ...
 
 def tokenize(text: str) -> list[Token]:
-    """The tokens of LilyPond text, from the parse tree; strings, embedded
-    Scheme and comments whole. Every character but whitespace is in exactly
-    one token, ``error`` tokens holding what the grammar cannot tokenize."""
+    """The tokens of LilyPond text, from the parse tree; strings and comments
+    whole, embedded Scheme as Scheme tokens. Every character but whitespace
+    is in exactly one token, ``error`` tokens holding what the grammar cannot
+    tokenize."""
     ...
 
 def strip_comments(text: str) -> str:
-    """*text* without its LilyPond comments; comments inside embedded Scheme
-    stay."""
+    """*text* without its comments, LilyPond's and embedded Scheme's."""
     ...
 
 def source_stats(text: str) -> dict[str, int]:

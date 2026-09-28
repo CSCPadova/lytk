@@ -3,6 +3,27 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-28 — Scheme tokens
+
+K3 left embedded Scheme as one token, noting that the compiled Scheme
+grammar could split it. It turned out not to be needed: the main grammar
+already parses embedded Scheme into `scheme_*` nodes (lists, symbols,
+numbers, strings, booleans, characters, keywords, quotes, vectors,
+comments) and LilyPond embedded in Scheme (`#{ … #}`) into LilyPond nodes.
+`tokenize` now descends into them, tracking with a stack of ancestors
+whether a node is Scheme (inside `embedded_scheme`) or LilyPond again
+(inside `scheme_embedded_lilypond_text`), and sets `Token.scheme`. The
+Scheme kinds reuse the lexical ones where they mean the same (symbol,
+number, string, comment, punctuation); `boolean`, `character` and `keyword`
+are Scheme's own, and `scheme` is now the `#` or `$` that opens an
+expression, so `source_stats` still counts expressions. A Scheme block
+comment's text is in no child node, so a comment is one token, as a string
+is. `strip_comments` now strips Scheme's comments as well. Nothing but
+whitespace is lost, still: 0 of the corpus board's 2,706 files. The grammar
+has two known gaps, which the tokens follow: a datum comment (`#;`) runs to
+the end of its line, and `#| … |#` outside a Scheme expression is not a
+comment.
+
 ## 2026-09-28 — Epic K: K2 (includes)
 
 `flatten` found includes line by line: `\include` had to start a line, and a

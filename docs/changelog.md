@@ -22,12 +22,16 @@ engineering notes are in the [development log](devlog.md).
   `ly_to_ir::{LilyPondVersion, lilypond_version, set_lilypond_version,
   strip_lilypond_version}` and `ScoreMetadata::lilypond_version`.
 - `lytk.tokenize(text)`: the tokens of LilyPond text from the parse tree
-  (`lytk.Token`: kind, text, character span, line, column). The kinds are
-  comment, string, scheme, command, symbol, number, fraction, punctuation,
-  and error for text the grammar cannot tokenize, so every character but
-  whitespace is in exactly one token, broken input included.
-  `lytk.strip_comments(text)` removes LilyPond comments. Rust:
-  `ly_to_ir::{tokenize, strip_comments, Token, TokenKind}`.
+  (`lytk.Token`: kind, text, character span, line, column, and whether it
+  is Scheme). The kinds are comment, string, command, symbol, number,
+  fraction, punctuation, and error for text the grammar cannot tokenize, so
+  every character but whitespace is in exactly one token, broken input
+  included. Embedded Scheme is tokenized as Scheme: `scheme` is the `#` or
+  `$` that starts it, then its symbols, numbers, strings, comments,
+  brackets and quotes, with `boolean`, `character` and `keyword` for
+  Scheme's own; LilyPond inside it (`#{ … #}`) is tokenized as LilyPond.
+  `lytk.strip_comments(text)` removes LilyPond's and Scheme's comments.
+  Rust: `ly_to_ir::{tokenize, strip_comments, Token, TokenKind}`.
 - `lytk.info(score)`: a score's metadata and counts as a dict, the library
   home of `lytk info --json`, which now calls it. Besides the parts and notes
   it counts voices, bars, the length in quarter notes, lyric syllables, chord

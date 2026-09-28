@@ -188,7 +188,7 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 | Slide | ✅ | Via glissando trill style |
 | Anacrusis | ✅ | `\partial` |
 | Paper block | ✅ | `\paper { }` → page layout |
-| Tokens | ✅ | `lytk.tokenize` (the tree's leaves; strings, Scheme and comments whole; nothing but whitespace lost) and `lytk.strip_comments` |
+| Tokens | ✅ | `lytk.tokenize` (the tree's leaves; strings and comments whole; embedded Scheme as Scheme tokens; nothing but whitespace lost) and `lytk.strip_comments` |
 | `\version` | ✅ | `Score.lilypond_version` (every movement's); `lytk.lilypond_version`, `set_lilypond_version`, `strip_lilypond_version` read and edit it on the tree; an invalid one is `invalid-version` |
 | `\header` | ✅ | Every field (`Score.header`); strings decoded as LilyPond does; `\markup` values as plain text, `#"…"` as the string; a `\score`'s header is its movement's, the top-level one every movement's |
 | `\language` | ✅ | At the top level, in `\score` and in music; an unknown name keeps the language in force |

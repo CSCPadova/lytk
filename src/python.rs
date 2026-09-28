@@ -659,10 +659,13 @@ fn strip_lilypond_version(py: Python<'_>, text: &str) -> PyResult<String> {
 // ---------------------------------------------------------------------------
 
 /// A token of LilyPond text, from :func:`tokenize`: ``kind`` is one of
-/// ``"comment"``, ``"string"``, ``"scheme"``, ``"command"``, ``"symbol"``,
-/// ``"number"``, ``"fraction"``, ``"punctuation"`` and ``"error"`` (text the
-/// grammar cannot tokenize); ``text[start:end]`` is the token (character
-/// offsets); ``line`` and ``column`` count from 1.
+/// ``"comment"``, ``"string"``, ``"command"``, ``"symbol"``, ``"number"``,
+/// ``"fraction"``, ``"punctuation"``, ``"scheme"`` (the ``#`` or ``$`` that
+/// starts embedded Scheme), ``"boolean"``, ``"character"``, ``"keyword"``
+/// (Scheme's) and ``"error"`` (text the grammar cannot tokenize);
+/// ``text[start:end]`` is the token (character offsets); ``line`` and
+/// ``column`` count from 1; ``scheme`` tells a Scheme token from a LilyPond
+/// one.
 #[pyclass(name = "Token", module = "lytk", frozen, get_all, eq, hash)]
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PyToken {
@@ -672,20 +675,28 @@ struct PyToken {
     end: usize,
     line: usize,
     column: usize,
+    scheme: bool,
 }
 
 #[pymethods]
 impl PyToken {
     fn __repr__(&self) -> String {
         format!(
-            "Token({:?}, {:?}, start={}, end={}, line={}, column={})",
-            self.kind, self.text, self.start, self.end, self.line, self.column
+            "Token({:?}, {:?}, start={}, end={}, line={}, column={}, scheme={})",
+            self.kind,
+            self.text,
+            self.start,
+            self.end,
+            self.line,
+            self.column,
+            if self.scheme { "True" } else { "False" }
         )
     }
 }
 
-/// The tokens of LilyPond text, in order, from the parse tree: strings,
-/// embedded Scheme expressions and comments whole. Whitespace is no token;
+/// The tokens of LilyPond text, in order, from the parse tree: strings and
+/// comments whole, embedded Scheme as Scheme tokens (``scheme`` set), and
+/// LilyPond inside it (``#{ … #}``) as LilyPond. Whitespace is no token;
 /// every other character is in exactly one, so the tokens of broken input
 /// cover it too (as ``"error"`` tokens where needed).
 #[pyfunction]
@@ -704,14 +715,15 @@ fn tokenize(py: Python<'_>, text: &str) -> PyResult<Vec<PyToken>> {
                 end: char_at(t.end),
                 line: t.line,
                 column: t.column,
+                scheme: t.scheme,
             })
             .collect())
     })
 }
 
-/// *text* without its LilyPond comments (``% …``, ``%{ … %}``): a block
-/// comment between two tokens becomes a space, a line comment leaves its
-/// line break. Comments inside embedded Scheme stay.
+/// *text* without its comments: LilyPond's (``% …``, ``%{ … %}``) and
+/// embedded Scheme's (``; …``, ``#| … |#``, ``#;datum``). A block comment
+/// between two tokens becomes a space, a line comment leaves its line break.
 #[pyfunction]
 fn strip_comments(py: Python<'_>, text: &str) -> PyResult<String> {
     guard(|| {

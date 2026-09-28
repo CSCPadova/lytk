@@ -535,6 +535,13 @@ class TestTokens:
             ("punctuation", "'"),
         ]
         assert {t.kind for t in tokens} >= {"fraction", "number", "string", "scheme"}
+        assert [(t.kind, t.text) for t in tokens if t.scheme] == [
+            ("scheme", "#"),
+            ("punctuation", "("),
+            ("symbol", "x"),
+            ("number", "1"),
+            ("punctuation", ")"),
+        ]
         for t in tokens:
             assert text[t.start : t.end] == t.text  # character offsets
         assert (tokens[1].line, tokens[1].column) == (2, 1)
@@ -546,6 +553,7 @@ class TestTokens:
 
     def test_strip_comments(self):
         assert lytk.strip_comments("c4%{x%}d4 % tail\nr4") == "c4 d4 \nr4"
+        assert lytk.strip_comments("#(a ; s\n b)") == "#(a \n b)"
 
 
 class TestStatistics:
@@ -565,7 +573,7 @@ class TestStatistics:
 
     def test_source_stats(self):
         stats = lytk.source_stats("% a\n#(define x 1)\n{ c'4 %{b%} }\n")
-        assert stats == {"bytes": 32, "lines": 3, "tokens": 8, "comments": 2, "scheme": 1, "error_tokens": 0}
+        assert stats == {"bytes": 32, "lines": 3, "tokens": 13, "comments": 2, "scheme": 1, "error_tokens": 0}
 
 
 class TestIncludes:

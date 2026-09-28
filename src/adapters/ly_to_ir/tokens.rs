@@ -1,5 +1,6 @@
-//! Tokens of LilyPond text: the syntax tree's leaves, with strings, embedded
-//! Scheme and quoted identifiers kept whole.
+//! Tokens of LilyPond text: the syntax tree's leaves, with strings, comments
+//! and quoted identifiers kept whole. Embedded Scheme is tokenized as Scheme,
+//! and LilyPond embedded in it (`#{ … #}`) as LilyPond.
 
 use tree_sitter::Node;
 
@@ -11,11 +12,12 @@ use super::{AdapterError, Result};
 /// What a [`Token`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenKind {
-    /// `% …` or `%{ … %}`.
+    /// `% …` or `%{ … %}`; in Scheme `; …`, `#| … |#` or `#;datum`.
     Comment,
     /// `"…"`, whole.
     String,
-    /// An embedded Scheme expression (`#…`, `$…`), whole.
+    /// The `#`, `$`, `#@` or `$@` that starts an embedded Scheme expression,
+    /// whose tokens follow.
     Scheme,
     /// A backslashed word or mark: `\relative`, `\!`, `\(`, `\1`.
     Command,
@@ -25,8 +27,15 @@ pub enum TokenKind {
     Number,
     /// `3/4`.
     Fraction,
-    /// Brackets, octave marks, articulations and the other marks.
+    /// Brackets, octave marks, articulations and the other marks; Scheme's
+    /// brackets and quotes.
     Punctuation,
+    /// Scheme's `#t`, `#f`, `#true`, `#false`.
+    Boolean,
+    /// A Scheme character: `#\a`, `#\space`.
+    Character,
+    /// A Scheme keyword: `#:key`.
+    Keyword,
     /// Text the grammar cannot make a token of.
     Error,
 }
@@ -42,6 +51,9 @@ impl TokenKind {
             TokenKind::Number => "number",
             TokenKind::Fraction => "fraction",
             TokenKind::Punctuation => "punctuation",
+            TokenKind::Boolean => "boolean",
+            TokenKind::Character => "character",
+            TokenKind::Keyword => "keyword",
             TokenKind::Error => "error",
         }
     }
@@ -56,23 +68,29 @@ pub struct Token {
     pub end: usize,
     pub line: usize,
     pub column: usize,
+    /// Whether the token is Scheme (embedded Scheme, its `#` or `$`
+    /// included) rather than LilyPond.
+    pub scheme: bool,
 }
 
 /// The kind of token `node` is, if it is one (a node the walk does not
 /// descend into); `None` for a node made of tokens.
 fn kind_of(node: Node, text: &str) -> Option<TokenKind> {
     let kind = match node.kind() {
-        "comment" => TokenKind::Comment,
-        "string" => TokenKind::String,
-        "embedded_scheme" => TokenKind::Scheme,
+        "comment" | "scheme_comment" => TokenKind::Comment,
+        "string" | "scheme_string" => TokenKind::String,
+        "embedded_scheme_prefix" => TokenKind::Scheme,
         "quoted_identifier"
         | "escaped_word"
         | "dynamic"
         | "ligature"
         | "instrument_string_number" => TokenKind::Command,
-        "symbol" => TokenKind::Symbol,
-        "unsigned_integer" | "decimal_number" => TokenKind::Number,
+        "symbol" | "scheme_symbol" => TokenKind::Symbol,
+        "unsigned_integer" | "decimal_number" | "scheme_number" => TokenKind::Number,
         "fraction" => TokenKind::Fraction,
+        "scheme_boolean" => TokenKind::Boolean,
+        "scheme_character" => TokenKind::Character,
+        "scheme_keyword" => TokenKind::Keyword,
         _ if node.child_count() > 0 => return None,
         _ if node.is_error() => TokenKind::Error,
         _ if text.starts_with('\\') => TokenKind::Command,
@@ -94,8 +112,15 @@ pub fn tokenize(text: &str) -> Result<Vec<Token>> {
     let mut out = Vec::new();
     let mut columns = Columns::default();
     let mut cursor = tree.walk();
+    // Whether each ancestor of the current node is Scheme.
+    let mut parents: Vec<bool> = Vec::new();
     loop {
         let node = cursor.node();
+        let scheme = match node.kind() {
+            "embedded_scheme" => true,
+            "scheme_embedded_lilypond_text" => false,
+            _ => parents.last().copied().unwrap_or(false),
+        };
         let (start, end) = (node.start_byte(), node.end_byte());
         let kind = if node.is_missing() || start == end {
             None
@@ -110,21 +135,24 @@ pub fn tokenize(text: &str) -> Result<Vec<Token>> {
                 end,
                 line: point.row + 1,
                 column: columns.column(text, start - point.column, start),
+                scheme,
             });
         } else if cursor.goto_first_child() {
+            parents.push(scheme);
             continue;
         }
         while !cursor.goto_next_sibling() {
             if !cursor.goto_parent() {
                 return Ok(out);
             }
+            parents.pop();
         }
     }
 }
 
-/// `text` without its LilyPond comments. A block comment between two tokens
-/// becomes a space, as LilyPond reads it; a line comment leaves its line
-/// break. Comments inside embedded Scheme are Scheme's, and stay.
+/// `text` without its comments, LilyPond's and embedded Scheme's. A block
+/// comment between two tokens becomes a space, as LilyPond reads it; a line
+/// comment leaves its line break.
 pub fn strip_comments(text: &str) -> Result<String> {
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
@@ -184,6 +212,45 @@ mod tests {
     }
 
     #[test]
+    fn scheme_is_tokenized_as_scheme() {
+        let src = "#(define x \"a\") ##f $y #(list #\\a #:k 'q ; c\n #{ c'4 #})";
+        let tokens: Vec<(&str, &str, bool)> = tokenize(src)
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.kind.as_str(), &src[t.start..t.end], t.scheme))
+            .collect();
+        assert_eq!(
+            tokens,
+            [
+                ("scheme", "#", true),
+                ("punctuation", "(", true),
+                ("symbol", "define", true),
+                ("symbol", "x", true),
+                ("string", "\"a\"", true),
+                ("punctuation", ")", true),
+                ("scheme", "#", true),
+                ("boolean", "#f", true),
+                ("scheme", "$", true),
+                ("symbol", "y", true),
+                ("scheme", "#", true),
+                ("punctuation", "(", true),
+                ("symbol", "list", true),
+                ("character", "#\\a", true),
+                ("keyword", "#:k", true),
+                ("punctuation", "'", true),
+                ("symbol", "q", true),
+                ("comment", "; c", true),
+                ("punctuation", "#{", true),
+                ("symbol", "c", false),
+                ("punctuation", "'", false),
+                ("number", "4", false),
+                ("punctuation", "#}", true),
+                ("punctuation", ")", true),
+            ]
+        );
+    }
+
+    #[test]
     fn leaves_become_tokens() {
         assert_eq!(
             kinds("\\relative c'' { \\time 3/4 c4.\\p( d) % end\n}"),
@@ -212,7 +279,12 @@ mod tests {
                 ("symbol", "t"),
                 ("punctuation", "="),
                 ("string", "\"a \\\"b\""),
-                ("scheme", "#(define x 1)"),
+                ("scheme", "#"),
+                ("punctuation", "("),
+                ("symbol", "define"),
+                ("symbol", "x"),
+                ("number", "1"),
+                ("punctuation", ")"),
                 ("command", "\\<"),
                 ("command", "\\!"),
             ]
@@ -231,7 +303,7 @@ mod tests {
                 s.scheme,
                 s.error_tokens
             ),
-            (32, 3, 8, 2, 1, 0)
+            (32, 3, 13, 2, 1, 0)
         );
     }
 
@@ -246,10 +318,10 @@ mod tests {
 
     #[test]
     fn comments_are_stripped_as_lilypond_skips_them() {
-        let src = "c4%{x%}d4 % tail\n#(display \"%\" ; s\n)\n";
+        let src = "c4%{x%}d4 % tail\n#(display \"%\" ; s\n#|b|#1)\n";
         assert_eq!(
             strip_comments(src).unwrap(),
-            "c4 d4 \n#(display \"%\" ; s\n)\n"
+            "c4 d4 \n#(display \"%\" \n1)\n"
         );
     }
 }
