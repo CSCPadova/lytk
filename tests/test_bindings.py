@@ -466,6 +466,55 @@ class TestStringsAndHeaders:
         assert score.diagnostics == []
 
 
+class TestLilyPondVersion:
+    """\\version read, compared and edited (Epic K1)."""
+
+    def test_versions_compare_numerically(self):
+        v = lytk.LilyPondVersion
+        assert v("2.24") == v("2.24.0") and hash(v("2.24")) == hash(v("2.24.0"))
+        assert v("2.24.10") > v("2.24.9") > v("2.22.2")
+        assert sorted([v("2.26.0"), v("2.24.0")]) == [v("2.24.0"), v("2.26.0")]
+        assert (str(v("2.24")), repr(v("2.24"))) == ("2.24.0", "LilyPondVersion('2.24.0')")
+        assert v("2.25.3.x").extra == "x"
+        import pickle
+
+        assert pickle.loads(pickle.dumps(v("2.26.0"))) == v("2.26.0")
+        for bad in ("2.25", "two", "2.24.0.a.b"):
+            with pytest.raises(lytk.ParseError):
+                v(bad)
+
+    def test_version_of_text_and_of_a_score(self):
+        text = '% \\version "1.0.0"\n\\version "2.24"\n{ c\'1 }'
+        assert lytk.lilypond_version(text) == lytk.LilyPondVersion("2.24.0")
+        assert lytk.lilypond_version("{ c'1 }") is None
+        assert lytk.from_lilypond_string(text).lilypond_version == lytk.LilyPondVersion("2.24.0")
+        assert lytk.from_lilypond_music_string(text).lilypond_version.minor == 24
+        assert lytk.from_lilypond_string("{ c'1 }").lilypond_version is None
+        score = lytk.from_lilypond_string(text)
+        assert lytk.Score.from_json(score.to_json()).lilypond_version == score.lilypond_version
+
+    def test_set_and_strip(self):
+        text = '\\version "2.18.2"\n{ c\'1 }\n'
+        assert lytk.set_lilypond_version(text, "2.24") == '\\version "2.24.0"\n{ c\'1 }\n'
+        assert lytk.set_lilypond_version("{ c'1 }", lytk.LilyPondVersion("2.26.0")).startswith('\\version "2.26.0"\n')
+        assert lytk.strip_lilypond_version(text) == "{ c'1 }\n"
+        with pytest.raises(lytk.ParseError):
+            lytk.set_lilypond_version(text, "2.25")
+
+    def test_writers_take_the_version(self):
+        score = lytk.from_lilypond_string("{ c'1 }")
+        assert '\\version "2.24.0"' in lytk.to_lilypond(score)
+        assert '\\version "2.26.0"' in lytk.to_lilypond(score, version="2.26")
+        doc = lytk.from_lilypond_music_string("{ c'1 }")
+        assert '\\version "2.26.0"' in lytk.to_lilypond_music(doc, version=lytk.LilyPondVersion("2.26.0"))
+        with pytest.raises(lytk.ParseError):
+            lytk.to_lilypond(score, version="latest")
+
+    def test_an_invalid_version_is_an_error(self):
+        codes = [d.code for d in lytk.check_lilypond('\\version "2.x"\n{ c\'1 }')]
+        assert codes == ["invalid-version"]
+
+
 class TestPanicFirewall:
     """A Rust panic reaches Python as lytk.InternalError, never as pyo3's
     PanicException (a BaseException), and prints nothing."""

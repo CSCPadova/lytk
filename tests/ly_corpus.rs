@@ -53,6 +53,12 @@ const MUTATIONS_CAUGHT: &[(&str, usize, usize)] = &[
     ("Scheme `)`", 42, 42),
 ];
 
+/// LilyPond's own tests of its errors (`expect-error = ##t`): LilyPond fails
+/// them on purpose, so they are no valid files. The boards count them apart.
+fn expects_error(src: &str) -> bool {
+    src.contains("expect-error = ##t")
+}
+
 fn read_lossy(path: &Path) -> String {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     String::from_utf8_lossy(&bytes).into_owned()
@@ -108,6 +114,7 @@ fn syntax_board() {
     ];
 
     let (mut total, mut flagged_files) = (0, Vec::new());
+    let (mut expected, mut caught) = (0, 0);
     let mut times = Vec::new();
     for (name, files) in &sets {
         let start = Instant::now();
@@ -121,7 +128,10 @@ fn syntax_board() {
                 .map(|d| d.to_string())
                 .collect();
             times.push(t.elapsed());
-            if !errors.is_empty() {
+            if expects_error(&src) {
+                expected += 1;
+                caught += usize::from(!errors.is_empty());
+            } else if !errors.is_empty() {
                 bad += 1;
                 let rel = path.strip_prefix(&root).unwrap_or(path);
                 flagged_files.push(format!(
@@ -145,6 +155,7 @@ fn syntax_board() {
         "check_lilypond median: {:.3} ms",
         median.as_secs_f64() * 1e3
     );
+    println!("files expecting an error: {expected}, a syntax error found in {caught}");
     for f in &flagged_files {
         println!("  error: {f}");
     }
@@ -185,6 +196,7 @@ fn reader_board() {
     let reader = LyToIrAdapter::new();
     let start = Instant::now();
     let (mut other_errors, mut refused, mut with_errors) = (0, Vec::new(), Vec::new());
+    let (mut expected, mut caught) = (0, 0);
     // Board (d): warnings per code, as (count, files).
     let mut warnings: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     let mut samples: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -194,13 +206,19 @@ fn reader_board() {
             .unwrap_or(path)
             .display()
             .to_string();
-        match reader.read_str(&read_lossy(path)) {
+        let src = read_lossy(path);
+        match reader.read_str(&src) {
             Ok(reading) => {
                 let errors: Vec<_> = reading
                     .diagnostics
                     .iter()
                     .filter(|d| d.is_error())
                     .collect();
+                if expects_error(&src) {
+                    expected += 1;
+                    caught += usize::from(!errors.is_empty());
+                    continue;
+                }
                 if !errors.is_empty() {
                     with_errors.push(format!("{rel}: {}", errors[0]));
                 }
@@ -230,6 +248,7 @@ fn reader_board() {
         refused.len(),
         with_errors.len()
     );
+    println!("files expecting an error: {expected}, an error found in {caught}");
     for r in &refused {
         println!("  refused: {r}");
     }

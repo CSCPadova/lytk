@@ -6,6 +6,8 @@ use tree_sitter::{Node, Tree};
 use crate::diagnostics::{Columns, Diagnostic, Severity};
 use crate::ir::language::{parse_pitch_name, PitchLanguage};
 
+use super::version::{self, LilyPondVersion};
+
 /// Every syntax error in `tree`, parsed from `source`.
 pub(crate) fn syntax_diagnostics(tree: &Tree, source: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
@@ -35,6 +37,8 @@ pub(crate) fn syntax_diagnostics(tree: &Tree, source: &str) -> Vec<Diagnostic> {
         } else if node.kind() == "embedded_scheme" {
             out.extend(after_scheme(cols, source, node));
             out.extend(markup_override(cols, source, node));
+        } else if version::is_statement(source, node) {
+            out.extend(invalid_version(cols, source, node));
         }
         if descend && cursor.goto_first_child() {
             continue;
@@ -249,6 +253,28 @@ fn markup_override(cols: &mut Columns, source: &str, node: Node) -> Option<Diagn
             ),
         )
     })
+}
+
+/// A `\version` without a string right after it, or whose string is no
+/// version LilyPond accepts: its lexer rejects both.
+fn invalid_version(cols: &mut Columns, source: &str, word: Node) -> Option<Diagnostic> {
+    let statement = version::statement(word);
+    let (node, message) = match (statement.string, statement.value(source)) {
+        (Some(string), Some(value)) => match value.parse::<LilyPondVersion>() {
+            Ok(_) => return None,
+            Err(e) => (string, e),
+        },
+        _ => (word, "quoted string expected after `\\version`".to_string()),
+    };
+    Some(Diagnostic::counted(
+        cols,
+        source,
+        node,
+        node.end_byte(),
+        Severity::Error,
+        "invalid-version",
+        message,
+    ))
 }
 
 /// Whether `node` stands in markup, where any word or mark is text: it, or a

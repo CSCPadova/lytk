@@ -40,8 +40,11 @@ fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
                 let text = state.text(node);
                 match text {
                     "\\version" => {
-                        // Skip version string; \version "2.24.0" consumes next string
-                        i += 1; // skip string
+                        // Its string: the syntax check judges it, and
+                        // read_here reads it from the tree.
+                        if children.get(i + 1).is_some_and(|n| n.kind() == "string") {
+                            i += 1;
+                        }
                     }
                     "\\language" => {
                         // \language "english"

@@ -188,6 +188,7 @@ Layer 1 (`MusicDocument`, the Music tree the ML representations consume).
 | Slide | ✅ | Via glissando trill style |
 | Anacrusis | ✅ | `\partial` |
 | Paper block | ✅ | `\paper { }` → page layout |
+| `\version` | ✅ | `Score.lilypond_version` (every movement's); `lytk.lilypond_version`, `set_lilypond_version`, `strip_lilypond_version` read and edit it on the tree; an invalid one is `invalid-version` |
 | `\header` | ✅ | Every field (`Score.header`); strings decoded as LilyPond does; `\markup` values as plain text, `#"…"` as the string; a `\score`'s header is its movement's, the top-level one every movement's |
 | `\language` | ✅ | At the top level, in `\score` and in music; an unknown name keeps the language in force |
 | `\set Staff.instrumentName` | ✅ | Part name from `\set` property |
@@ -218,6 +219,7 @@ A warning is input lytk reads around.
 | `invalid-ratio` | error | A zero term in a tuplet (`\tuplet 0/2`), a duration multiplier (`*1/0`) or a measure length |
 | `not-lilypond` | error | Words at the start of the file that are no LilyPond (plain text) |
 | `too-large` | error | Input past the reader's bounds (`check_lilypond` only; a reader raises `ParseError`) |
+| `invalid-version` | error | `\version` without a quoted string after it, or with no version LilyPond 2.24 accepts (`"2.x"`; `"2.25"`, which leaves out the patch of a development release) |
 | `unknown-command` | warning | A command neither LilyPond 2.26 nor the file defines (a typo, or one from an include) |
 | `unrecognized-token` | warning | A word in music that is no note name in the current language, or no drum name in drum mode |
 | `ignored-include` | warning | `\include`: the reader does not follow includes; flatten the file first |
@@ -237,6 +239,7 @@ Scheme parenthesis, 499 have one.
 
 | Feature | Status | Notes |
 |---|---|---|
+| `\version` | ✅ | `2.24.0`, the syntax lytk writes, whatever the score was read from; `version=` on `to_lilypond`/`to_lilypond_music` writes another |
 | Notes with pitch | ✅ | All 12 languages, in the spelling LilyPond uses; relative/absolute |
 | Rests (r, R, s) | ✅ | |
 | Chords (`< >`) | ✅ | With arpeggio support |

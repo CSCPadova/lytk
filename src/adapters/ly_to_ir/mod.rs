@@ -35,6 +35,7 @@ mod postprocess;
 mod state;
 mod syntax;
 mod text;
+mod version;
 mod walk;
 
 #[cfg(test)]
@@ -247,6 +248,9 @@ pub fn check(text: &str, semantic: bool) -> Vec<Diagnostic> {
 }
 
 pub use text::HeaderField;
+pub use version::{
+    lilypond_version, set_lilypond_version, strip_lilypond_version, LilyPondVersion,
+};
 
 /// Every `\header` field of LilyPond text, in source order, from the syntax
 /// tree alone (nothing is read): its key, its value as text (strings decoded,
@@ -330,8 +334,10 @@ impl LyToIrAdapter {
             scores.push(score);
         }
         // The book's header, last assignment first, where a movement leaves a
-        // field unset.
+        // field unset; the file's version.
+        let version = version::version_of(source, root).map(|v| v.to_string());
         for score in &mut scores {
+            score.metadata.lilypond_version = version.clone();
             for (key, value) in state.book_header.iter().rev() {
                 walk::set_header_field(&mut score.metadata, key, value.clone(), false);
             }

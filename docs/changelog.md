@@ -7,6 +7,21 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+### Added
+
+- LilyPond `\version`: `lytk.lilypond_version(text)` reads the version the
+  first `\version` statement states, from the parse tree (a commented-out
+  one does not count), as a `lytk.LilyPondVersion`, which compares
+  numerically (`2.24` equals `2.24.0`) and accepts what LilyPond 2.24
+  accepts. `lytk.set_lilypond_version(text, version)` and
+  `lytk.strip_lilypond_version(text)` edit the statements.
+  `Score.lilypond_version` and `MusicDocument.lilypond_version` give the
+  version a LilyPond source stated. `to_lilypond(…, version=)` and
+  `to_lilypond_music(…, version=)` write another `\version` than 2.24.0.
+  An invalid `\version` is an `invalid-version` error. Rust:
+  `ly_to_ir::{LilyPondVersion, lilypond_version, set_lilypond_version,
+  strip_lilypond_version}` and `ScoreMetadata::lilypond_version`.
+
 ## [0.3.0] - 2026-09-27
 
 LilyPond input you can trust. Readers raise `lytk.ParseError` instead of

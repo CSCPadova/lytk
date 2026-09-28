@@ -47,7 +47,7 @@ class Diagnostic:
     def code(self) -> str:
         """A stable identifier: ``syntax-error``, ``missing-token``,
         ``invalid-duration``, ``invalid-ratio``, ``not-lilypond``,
-        ``too-large`` (errors); ``unknown-command``, ``unrecognized-token``,
+        ``too-large``, ``invalid-version`` (errors); ``unknown-command``, ``unrecognized-token``,
         ``ignored-include``, ``unknown-language``, ``dropped-music``,
         ``skipped-score``, ``unsupported-value`` (warnings)."""
         ...
@@ -84,6 +84,11 @@ class Score:
     def arranger(self) -> str | None: ...
     @property
     def lyricist(self) -> str | None: ...
+    @property
+    def lilypond_version(self) -> LilyPondVersion | None:
+        """The version the source's ``\\version`` states, for a score read
+        from LilyPond that states a valid one."""
+        ...
     @property
     def language(self) -> str | None: ...
     @property
@@ -137,6 +142,10 @@ class MusicDocument:
         ...
     @property
     def lyricist(self) -> str | None: ...
+    @property
+    def lilypond_version(self) -> LilyPondVersion | None:
+        """As :attr:`Score.lilypond_version`."""
+        ...
     @property
     def header(self) -> dict[str, str]:
         """Every header field, as :attr:`Score.header`."""
@@ -347,6 +356,44 @@ def header_fields(text: str) -> list[HeaderField]:
     out."""
     ...
 
+class LilyPondVersion:
+    """A LilyPond version, compared numerically (``2.24`` equals ``2.24.0``).
+    Accepted as LilyPond 2.24 accepts it: ``major.minor.patch`` with an
+    optional fourth part (kept, not compared), or ``major.minor`` with an even
+    minor. Other strings raise :class:`ParseError`. Hashable, picklable."""
+
+    def __init__(self, text: str) -> None: ...
+    @property
+    def major(self) -> int: ...
+    @property
+    def minor(self) -> int: ...
+    @property
+    def patch(self) -> int: ...
+    @property
+    def extra(self) -> str | None:
+        """The fourth part, if any."""
+        ...
+    def __lt__(self, other: LilyPondVersion) -> bool: ...
+    def __le__(self, other: LilyPondVersion) -> bool: ...
+    def __gt__(self, other: LilyPondVersion) -> bool: ...
+    def __ge__(self, other: LilyPondVersion) -> bool: ...
+    def __hash__(self) -> int: ...
+
+def lilypond_version(text: str) -> LilyPondVersion | None:
+    """The version the first ``\\version`` statement states, from the parse
+    tree (a commented-out one does not count); *None* when there is none or
+    it is invalid (``check_lilypond`` reports ``invalid-version``)."""
+    ...
+
+def set_lilypond_version(text: str, version: LilyPondVersion | str) -> str:
+    """*text* with every ``\\version`` statement stating *version*, or with
+    one added at the top."""
+    ...
+
+def strip_lilypond_version(text: str) -> str:
+    """*text* without its ``\\version`` statements."""
+    ...
+
 def check_lilypond(text: str, *, semantic: bool = False) -> list[Diagnostic]:
     """Diagnostics of LilyPond text, in source order: the syntax only (fast,
     nothing is read), or with ``semantic=True`` what a reading reports too.
@@ -386,12 +433,16 @@ def to_lilypond(
     *,
     language: str | None = None,
     relative: bool | None = None,
+    version: LilyPondVersion | str | None = None,
 ) -> str:
     """*relative*: ``True`` for ``\\relative`` entry, ``False`` for absolute,
     ``None`` for the score's own."""
     ...
 def to_lilypond_music(
-    doc: MusicDocument, path: str | None = None
+    doc: MusicDocument,
+    path: str | None = None,
+    *,
+    version: LilyPondVersion | str | None = None,
 ) -> str: ...
 def to_musicxml(score: Score, path: str | None = None) -> str: ...
 def to_mxl_bytes(score: Score) -> bytes:

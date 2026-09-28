@@ -205,6 +205,13 @@ fn check_ir_values(value: &serde_json::Value) -> Result<(), String> {
                         Some(_) => return bad(format!("duration {v} out of range")),
                         None => check_ir_values(v)?,
                     },
+                    "lilypond_version"
+                        if v.as_str().is_some_and(|s| {
+                            s.parse::<adapters::ly_to_ir::LilyPondVersion>().is_err()
+                        }) =>
+                    {
+                        return bad(format!("lilypond_version {v} is not a LilyPond version"));
+                    }
                     // The LilyPond reader's bound (its regression tests climb to 22).
                     "octave" if v.as_i64().is_some_and(|o| !(-128..=127).contains(&o)) => {
                         return bad(format!("octave {v} out of range -128..=127"));
@@ -507,6 +514,125 @@ fn check_lilypond(py: Python<'_>, text: &str, semantic: bool) -> PyResult<Vec<Py
 }
 
 // ---------------------------------------------------------------------------
+// LilyPond versions
+// ---------------------------------------------------------------------------
+
+/// A LilyPond version, as ``\\version`` states it, compared numerically:
+/// ``LilyPondVersion("2.24") == LilyPondVersion("2.24.0")``. Accepted as
+/// LilyPond 2.24 accepts it: ``major.minor.patch`` with an optional fourth
+/// part (kept, not compared), or ``major.minor`` with an even minor (a stable
+/// series). Any other string raises :class:`ParseError`. ``str()`` gives
+/// ``"2.24.0"``.
+#[pyclass(name = "LilyPondVersion", module = "lytk", frozen)]
+#[derive(Clone)]
+struct PyLilyPondVersion(adapters::ly_to_ir::LilyPondVersion);
+
+#[pymethods]
+impl PyLilyPondVersion {
+    #[new]
+    fn new(text: &str) -> PyResult<Self> {
+        text.parse().map(Self).map_err(parse_error)
+    }
+
+    #[getter]
+    fn major(&self) -> u32 {
+        self.0.major
+    }
+
+    #[getter]
+    fn minor(&self) -> u32 {
+        self.0.minor
+    }
+
+    #[getter]
+    fn patch(&self) -> u32 {
+        self.0.patch
+    }
+
+    /// The fourth part (``"foo"`` in ``2.25.3.foo``), if any.
+    #[getter]
+    fn extra(&self) -> Option<String> {
+        self.0.extra.clone()
+    }
+
+    fn __str__(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let text = pyo3::types::PyString::new_bound(py, &self.0.to_string());
+        Ok(format!("LilyPondVersion({})", text.repr()?))
+    }
+
+    fn __richcmp__(&self, other: PyRef<'_, Self>, op: pyo3::basic::CompareOp) -> bool {
+        op.matches(self.0.cmp(&other.0))
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.0.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> (Bound<'py, PyType>, (String,)) {
+        (slf.get_type(), (slf.get().0.to_string(),))
+    }
+}
+
+/// A version argument: a :class:`LilyPondVersion`, or a string to parse.
+fn version_arg(version: &Bound<'_, PyAny>) -> PyResult<adapters::ly_to_ir::LilyPondVersion> {
+    if let Ok(v) = version.downcast::<PyLilyPondVersion>() {
+        return Ok(v.get().0.clone());
+    }
+    version.extract::<String>()?.parse().map_err(parse_error)
+}
+
+/// The version stored in `meta`, read from a ``\\version``.
+fn meta_version(meta: &ir::score::ScoreMetadata) -> Option<PyLilyPondVersion> {
+    let version = meta.lilypond_version.as_deref()?.parse().ok()?;
+    Some(PyLilyPondVersion(version))
+}
+
+/// The version the first ``\\version`` statement of LilyPond text states,
+/// from the parse tree (a commented-out one does not count): *None* when
+/// there is none, or when it is not a valid version (:func:`check_lilypond`
+/// reports it as ``invalid-version``).
+#[pyfunction]
+fn lilypond_version(py: Python<'_>, text: &str) -> PyResult<Option<PyLilyPondVersion>> {
+    guard(|| {
+        let version = py.allow_threads(|| adapters::ly_to_ir::lilypond_version(text));
+        Ok(version.map(PyLilyPondVersion))
+    })
+}
+
+/// *text* with every ``\\version`` statement stating *version* (a
+/// :class:`LilyPondVersion` or a string), or with one added at the top when
+/// there is none.
+#[pyfunction]
+fn set_lilypond_version(
+    py: Python<'_>,
+    text: &str,
+    version: &Bound<'_, PyAny>,
+) -> PyResult<String> {
+    let version = version_arg(version)?;
+    guard(|| {
+        py.allow_threads(|| adapters::ly_to_ir::set_lilypond_version(text, &version))
+            .map_err(read_err)
+    })
+}
+
+/// *text* without its ``\\version`` statements; a statement alone on its
+/// line takes the line with it.
+#[pyfunction]
+fn strip_lilypond_version(py: Python<'_>, text: &str) -> PyResult<String> {
+    guard(|| {
+        py.allow_threads(|| adapters::ly_to_ir::strip_lilypond_version(text))
+            .map_err(read_err)
+    })
+}
+
+// ---------------------------------------------------------------------------
 // PyScore — opaque wrapper for the IR Score
 // ---------------------------------------------------------------------------
 
@@ -568,6 +694,13 @@ impl PyScore {
     #[getter]
     fn lyricist(&self) -> Option<String> {
         self.inner.metadata.lyricist.clone()
+    }
+
+    /// The :class:`LilyPondVersion` the source's ``\\version`` states, for a
+    /// score read from LilyPond that states a valid one; else *None*.
+    #[getter]
+    fn lilypond_version(&self) -> Option<PyLilyPondVersion> {
+        meta_version(&self.inner.metadata)
     }
 
     /// Every header field as a dict of strings: ``title``, ``subtitle``,
@@ -759,6 +892,13 @@ impl PyMusicDocument {
     #[getter]
     fn lyricist(&self) -> Option<String> {
         self.inner.metadata.lyricist.clone()
+    }
+
+    /// The :class:`LilyPondVersion` the source's ``\\version`` states (see
+    /// :attr:`Score.lilypond_version`).
+    #[getter]
+    fn lilypond_version(&self) -> Option<PyLilyPondVersion> {
+        meta_version(&self.inner.metadata)
     }
 
     /// Every header field as a dict of strings (see :attr:`Score.header`).
@@ -974,12 +1114,21 @@ fn from_lilypond_music_string(
 }
 
 /// Emit a :class:`MusicDocument` as a LilyPond string.  If *path* is given the
-/// result is also written to that file.
+/// result is also written to that file. *version* (a :class:`LilyPondVersion`
+/// or a string) is the ``\\version`` written; by default ``2.24.0``.
 #[pyfunction]
-#[pyo3(signature = (doc, path=None))]
-fn to_lilypond_music(doc: &PyMusicDocument, path: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (doc, path=None, *, version=None))]
+fn to_lilypond_music(
+    doc: &PyMusicDocument,
+    path: Option<&str>,
+    version: Option<&Bound<'_, PyAny>>,
+) -> PyResult<String> {
+    let version = version.map(version_arg).transpose()?;
     guard(|| {
-        let adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+        let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+        if let Some(v) = &version {
+            adapter = adapter.with_version(&v.to_string());
+        }
         let output = adapter
             .convert_music(&doc.inner)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -995,16 +1144,24 @@ fn to_lilypond_music(doc: &PyMusicDocument, path: Option<&str>) -> PyResult<Stri
 ///
 /// *relative* chooses the pitch entry: ``True`` for ``\\relative`` octave marks,
 /// ``False`` for absolute ones, ``None`` (default) for the score's own.
+/// *version* (a :class:`LilyPondVersion` or a string) is the ``\\version``
+/// written; by default ``2.24.0``, the syntax lytk writes, whatever version
+/// the score was read from.
 #[pyfunction]
-#[pyo3(signature = (score, path=None, *, language=None, relative=None))]
+#[pyo3(signature = (score, path=None, *, language=None, relative=None, version=None))]
 fn to_lilypond(
     score: &PyScore,
     path: Option<&str>,
     language: Option<&str>,
     relative: Option<bool>,
+    version: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<String> {
+    let version = version.map(version_arg).transpose()?;
     guard(|| {
         let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+        if let Some(v) = &version {
+            adapter = adapter.with_version(&v.to_string());
+        }
         if let Some(lang_str) = language {
             adapter = adapter.with_language(parse_language(lang_str)?);
         } else if let Some(lang) = score.inner.metadata.pitch_language {
@@ -1652,6 +1809,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check_lilypond, m)?)?;
     m.add_class::<PyHeaderField>()?;
     m.add_function(wrap_pyfunction!(header_fields, m)?)?;
+    m.add_class::<PyLilyPondVersion>()?;
+    m.add_function(wrap_pyfunction!(lilypond_version, m)?)?;
+    m.add_function(wrap_pyfunction!(set_lilypond_version, m)?)?;
+    m.add_function(wrap_pyfunction!(strip_lilypond_version, m)?)?;
     m.add_function(wrap_pyfunction!(_panic_for_tests, m)?)?;
 
     // Score class

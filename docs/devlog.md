@@ -3,6 +3,34 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-28 — Epic K: K1 (`\version`)
+
+`ly_to_ir/version.rs` holds `LilyPondVersion` and one scan of the tree for
+`\version` statements, which the reader (the version goes into every
+movement's metadata), the syntax check and the three text functions
+(`lilypond_version`, `set_lilypond_version`, `strip_lilypond_version`) all
+use. A statement is the command and the string right after it; LilyPond's
+lexer allows only whitespace between them, so a comment there makes the
+statement invalid, as in LilyPond.
+
+What a version is follows LilyPond 2.24 (`parse-lily-version` in
+`scm/lily-library.scm`, since 2.23.8): `x.y.z`, with a free fourth part that
+is not compared, or `x.y` for an even `y` only, because within a
+development series syntax changes with point releases. LilyPond's lexer
+rejects a bad string and a missing one alike, so both are the new
+`invalid-version` error. The "program too old" check is LilyPond's own and
+is left out. `Score.lilypond_version` is informational: the writers keep
+writing `2.24.0`, the syntax they write, unless `version=` says otherwise.
+The IR field is skipped in JSON when unset, so existing JSON is unchanged.
+
+The corpus boards now leave out LilyPond's tests of its own errors
+(`expect-error = ##t`, 13 files): LilyPond fails them on purpose. lytk
+reports an error in 2 of them, the two version tests; before K1 it found
+none. The boards ran on the 2.27.3 checkout this time (the 2.26 one was
+gone): still the one false positive (`##[ #]`).
+
+Tests: 1,150 Rust (`tests/ly_source.rs`), 234 Python (`TestLilyPondVersion`).
+
 ## 2026-09-27 — Release 0.3.0
 
 Epic J (J0–J7) ships as **0.3.0**. The version was already 0.3.0 in
