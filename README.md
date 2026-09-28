@@ -28,8 +28,9 @@ from the command line.
   release to the next.
 - **Built for machine learning.** Encoders for note arrays, piano rolls and
   Performance-RNN event sequences, objective metrics from the muspy family,
-  folder datasets with deterministic splits and caching, and padded data
-  loaders for PyTorch and TensorFlow.
+  datasets over folders or JSON Lines records with deterministic (or the
+  records' own) splits and caching, and padded data loaders for PyTorch and
+  TensorFlow.
 - **Fast.** A Rust core with prebuilt wheels, and a batch converter that uses
   every core. It transposes LilyPond about 50× faster than python-ly.
 
@@ -108,6 +109,19 @@ Scores differ in length, so each batch is padded. The true lengths come back
 alongside it because `0` is a valid event, pitch and velocity, so padding alone
 can't tell you where a score ends. `to_tensorflow_dataloader` works the same way.
 
+A corpus kept as JSON Lines records (id, text, metadata) keeps its ids and its
+own splits:
+
+```python
+from lytk.datasets import RecordsDataset
+
+data = RecordsDataset.from_jsonl("scores.jsonl", split_field="split", on_error="skip")
+splits = data.split()                  # {"train": …, "valid": …, "test": …}, as recorded
+loader = splits["train"].to_pytorch_dataloader("note_array", batch_size=32, return_ids=True)
+for arrays, lengths, ids in loader:
+    ...
+```
+
 The package also installs a `lytk` command:
 
 ```bash
@@ -154,6 +168,7 @@ lyrics); slurs and ornaments are not performed.
 
 ## Documentation
 
+- [Python API reference](docs/python-api.md)
 - [Command line](docs/cli.md)
 - [What each format reads and writes](docs/import-export.md)
 - [Design and internals](docs/design.md)

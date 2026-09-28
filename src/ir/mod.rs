@@ -41,6 +41,7 @@ pub mod note;
 pub mod part;
 pub mod pitch;
 pub mod score;
+pub mod stats;
 pub mod voice;
 
 // Layer 1: Music tree (format-agnostic representation).

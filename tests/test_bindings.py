@@ -460,10 +460,178 @@ class TestStringsAndHeaders:
         cut = text[: fields[0].start] + text[fields[0].end :]
         assert [f.key for f in lytk.header_fields(cut)] == ["piece"]
 
+    def test_movements_of_a_string(self):
+        text = "\\version \"2.24.0\"\n{ c'1 }\n\\score { { d'1 e'1 } }\n{ c'3 }\n"
+        scores = lytk.from_lilypond_movements_string(text)
+        assert [len(s.notes()) for s in scores] == [1, 2, 1]
+        assert all([d.code for d in s.diagnostics] == ["invalid-duration"] for s in scores)
+        with pytest.raises(lytk.LilyPondSyntaxError):
+            lytk.from_lilypond_movements_string(text, strict=True)
+
+    def test_music_movements(self, tmp_path):
+        path = tmp_path / "two.ly"
+        path.write_text('\\version "2.24.0"\n{ c\'1 }\n\\score { { d\'1 e\'1 } }\n')
+        docs = lytk.from_lilypond_music_movements(str(path))
+        assert [len(d.notes()) for d in docs] == [1, 2]
+        assert all(d.lilypond_version == lytk.LilyPondVersion("2.24") for d in docs)
+
     def test_language_files_set_the_pitch_names(self):
         score = lytk.from_lilypond_string('\\include "english.ly"\n{ cs\'4 }')
         assert [n[2] for n in score.notes()] == [61]
         assert score.diagnostics == []
+
+
+class TestLilyPondVersion:
+    """\\version read, compared and edited (Epic K1)."""
+
+    def test_versions_compare_numerically(self):
+        v = lytk.LilyPondVersion
+        assert v("2.24") == v("2.24.0") and hash(v("2.24")) == hash(v("2.24.0"))
+        assert v("2.24.10") > v("2.24.9") > v("2.22.2")
+        assert sorted([v("2.26.0"), v("2.24.0")]) == [v("2.24.0"), v("2.26.0")]
+        assert (str(v("2.24")), repr(v("2.24"))) == ("2.24.0", "LilyPondVersion('2.24.0')")
+        assert v("2.25.3.x").extra == "x"
+        import pickle
+
+        assert pickle.loads(pickle.dumps(v("2.26.0"))) == v("2.26.0")
+        for bad in ("2.25", "two", "2.24.0.a.b"):
+            with pytest.raises(lytk.ParseError):
+                v(bad)
+
+    def test_version_of_text_and_of_a_score(self):
+        text = '% \\version "1.0.0"\n\\version "2.24"\n{ c\'1 }'
+        assert lytk.lilypond_version(text) == lytk.LilyPondVersion("2.24.0")
+        assert lytk.lilypond_version("{ c'1 }") is None
+        assert lytk.from_lilypond_string(text).lilypond_version == lytk.LilyPondVersion("2.24.0")
+        assert lytk.from_lilypond_music_string(text).lilypond_version.minor == 24
+        assert lytk.from_lilypond_string("{ c'1 }").lilypond_version is None
+        score = lytk.from_lilypond_string(text)
+        assert lytk.Score.from_json(score.to_json()).lilypond_version == score.lilypond_version
+
+    def test_set_and_strip(self):
+        text = '\\version "2.18.2"\n{ c\'1 }\n'
+        assert lytk.set_lilypond_version(text, "2.24") == '\\version "2.24"\n{ c\'1 }\n'
+        assert lytk.set_lilypond_version("{ c'1 }", lytk.LilyPondVersion("2.26.0")).startswith('\\version "2.26.0"\n')
+        assert lytk.strip_lilypond_version(text) == "{ c'1 }\n"
+        with pytest.raises(lytk.ParseError):
+            lytk.set_lilypond_version(text, "2.25")
+
+    def test_writers_take_the_version(self):
+        score = lytk.from_lilypond_string("{ c'1 }")
+        assert '\\version "2.24.0"' in lytk.to_lilypond(score)
+        assert '\\version "2.26"' in lytk.to_lilypond(score, version="2.26")
+        doc = lytk.from_lilypond_music_string("{ c'1 }")
+        assert '\\version "2.26.0"' in lytk.to_lilypond_music(doc, version=lytk.LilyPondVersion("2.26.0"))
+        with pytest.raises(lytk.ParseError):
+            lytk.to_lilypond(score, version="latest")
+
+    def test_an_invalid_version_is_an_error(self):
+        codes = [d.code for d in lytk.check_lilypond('\\version "2.x"\n{ c\'1 }')]
+        assert codes == ["invalid-version"]
+
+
+class TestTokens:
+    """Tokens and comment stripping (Epic K3)."""
+
+    def test_tokens_cover_the_text(self):
+        text = "% é\n\\relative c'' { \\time 3/4 c4 \"a \\\"b\" #(x 1) }"
+        tokens = lytk.tokenize(text)
+        assert [(t.kind, t.text) for t in tokens][:4] == [
+            ("comment", "% é"),
+            ("command", "\\relative"),
+            ("symbol", "c"),
+            ("punctuation", "'"),
+        ]
+        assert {t.kind for t in tokens} >= {"fraction", "number", "string", "scheme"}
+        assert [(t.kind, t.text) for t in tokens if t.scheme] == [
+            ("scheme", "#"),
+            ("punctuation", "("),
+            ("symbol", "x"),
+            ("number", "1"),
+            ("punctuation", ")"),
+        ]
+        for t in tokens:
+            assert text[t.start : t.end] == t.text  # character offsets
+        assert (tokens[1].line, tokens[1].column) == (2, 1)
+        leftover = text
+        for t in reversed(tokens):
+            leftover = leftover[: t.start] + leftover[t.end :]
+        assert leftover.strip() == ""
+        assert [t.kind for t in lytk.tokenize("}}} ?!")].count("punctuation") >= 3
+
+    def test_strip_comments(self):
+        assert lytk.strip_comments("c4%{x%}d4 % tail\nr4") == "c4 d4 \nr4"
+        assert lytk.strip_comments("#(a ; s\n b)") == "#(a \n b)"
+
+
+class TestStatistics:
+    """lytk.info and lytk.source_stats (Epic K4)."""
+
+    def test_counts(self):
+        score = lytk.from_lilypond_string(
+            "\\version \"2.24.0\"\n{ \\grace d''8 e''4 f'' <g'' b''> a'' | c''1 }\n\\addlyrics { la la la la la }"
+        )
+        data = lytk.info(score)
+        assert data["lilypond_version"] == "2.24.0"
+        assert (data["part_count"], data["note_count"], data["grace_note_count"]) == (1, 7, 1)
+        assert (data["bar_count"], data["duration_quarters"], data["lyric_count"]) == (2, 8.0, 5)
+        assert data["parts"][0]["notes"] == 7 and data["parts"][0]["measures"] == 2
+        two = lytk.info(lytk.from_lilypond_string("<< \\new ChordNames \\chordmode { c1 g1 } \\new Staff << { c''1 d''1 } \\\\ { c'1 d'1 } >> >>"))
+        assert (two["voice_count"], two["chord_symbol_count"], two["note_count"]) == (2, 2, 4)
+
+    def test_source_stats(self):
+        stats = lytk.source_stats("% a\n#(define x 1)\n{ c'4 %{b%} }\n")
+        assert stats == {"bytes": 32, "lines": 3, "tokens": 13, "comments": 2, "scheme": 1, "error_tokens": 0}
+
+
+class TestIncludes:
+    """flatten_string and include_paths on the readers (Epic K2)."""
+
+    def test_flatten_string(self, tmp_path):
+        (tmp_path / "part.ily").write_text("d'4\n")
+        text = "%{ x %}\n{ c'4 \\include \"part.ily\" e'4 }\n\\include \"english.ly\"\n"
+        flat = lytk.flatten_string(text, base_dir=str(tmp_path), add_markers=False)
+        assert flat == "%{ x %}\n{ c'4 \nd'4\n e'4 }\n\\include \"english.ly\"\n"
+        assert lytk.flatten_string(text, include_paths=[str(tmp_path)]).count("BEGIN INCLUDE") == 1
+        with pytest.raises(lytk.ParseError):
+            lytk.flatten_string('\\include "gone.ily"')
+
+    def test_readers_follow_includes_when_given_paths(self, tmp_path):
+        (tmp_path / "notes.ily").write_text("{ d'4 \\nosuch e'4 }\n")
+        main = tmp_path / "main.ly"
+        main.write_text('\\include "notes.ily"\n{ c\'3 }\n')
+        assert len(lytk.from_lilypond_movements(str(main))) == 1
+        followed = lytk.from_lilypond_movements(str(main), include_paths=[])
+        assert len(followed) == 2
+        first = lytk.from_lilypond(str(main), include_paths=[])
+        assert [(d.code, d.line) for d in first.diagnostics] == [("unknown-command", 1), ("dropped-music", 2), ("invalid-duration", 2)]
+        assert first.diagnostics[0].message.startswith("in `notes.ily`")
+        text = main.read_text()
+        codes = [d.code for d in lytk.check_lilypond(text, semantic=True, include_paths=[str(tmp_path)])]
+        assert codes == ["unknown-command", "invalid-duration"]
+        score = lytk.from_lilypond_string(text, include_paths=[str(tmp_path)])
+        assert len(score.notes()) == 2
+
+
+class TestPythonApiReference:
+    """docs/python-api.md is generated from the stubs (Epic L4)."""
+
+    def test_the_reference_is_current(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("python_api", "scripts/python_api.py")
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        current = Path("docs/python-api.md").read_text(encoding="utf-8")
+        assert current == generator.render(), "docs/python-api.md is stale: run python scripts/python_api.py"
+
+    def test_the_stubs_cover_the_extension(self):
+        import ast
+
+        stub = ast.parse(Path("src/lytk/_core.pyi").read_text(encoding="utf-8"))
+        stubbed = {n.name for n in stub.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+        public = {n for n in dir(lytk._core) if not n.startswith("_") and callable(getattr(lytk._core, n))}
+        assert public <= stubbed, f"no stub for {sorted(public - stubbed)}"
 
 
 class TestPanicFirewall:

@@ -203,6 +203,9 @@ pub(super) struct WalkState<'src> {
     /// Above 0 while music already walked once is walked for another purpose
     /// (a chord-mode block read as notes): the first walk reported it.
     pub(super) quiet: u32,
+    /// The text read was flattened with include paths: an `\include` left
+    /// in it names a file not found.
+    pub(super) follows_includes: bool,
     /// Names assigned at the top level (`name = …`), whatever their value.
     pub(super) assigned: HashSet<String>,
     /// The top-level music expression being read, if any: LilyPond makes a
@@ -270,6 +273,7 @@ impl<'src> WalkState<'src> {
             diagnostics: Vec::new(),
             columns: Columns::default(),
             quiet: 0,
+            follows_includes: false,
             assigned: HashSet::new(),
             open_movement: None,
             fixed_octaves: 0,
@@ -380,11 +384,17 @@ impl<'src> WalkState<'src> {
             let shown = file
                 .map(|n| format!(" {}", self.text(n)))
                 .unwrap_or_default();
-            self.warn(
-                node,
-                "ignored-include",
-                format!("`\\include{shown}` is not followed: flatten the file first"),
-            );
+            let why = if path
+                .as_deref()
+                .is_some_and(|p| super::builtins::LILYPOND_FILES.binary_search(&p).is_ok())
+            {
+                "is one of LilyPond's own files, which lytk does not read"
+            } else if self.follows_includes {
+                "is not followed: no such file in the include paths"
+            } else {
+                "is not followed: flatten the file first, or give include paths"
+            };
+            self.warn(node, "ignored-include", format!("`\\include{shown}` {why}"));
         }
     }
 

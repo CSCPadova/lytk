@@ -480,47 +480,23 @@ def info(
     input: Annotated[str, typer.Argument(help="Input file.", show_default=False)],
     as_json: Annotated[bool, typer.Option("--json", help="Machine-readable JSON.")] = False,
 ) -> None:
-    """Show a score's metadata and parts."""
-    score = read_score(input)
-    parts = score.iter_parts()
+    """Show a score's metadata, counts and parts (``lytk.info``)."""
+    data = lytk.info(read_score(input))
     if as_json:
-        _json(
-            {
-                "title": score.title,
-                "subtitle": score.subtitle,
-                "composer": score.composer,
-                "arranger": score.arranger,
-                "lyricist": score.lyricist,
-                "language": score.language,
-                "part_count": len(parts),
-                "note_count": len(_pitches(score)),
-                "parts": [
-                    {
-                        "id": p.part_id,
-                        "name": p.name,
-                        "abbreviation": p.abbreviation,
-                        "measures": len(p.measures),
-                        "staves": p.staves,
-                        "midi_program": p.midi_program,
-                        "midi_instrument": p.midi_instrument,
-                    }
-                    for p in parts
-                ],
-            }
-        )
+        _json(data)
         return
-    for label, value in [
-        ("Title", score.title),
-        ("Composer", score.composer),
-        ("Subtitle", score.subtitle),
-        ("Arranger", score.arranger),
-        ("Language", score.language),
+    for label, key in [
+        ("Title", "title"),
+        ("Composer", "composer"),
+        ("Subtitle", "subtitle"),
+        ("Arranger", "arranger"),
+        ("Language", "language"),
     ]:
-        if value:
-            typer.echo(f"{label + ':':<10}{value}")
-    typer.echo(f"{'Parts:':<10}{len(parts)}")
-    for p in parts:
-        typer.echo(f"  - {p.name or p.part_id} ({len(p.measures)} measures)")
+        if data[key]:
+            typer.echo(f"{label + ':':<10}{data[key]}")
+    typer.echo(f"{'Parts:':<10}{data['part_count']}")
+    for p in data["parts"]:
+        typer.echo(f"  - {p['name'] or p['id']} ({p['measures']} measures)")
 
 
 def _length(elements: list[Any]) -> Fraction:

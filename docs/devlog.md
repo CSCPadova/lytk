@@ -3,6 +3,188 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-28 — Release 0.4.0
+
+Epics K and L ship as **0.4.0**, with the Scheme tokens and
+`from_lilypond_movements_string` added after K. The version is bumped in
+`Cargo.toml`, its only source (and in `Cargo.lock`); `[Unreleased]` became
+`[0.4.0] - 2026-09-28`. As for 0.3.0: a pull request to `master`, the tag on
+the merge commit, the release workflow publishing to PyPI, and a GitHub
+release with the changelog section. The next minor release is P5, which
+breaks the Python API (0.5.0). Just before tagging, a version given as a
+string to `set_lilypond_version` or `version=` became written as given
+(checked, not canonicalized), so lilycorpus's synthesized
+`\version "2.24"` keeps its text, and its records their ids.
+
+## 2026-09-28 — Epic L (datasets), shipped with K in 0.4.0
+
+The owner chose to release Epic L in 0.4.0 together with K; it was planned
+for 0.5.0.
+
+The datasets module was rebuilt around one private base, `_SourceDataset`,
+shared by `FolderDataset` (a source is a file) and the new `RecordsDataset`
+(a source is a record's text). A source's reading goes through one
+`_read`, which passes the LilyPond options (`language`, `include_paths`,
+`strict`) to LilyPond only and `quantize` to MIDI only, and returns the first
+movement or all of them. `movements="all"` reads every source once to count
+its movements, keeps only the counts, and reads a source again for its items
+(the last source read is kept, so a sequential pass reads each twice).
+
+`on_error` applies where the dataset iterates: `for doc in ds`,
+`iter_representation`, `to_representation`, `metrics` and the TensorFlow
+generator (whose probe item is now the first readable one). Indexing
+(`ds[i]`, the torch dataset) asks for one item and raises: a torch dataset
+cannot drop an index. Skipped items go to `errors`, keyed by id; a
+`Subset` records into its parent's.
+
+The cache key used to be the path and the arguments as given: an edited
+file was served stale, and `to_note_arrays()` (which passes `resolution=480`)
+and `iter_representation("note_array")` (which passes nothing) wrote two
+files. It is now a SHA-256 of the source's bytes, the reading options, the
+movement, lytk's version and the converter's arguments with the defaults
+filled in; files are written to a temporary name and renamed. `Subset`
+now delegates its conversion to its parent, so it uses the cache (it
+converted without it). Included files' content is not in the key.
+
+`RecordsDataset.split()` returns `{value: Subset}` for the split field (or
+any `field=`), in order of first appearance, so a curated split is never
+re-shuffled by accident; passing ratios is a deliberate re-split. Ratio
+splits take `groups`: the groups are shuffled with the seed and each goes to
+the subset furthest below its share, which keeps a dedup cluster (or a
+folder) in one subset. Without `groups` the split is the old one, item for
+item. Ids: paths relative to the root, records' ids, `#k` for movements;
+`return_ids` adds them to torch and TensorFlow items and batches
+(`pad_collate` passes them through). The torch and TensorFlow paths are
+tested in CI only (neither is installed locally).
+
+`docs/python-api.md` is written by `scripts/python_api.py` from the stubs,
+in the sections of `lytk.__all__`, plus the datasets module; private bases
+are folded into the public classes. Two tests keep it honest: the file must
+equal a fresh rendering, and every public name of the compiled extension
+must have a stub.
+
+Tests: 1,158 Rust, 262 Python (14 skipped without torch and TensorFlow).
+
+## 2026-09-28 — Scheme tokens
+
+K3 left embedded Scheme as one token, noting that the compiled Scheme
+grammar could split it. It turned out not to be needed: the main grammar
+already parses embedded Scheme into `scheme_*` nodes (lists, symbols,
+numbers, strings, booleans, characters, keywords, quotes, vectors,
+comments) and LilyPond embedded in Scheme (`#{ … #}`) into LilyPond nodes.
+`tokenize` now descends into them, tracking with a stack of ancestors
+whether a node is Scheme (inside `embedded_scheme`) or LilyPond again
+(inside `scheme_embedded_lilypond_text`), and sets `Token.scheme`. The
+Scheme kinds reuse the lexical ones where they mean the same (symbol,
+number, string, comment, punctuation); `boolean`, `character` and `keyword`
+are Scheme's own, and `scheme` is now the `#` or `$` that opens an
+expression, so `source_stats` still counts expressions. A Scheme block
+comment's text is in no child node, so a comment is one token, as a string
+is. `strip_comments` now strips Scheme's comments as well. Nothing but
+whitespace is lost, still: 0 of the corpus board's 2,706 files. The grammar
+has two known gaps, which the tokens follow: a datum comment (`#;`) runs to
+the end of its line, and `#| … |#` outside a Scheme expression is not a
+comment.
+
+## 2026-09-28 — Epic K: K2 (includes)
+
+`flatten` found includes line by line: `\include` had to start a line, and a
+line starting with `%{` switched it into a comment until a line starting
+with `%}`, so a one-line `%{ … %}` hid every include after it. It now finds
+them on the tree (`include_statements`), which also keeps them out of
+strings. An include alone on its line replaces the line, as before; one
+mid-line is spliced in on lines of its own.
+
+Two normalizations were wrong. Keeping only the last `\language` changes
+the language of the music written before it; they all stay now. Refusing
+several `\header` blocks rejected valid LilyPond: a second top-level header
+copies the first and adds to it (`get_header` in `lily/lily-parser.cc`),
+which lytk's reader already does; the error is gone. An include of one of
+LilyPond's own files failed as "not found" unless LilyPond's `ly/`
+directory was a search path; `scripts/ly_builtins.py` now also lists that
+directory (62 files, `LILYPOND_FILES`), and such an include stays as it is.
+
+The readers take `include_paths=`. They flatten with missing files kept
+(the walk warns about them, now saying they are not found), read the flat
+text, and map each diagnostic back through the pieces `flatten_mapped`
+records: text of the source keeps its place, and a diagnostic in an
+included file moves to the `\include` that brought the file in, its message
+naming it. Positions therefore always refer to the text the caller has.
+Two diagnostics of one code in one included file then share a span, and
+`into_first` keeps one of them. Without `include_paths` nothing changes:
+includes are not followed, as SECURITY.md says, which now also warns that
+an include may name any path.
+
+Tests: 1,157 Rust, 241 Python (`TestIncludes`).
+
+## 2026-09-28 — Epic K: K4 (statistics) and K5 (music movements)
+
+`lytk.info(score)` is the dict `lytk info --json` printed, now built in the
+library and computed in Rust (`ir/stats.rs`). The CLI built it in Python
+through the navigation objects, one Python object per note; a corpus that
+wants statistics per record (lilycorpus's wishlist item 7) should not pay
+that. The keys the CLI printed stay as they were, and `test_info_json`
+checks the CLI prints exactly `lytk.info`. The new counts: voices (distinct
+voice numbers per part, summed over parts), bars (the longest part's),
+length in quarter notes (each bar as long as its longest voice, grace notes
+taking no time), lyric syllables, chord symbols and grace notes.
+`source_stats(text)` counts tokens by kind, with lines and error tokens
+added to what the roadmap asked for.
+
+K5's first half, single-score readers reporting the movements they drop,
+came with J3 and J7; `from_lilypond_music_movements` is the Music-tree twin
+of `from_lilypond_movements`.
+
+Tests: 1,153 Rust, 239 Python (`TestStatistics`, `test_music_movements`).
+
+## 2026-09-28 — Epic K: K3 (tokens)
+
+`ly_to_ir/tokens.rs` walks the tree and makes a token of each leaf, and of
+three composites kept whole: strings, embedded Scheme and quoted
+identifiers. Anonymous leaves starting with a backslash (`\<`, `\!`,
+`\(`) are commands, the other anonymous leaves punctuation. An ERROR leaf
+is an `error` token, so the tokens of broken input still cover it; MISSING
+nodes are empty and make none. The property that matters to callers such
+as lilycorpus's dedup is that nothing but whitespace is lost:
+`tests/common::token_gap` checks it on the fixtures and on broken input,
+and the syntax board on the whole corpus (0 of 2,706 files lose text).
+
+`strip_comments` keeps what LilyPond reads: a block comment between two
+tokens becomes a space (`c4%{x%}d4` is two notes in LilyPond), and a line
+comment leaves its line break. Scheme's own comments stay, being part of a
+Scheme token. Scheme is not sub-tokenized: the roadmap left it optional,
+and nothing asks for it.
+
+Tests: 1,152 Rust, 236 Python (`TestTokens`).
+
+## 2026-09-28 — Epic K: K1 (`\version`)
+
+`ly_to_ir/version.rs` holds `LilyPondVersion` and one scan of the tree for
+`\version` statements, which the reader (the version goes into every
+movement's metadata), the syntax check and the three text functions
+(`lilypond_version`, `set_lilypond_version`, `strip_lilypond_version`) all
+use. A statement is the command and the string right after it; LilyPond's
+lexer allows only whitespace between them, so a comment there makes the
+statement invalid, as in LilyPond.
+
+What a version is follows LilyPond 2.24 (`parse-lily-version` in
+`scm/lily-library.scm`, since 2.23.8): `x.y.z`, with a free fourth part that
+is not compared, or `x.y` for an even `y` only, because within a
+development series syntax changes with point releases. LilyPond's lexer
+rejects a bad string and a missing one alike, so both are the new
+`invalid-version` error. The "program too old" check is LilyPond's own and
+is left out. `Score.lilypond_version` is informational: the writers keep
+writing `2.24.0`, the syntax they write, unless `version=` says otherwise.
+The IR field is skipped in JSON when unset, so existing JSON is unchanged.
+
+The corpus boards now leave out LilyPond's tests of its own errors
+(`expect-error = ##t`, 13 files): LilyPond fails them on purpose. lytk
+reports an error in 2 of them, the two version tests; before K1 it found
+none. The boards ran on the 2.27.3 checkout this time (the 2.26 one was
+gone): still the one false positive (`##[ #]`).
+
+Tests: 1,148 Rust (`tests/ly_source.rs`), 234 Python (`TestLilyPondVersion`).
+
 ## 2026-09-27 — Release 0.3.0
 
 Epic J (J0–J7) ships as **0.3.0**. The version was already 0.3.0 in

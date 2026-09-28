@@ -7,6 +7,106 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
+LilyPond source you can inspect and edit, and datasets for curated
+corpora. `\version` is read, compared and edited; LilyPond text is
+tokenized (embedded Scheme as Scheme) and counted; includes are found on
+the syntax tree, `flatten_string` flattens text, and every reader follows
+includes when given `include_paths=`, with diagnostics pointing into the
+caller's text. `lytk.info` gives a score's statistics. Datasets read JSON
+Lines records as well as folders, keep ids and a corpus's own splits, skip
+what they cannot read when asked, and cache by content. The Python API
+reference is generated from the stubs.
+
+### Added
+
+- LilyPond `\version`: `lytk.lilypond_version(text)` reads the version the
+  first `\version` statement states, from the parse tree (a commented-out
+  one does not count), as a `lytk.LilyPondVersion`, which compares
+  numerically (`2.24` equals `2.24.0`) and accepts what LilyPond 2.24
+  accepts. `lytk.set_lilypond_version(text, version)` and
+  `lytk.strip_lilypond_version(text)` edit the statements (a version given
+  as a string is written as given, once checked).
+  `Score.lilypond_version` and `MusicDocument.lilypond_version` give the
+  version a LilyPond source stated. `to_lilypond(…, version=)` and
+  `to_lilypond_music(…, version=)` write another `\version` than 2.24.0.
+  An invalid `\version` is an `invalid-version` error. Rust:
+  `ly_to_ir::{LilyPondVersion, lilypond_version, set_lilypond_version,
+  strip_lilypond_version}` and `ScoreMetadata::lilypond_version`.
+- `lytk.tokenize(text)`: the tokens of LilyPond text from the parse tree
+  (`lytk.Token`: kind, text, character span, line, column, and whether it
+  is Scheme). The kinds are comment, string, command, symbol, number,
+  fraction, punctuation, and error for text the grammar cannot tokenize, so
+  every character but whitespace is in exactly one token, broken input
+  included. Embedded Scheme is tokenized as Scheme: `scheme` is the `#` or
+  `$` that starts it, then its symbols, numbers, strings, comments,
+  brackets and quotes, with `boolean`, `character` and `keyword` for
+  Scheme's own; LilyPond inside it (`#{ … #}`) is tokenized as LilyPond.
+  `lytk.strip_comments(text)` removes LilyPond's and Scheme's comments.
+  Rust: `ly_to_ir::{tokenize, strip_comments, Token, TokenKind}`.
+- `lytk.info(score)`: a score's metadata and counts as a dict, the library
+  home of `lytk info --json`, which now calls it. Besides the parts and notes
+  it counts voices, bars, the length in quarter notes, lyric syllables, chord
+  symbols and grace notes, computed in Rust. `lytk.source_stats(text)`:
+  bytes, lines, tokens, comments, Scheme expressions and error tokens of
+  LilyPond text. Rust: `ir::stats::score_info`, `ly_to_ir::source_stats`.
+- `lytk.from_lilypond_music_movements(path)`: every movement of a LilyPond
+  file as a `MusicDocument`, as `from_lilypond_movements` gives them as
+  scores; `lytk.from_lilypond_movements_string(text)`, every movement of
+  LilyPond text.
+- `lytk.flatten_string(text, *, base_dir=None, include_paths=None,
+  add_markers=True)`: `flatten` for text. `lytk.from_abc_tunes_string(text)`:
+  every tune of ABC text.
+- `lytk.datasets.RecordsDataset`: a dataset over records holding music as
+  text, `from_jsonl(path, …)` or `from_records(iterable, …)`, with
+  `text_field`, `id_field`, `format` (LilyPond, MusicXML, ABC or `**kern`)
+  and `split_field`. Items keep their ids and records (`record(i)`); with
+  `split_field`, `split()` returns the records' own splits as
+  `{value: Subset}` instead of re-shuffling them.
+- Datasets: `on_error="raise" | "skip" | "warn"` (iteration leaves out an
+  item that cannot be read and records it in `dataset.errors`; indexing
+  still raises); `movements="all"` (each movement of a file or record is an
+  item); `language`, `include_paths`, `strict` and MIDI `quantize` passed to
+  the readers; `ids` on every dataset (a folder's are paths relative to it);
+  `return_ids=True` on the torch and TensorFlow datasets and data loaders;
+  `split(…, groups=…)` keeps the items of a group in one subset.
+- `docs/python-api.md`, the Python API reference, generated from the stubs
+  (`scripts/python_api.py`); a test fails when it is stale.
+- `include_paths=` on every LilyPond reader and on `check_lilypond`: given
+  (possibly empty), `\include`s are followed, relative to the file's
+  directory, then the paths. A diagnostic in an included file is reported at
+  its `\include`, naming the file; an include not found is an
+  `ignored-include` warning. Without it, includes are still not followed.
+  Rust: `LyToIrAdapter::with_include_paths`, `read_text` and `check_str`.
+
+### Changed
+
+- `flatten` finds includes on the parse tree: anywhere in a line, never in a
+  comment or a string. It used to miss an include not at the start of a
+  line, and after a one-line `%{ … %}` it took the rest of the file for a
+  comment and followed no include in it.
+- `flatten` keeps an include of LilyPond's own files (`english.ly`,
+  `gregorian.ly`, …) as it is when no such file is found; it was a "not
+  found" error. Rust: `flatten_str` takes `Option<&Path>` for its base
+  directory, and `FlattenOpts::keep_missing` keeps any missing include.
+- The dataset cache is keyed by the item's content, how it is read, lytk's
+  version and the converter's arguments with their defaults filled in, and
+  written atomically: an edited file is no longer served stale, and
+  `to_note_arrays()` and `iter_representation("note_array")` share entries.
+  Entries of earlier versions are not read again. A `Subset` uses its
+  parent's cache (it bypassed it).
+
+### Fixed
+
+- `flatten` kept only the last `\language` line, so music written before it
+  was read in the wrong language; every `\language` now stays.
+- `flatten` refused a file with more than one `\header` block, a top-level
+  one with a score's own included (`FlattenError::MultipleHeaders`, now
+  gone). LilyPond merges top-level headers, and so does lytk's reader.
+- The `ignored-include` warning for one of LilyPond's own files (other than a
+  language file) no longer advises flattening, which would not follow it.
+
 ## [0.3.0] - 2026-09-27
 
 LilyPond input you can trust. Readers raise `lytk.ParseError` instead of
@@ -477,7 +577,8 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/CSCPadova/lytk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CSCPadova/lytk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CSCPadova/lytk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/CSCPadova/lytk/releases/tag/v0.1.0

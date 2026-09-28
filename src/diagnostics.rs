@@ -92,6 +92,28 @@ impl Diagnostic {
         }
     }
 
+    /// A diagnostic from byte `start` to byte `end` of `source`.
+    pub fn between(
+        source: &str,
+        start: usize,
+        end: usize,
+        severity: Severity,
+        code: &'static str,
+        message: String,
+    ) -> Self {
+        let before = source.get(..start).unwrap_or("");
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        Self {
+            severity,
+            code,
+            message,
+            line: before.matches('\n').count() + 1,
+            column: before[line_start..].chars().count() + 1,
+            start,
+            end,
+        }
+    }
+
     /// A diagnostic about the input as a whole, at its start.
     pub fn whole(severity: Severity, code: &'static str, message: String) -> Self {
         Self {
@@ -123,7 +145,7 @@ pub(crate) struct Columns {
 impl Columns {
     /// The 1-based character column of byte `start` on the line starting at
     /// byte `line_start`.
-    fn column(&mut self, source: &str, line_start: usize, start: usize) -> usize {
+    pub(crate) fn column(&mut self, source: &str, line_start: usize, start: usize) -> usize {
         if line_start != self.line_start || start < self.byte {
             (self.line_start, self.byte, self.chars) = (line_start, line_start, 0);
         }

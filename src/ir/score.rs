@@ -32,6 +32,10 @@ pub struct ScoreMetadata {
     pub pitch_mode: PitchMode,
     /// Anacrusis / pickup duration (emitted as `\partial <dur>`).
     pub partial_duration: Option<Duration>,
+    /// The LilyPond version the source's `\version` states (`2.24.0`), when
+    /// the score was read from LilyPond that states a valid one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lilypond_version: Option<String>,
 }
 
 /// Page layout dimensions (all measurements in cm, staff-size in points).

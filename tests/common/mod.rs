@@ -23,6 +23,30 @@ use _core::ir::score::Score;
 // Conversion shortcuts
 // ---------------------------------------------------------------------------
 
+/// Where `lytk.tokenize` loses text: the first character outside every token
+/// that is no whitespace (LilyPond's, a byte-order mark included), or two
+/// tokens overlapping. `None` when every other character is in exactly one
+/// token.
+pub fn token_gap(src: &str) -> Option<String> {
+    let tokens = _core::adapters::ly_to_ir::tokenize(src).ok()?;
+    let blank = |c: &char| matches!(c, ' ' | '\n' | '\t' | '\r' | '\u{c}' | '\u{feff}');
+    let mut at = 0;
+    for t in tokens
+        .iter()
+        .map(|t| (t.start, t.end))
+        .chain([(src.len(), src.len())])
+    {
+        if t.0 < at {
+            return Some(format!("tokens overlap at byte {}", t.0));
+        }
+        if let Some(c) = src[at..t.0].chars().find(|c| !blank(c)) {
+            return Some(format!("{c:?} in no token, after byte {at}"));
+        }
+        at = t.1;
+    }
+    None
+}
+
 pub fn ly_to_score(src: &str) -> Score {
     LyToIrAdapter::new().convert_str(src).expect("LY → Score")
 }

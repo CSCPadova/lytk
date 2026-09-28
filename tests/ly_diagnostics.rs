@@ -35,6 +35,9 @@ fn each_code_on_its_input() {
         ("{ \\tuplet 0/2 { c'8 d' e' } }", Error, "invalid-ratio"),
         ("{ c'4*1/0 }", Error, "invalid-ratio"),
         ("Hello world, this is not music.", Error, "not-lilypond"),
+        ("\\version \"2.x\"\n{ c'1 }", Error, "invalid-version"),
+        ("\\version \"2.25\"\n{ c'1 }", Error, "invalid-version"),
+        ("\\version 2.24\n{ c'1 }", Error, "invalid-version"),
         // Warnings: what the reader does not read.
         ("{ c'2048 }", Warning, "unsupported-value"),
         ("{ \\time 3/256 c'4 }", Warning, "unsupported-value"),

@@ -35,12 +35,14 @@ mod postprocess;
 mod state;
 mod syntax;
 mod text;
+mod tokens;
+mod version;
 mod walk;
 
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use num::rational::Ratio;
 
@@ -54,6 +56,7 @@ use crate::ir::score::{Score, ScoreChild};
 use crate::ir::Part;
 use crate::parser::LilyPondParser;
 
+use super::ly_flatten::{flatten_mapped, FlattenError, FlattenOpts, Origin, SourceMap};
 use super::{AdapterError, Result, ToIrAdapter};
 
 use crate::ir::duration::{Duration, Frac};
@@ -226,13 +229,22 @@ pub fn read_source(path: &Path) -> Result<String> {
 /// Check LilyPond text. By default only the syntax, from the tree (fast, no
 /// reading); with `semantic`, everything a reading reports too. Input the
 /// reader refuses as too large is an error diagnostic here, not an `Err`.
+/// See [`LyToIrAdapter::check_str`] to follow includes.
 pub fn check(text: &str, semantic: bool) -> Vec<Diagnostic> {
-    let too_large = |message: String| Diagnostic::whole(Severity::Error, "too-large", message);
+    check_plain(text, semantic, false)
+}
+
+fn too_large(message: String) -> Diagnostic {
+    Diagnostic::whole(Severity::Error, "too-large", message)
+}
+
+/// [`check`], of text flattened with include paths when `follows_includes`.
+fn check_plain(text: &str, semantic: bool, follows_includes: bool) -> Vec<Diagnostic> {
     if semantic {
-        return match LyToIrAdapter::new().read_str(text) {
+        return match LyToIrAdapter::new().read_plain(text, follows_includes) {
             Ok(reading) => reading.diagnostics,
             Err(e) => {
-                let mut out = check(text, false);
+                let mut out = check_plain(text, false, follows_includes);
                 out.push(too_large(e.to_string()));
                 tidy(&mut out);
                 out
@@ -246,7 +258,59 @@ pub fn check(text: &str, semantic: bool) -> Vec<Diagnostic> {
     }
 }
 
+/// `d`, found in the flattened text, located in `source`: in the source's
+/// own text at its place, in an included file at the `\include` that
+/// brought it in, naming the file.
+fn locate(d: Diagnostic, map: &SourceMap, source: &str) -> Diagnostic {
+    let i = map
+        .partition_point(|(at, _)| *at <= d.start)
+        .saturating_sub(1);
+    let Some((piece, origin)) = map.get(i) else {
+        return d;
+    };
+    let piece_end = map.get(i + 1).map_or(usize::MAX, |(at, _)| *at);
+    let (start, end, message) = match origin {
+        Origin::Source(at) => {
+            let end = d.end.clamp(d.start, piece_end);
+            (at + d.start - piece, at + end - piece, d.message)
+        }
+        Origin::Include { statement, path } => (
+            statement.start,
+            statement.end,
+            format!("in `{path}`: {}", d.message),
+        ),
+    };
+    Diagnostic::between(source, start, end, d.severity, d.code, message)
+}
+
+/// Flatten options for a reading with include paths: missing files are
+/// kept, for the walk to warn about.
+fn flatten_opts(include_paths: &[PathBuf]) -> FlattenOpts {
+    FlattenOpts {
+        include_paths: include_paths.to_vec(),
+        add_markers: false,
+        keep_missing: true,
+    }
+}
+
+/// A flatten failure as a reading error: I/O stays I/O.
+fn flatten_err(e: FlattenError) -> AdapterError {
+    match e {
+        FlattenError::Io { path, source } => AdapterError::Io(std::io::Error::new(
+            source.kind(),
+            format!("{}: {source}", path.display()),
+        )),
+        FlattenError::TooLarge(_) => AdapterError::Unsupported(e.to_string()),
+        e => AdapterError::Parse(e.to_string()),
+    }
+}
+
+pub(crate) use builtins::LILYPOND_FILES;
 pub use text::HeaderField;
+pub use tokens::{source_stats, strip_comments, tokenize, SourceStats, Token, TokenKind};
+pub use version::{
+    lilypond_version, set_lilypond_version, strip_lilypond_version, LilyPondVersion,
+};
 
 /// Every `\header` field of LilyPond text, in source order, from the syntax
 /// tree alone (nothing is read): its key, its value as text (strings decoded,
@@ -265,13 +329,43 @@ pub fn header_fields(text: &str) -> Vec<HeaderField> {
 /// Parses LilyPond source text using tree-sitter and produces an IR `Score`.
 pub struct LyToIrAdapter {
     language: PitchLanguage,
+    /// Where to look for `\include`d files; `None`: includes are not followed.
+    include_paths: Option<Vec<PathBuf>>,
 }
 
 impl LyToIrAdapter {
     pub fn new() -> Self {
         Self {
             language: PitchLanguage::Nederlands,
+            include_paths: None,
         }
+    }
+
+    /// Follow `\include`s: the text is flattened first, relative includes
+    /// resolved against the file's directory (when reading a file) and then
+    /// `include_paths`. An include not found is an `ignored-include`
+    /// warning; diagnostics in an included file are reported at its
+    /// `\include`. Without this, includes are not followed.
+    pub fn with_include_paths(mut self, include_paths: Vec<PathBuf>) -> Self {
+        self.include_paths = Some(include_paths);
+        self
+    }
+
+    /// [`check`], following includes when the adapter does: an included
+    /// file that cannot be read is an `Err`.
+    pub fn check_str(&self, text: &str, semantic: bool) -> Result<Vec<Diagnostic>> {
+        let Some(paths) = &self.include_paths else {
+            return Ok(check(text, semantic));
+        };
+        let (flat, map) = match flatten_mapped(text, None, &flatten_opts(paths)) {
+            Ok(flattened) => flattened,
+            Err(e @ FlattenError::Io { .. }) => return Err(flatten_err(e)),
+            Err(e) => return Ok(vec![too_large(e.to_string())]),
+        };
+        Ok(check_plain(&flat, semantic, true)
+            .into_iter()
+            .map(|d| locate(d, &map, text))
+            .collect())
     }
 
     /// Set the default pitch language (overridden by `\language` in the source).
@@ -281,28 +375,52 @@ impl LyToIrAdapter {
     }
 
     /// Read LilyPond text: every movement, and the diagnostics.
+    pub fn read_str(&self, text: &str) -> Result<LyReading> {
+        self.read_text(text, None)
+    }
+
+    /// Read a LilyPond file (see [`read_source`]); its includes, when
+    /// followed, are relative to its directory.
+    pub fn read_file(&self, path: &Path) -> Result<LyReading> {
+        self.read_text(&read_source(path)?, path.parent())
+    }
+
+    /// Read LilyPond text whose relative includes, when followed, are
+    /// relative to `base_dir`.
+    pub fn read_text(&self, text: &str, base_dir: Option<&Path>) -> Result<LyReading> {
+        let Some(paths) = &self.include_paths else {
+            return self.read_plain(text, false);
+        };
+        let (flat, map) =
+            flatten_mapped(text, base_dir, &flatten_opts(paths)).map_err(flatten_err)?;
+        let mut reading = self.read_plain(&flat, true)?;
+        for list in [&mut reading.diagnostics, &mut reading.later_movements] {
+            *list = std::mem::take(list)
+                .into_iter()
+                .map(|d| locate(d, &map, text))
+                .collect();
+        }
+        Ok(reading)
+    }
+
+    /// Read text as it is (flattened when `follows_includes`).
     ///
     /// The walk recurses once per nested music block, so it runs on a thread
     /// with a stack of its own: how deep a score may nest must not depend on
     /// the caller's thread (Rust test threads and many Python threads get 2 MB
     /// or less). A panic on that thread resumes on the caller's.
-    pub fn read_str(&self, text: &str) -> Result<LyReading> {
+    fn read_plain(&self, text: &str, follows_includes: bool) -> Result<LyReading> {
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .name("lytk-ly-reader".to_string())
                 .stack_size(WALK_STACK_BYTES)
-                .spawn_scoped(scope, || self.read_here(text))?
+                .spawn_scoped(scope, || self.read_here(text, follows_includes))?
                 .join()
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
         })
     }
 
-    /// Read a LilyPond file (see [`read_source`]).
-    pub fn read_file(&self, path: &Path) -> Result<LyReading> {
-        self.read_str(&read_source(path)?)
-    }
-
-    fn read_here(&self, source: &str) -> Result<LyReading> {
+    fn read_here(&self, source: &str, follows_includes: bool) -> Result<LyReading> {
         let mut parser = LilyPondParser::new().map_err(|e| AdapterError::Parse(e.to_string()))?;
         let tree = parser
             .parse(source)
@@ -313,6 +431,7 @@ impl LyToIrAdapter {
         let mut state = state::WalkState::new(source);
         state.root = Some(root);
         state.language = self.language;
+        state.follows_includes = follows_includes;
 
         walk::walk_program(&mut state, root);
         let refused = |reason: String| {
@@ -330,8 +449,10 @@ impl LyToIrAdapter {
             scores.push(score);
         }
         // The book's header, last assignment first, where a movement leaves a
-        // field unset.
+        // field unset; the file's version.
+        let version = version::version_of(source, root).map(|v| v.to_string());
         for score in &mut scores {
+            score.metadata.lilypond_version = version.clone();
             for (key, value) in state.book_header.iter().rev() {
                 walk::set_header_field(&mut score.metadata, key, value.clone(), false);
             }

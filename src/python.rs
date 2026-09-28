@@ -3,7 +3,7 @@
 //! Every function and method here that reads, writes or transforms music runs
 //! inside [`guard`], so a Rust panic reaches Python as `lytk.InternalError`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use std::borrow::Cow;
 
@@ -205,6 +205,13 @@ fn check_ir_values(value: &serde_json::Value) -> Result<(), String> {
                         Some(_) => return bad(format!("duration {v} out of range")),
                         None => check_ir_values(v)?,
                     },
+                    "lilypond_version"
+                        if v.as_str().is_some_and(|s| {
+                            s.parse::<adapters::ly_to_ir::LilyPondVersion>().is_err()
+                        }) =>
+                    {
+                        return bad(format!("lilypond_version {v} is not a LilyPond version"));
+                    }
                     // The LilyPond reader's bound (its regression tests climb to 22).
                     "octave" if v.as_i64().is_some_and(|o| !(-128..=127).contains(&o)) => {
                         return bad(format!("octave {v} out of range -128..=127"));
@@ -459,22 +466,30 @@ fn header_dict<'py>(
 }
 
 /// Read LilyPond, from a file or text, releasing the GIL: the text and the
-/// reading.
+/// reading. With *include_paths*, includes are followed (relative to a
+/// file's directory, then the paths).
 fn read_lilypond(
     py: Python<'_>,
     source: Result<&str, &str>,
     language: Option<&str>,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<(String, adapters::ly_to_ir::LyReading)> {
     let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
     if let Some(lang_str) = language {
         adapter = adapter.with_language(parse_language(lang_str)?);
     }
+    if let Some(paths) = include_paths {
+        adapter = adapter.with_include_paths(paths.into_iter().map(PathBuf::from).collect());
+    }
     py.allow_threads(|| {
-        let text = match source {
-            Ok(path) => Cow::Owned(adapters::ly_to_ir::read_source(Path::new(path))?),
-            Err(text) => Cow::Borrowed(text),
+        let (text, base_dir) = match source {
+            Ok(path) => (
+                Cow::Owned(adapters::ly_to_ir::read_source(Path::new(path))?),
+                Path::new(path).parent(),
+            ),
+            Err(text) => (Cow::Borrowed(text), None),
         };
-        let reading = adapter.read_str(&text)?;
+        let reading = adapter.read_text(&text, base_dir)?;
         Ok((text.into_owned(), reading))
     })
     .map_err(read_err)
@@ -497,12 +512,320 @@ fn first_movement(
 /// (fast, nothing is read); with ``semantic=True`` also what a reading
 /// reports: invalid durations and ratios, unknown commands, input it does not
 /// read. Input too large to read is an error here, not an exception.
+/// *include_paths* follows includes as the readers do (see
+/// :func:`from_lilypond`); an included file that cannot be read raises
+/// ``OSError``.
 #[pyfunction]
-#[pyo3(signature = (text, *, semantic=false))]
-fn check_lilypond(py: Python<'_>, text: &str, semantic: bool) -> PyResult<Vec<PyDiagnostic>> {
+#[pyo3(signature = (text, *, semantic=false, include_paths=None))]
+fn check_lilypond(
+    py: Python<'_>,
+    text: &str,
+    semantic: bool,
+    include_paths: Option<Vec<String>>,
+) -> PyResult<Vec<PyDiagnostic>> {
     guard(|| {
-        let diagnostics = py.allow_threads(|| adapters::ly_to_ir::check(text, semantic));
+        let mut adapter = adapters::ly_to_ir::LyToIrAdapter::new();
+        if let Some(paths) = include_paths {
+            adapter = adapter.with_include_paths(paths.into_iter().map(PathBuf::from).collect());
+        }
+        let diagnostics = py
+            .allow_threads(|| adapter.check_str(text, semantic))
+            .map_err(read_err)?;
         Ok(py_diagnostics(text, &diagnostics))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// LilyPond versions
+// ---------------------------------------------------------------------------
+
+/// A LilyPond version, as ``\\version`` states it, compared numerically:
+/// ``LilyPondVersion("2.24") == LilyPondVersion("2.24.0")``. Accepted as
+/// LilyPond 2.24 accepts it: ``major.minor.patch`` with an optional fourth
+/// part (kept, not compared), or ``major.minor`` with an even minor (a stable
+/// series). Any other string raises :class:`ParseError`. ``str()`` gives
+/// ``"2.24.0"``.
+#[pyclass(name = "LilyPondVersion", module = "lytk", frozen)]
+#[derive(Clone)]
+struct PyLilyPondVersion(adapters::ly_to_ir::LilyPondVersion);
+
+#[pymethods]
+impl PyLilyPondVersion {
+    #[new]
+    fn new(text: &str) -> PyResult<Self> {
+        text.parse().map(Self).map_err(parse_error)
+    }
+
+    #[getter]
+    fn major(&self) -> u32 {
+        self.0.major
+    }
+
+    #[getter]
+    fn minor(&self) -> u32 {
+        self.0.minor
+    }
+
+    #[getter]
+    fn patch(&self) -> u32 {
+        self.0.patch
+    }
+
+    /// The fourth part (``"foo"`` in ``2.25.3.foo``), if any.
+    #[getter]
+    fn extra(&self) -> Option<String> {
+        self.0.extra.clone()
+    }
+
+    fn __str__(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let text = pyo3::types::PyString::new_bound(py, &self.0.to_string());
+        Ok(format!("LilyPondVersion({})", text.repr()?))
+    }
+
+    fn __richcmp__(&self, other: PyRef<'_, Self>, op: pyo3::basic::CompareOp) -> bool {
+        op.matches(self.0.cmp(&other.0))
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.0.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> (Bound<'py, PyType>, (String,)) {
+        (slf.get_type(), (slf.get().0.to_string(),))
+    }
+}
+
+/// The text of a version argument: a :class:`LilyPondVersion` as ``str()``
+/// writes it, or a string as given, once checked to be a version.
+fn version_arg(version: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(v) = version.downcast::<PyLilyPondVersion>() {
+        return Ok(v.get().0.to_string());
+    }
+    let text = version.extract::<String>()?;
+    text.parse::<adapters::ly_to_ir::LilyPondVersion>()
+        .map_err(parse_error)?;
+    Ok(text)
+}
+
+/// The version stored in `meta`, read from a ``\\version``.
+fn meta_version(meta: &ir::score::ScoreMetadata) -> Option<PyLilyPondVersion> {
+    let version = meta.lilypond_version.as_deref()?.parse().ok()?;
+    Some(PyLilyPondVersion(version))
+}
+
+/// The version the first ``\\version`` statement of LilyPond text states,
+/// from the parse tree (a commented-out one does not count): *None* when
+/// there is none, or when it is not a valid version (:func:`check_lilypond`
+/// reports it as ``invalid-version``).
+#[pyfunction]
+fn lilypond_version(py: Python<'_>, text: &str) -> PyResult<Option<PyLilyPondVersion>> {
+    guard(|| {
+        let version = py.allow_threads(|| adapters::ly_to_ir::lilypond_version(text));
+        Ok(version.map(PyLilyPondVersion))
+    })
+}
+
+/// *text* with every ``\\version`` statement stating *version* (a
+/// :class:`LilyPondVersion`, or a string, written as given), or with one added
+/// at the top when there is none.
+#[pyfunction]
+fn set_lilypond_version(
+    py: Python<'_>,
+    text: &str,
+    version: &Bound<'_, PyAny>,
+) -> PyResult<String> {
+    let version = version_arg(version)?;
+    guard(|| {
+        py.allow_threads(|| adapters::ly_to_ir::set_lilypond_version(text, &version))
+            .map_err(read_err)
+    })
+}
+
+/// *text* without its ``\\version`` statements; a statement alone on its
+/// line takes the line with it.
+#[pyfunction]
+fn strip_lilypond_version(py: Python<'_>, text: &str) -> PyResult<String> {
+    guard(|| {
+        py.allow_threads(|| adapters::ly_to_ir::strip_lilypond_version(text))
+            .map_err(read_err)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tokens
+// ---------------------------------------------------------------------------
+
+/// A token of LilyPond text, from :func:`tokenize`: ``kind`` is one of
+/// ``"comment"``, ``"string"``, ``"command"``, ``"symbol"``, ``"number"``,
+/// ``"fraction"``, ``"punctuation"``, ``"scheme"`` (the ``#`` or ``$`` that
+/// starts embedded Scheme), ``"boolean"``, ``"character"``, ``"keyword"``
+/// (Scheme's) and ``"error"`` (text the grammar cannot tokenize);
+/// ``text[start:end]`` is the token (character offsets); ``line`` and
+/// ``column`` count from 1; ``scheme`` tells a Scheme token from a LilyPond
+/// one.
+#[pyclass(name = "Token", module = "lytk", frozen, get_all, eq, hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PyToken {
+    kind: &'static str,
+    text: String,
+    start: usize,
+    end: usize,
+    line: usize,
+    column: usize,
+    scheme: bool,
+}
+
+#[pymethods]
+impl PyToken {
+    fn __repr__(&self) -> String {
+        format!(
+            "Token({:?}, {:?}, start={}, end={}, line={}, column={}, scheme={})",
+            self.kind,
+            self.text,
+            self.start,
+            self.end,
+            self.line,
+            self.column,
+            if self.scheme { "True" } else { "False" }
+        )
+    }
+}
+
+/// The tokens of LilyPond text, in order, from the parse tree: strings and
+/// comments whole, embedded Scheme as Scheme tokens (``scheme`` set), and
+/// LilyPond inside it (``#{ … #}``) as LilyPond. Whitespace is no token;
+/// every other character is in exactly one, so the tokens of broken input
+/// cover it too (as ``"error"`` tokens where needed).
+#[pyfunction]
+fn tokenize(py: Python<'_>, text: &str) -> PyResult<Vec<PyToken>> {
+    guard(|| {
+        let tokens = py
+            .allow_threads(|| adapters::ly_to_ir::tokenize(text))
+            .map_err(read_err)?;
+        let char_at = char_offsets(text, tokens.iter().flat_map(|t| [t.start, t.end]));
+        Ok(tokens
+            .into_iter()
+            .map(|t| PyToken {
+                kind: t.kind.as_str(),
+                text: text[t.start..t.end].to_string(),
+                start: char_at(t.start),
+                end: char_at(t.end),
+                line: t.line,
+                column: t.column,
+                scheme: t.scheme,
+            })
+            .collect())
+    })
+}
+
+/// *text* without its comments: LilyPond's (``% …``, ``%{ … %}``) and
+/// embedded Scheme's (``; …``, ``#| … |#``, ``#;datum``). A block comment
+/// between two tokens becomes a space, a line comment leaves its line break.
+#[pyfunction]
+fn strip_comments(py: Python<'_>, text: &str) -> PyResult<String> {
+    guard(|| {
+        py.allow_threads(|| adapters::ly_to_ir::strip_comments(text))
+            .map_err(read_err)
+    })
+}
+
+/// Counts of LilyPond source text, from its tokens (:func:`tokenize`):
+/// ``bytes`` (UTF-8), ``lines``, ``tokens``, ``comments``, ``scheme``
+/// (embedded Scheme expressions) and ``error_tokens`` (text the grammar
+/// cannot tokenize).
+#[pyfunction]
+fn source_stats<'py>(py: Python<'py>, text: &str) -> PyResult<Bound<'py, PyDict>> {
+    guard(|| {
+        let s = py
+            .allow_threads(|| adapters::ly_to_ir::source_stats(text))
+            .map_err(read_err)?;
+        let dict = PyDict::new_bound(py);
+        for (key, value) in [
+            ("bytes", s.bytes),
+            ("lines", s.lines),
+            ("tokens", s.tokens),
+            ("comments", s.comments),
+            ("scheme", s.scheme),
+            ("error_tokens", s.error_tokens),
+        ] {
+            dict.set_item(key, value)?;
+        }
+        Ok(dict)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
+/// A score's metadata and counts, as ``lytk info --json`` prints them:
+/// ``title``, ``subtitle``, ``composer``, ``arranger``, ``lyricist``,
+/// ``language``, ``lilypond_version`` (strings or *None*); ``part_count``,
+/// ``note_count`` (sounding notes: chord members and grace notes each
+/// count), ``voice_count`` (distinct voices of each part, summed),
+/// ``bar_count``, ``duration_quarters`` (each bar as long as its longest
+/// voice), ``lyric_count`` (syllables), ``chord_symbol_count``,
+/// ``grace_note_count``; and ``parts``, one dict per part (``id``, ``name``,
+/// ``abbreviation``, ``measures``, ``staves``, ``midi_program``,
+/// ``midi_instrument``, ``voices``, ``notes``).
+#[pyfunction]
+fn info<'py>(py: Python<'py>, score: &PyScore) -> PyResult<Bound<'py, PyDict>> {
+    guard(|| {
+        let s = &score.inner;
+        let counts = ir::stats::score_info(s);
+        let meta = &s.metadata;
+        let dict = PyDict::new_bound(py);
+        let language = meta.pitch_language.map(|l| l.as_str().to_string());
+        for (key, value) in [
+            ("title", &meta.title),
+            ("subtitle", &meta.subtitle),
+            ("composer", &meta.composer),
+            ("arranger", &meta.arranger),
+            ("lyricist", &meta.lyricist),
+            ("language", &language),
+            ("lilypond_version", &meta.lilypond_version),
+        ] {
+            dict.set_item(key, value)?;
+        }
+        let quarters = counts.duration_quarters;
+        dict.set_item("part_count", counts.parts.len())?;
+        dict.set_item("note_count", counts.note_count)?;
+        dict.set_item("voice_count", counts.voice_count)?;
+        dict.set_item("bar_count", counts.bar_count)?;
+        dict.set_item(
+            "duration_quarters",
+            *quarters.numer() as f64 / *quarters.denom() as f64,
+        )?;
+        dict.set_item("lyric_count", counts.lyric_count)?;
+        dict.set_item("chord_symbol_count", counts.chord_symbol_count)?;
+        dict.set_item("grace_note_count", counts.grace_note_count)?;
+        let parts = s
+            .parts()
+            .into_iter()
+            .zip(&counts.parts)
+            .map(|(part, c)| {
+                let d = PyDict::new_bound(py);
+                d.set_item("id", &part.part_id)?;
+                d.set_item("name", &part.name)?;
+                d.set_item("abbreviation", &part.abbreviation)?;
+                d.set_item("measures", c.measures)?;
+                d.set_item("staves", part.staves)?;
+                d.set_item("midi_program", part.midi_program)?;
+                d.set_item("midi_instrument", &part.midi_instrument)?;
+                d.set_item("voices", c.voices)?;
+                d.set_item("notes", c.notes)?;
+                Ok(d)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        dict.set_item("parts", parts)?;
+        Ok(dict)
     })
 }
 
@@ -568,6 +891,13 @@ impl PyScore {
     #[getter]
     fn lyricist(&self) -> Option<String> {
         self.inner.metadata.lyricist.clone()
+    }
+
+    /// The :class:`LilyPondVersion` the source's ``\\version`` states, for a
+    /// score read from LilyPond that states a valid one; else *None*.
+    #[getter]
+    fn lilypond_version(&self) -> Option<PyLilyPondVersion> {
+        meta_version(&self.inner.metadata)
     }
 
     /// Every header field as a dict of strings: ``title``, ``subtitle``,
@@ -761,6 +1091,13 @@ impl PyMusicDocument {
         self.inner.metadata.lyricist.clone()
     }
 
+    /// The :class:`LilyPondVersion` the source's ``\\version`` states (see
+    /// :attr:`Score.lilypond_version`).
+    #[getter]
+    fn lilypond_version(&self) -> Option<PyLilyPondVersion> {
+        meta_version(&self.inner.metadata)
+    }
+
     /// Every header field as a dict of strings (see :attr:`Score.header`).
     #[getter]
     fn header<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -867,16 +1204,22 @@ fn parse_language(name: &str) -> PyResult<PitchLanguage> {
 ///
 /// ``strict=True`` raises :class:`LilyPondSyntaxError` if the reading reports
 /// an error; the diagnostics are in :attr:`Score.diagnostics` either way.
+/// With *include_paths* (a list of directories, possibly empty),
+/// ``\\include`` statements are followed: relative to the file's directory (for a
+/// string reader, only the paths), then the paths. An include not found is an
+/// ``ignored-include`` warning; a diagnostic in an included file is reported
+/// at its ``\\include``. Without it, includes are not read.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None, strict=false))]
+#[pyo3(signature = (path, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<PyScore> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (text, reading) = read_lilypond(py, Ok(path), language, include_paths)?;
         let (score, diagnostics) = first_movement(&text, reading, strict)?;
         Ok(PyScore {
             inner: score,
@@ -889,15 +1232,43 @@ fn from_lilypond(
 /// block and per top-level music expression, in order, as LilyPond makes a
 /// score of each. Each score carries the file's diagnostics.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None, strict=false))]
+#[pyo3(signature = (path, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_movements(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<Vec<PyScore>> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (text, reading) = read_lilypond(py, Ok(path), language, include_paths)?;
+        let diagnostics = py_diagnostics(&text, &reading.diagnostics);
+        check_strict(strict, &diagnostics)?;
+        Ok(reading
+            .scores
+            .into_iter()
+            .map(|inner| PyScore {
+                inner,
+                diagnostics: diagnostics.clone(),
+            })
+            .collect())
+    })
+}
+
+/// Parse every movement of a LilyPond string (see
+/// :func:`from_lilypond_movements`). Each score carries the text's
+/// diagnostics.
+#[pyfunction]
+#[pyo3(signature = (text, *, language=None, strict=false, include_paths=None))]
+fn from_lilypond_movements_string(
+    py: Python<'_>,
+    text: &str,
+    language: Option<&str>,
+    strict: bool,
+    include_paths: Option<Vec<String>>,
+) -> PyResult<Vec<PyScore>> {
+    guard(|| {
+        let (text, reading) = read_lilypond(py, Err(text), language, include_paths)?;
         let diagnostics = py_diagnostics(&text, &reading.diagnostics);
         check_strict(strict, &diagnostics)?;
         Ok(reading
@@ -914,15 +1285,16 @@ fn from_lilypond_movements(
 /// Parse a LilyPond string into a :class:`Score` (its first movement); see
 /// :func:`from_lilypond`.
 #[pyfunction]
-#[pyo3(signature = (text, *, language=None, strict=false))]
+#[pyo3(signature = (text, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_string(
     py: Python<'_>,
     text: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<PyScore> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Err(text), language)?;
+        let (text, reading) = read_lilypond(py, Err(text), language, include_paths)?;
         let (score, diagnostics) = first_movement(&text, reading, strict)?;
         Ok(PyScore {
             inner: score,
@@ -936,15 +1308,16 @@ fn from_lilypond_string(
 /// This preserves structural information like contexts and simultaneous
 /// blocks. ``strict`` as in :func:`from_lilypond`.
 #[pyfunction]
-#[pyo3(signature = (path, *, language=None, strict=false))]
+#[pyo3(signature = (path, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_music(
     py: Python<'_>,
     path: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<PyMusicDocument> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Ok(path), language)?;
+        let (text, reading) = read_lilypond(py, Ok(path), language, include_paths)?;
         let (score, diagnostics) = first_movement(&text, reading, strict)?;
         Ok(PyMusicDocument {
             inner: ir::lift::lift_to_music(&score),
@@ -953,18 +1326,46 @@ fn from_lilypond_music(
     })
 }
 
+/// Parse every movement of a LilyPond file into a :class:`MusicDocument`
+/// (see :func:`from_lilypond_movements`). Each carries the file's
+/// diagnostics.
+#[pyfunction]
+#[pyo3(signature = (path, *, language=None, strict=false, include_paths=None))]
+fn from_lilypond_music_movements(
+    py: Python<'_>,
+    path: &str,
+    language: Option<&str>,
+    strict: bool,
+    include_paths: Option<Vec<String>>,
+) -> PyResult<Vec<PyMusicDocument>> {
+    guard(|| {
+        let (text, reading) = read_lilypond(py, Ok(path), language, include_paths)?;
+        let diagnostics = py_diagnostics(&text, &reading.diagnostics);
+        check_strict(strict, &diagnostics)?;
+        Ok(reading
+            .scores
+            .iter()
+            .map(|score| PyMusicDocument {
+                inner: ir::lift::lift_to_music(score),
+                diagnostics: diagnostics.clone(),
+            })
+            .collect())
+    })
+}
+
 /// Parse a LilyPond string into a :class:`MusicDocument` (Layer 1 Music
 /// tree); see :func:`from_lilypond_music`.
 #[pyfunction]
-#[pyo3(signature = (text, *, language=None, strict=false))]
+#[pyo3(signature = (text, *, language=None, strict=false, include_paths=None))]
 fn from_lilypond_music_string(
     py: Python<'_>,
     text: &str,
     language: Option<&str>,
     strict: bool,
+    include_paths: Option<Vec<String>>,
 ) -> PyResult<PyMusicDocument> {
     guard(|| {
-        let (text, reading) = read_lilypond(py, Err(text), language)?;
+        let (text, reading) = read_lilypond(py, Err(text), language, include_paths)?;
         let (score, diagnostics) = first_movement(&text, reading, strict)?;
         Ok(PyMusicDocument {
             inner: ir::lift::lift_to_music(&score),
@@ -974,12 +1375,21 @@ fn from_lilypond_music_string(
 }
 
 /// Emit a :class:`MusicDocument` as a LilyPond string.  If *path* is given the
-/// result is also written to that file.
+/// result is also written to that file. *version* (a :class:`LilyPondVersion`
+/// or a string) is the ``\\version`` written; by default ``2.24.0``.
 #[pyfunction]
-#[pyo3(signature = (doc, path=None))]
-fn to_lilypond_music(doc: &PyMusicDocument, path: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (doc, path=None, *, version=None))]
+fn to_lilypond_music(
+    doc: &PyMusicDocument,
+    path: Option<&str>,
+    version: Option<&Bound<'_, PyAny>>,
+) -> PyResult<String> {
+    let version = version.map(version_arg).transpose()?;
     guard(|| {
-        let adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+        let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+        if let Some(v) = &version {
+            adapter = adapter.with_version(v);
+        }
         let output = adapter
             .convert_music(&doc.inner)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -995,16 +1405,24 @@ fn to_lilypond_music(doc: &PyMusicDocument, path: Option<&str>) -> PyResult<Stri
 ///
 /// *relative* chooses the pitch entry: ``True`` for ``\\relative`` octave marks,
 /// ``False`` for absolute ones, ``None`` (default) for the score's own.
+/// *version* (a :class:`LilyPondVersion` or a string) is the ``\\version``
+/// written; by default ``2.24.0``, the syntax lytk writes, whatever version
+/// the score was read from.
 #[pyfunction]
-#[pyo3(signature = (score, path=None, *, language=None, relative=None))]
+#[pyo3(signature = (score, path=None, *, language=None, relative=None, version=None))]
 fn to_lilypond(
     score: &PyScore,
     path: Option<&str>,
     language: Option<&str>,
     relative: Option<bool>,
+    version: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<String> {
+    let version = version.map(version_arg).transpose()?;
     guard(|| {
         let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
+        if let Some(v) = &version {
+            adapter = adapter.with_version(v);
+        }
         if let Some(lang_str) = language {
             adapter = adapter.with_language(parse_language(lang_str)?);
         } else if let Some(lang) = score.inner.metadata.pitch_language {
@@ -1076,14 +1494,53 @@ fn flatten(
                 .map(std::path::PathBuf::from)
                 .collect(),
             add_markers,
+            ..Default::default()
         };
-        let text = adapters::ly_flatten::flatten(Path::new(input), opts)
-            .map_err(|e| parse_error(e.to_string()))?;
+        let text = adapters::ly_flatten::flatten(Path::new(input), opts).map_err(flatten_error)?;
         if let Some(p) = output {
             std::fs::write(p, &text).map_err(|e| PyIOError::new_err(e.to_string()))?;
         }
         Ok(text)
     })
+}
+
+/// Expand the ``\\include`` directives of LilyPond *text*: relative ones
+/// against *base_dir* (when given), then *include_paths*. Includes are found
+/// on the parse tree (anywhere in a line, never in a comment or string).
+/// Raises :class:`ParseError` for a file not found (LilyPond's own, such as
+/// ``english.ly``, stay as they are), a circular include, or an expansion
+/// past the bounds; ``OSError`` for a file that cannot be read.
+#[pyfunction]
+#[pyo3(signature = (text, *, base_dir=None, include_paths=None, add_markers=true))]
+fn flatten_string(
+    py: Python<'_>,
+    text: &str,
+    base_dir: Option<&str>,
+    include_paths: Option<Vec<String>>,
+    add_markers: bool,
+) -> PyResult<String> {
+    guard(|| {
+        let opts = adapters::ly_flatten::FlattenOpts {
+            include_paths: include_paths
+                .unwrap_or_default()
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            add_markers,
+            ..Default::default()
+        };
+        py.allow_threads(|| adapters::ly_flatten::flatten_str(text, base_dir.map(Path::new), opts))
+            .map_err(flatten_error)
+    })
+}
+
+/// A flatten failure: ``OSError`` for a file that cannot be read, else
+/// :class:`ParseError`.
+fn flatten_error(e: adapters::ly_flatten::FlattenError) -> PyErr {
+    match e {
+        adapters::ly_flatten::FlattenError::Io { .. } => PyIOError::new_err(e.to_string()),
+        e => parse_error(e.to_string()),
+    }
 }
 
 /// Parse an ABC notation (``.abc``) file into a :class:`Score`.
@@ -1104,6 +1561,18 @@ fn from_abc_tunes(py: Python<'_>, path: &str) -> PyResult<Vec<PyScore>> {
         let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
         let scores = py
             .allow_threads(|| adapter.convert_file_tunes(Path::new(path)))
+            .map_err(read_err)?;
+        Ok(scores.into_iter().map(PyScore::from).collect())
+    })
+}
+
+/// Parse every tune of an ABC string (see :func:`from_abc_tunes`).
+#[pyfunction]
+fn from_abc_tunes_string(py: Python<'_>, text: &str) -> PyResult<Vec<PyScore>> {
+    guard(|| {
+        let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
+        let scores = py
+            .allow_threads(|| adapter.convert_str_tunes(text))
             .map_err(read_err)?;
         Ok(scores.into_iter().map(PyScore::from).collect())
     })
@@ -1652,6 +2121,15 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check_lilypond, m)?)?;
     m.add_class::<PyHeaderField>()?;
     m.add_function(wrap_pyfunction!(header_fields, m)?)?;
+    m.add_class::<PyLilyPondVersion>()?;
+    m.add_function(wrap_pyfunction!(lilypond_version, m)?)?;
+    m.add_function(wrap_pyfunction!(set_lilypond_version, m)?)?;
+    m.add_function(wrap_pyfunction!(strip_lilypond_version, m)?)?;
+    m.add_class::<PyToken>()?;
+    m.add_function(wrap_pyfunction!(tokenize, m)?)?;
+    m.add_function(wrap_pyfunction!(strip_comments, m)?)?;
+    m.add_function(wrap_pyfunction!(source_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(info, m)?)?;
     m.add_function(wrap_pyfunction!(_panic_for_tests, m)?)?;
 
     // Score class
@@ -1668,16 +2146,20 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_movements, m)?)?;
+    m.add_function(wrap_pyfunction!(from_lilypond_movements_string, m)?)?;
+    m.add_function(wrap_pyfunction!(from_lilypond_music_movements, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(to_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(flatten, m)?)?;
+    m.add_function(wrap_pyfunction!(flatten_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_musicxml, m)?)?;
     m.add_function(wrap_pyfunction!(to_mxl_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc_tunes, m)?)?;
+    m.add_function(wrap_pyfunction!(from_abc_tunes_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_humdrum, m)?)?;
     m.add_function(wrap_pyfunction!(from_humdrum_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_humdrum, m)?)?;

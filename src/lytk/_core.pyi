@@ -47,7 +47,7 @@ class Diagnostic:
     def code(self) -> str:
         """A stable identifier: ``syntax-error``, ``missing-token``,
         ``invalid-duration``, ``invalid-ratio``, ``not-lilypond``,
-        ``too-large`` (errors); ``unknown-command``, ``unrecognized-token``,
+        ``too-large``, ``invalid-version`` (errors); ``unknown-command``, ``unrecognized-token``,
         ``ignored-include``, ``unknown-language``, ``dropped-music``,
         ``skipped-score``, ``unsupported-value`` (warnings)."""
         ...
@@ -84,6 +84,11 @@ class Score:
     def arranger(self) -> str | None: ...
     @property
     def lyricist(self) -> str | None: ...
+    @property
+    def lilypond_version(self) -> LilyPondVersion | None:
+        """The version the source's ``\\version`` states, for a score read
+        from LilyPond that states a valid one."""
+        ...
     @property
     def language(self) -> str | None: ...
     @property
@@ -137,6 +142,10 @@ class MusicDocument:
         ...
     @property
     def lyricist(self) -> str | None: ...
+    @property
+    def lilypond_version(self) -> LilyPondVersion | None:
+        """As :attr:`Score.lilypond_version`."""
+        ...
     @property
     def header(self) -> dict[str, str]:
         """Every header field, as :attr:`Score.header`."""
@@ -347,11 +356,107 @@ def header_fields(text: str) -> list[HeaderField]:
     out."""
     ...
 
-def check_lilypond(text: str, *, semantic: bool = False) -> list[Diagnostic]:
+class LilyPondVersion:
+    """A LilyPond version, compared numerically (``2.24`` equals ``2.24.0``).
+    Accepted as LilyPond 2.24 accepts it: ``major.minor.patch`` with an
+    optional fourth part (kept, not compared), or ``major.minor`` with an even
+    minor. Other strings raise :class:`ParseError`. Hashable, picklable."""
+
+    def __init__(self, text: str) -> None: ...
+    @property
+    def major(self) -> int: ...
+    @property
+    def minor(self) -> int: ...
+    @property
+    def patch(self) -> int: ...
+    @property
+    def extra(self) -> str | None:
+        """The fourth part, if any."""
+        ...
+    def __lt__(self, other: LilyPondVersion) -> bool: ...
+    def __le__(self, other: LilyPondVersion) -> bool: ...
+    def __gt__(self, other: LilyPondVersion) -> bool: ...
+    def __ge__(self, other: LilyPondVersion) -> bool: ...
+    def __hash__(self) -> int: ...
+
+def lilypond_version(text: str) -> LilyPondVersion | None:
+    """The version the first ``\\version`` statement states, from the parse
+    tree (a commented-out one does not count); *None* when there is none or
+    it is invalid (``check_lilypond`` reports ``invalid-version``)."""
+    ...
+
+def set_lilypond_version(text: str, version: LilyPondVersion | str) -> str:
+    """*text* with every ``\\version`` statement stating *version* (a string
+    is written as given, once checked), or with one added at the top."""
+    ...
+
+def strip_lilypond_version(text: str) -> str:
+    """*text* without its ``\\version`` statements."""
+    ...
+
+class Token:
+    """A token of LilyPond text (see :func:`tokenize`). Hashable."""
+
+    @property
+    def kind(self) -> str:
+        """``comment``, ``string``, ``command``, ``symbol``, ``number``,
+        ``fraction``, ``punctuation``, ``scheme`` (the ``#`` or ``$`` that
+        starts embedded Scheme), ``boolean``, ``character``, ``keyword``
+        (Scheme's) or ``error``."""
+        ...
+    @property
+    def scheme(self) -> bool:
+        """Whether the token is Scheme rather than LilyPond."""
+        ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def start(self) -> int:
+        """Character offset: ``text[t.start:t.end]`` is the token."""
+        ...
+    @property
+    def end(self) -> int: ...
+    @property
+    def line(self) -> int:
+        """1-based."""
+        ...
+    @property
+    def column(self) -> int:
+        """1-based, in characters."""
+        ...
+
+def tokenize(text: str) -> list[Token]:
+    """The tokens of LilyPond text, from the parse tree; strings and comments
+    whole, embedded Scheme as Scheme tokens. Every character but whitespace
+    is in exactly one token, ``error`` tokens holding what the grammar cannot
+    tokenize."""
+    ...
+
+def strip_comments(text: str) -> str:
+    """*text* without its comments, LilyPond's and embedded Scheme's."""
+    ...
+
+def source_stats(text: str) -> dict[str, int]:
+    """Counts of LilyPond source text from its tokens: ``bytes``, ``lines``,
+    ``tokens``, ``comments``, ``scheme``, ``error_tokens``."""
+    ...
+
+def info(score: Score) -> dict[str, Any]:
+    """A score's metadata and counts, as ``lytk info --json`` prints them:
+    ``title`` … ``language``, ``lilypond_version``; ``part_count``,
+    ``note_count``, ``voice_count``, ``bar_count``, ``duration_quarters``,
+    ``lyric_count``, ``chord_symbol_count``, ``grace_note_count``; and
+    ``parts``, a dict per part."""
+    ...
+
+def check_lilypond(
+    text: str, *, semantic: bool = False, include_paths: list[str] | None = None
+) -> list[Diagnostic]:
     """Diagnostics of LilyPond text, in source order: the syntax only (fast,
     nothing is read), or with ``semantic=True`` what a reading reports too.
     Never raises for bad input: input too large to read is a ``too-large``
-    error."""
+    error. *include_paths* follows includes as the readers do; an included
+    file that cannot be read raises ``OSError``."""
     ...
 
 def from_musicxml(path: str) -> Score: ...
@@ -360,25 +465,67 @@ def from_musicxml_bytes(data: bytes) -> Score:
     """Parse MusicXML or compressed MXL from in-memory bytes."""
     ...
 def from_lilypond(
-    path: str, *, language: str | None = None, strict: bool = False
+    path: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> Score:
     """The first movement; ``strict=True`` raises LilyPondSyntaxError on an
-    error. The diagnostics are in ``Score.diagnostics`` either way."""
+    error. The diagnostics are in ``Score.diagnostics`` either way. With
+    *include_paths*, ``\\include`` statements are followed (the file's directory,
+    then the paths); a diagnostic in an included file is reported at its
+    ``\\include``, and one not found is an ``ignored-include`` warning."""
     ...
 def from_lilypond_string(
-    text: str, *, language: str | None = None, strict: bool = False
+    text: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> Score: ...
 def from_lilypond_movements(
-    path: str, *, language: str | None = None, strict: bool = False
+    path: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> list[Score]:
     """Every movement of a LilyPond file: one score per ``\\score`` block and
     per top-level music expression, each with the file's diagnostics."""
     ...
+def from_lilypond_movements_string(
+    text: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
+) -> list[Score]:
+    """Every movement of LilyPond text, each with the text's diagnostics."""
+    ...
+def from_lilypond_music_movements(
+    path: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
+) -> list[MusicDocument]:
+    """Every movement of a LilyPond file as a Music tree, each with the
+    file's diagnostics."""
+    ...
 def from_lilypond_music(
-    path: str, *, language: str | None = None, strict: bool = False
+    path: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> MusicDocument: ...
 def from_lilypond_music_string(
-    text: str, *, language: str | None = None, strict: bool = False
+    text: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
 ) -> MusicDocument: ...
 def to_lilypond(
     score: Score,
@@ -386,16 +533,32 @@ def to_lilypond(
     *,
     language: str | None = None,
     relative: bool | None = None,
+    version: LilyPondVersion | str | None = None,
 ) -> str:
     """*relative*: ``True`` for ``\\relative`` entry, ``False`` for absolute,
     ``None`` for the score's own."""
     ...
 def to_lilypond_music(
-    doc: MusicDocument, path: str | None = None
+    doc: MusicDocument,
+    path: str | None = None,
+    *,
+    version: LilyPondVersion | str | None = None,
 ) -> str: ...
 def to_musicxml(score: Score, path: str | None = None) -> str: ...
 def to_mxl_bytes(score: Score) -> bytes:
     """Serialize a score to compressed MusicXML (a ZIP archive)."""
+    ...
+def flatten_string(
+    text: str,
+    *,
+    base_dir: str | None = None,
+    include_paths: list[str] | None = None,
+    add_markers: bool = True,
+) -> str:
+    """Expand the ``\\include`` directives of LilyPond text (relative ones
+    against *base_dir*, then *include_paths*), found on the parse tree.
+    ParseError for a missing file (LilyPond's own, like ``english.ly``, stay
+    as they are), a circular include or an expansion past the bounds."""
     ...
 def flatten(
     input: str,
@@ -408,6 +571,9 @@ def from_abc(path: str) -> Score: ...
 def from_abc_string(text: str) -> Score: ...
 def from_abc_tunes(path: str) -> list[Score]:
     """Every tune of an ABC file, one score each (``from_abc`` reads the first)."""
+def from_abc_tunes_string(text: str) -> list[Score]:
+    """Every tune of an ABC string, one score each."""
+    ...
 def to_abc(score: Score, path: str | None = None) -> str: ...
 def from_humdrum(path: str) -> Score: ...
 def from_humdrum_string(text: str) -> Score: ...
