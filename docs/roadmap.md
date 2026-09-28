@@ -4,7 +4,7 @@ Items are grouped by status. Completed items are kept for reference.
 
 ## Latest status (2026-09-28, Epics K and L)
 
-**Epics K and L are done; 0.4.0 is ready to tag.** Epic L (datasets) ships
+**Epics K and L are done and released as v0.4.0.** Epic L (datasets) ships
 in it too, as the owner chose. Datasets read records as well as folders
 (`RecordsDataset`, with the records' own splits and ids), skip what they
 cannot read when asked (`on_error`), make an item of each movement when
@@ -725,7 +725,7 @@ what it drops. Principles, as in Epic I:
 
 Order: J0 → J1 + J2 → J3 → J4 + J5 → J6 → J7.
 
-### Epic K — 0.4.0: source-level API (✅ 2026-09-28, to be released as v0.4.0)
+### Epic K — 0.4.0: source-level API (✅ released in v0.4.0, 2026-09-28)
 
 | Task | Description | Size | Status |
 |------|-------------|------|--------|
@@ -735,7 +735,7 @@ Order: J0 → J1 + J2 → J3 → J4 + J5 → J6 → J7.
 | K4 | **Statistics.** `lytk.info(score) -> dict` becomes the library home of `lytk info --json` (moved from `cli.py:484-529`; the CLI calls it), plus voices, total bars, duration in quarters, lyrics, chord symbols and grace notes. `lytk.source_stats(text)` from tokens: comments, Scheme expressions, bytes, tokens | S | ✅ 2026-09-28: counted in Rust (`ir/stats.rs`) instead of through the navigation objects, so a corpus pays microseconds a score; the CLI's keys stay, the new ones are added; `source_stats` also gives lines and error tokens |
 | K5 | **Movements.** Single-score readers report what they drop (`dropped-music`, from J3); add `from_lilypond_music_movements` for Layer-1 users (the datasets) | S | ✅ 2026-09-28: the first half came with J3 and J7 |
 
-### Epic L — datasets for curated corpora (✅ 2026-09-28, released with K as v0.4.0)
+### Epic L — datasets for curated corpora (✅ released with K in v0.4.0, 2026-09-28)
 
 Planned for 0.5.0; the owner chose to ship it in 0.4.0 together with Epic K.
 
@@ -960,9 +960,8 @@ notation-exported MIDI (IC).
 | **12** | **0.1.0** | **Preview release before the remaining P-epics; then P5 → P3 → P4 → P6 → P8 → P9** |
 | **13** | **I → 0.2.0** | **MIDI and ABC conversion repair (Epic I, with P9 performed MIDI): tagged `v0.2.0` 2026-09-27** |
 | **14** | **J → 0.3.0** | **Trustworthy LilyPond reading: no panics, diagnostics + strict mode, whole strings and headers, pitch-language files: tagged `v0.3.0` 2026-09-27** |
-| 15 | K → 0.4.0 | Source-level API: `\version`, includes from strings, tokens, statistics, movements |
-| 16 | L → 0.5.0 | Datasets for curated corpora: robust `FolderDataset`, records dataset, ids, Python API reference |
-| 17 | P5 → 0.6.0, then P3 → P4 → P6 → P8 → 1.0.0 | Pre-1.0 queue resumes (P5 breaks the Python API) |
+| **15** | **K + L → 0.4.0** | **Source-level API (`\version`, includes, tokens, statistics, movements) and datasets for curated corpora (records dataset, errors, ids, Python API reference): tagged `v0.4.0` 2026-09-28** |
+| 16 | P5 → 0.5.0, then P3 → P4 → P6 → P8 → 1.0.0 | Pre-1.0 queue resumes (P5 breaks the Python API) |
 
 ## Key Decisions
 

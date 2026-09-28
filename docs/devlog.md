@@ -3,6 +3,19 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-28 — Release 0.4.0
+
+Epics K and L ship as **0.4.0**, with the Scheme tokens and
+`from_lilypond_movements_string` added after K. The version is bumped in
+`Cargo.toml`, its only source (and in `Cargo.lock`); `[Unreleased]` became
+`[0.4.0] - 2026-09-28`. As for 0.3.0: a pull request to `master`, the tag on
+the merge commit, the release workflow publishing to PyPI, and a GitHub
+release with the changelog section. The next minor release is P5, which
+breaks the Python API (0.5.0). Just before tagging, a version given as a
+string to `set_lilypond_version` or `version=` became written as given
+(checked, not canonicalized), so lilycorpus's synthesized
+`\version "2.24"` keeps its text, and its records their ids.
+
 ## 2026-09-28 — Epic L (datasets), shipped with K in 0.4.0
 
 The owner chose to release Epic L in 0.4.0 together with K; it was planned

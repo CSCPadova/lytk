@@ -7,6 +7,18 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
+LilyPond source you can inspect and edit, and datasets for curated
+corpora. `\version` is read, compared and edited; LilyPond text is
+tokenized (embedded Scheme as Scheme) and counted; includes are found on
+the syntax tree, `flatten_string` flattens text, and every reader follows
+includes when given `include_paths=`, with diagnostics pointing into the
+caller's text. `lytk.info` gives a score's statistics. Datasets read JSON
+Lines records as well as folders, keep ids and a corpus's own splits, skip
+what they cannot read when asked, and cache by content. The Python API
+reference is generated from the stubs.
+
 ### Added
 
 - LilyPond `\version`: `lytk.lilypond_version(text)` reads the version the
@@ -14,7 +26,8 @@ engineering notes are in the [development log](devlog.md).
   one does not count), as a `lytk.LilyPondVersion`, which compares
   numerically (`2.24` equals `2.24.0`) and accepts what LilyPond 2.24
   accepts. `lytk.set_lilypond_version(text, version)` and
-  `lytk.strip_lilypond_version(text)` edit the statements.
+  `lytk.strip_lilypond_version(text)` edit the statements (a version given
+  as a string is written as given, once checked).
   `Score.lilypond_version` and `MusicDocument.lilypond_version` give the
   version a LilyPond source stated. `to_lilypond(…, version=)` and
   `to_lilypond_music(…, version=)` write another `\version` than 2.24.0.
@@ -564,7 +577,8 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/CSCPadova/lytk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CSCPadova/lytk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CSCPadova/lytk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/CSCPadova/lytk/releases/tag/v0.1.0
