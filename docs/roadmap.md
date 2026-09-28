@@ -2,9 +2,22 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-09-28, Epic K)
+## Latest status (2026-09-28, Epics K and L)
 
-**Epic K is done; 0.4.0 is ready to tag.** LilyPond source can be inspected
+**Epics K and L are done; 0.4.0 is ready to tag.** Epic L (datasets) ships
+in it too, as the owner chose. Datasets read records as well as folders
+(`RecordsDataset`, with the records' own splits and ids), skip what they
+cannot read when asked (`on_error`), make an item of each movement when
+asked, cache by content, and the torch and TensorFlow adapters can return
+ids; `docs/python-api.md` is generated from the stubs. Since K: embedded
+Scheme is tokenized as Scheme, and `from_lilypond_movements_string` reads
+every movement of text. Test counts: 1,158 Rust + 262 Python.
+
+---
+
+## Previous status (2026-09-28, Epic K)
+
+**Epic K is done.** LilyPond source can be inspected
 and edited without reading the music: its `\version` (K1:
 `lytk.LilyPondVersion`, `lilypond_version`, `set_`/`strip_lilypond_version`,
 `version=` on the writers, the `invalid-version` error), its tokens (K3:
@@ -722,19 +735,21 @@ Order: J0 → J1 + J2 → J3 → J4 + J5 → J6 → J7.
 | K4 | **Statistics.** `lytk.info(score) -> dict` becomes the library home of `lytk info --json` (moved from `cli.py:484-529`; the CLI calls it), plus voices, total bars, duration in quarters, lyrics, chord symbols and grace notes. `lytk.source_stats(text)` from tokens: comments, Scheme expressions, bytes, tokens | S | ✅ 2026-09-28: counted in Rust (`ir/stats.rs`) instead of through the navigation objects, so a corpus pays microseconds a score; the CLI's keys stay, the new ones are added; `source_stats` also gives lines and error tokens |
 | K5 | **Movements.** Single-score readers report what they drop (`dropped-music`, from J3); add `from_lilypond_music_movements` for Layer-1 users (the datasets) | S | ✅ 2026-09-28: the first half came with J3 and J7 |
 
-### Epic L — 0.5.0: datasets for curated corpora
+### Epic L — datasets for curated corpora (✅ 2026-09-28, released with K as v0.4.0)
+
+Planned for 0.5.0; the owner chose to ship it in 0.4.0 together with Epic K.
 
 | Task | Description | Size | Status |
 |------|-------------|------|--------|
-| L1 | **`FolderDataset` robustness.** `on_error="raise" \| "skip" \| "warn"` with `dataset.errors` (today the first bad file ends every iteration). Cache keyed by file content + lytk version + normalized representation kwargs, written atomically (today keyed by path, never invalidated; `to_note_arrays()` and `iter_representation("note_array")` write different files). `Subset` delegates `_convert_item` to its parent: today it skips the cache, so the README's `split()` → dataloader example never uses it. `movements="first" \| "all"`. Pass-through of `language`, `include_paths`, `strict` and MIDI `quantize` | M | ⬜ |
-| L2 | **Records dataset.** `RecordsDataset.from_jsonl(path, *, text_field="text", id_field="id", format="lilypond", split_field=None)` and `from_records(iterable)`. Items keep their id and metadata; `split(field=…)` returns the records' own splits (a deterministic, decontaminated split must not be re-shuffled by ratio). `Dataset.split(…, groups=)` for group-aware ratio splits | M | ⬜ |
-| L3 | **Identity.** `FolderDataset.ids` (paths relative to the root); `return_ids=True` on the torch and tf adapters | S | ⬜ |
-| L4 | **Python API reference.** `docs/python-api.md` generated from or checked against the stubs: lytk has none today (README + `_core.pyi`). It states that `from_lilypond_string` and `from_lilypond_music_string` share one parse (the Music tree is lifted from the Score) | S | ⬜ |
+| L1 | **`FolderDataset` robustness.** `on_error="raise" \| "skip" \| "warn"` with `dataset.errors` (today the first bad file ends every iteration). Cache keyed by file content + lytk version + normalized representation kwargs, written atomically (today keyed by path, never invalidated; `to_note_arrays()` and `iter_representation("note_array")` write different files). `Subset` delegates `_convert_item` to its parent: today it skips the cache, so the README's `split()` → dataloader example never uses it. `movements="first" \| "all"`. Pass-through of `language`, `include_paths`, `strict` and MIDI `quantize` | M | ✅ 2026-09-28: iteration skips or raises as `on_error` says, indexing always raises; the cache key hashes the content with the reading options, lytk's version and the converter's arguments with their defaults filled in (content of included files excepted); `movements="all"` ids are `path#1`, `path#2`, … |
+| L2 | **Records dataset.** `RecordsDataset.from_jsonl(path, *, text_field="text", id_field="id", format="lilypond", split_field=None)` and `from_records(iterable)`. Items keep their id and metadata; `split(field=…)` returns the records' own splits (a deterministic, decontaminated split must not be re-shuffled by ratio). `Dataset.split(…, groups=)` for group-aware ratio splits | M | ✅ 2026-09-28: with `split_field`, `split()` returns `{value: Subset}` as recorded (ratios are then a deliberate re-split); `groups` is one key per item, a function of the id, or for records a field name; each shuffled group goes to the subset furthest below its share. `from_abc_tunes_string` added for `movements="all"` on ABC records |
+| L3 | **Identity.** `FolderDataset.ids` (paths relative to the root); `return_ids=True` on the torch and tf adapters | S | ✅ 2026-09-28: `ids` on every dataset (records: their ids); `return_ids` on the two datasets and the two data loaders, whose batches gain the ids |
+| L4 | **Python API reference.** `docs/python-api.md` generated from or checked against the stubs: lytk has none today (README + `_core.pyi`). It states that `from_lilypond_string` and `from_lilypond_music_string` share one parse (the Music tree is lifted from the Score) | S | ✅ 2026-09-28: `scripts/python_api.py` writes it from the stubs and the datasets module, in the sections of `lytk.__all__`; tests fail when it is stale or when a public name of the extension has no stub |
 
-### After 0.5.0
+### After 0.4.0
 
 The pre-1.0 queue resumes: **P5** (enumerated notation types, the one
-epic that breaks the Python API) as 0.6.0, then P3 → P4 → P6 → P8 → 1.0.0.
+epic that breaks the Python API) as 0.5.0, then P3 → P4 → P6 → P8 → 1.0.0.
 Decision for the owner: J–L go before P5 because they unblock lilycorpus
 and are backward compatible, whereas the 0.1.0 plan put P5 first. P3's
 import-options object should absorb J3/K2's keywords one to one:

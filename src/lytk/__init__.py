@@ -28,6 +28,7 @@ from lytk._core import (
     from_abc,
     from_abc_string,
     from_abc_tunes,
+    from_abc_tunes_string,
     from_humdrum,
     from_humdrum_string,
     from_event_sequence,
@@ -90,6 +91,7 @@ __all__ = [
     # Statistics
     "info",
     "source_stats",
+    # Scores
     "MusicDocument",
     "Score",
     # Structured note navigation (read-only Layer-2 tree)
@@ -115,6 +117,7 @@ __all__ = [
     "from_humdrum",
     "from_abc_string",
     "from_abc_tunes",
+    "from_abc_tunes_string",
     "from_humdrum_string",
     "to_lilypond",
     "to_lilypond_music",

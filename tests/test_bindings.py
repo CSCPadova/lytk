@@ -613,6 +613,27 @@ class TestIncludes:
         assert len(score.notes()) == 2
 
 
+class TestPythonApiReference:
+    """docs/python-api.md is generated from the stubs (Epic L4)."""
+
+    def test_the_reference_is_current(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("python_api", "scripts/python_api.py")
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        current = Path("docs/python-api.md").read_text(encoding="utf-8")
+        assert current == generator.render(), "docs/python-api.md is stale: run python scripts/python_api.py"
+
+    def test_the_stubs_cover_the_extension(self):
+        import ast
+
+        stub = ast.parse(Path("src/lytk/_core.pyi").read_text(encoding="utf-8"))
+        stubbed = {n.name for n in stub.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+        public = {n for n in dir(lytk._core) if not n.startswith("_") and callable(getattr(lytk._core, n))}
+        assert public <= stubbed, f"no stub for {sorted(public - stubbed)}"
+
+
 class TestPanicFirewall:
     """A Rust panic reaches Python as lytk.InternalError, never as pyo3's
     PanicException (a BaseException), and prints nothing."""

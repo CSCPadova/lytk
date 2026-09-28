@@ -1201,7 +1201,7 @@ fn parse_language(name: &str) -> PyResult<PitchLanguage> {
 /// ``strict=True`` raises :class:`LilyPondSyntaxError` if the reading reports
 /// an error; the diagnostics are in :attr:`Score.diagnostics` either way.
 /// With *include_paths* (a list of directories, possibly empty),
-/// ``\\include``\ s are followed: relative to the file's directory (for a
+/// ``\\include`` statements are followed: relative to the file's directory (for a
 /// string reader, only the paths), then the paths. An include not found is an
 /// ``ignored-include`` warning; a diagnostic in an included file is reported
 /// at its ``\\include``. Without it, includes are not read.
@@ -1557,6 +1557,18 @@ fn from_abc_tunes(py: Python<'_>, path: &str) -> PyResult<Vec<PyScore>> {
         let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
         let scores = py
             .allow_threads(|| adapter.convert_file_tunes(Path::new(path)))
+            .map_err(read_err)?;
+        Ok(scores.into_iter().map(PyScore::from).collect())
+    })
+}
+
+/// Parse every tune of an ABC string (see :func:`from_abc_tunes`).
+#[pyfunction]
+fn from_abc_tunes_string(py: Python<'_>, text: &str) -> PyResult<Vec<PyScore>> {
+    guard(|| {
+        let adapter = adapters::abc_to_ir::AbcToIrAdapter::new();
+        let scores = py
+            .allow_threads(|| adapter.convert_str_tunes(text))
             .map_err(read_err)?;
         Ok(scores.into_iter().map(PyScore::from).collect())
     })
@@ -2143,6 +2155,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_abc, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_abc_tunes, m)?)?;
+    m.add_function(wrap_pyfunction!(from_abc_tunes_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_humdrum, m)?)?;
     m.add_function(wrap_pyfunction!(from_humdrum_string, m)?)?;
     m.add_function(wrap_pyfunction!(to_humdrum, m)?)?;

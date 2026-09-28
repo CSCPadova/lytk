@@ -43,7 +43,23 @@ engineering notes are in the [development log](devlog.md).
   scores; `lytk.from_lilypond_movements_string(text)`, every movement of
   LilyPond text.
 - `lytk.flatten_string(text, *, base_dir=None, include_paths=None,
-  add_markers=True)`: `flatten` for text.
+  add_markers=True)`: `flatten` for text. `lytk.from_abc_tunes_string(text)`:
+  every tune of ABC text.
+- `lytk.datasets.RecordsDataset`: a dataset over records holding music as
+  text, `from_jsonl(path, …)` or `from_records(iterable, …)`, with
+  `text_field`, `id_field`, `format` (LilyPond, MusicXML, ABC or `**kern`)
+  and `split_field`. Items keep their ids and records (`record(i)`); with
+  `split_field`, `split()` returns the records' own splits as
+  `{value: Subset}` instead of re-shuffling them.
+- Datasets: `on_error="raise" | "skip" | "warn"` (iteration leaves out an
+  item that cannot be read and records it in `dataset.errors`; indexing
+  still raises); `movements="all"` (each movement of a file or record is an
+  item); `language`, `include_paths`, `strict` and MIDI `quantize` passed to
+  the readers; `ids` on every dataset (a folder's are paths relative to it);
+  `return_ids=True` on the torch and TensorFlow datasets and data loaders;
+  `split(…, groups=…)` keeps the items of a group in one subset.
+- `docs/python-api.md`, the Python API reference, generated from the stubs
+  (`scripts/python_api.py`); a test fails when it is stale.
 - `include_paths=` on every LilyPond reader and on `check_lilypond`: given
   (possibly empty), `\include`s are followed, relative to the file's
   directory, then the paths. A diagnostic in an included file is reported at
@@ -61,6 +77,12 @@ engineering notes are in the [development log](devlog.md).
   `gregorian.ly`, …) as it is when no such file is found; it was a "not
   found" error. Rust: `flatten_str` takes `Option<&Path>` for its base
   directory, and `FlattenOpts::keep_missing` keeps any missing include.
+- The dataset cache is keyed by the item's content, how it is read, lytk's
+  version and the converter's arguments with their defaults filled in, and
+  written atomically: an edited file is no longer served stale, and
+  `to_note_arrays()` and `iter_representation("note_array")` share entries.
+  Entries of earlier versions are not read again. A `Subset` uses its
+  parent's cache (it bypassed it).
 
 ### Fixed
 

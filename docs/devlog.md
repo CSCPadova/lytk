@@ -3,6 +3,55 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-09-28 — Epic L (datasets), shipped with K in 0.4.0
+
+The owner chose to release Epic L in 0.4.0 together with K; it was planned
+for 0.5.0.
+
+The datasets module was rebuilt around one private base, `_SourceDataset`,
+shared by `FolderDataset` (a source is a file) and the new `RecordsDataset`
+(a source is a record's text). A source's reading goes through one
+`_read`, which passes the LilyPond options (`language`, `include_paths`,
+`strict`) to LilyPond only and `quantize` to MIDI only, and returns the first
+movement or all of them. `movements="all"` reads every source once to count
+its movements, keeps only the counts, and reads a source again for its items
+(the last source read is kept, so a sequential pass reads each twice).
+
+`on_error` applies where the dataset iterates: `for doc in ds`,
+`iter_representation`, `to_representation`, `metrics` and the TensorFlow
+generator (whose probe item is now the first readable one). Indexing
+(`ds[i]`, the torch dataset) asks for one item and raises: a torch dataset
+cannot drop an index. Skipped items go to `errors`, keyed by id; a
+`Subset` records into its parent's.
+
+The cache key used to be the path and the arguments as given: an edited
+file was served stale, and `to_note_arrays()` (which passes `resolution=480`)
+and `iter_representation("note_array")` (which passes nothing) wrote two
+files. It is now a SHA-256 of the source's bytes, the reading options, the
+movement, lytk's version and the converter's arguments with the defaults
+filled in; files are written to a temporary name and renamed. `Subset`
+now delegates its conversion to its parent, so it uses the cache (it
+converted without it). Included files' content is not in the key.
+
+`RecordsDataset.split()` returns `{value: Subset}` for the split field (or
+any `field=`), in order of first appearance, so a curated split is never
+re-shuffled by accident; passing ratios is a deliberate re-split. Ratio
+splits take `groups`: the groups are shuffled with the seed and each goes to
+the subset furthest below its share, which keeps a dedup cluster (or a
+folder) in one subset. Without `groups` the split is the old one, item for
+item. Ids: paths relative to the root, records' ids, `#k` for movements;
+`return_ids` adds them to torch and TensorFlow items and batches
+(`pad_collate` passes them through). The torch and TensorFlow paths are
+tested in CI only (neither is installed locally).
+
+`docs/python-api.md` is written by `scripts/python_api.py` from the stubs,
+in the sections of `lytk.__all__`, plus the datasets module; private bases
+are folded into the public classes. Two tests keep it honest: the file must
+equal a fresh rendering, and every public name of the compiled extension
+must have a stub.
+
+Tests: 1,158 Rust, 262 Python (14 skipped without torch and TensorFlow).
+
 ## 2026-09-28 — Scheme tokens
 
 K3 left embedded Scheme as one token, noting that the compiled Scheme
