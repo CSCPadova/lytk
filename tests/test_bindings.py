@@ -460,6 +460,14 @@ class TestStringsAndHeaders:
         cut = text[: fields[0].start] + text[fields[0].end :]
         assert [f.key for f in lytk.header_fields(cut)] == ["piece"]
 
+    def test_movements_of_a_string(self):
+        text = "\\version \"2.24.0\"\n{ c'1 }\n\\score { { d'1 e'1 } }\n{ c'3 }\n"
+        scores = lytk.from_lilypond_movements_string(text)
+        assert [len(s.notes()) for s in scores] == [1, 2, 1]
+        assert all([d.code for d in s.diagnostics] == ["invalid-duration"] for s in scores)
+        with pytest.raises(lytk.LilyPondSyntaxError):
+            lytk.from_lilypond_movements_string(text, strict=True)
+
     def test_music_movements(self, tmp_path):
         path = tmp_path / "two.ly"
         path.write_text('\\version "2.24.0"\n{ c\'1 }\n\\score { { d\'1 e\'1 } }\n')

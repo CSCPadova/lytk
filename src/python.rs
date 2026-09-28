@@ -1251,6 +1251,33 @@ fn from_lilypond_movements(
     })
 }
 
+/// Parse every movement of a LilyPond string (see
+/// :func:`from_lilypond_movements`). Each score carries the text's
+/// diagnostics.
+#[pyfunction]
+#[pyo3(signature = (text, *, language=None, strict=false, include_paths=None))]
+fn from_lilypond_movements_string(
+    py: Python<'_>,
+    text: &str,
+    language: Option<&str>,
+    strict: bool,
+    include_paths: Option<Vec<String>>,
+) -> PyResult<Vec<PyScore>> {
+    guard(|| {
+        let (text, reading) = read_lilypond(py, Err(text), language, include_paths)?;
+        let diagnostics = py_diagnostics(&text, &reading.diagnostics);
+        check_strict(strict, &diagnostics)?;
+        Ok(reading
+            .scores
+            .into_iter()
+            .map(|inner| PyScore {
+                inner,
+                diagnostics: diagnostics.clone(),
+            })
+            .collect())
+    })
+}
+
 /// Parse a LilyPond string into a :class:`Score` (its first movement); see
 /// :func:`from_lilypond`.
 #[pyfunction]
@@ -2103,6 +2130,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_lilypond, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_movements, m)?)?;
+    m.add_function(wrap_pyfunction!(from_lilypond_movements_string, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music_movements, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music, m)?)?;
     m.add_function(wrap_pyfunction!(from_lilypond_music_string, m)?)?;

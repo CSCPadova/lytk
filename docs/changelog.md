@@ -40,7 +40,8 @@ engineering notes are in the [development log](devlog.md).
   LilyPond text. Rust: `ir::stats::score_info`, `ly_to_ir::source_stats`.
 - `lytk.from_lilypond_music_movements(path)`: every movement of a LilyPond
   file as a `MusicDocument`, as `from_lilypond_movements` gives them as
-  scores.
+  scores; `lytk.from_lilypond_movements_string(text)`, every movement of
+  LilyPond text.
 - `lytk.flatten_string(text, *, base_dir=None, include_paths=None,
   add_markers=True)`: `flatten` for text.
 - `include_paths=` on every LilyPond reader and on `check_lilypond`: given

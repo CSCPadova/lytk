@@ -494,6 +494,15 @@ def from_lilypond_movements(
     """Every movement of a LilyPond file: one score per ``\\score`` block and
     per top-level music expression, each with the file's diagnostics."""
     ...
+def from_lilypond_movements_string(
+    text: str,
+    *,
+    language: str | None = None,
+    strict: bool = False,
+    include_paths: list[str] | None = None,
+) -> list[Score]:
+    """Every movement of LilyPond text, each with the text's diagnostics."""
+    ...
 def from_lilypond_music_movements(
     path: str,
     *,
