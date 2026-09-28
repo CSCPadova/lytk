@@ -510,7 +510,7 @@ class TestLilyPondVersion:
 
     def test_set_and_strip(self):
         text = '\\version "2.18.2"\n{ c\'1 }\n'
-        assert lytk.set_lilypond_version(text, "2.24") == '\\version "2.24.0"\n{ c\'1 }\n'
+        assert lytk.set_lilypond_version(text, "2.24") == '\\version "2.24"\n{ c\'1 }\n'
         assert lytk.set_lilypond_version("{ c'1 }", lytk.LilyPondVersion("2.26.0")).startswith('\\version "2.26.0"\n')
         assert lytk.strip_lilypond_version(text) == "{ c'1 }\n"
         with pytest.raises(lytk.ParseError):
@@ -519,7 +519,7 @@ class TestLilyPondVersion:
     def test_writers_take_the_version(self):
         score = lytk.from_lilypond_string("{ c'1 }")
         assert '\\version "2.24.0"' in lytk.to_lilypond(score)
-        assert '\\version "2.26.0"' in lytk.to_lilypond(score, version="2.26")
+        assert '\\version "2.26"' in lytk.to_lilypond(score, version="2.26")
         doc = lytk.from_lilypond_music_string("{ c'1 }")
         assert '\\version "2.26.0"' in lytk.to_lilypond_music(doc, version=lytk.LilyPondVersion("2.26.0"))
         with pytest.raises(lytk.ParseError):

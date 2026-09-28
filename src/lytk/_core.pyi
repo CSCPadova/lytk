@@ -386,8 +386,8 @@ def lilypond_version(text: str) -> LilyPondVersion | None:
     ...
 
 def set_lilypond_version(text: str, version: LilyPondVersion | str) -> str:
-    """*text* with every ``\\version`` statement stating *version*, or with
-    one added at the top."""
+    """*text* with every ``\\version`` statement stating *version* (a string
+    is written as given, once checked), or with one added at the top."""
     ...
 
 def strip_lilypond_version(text: str) -> str:

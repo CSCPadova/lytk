@@ -602,12 +602,16 @@ impl PyLilyPondVersion {
     }
 }
 
-/// A version argument: a :class:`LilyPondVersion`, or a string to parse.
-fn version_arg(version: &Bound<'_, PyAny>) -> PyResult<adapters::ly_to_ir::LilyPondVersion> {
+/// The text of a version argument: a :class:`LilyPondVersion` as ``str()``
+/// writes it, or a string as given, once checked to be a version.
+fn version_arg(version: &Bound<'_, PyAny>) -> PyResult<String> {
     if let Ok(v) = version.downcast::<PyLilyPondVersion>() {
-        return Ok(v.get().0.clone());
+        return Ok(v.get().0.to_string());
     }
-    version.extract::<String>()?.parse().map_err(parse_error)
+    let text = version.extract::<String>()?;
+    text.parse::<adapters::ly_to_ir::LilyPondVersion>()
+        .map_err(parse_error)?;
+    Ok(text)
 }
 
 /// The version stored in `meta`, read from a ``\\version``.
@@ -629,8 +633,8 @@ fn lilypond_version(py: Python<'_>, text: &str) -> PyResult<Option<PyLilyPondVer
 }
 
 /// *text* with every ``\\version`` statement stating *version* (a
-/// :class:`LilyPondVersion` or a string), or with one added at the top when
-/// there is none.
+/// :class:`LilyPondVersion`, or a string, written as given), or with one added
+/// at the top when there is none.
 #[pyfunction]
 fn set_lilypond_version(
     py: Python<'_>,
@@ -1384,7 +1388,7 @@ fn to_lilypond_music(
     guard(|| {
         let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
         if let Some(v) = &version {
-            adapter = adapter.with_version(&v.to_string());
+            adapter = adapter.with_version(v);
         }
         let output = adapter
             .convert_music(&doc.inner)
@@ -1417,7 +1421,7 @@ fn to_lilypond(
     guard(|| {
         let mut adapter = adapters::ir_to_ly::IrToLyAdapter::new();
         if let Some(v) = &version {
-            adapter = adapter.with_version(&v.to_string());
+            adapter = adapter.with_version(v);
         }
         if let Some(lang_str) = language {
             adapter = adapter.with_language(parse_language(lang_str)?);

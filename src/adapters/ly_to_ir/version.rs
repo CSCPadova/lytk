@@ -181,9 +181,13 @@ pub fn lilypond_version(text: &str) -> Option<LilyPondVersion> {
     version_of(text, tree.root_node())
 }
 
-/// `text` with every `\version` statement stating `version`, or with one
-/// added at the top (after a byte-order mark) when there is none.
-pub fn set_lilypond_version(text: &str, version: &LilyPondVersion) -> Result<String> {
+/// `text` with every `\version` statement stating `version`, written as
+/// given, or with one added at the top (after a byte-order mark) when there is
+/// none. `version` must be a valid [`LilyPondVersion`].
+pub fn set_lilypond_version(text: &str, version: &str) -> Result<String> {
+    version
+        .parse::<LilyPondVersion>()
+        .map_err(AdapterError::Parse)?;
     let statement = format!("\\version \"{version}\"");
     let tree = parse(text)?;
     let found = statements(text, tree.root_node());
@@ -260,13 +264,14 @@ mod tests {
         assert_eq!(lilypond_version("{ c'4 }"), None);
         assert_eq!(lilypond_version("\\version \"2.x\" { c'4 }"), None);
         assert_eq!(
-            set_lilypond_version(src, &v("2.26")).unwrap(),
-            "% \\version \"1.0.0\"\n\\version \"2.26.0\"\n{ c'4 }\n"
+            set_lilypond_version(src, "2.26").unwrap(),
+            "% \\version \"1.0.0\"\n\\version \"2.26\"\n{ c'4 }\n"
         );
         assert_eq!(
-            set_lilypond_version("\u{feff}{ c'4 }", &v("2.24.0")).unwrap(),
+            set_lilypond_version("\u{feff}{ c'4 }", "2.24.0").unwrap(),
             "\u{feff}\\version \"2.24.0\"\n{ c'4 }"
         );
+        assert!(set_lilypond_version(src, "2.25").is_err());
         assert_eq!(
             strip_lilypond_version(src).unwrap(),
             "% \\version \"1.0.0\"\n{ c'4 }\n"
