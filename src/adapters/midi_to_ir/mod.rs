@@ -36,7 +36,6 @@ use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use super::dynamics_velocity::{lilypond_dynamic, velocity_to_dynamic};
 use super::{AdapterError, Result, ToIrAdapter};
 use crate::ir::articulation::Placement;
-use crate::ir::beams::post_process_beams_and_stems;
 use crate::ir::direction::{Direction, PedalEvent, TempoDirection, TextDirection};
 use crate::ir::duration::Frac;
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
@@ -181,6 +180,8 @@ struct TrackMeta {
     pedal: Vec<(u64, u8, bool)>,
     /// (tick, text) of text events: a karaoke file's lyrics.
     texts: Vec<(u64, String)>,
+    /// Copyright events' text.
+    copyright: Vec<String>,
     /// Written by LilyPond or lytk (a text event says so): velocities follow
     /// LilyPond's dynamics table rather than the common one.
     lilypond: bool,
@@ -235,7 +236,7 @@ fn collect_track_events(events: &[midly::TrackEvent<'_>]) -> (Vec<RawNote>, Trac
             TrackEventKind::Meta(msg) => match msg {
                 MetaMessage::TrackName(name) => {
                     // MuseScore ends its names with a NUL.
-                    meta.name = String::from_utf8_lossy(name)
+                    meta.name = super::decode_text_bytes(name.to_vec())
                         .trim_matches(|c: char| c.is_whitespace() || c == '\0')
                         .to_string();
                 }
@@ -247,18 +248,20 @@ fn collect_track_events(events: &[midly::TrackEvent<'_>]) -> (Vec<RawNote>, Trac
                     meta.key_sig_changes.push((tick, sf, minor));
                 }
                 MetaMessage::Lyric(t) => {
-                    let t = String::from_utf8_lossy(t).trim().to_string();
+                    let t = super::decode_text_bytes(t.to_vec()).trim().to_string();
                     if !t.is_empty() {
                         meta.lyrics.push((tick, t));
                     }
                 }
                 MetaMessage::Text(t) | MetaMessage::Copyright(t) => {
-                    let t = String::from_utf8_lossy(t);
+                    let t = super::decode_text_bytes(t.to_vec());
                     if t.contains("LilyPond") || t.starts_with("creator: lytk") {
                         meta.lilypond = true;
                     }
                     if matches!(event.kind, TrackEventKind::Meta(MetaMessage::Text(_))) {
-                        meta.texts.push((tick, t.into_owned()));
+                        meta.texts.push((tick, t));
+                    } else {
+                        meta.copyright.push(t);
                     }
                 }
                 _ => {}
@@ -871,6 +874,18 @@ fn read(
         if !m.name.is_empty() && collected.len() > 1 {
             score.metadata.title = Some(m.name.clone());
         }
+        score.metadata.composer = m
+            .texts
+            .iter()
+            .find_map(|(_, t)| t.strip_prefix("composer: ").map(str::to_string));
+    }
+    for (_, m) in &collected {
+        for c in &m.copyright {
+            score
+                .metadata
+                .rights
+                .push(("copyright".to_string(), c.clone()));
+        }
     }
 
     let staves = staves(collected);
@@ -1125,9 +1140,24 @@ fn read(
                         *k = (*k).max(n.midi_key);
                     }
                 }
+                // A syllable after one ending in `-` continues its word
+                // (marked for `voices::syllable`).
+                let sung: Vec<(u64, String)> = st
+                    .lyrics
+                    .iter()
+                    .scan(false, |continues, (tick, text)| {
+                        let marked = if *continues {
+                            format!("{}{text}", voices::CONTINUES)
+                        } else {
+                            text.clone()
+                        };
+                        *continues = text.ends_with('-');
+                        Some((*tick, marked))
+                    })
+                    .collect();
                 let lyric = |tick: u64, key: u8| {
                     (top.get(&tick) == Some(&key))
-                        .then(|| st.lyrics.iter().find(|l| l.0 == tick).map(|l| l.1.clone()))
+                        .then(|| sung.iter().find(|l| l.0 == tick).map(|l| l.1.clone()))
                         .flatten()
                 };
                 separate(
@@ -1286,7 +1316,6 @@ fn read(
         }
         score.children.push(ScoreChild::Part(part));
     }
-    post_process_beams_and_stems(&mut score);
     Ok(score)
 }
 

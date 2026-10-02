@@ -260,13 +260,19 @@ pub(super) fn convert_direction(dir: &mxml::Direction) -> Option<Direction> {
 
     // Check <sound> element for dacapo/dalsegno and tempo attributes.
     if let Some(ref sound) = dir.content.sound {
+        // The direction's words are the jump's text (`D.C. al Fine`), kept
+        // once: as plain text too, every writer wrote it twice.
+        let mut jump =
+            |default: &str| Some(ir_dir.text.take().map_or(default.to_string(), |t| t.text));
         if sound.attributes.dacapo == Some(mdt::YesNo::Yes) {
-            ir_dir.da_capo = Some("D.C.".to_string());
-        }
-        if let Some(ref ds) = sound.attributes.dalsegno {
-            if !ds.0.is_empty() {
-                ir_dir.dal_segno = Some("D.S.".to_string());
-            }
+            ir_dir.da_capo = jump("D.C.");
+        } else if sound
+            .attributes
+            .dalsegno
+            .as_ref()
+            .is_some_and(|ds| !ds.0.is_empty())
+        {
+            ir_dir.dal_segno = jump("D.S.");
         }
         // <sound tempo="120"> as fallback BPM when no <metronome> was given,
         // or to fill in a missing per_minute value.
@@ -330,42 +336,7 @@ fn step_to_str(step: &mdt::Step) -> String {
 }
 
 fn kind_value_to_str(kv: &mdt::KindValue) -> String {
-    match kv {
-        mdt::KindValue::Augmented => "augmented",
-        mdt::KindValue::AugmentedSeventh => "augmented-seventh",
-        mdt::KindValue::Diminished => "diminished",
-        mdt::KindValue::DiminishedSeventh => "diminished-seventh",
-        mdt::KindValue::Dominant => "dominant",
-        mdt::KindValue::Dominant11th => "dominant-11th",
-        mdt::KindValue::Dominant13th => "dominant-13th",
-        mdt::KindValue::DominantNinth => "dominant-ninth",
-        mdt::KindValue::French => "French",
-        mdt::KindValue::German => "German",
-        mdt::KindValue::HalfDiminished => "half-diminished",
-        mdt::KindValue::Italian => "Italian",
-        mdt::KindValue::Major => "major",
-        mdt::KindValue::Major11th => "major-11th",
-        mdt::KindValue::Major13th => "major-13th",
-        mdt::KindValue::MajorMinor => "major-minor",
-        mdt::KindValue::MajorNinth => "major-ninth",
-        mdt::KindValue::MajorSeventh => "major-seventh",
-        mdt::KindValue::MajorSixth => "major-sixth",
-        mdt::KindValue::Minor => "minor",
-        mdt::KindValue::Minor11th => "minor-11th",
-        mdt::KindValue::Minor13th => "minor-13th",
-        mdt::KindValue::MinorNinth => "minor-ninth",
-        mdt::KindValue::MinorSeventh => "minor-seventh",
-        mdt::KindValue::MinorSixth => "minor-sixth",
-        mdt::KindValue::Neapolitan => "Neapolitan",
-        mdt::KindValue::None => "none",
-        mdt::KindValue::Other => "other",
-        mdt::KindValue::Pedal => "pedal",
-        mdt::KindValue::Power => "power",
-        mdt::KindValue::SuspendedFourth => "suspended-fourth",
-        mdt::KindValue::SuspendedSecond => "suspended-second",
-        mdt::KindValue::Tristan => "Tristan",
-    }
-    .to_string()
+    musicxml_internal::DatatypeSerializer::serialize(kv)
 }
 
 fn degree_type_to_str(dt: &mdt::DegreeTypeValue) -> String {

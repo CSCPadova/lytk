@@ -85,6 +85,10 @@ pub struct Note {
     /// the dynamic in force.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity: Option<u8>,
+    /// While a LilyPond file is read: the Voice context the note was
+    /// written in, which `\lyricsto` follows. 0 in every score returned.
+    #[serde(skip)]
+    pub lyric_voice: u32,
 }
 
 impl Note {
@@ -123,6 +127,7 @@ impl Note {
             no_auto_beam: false,
             in_melisma: false,
             velocity: None,
+            lyric_voice: 0,
         }
     }
 }
@@ -249,6 +254,42 @@ pub enum VoiceElement {
 }
 
 impl VoiceElement {
+    /// The staff the element is written on.
+    pub fn staff(&self) -> u8 {
+        match self {
+            VoiceElement::Note(n) => n.staff,
+            VoiceElement::Rest(r) => r.staff,
+            VoiceElement::Chord(c) => c.staff,
+        }
+    }
+
+    /// The element's notes: one, a chord's, none for a rest.
+    pub fn notes(&self) -> &[Note] {
+        match self {
+            VoiceElement::Note(n) => std::slice::from_ref(n),
+            VoiceElement::Chord(c) => &c.notes,
+            VoiceElement::Rest(_) => &[],
+        }
+    }
+
+    /// The element's notes, to change.
+    pub fn notes_mut(&mut self) -> &mut [Note] {
+        match self {
+            VoiceElement::Note(n) => std::slice::from_mut(n),
+            VoiceElement::Chord(c) => &mut c.notes,
+            VoiceElement::Rest(_) => &mut [],
+        }
+    }
+
+    /// An invisible rest (LilyPond `s`, a MusicXML `<forward>`) `len` long.
+    pub fn spacer(len: super::duration::Frac, voice: u8, staff: u8) -> VoiceElement {
+        let mut r = Rest::new(super::duration::Duration::new(len));
+        r.is_spacer = true;
+        r.voice = voice;
+        r.staff = staff;
+        VoiceElement::Rest(r)
+    }
+
     /// Time this element occupies in its measure. Grace notes and grace
     /// chords (their notes carry `is_grace`) take none.
     pub fn metric_duration(&self) -> super::duration::Frac {

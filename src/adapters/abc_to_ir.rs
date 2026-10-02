@@ -20,12 +20,14 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::ir::annotation::Annotation;
-use crate::ir::articulation::{Articulation, DynamicMark, Fermata, Ornament, Placement, Wedge};
+use crate::ir::articulation::{
+    Articulation, DynamicMark, Fermata, Ornament, Placement, Technical, Wedge,
+};
 use crate::ir::direction::{
     Barline, BarlineType, Direction, RepeatDirection, TempoDirection, TextDirection,
 };
 use crate::ir::duration::{Duration, Frac};
-use crate::ir::harmony::{kind_from_suffix, ChordPitch, Harmony};
+use crate::ir::harmony::{parse_chord_suffix, ChordPitch, Harmony};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
 use crate::ir::music::{ContextType, Music, MusicDocument};
 use crate::ir::pitch::{Alter, Pitch, PitchStep};
@@ -71,13 +73,14 @@ impl AbcToIrAdapter {
     }
 
     pub fn convert_file_tunes(&self, path: &Path) -> Result<Vec<crate::ir::Score>> {
-        self.convert_str_tunes(&std::fs::read_to_string(path)?)
+        self.convert_str_tunes(&super::decode_text_bytes(std::fs::read(path)?))
     }
 }
 
 impl ToMusicAdapter for AbcToIrAdapter {
     fn convert_file_to_music(&self, path: &Path) -> Result<MusicDocument> {
-        let text = std::fs::read_to_string(path)?;
+        // Older ABC collections are Latin-1.
+        let text = super::decode_text_bytes(std::fs::read(path)?);
         self.convert_str_to_music(&text)
     }
 
@@ -217,6 +220,11 @@ struct VoiceStream {
     /// following `w:` line sings again as the next verse.
     lyric_from: usize,
     verse: Option<(usize, u8)>,
+    /// Verses whose last `w:` line ended inside a word (`haj-`).
+    open_words: Vec<u8>,
+    /// The last note of the beam being read (an index in `events`): the
+    /// next note written right after it joins it.
+    beam_from: Option<usize>,
 }
 
 /// Find the voice with `id`, creating it (recording `name` if given) when absent.
@@ -248,6 +256,8 @@ fn ensure_voice(
         slurs: 0,
         lyric_from: 0,
         verse: None,
+        open_words: Vec::new(),
+        beam_from: None,
     });
     voices.len() - 1
 }
@@ -259,6 +269,8 @@ struct VoiceField {
     name: Option<String>,
     clef: Option<Clef>,
     octave: Option<i32>,
+    /// `transpose=N`: the voice sounds `N` semitones from its written notes.
+    transpose: Option<i32>,
 }
 
 fn parse_voice_field(value: &str) -> VoiceField {
@@ -268,9 +280,12 @@ fn parse_voice_field(value: &str) -> VoiceField {
     let name = extract_param(v, "name").or_else(|| extract_param(v, "nm"));
     let mut clef = None;
     let mut octave = None;
+    let mut transpose = None;
     for t in toks {
         if let Some(c) = t.strip_prefix("clef=").and_then(parse_clef) {
             clef = Some(c);
+        } else if let Some(n) = t.strip_prefix("transpose=") {
+            transpose = parse_transpose(n);
         } else if let Some(o) = t.strip_prefix("octave=") {
             octave = parse_octave(o);
         } else if !t.contains('=') {
@@ -289,7 +304,22 @@ fn parse_voice_field(value: &str) -> VoiceField {
         name,
         clef,
         octave,
+        transpose,
     }
+}
+
+/// `transpose=N`, bounded (an instrument transposes a few octaves at most).
+fn parse_transpose(v: &str) -> Option<i32> {
+    v.parse::<i32>().ok().map(|n| n.clamp(-48, 48))
+}
+
+/// The events a voice's `clef=` and `transpose=` settings put in its music.
+fn voice_settings(clef: Option<Clef>, transpose: Option<i32>) -> Vec<Music> {
+    let mut out: Vec<Music> = clef.into_iter().map(Music::Clef).collect();
+    out.extend(
+        transpose.map(|n| Music::Transposition(crate::ir::measure::Transpose::from_semitones(n))),
+    );
+    out
 }
 
 /// Pull `key=value` (or `key="quoted value"`) from an ABC field parameter list.
@@ -350,9 +380,9 @@ fn switch_voice(voices: &mut Vec<VoiceStream>, value: &str, state: &TuneState) -
     if let Some(o) = vf.octave {
         voices[i].pitch.octave_shift = o;
     }
-    if let Some(c) = vf.clef {
-        voices[i].events.push(Music::Clef(c));
-    }
+    voices[i]
+        .events
+        .extend(voice_settings(vf.clef, vf.transpose));
     i
 }
 
@@ -371,7 +401,7 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
     let mut voices: Vec<VoiceStream> = Vec::new();
     // Clefs and octave shifts declared by header `V:` lines, applied once the
     // header's `K:` has set the key each voice starts from.
-    let mut header_voice_settings: Vec<(String, Option<Clef>, Option<i32>)> = Vec::new();
+    let mut header_voice_settings: Vec<VoiceField> = Vec::new();
     let mut current: usize = 0;
     let mut in_body = false;
     let mut seen_x = false;
@@ -379,6 +409,8 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
     let mut header_tempo: Option<TempoDirection> = None;
     // The last body line was a `w:` line (the next one is another verse).
     let mut after_w = false;
+    // The last music line ended with `\`: this one goes on with it.
+    let mut continued = false;
 
     for raw in text.lines() {
         let line = raw.trim_end();
@@ -423,17 +455,15 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
                     // Voice declaration in the header (ABC 2.1 §4.1): set up the
                     // voice (and its name) ahead of the body.
                     let vf = parse_voice_field(value);
-                    ensure_voice(&mut voices, &vf.id, vf.name, &state);
-                    header_voice_settings.push((vf.id, vf.clef, vf.octave));
+                    ensure_voice(&mut voices, &vf.id, vf.name.clone(), &state);
+                    header_voice_settings.push(vf);
                 }
                 'K' => {
                     let k = parse_key_field(value);
                     if let Some(sig) = k.signature {
                         header_events.push(Music::KeySignature(sig));
                     }
-                    if let Some(clef) = k.clef {
-                        header_events.push(Music::Clef(clef));
-                    }
+                    header_events.extend(voice_settings(k.clef, k.transpose));
                     apply_key(&mut state.default_pitch, &k);
                     // Default unit length depends on the meter when L: is absent.
                     if !explicit_unit_length {
@@ -445,15 +475,11 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
                         v.pitch = state.default_pitch.clone();
                         v.unit = state.unit_length;
                         v.meter = state.meter;
-                        if let Some((_, clef, octave)) =
-                            header_voice_settings.iter().find(|(id, ..)| *id == v.id)
-                        {
-                            if let Some(o) = octave {
-                                v.pitch.octave_shift = *o;
+                        if let Some(vf) = header_voice_settings.iter().find(|vf| vf.id == v.id) {
+                            if let Some(o) = vf.octave {
+                                v.pitch.octave_shift = o;
                             }
-                            if let Some(c) = clef {
-                                v.events.push(Music::Clef(*c));
-                            }
+                            v.events.extend(voice_settings(vf.clef, vf.transpose));
                         }
                     }
                     // K: ends the header; the rest is the tune body.
@@ -513,6 +539,9 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
                 continue;
             }
             after_w = false;
+            // A `w:` line is sung on the music line above it (ABC 2.1 §5.1),
+            // with the lines a `\` joins to it.
+            let mut started: Vec<usize> = Vec::new();
             // Inline `[V:id]` markers switch voices anywhere in the line.
             for (switch, music) in split_inline_voices(line) {
                 if let Some(value) = switch {
@@ -525,8 +554,18 @@ fn parse_tune(text: &str) -> Result<MusicDocument> {
                     }
                     current = ensure_voice(&mut voices, "1", None, &state);
                 }
+                if !continued && !started.contains(&current) {
+                    voices[current].lyric_from = voices[current].events.len();
+                    started.push(current);
+                }
                 parse_body_line(music, &mut state, &mut voices[current]);
             }
+            continued = line
+                .split('%')
+                .next()
+                .unwrap_or("")
+                .trim_end()
+                .ends_with('\\');
         }
     }
     for v in &mut voices {
@@ -674,9 +713,12 @@ fn is_field_line(line: &str) -> bool {
 fn split_field(line: &str) -> (char, &str) {
     let key = line.chars().next().unwrap();
     let value = line[2..].trim();
-    // Strip trailing inline comment.
-    let value = value.split('%').next().unwrap_or(value).trim();
-    (key, value)
+    // Strip trailing inline comment (`\%` is a percent sign).
+    let cut = value
+        .char_indices()
+        .find(|&(i, c)| c == '%' && !value[..i].ends_with('\\'))
+        .map_or(value.len(), |(i, _)| i);
+    (key, value[..cut].trim())
 }
 
 /// Apply a `K:`/`M:`/`L:` field met in the body (on its own line or inline as
@@ -699,9 +741,7 @@ fn apply_inline_field(key: char, value: &str, state: &mut TuneState, voice: &mut
             if let Some(sig) = k.signature {
                 voice.events.push(Music::KeySignature(sig));
             }
-            if let Some(clef) = k.clef {
-                voice.events.push(Music::Clef(clef));
-            }
+            voice.events.extend(voice_settings(k.clef, k.transpose));
             apply_key(&mut voice.pitch, &k);
         }
         'Q' => voice
@@ -808,10 +848,8 @@ fn align_lyrics(voice: &mut VoiceStream, line: &str, again: bool) {
                 });
             }
             '~' => cur.push(' '),
-            '\\' if chars.peek() == Some(&'-') => {
-                chars.next();
-                cur.push('-');
-            }
+            // `\-`, `\_`, `\*`, …: the sign itself.
+            '\\' => cur.extend(chars.next()),
             _ => cur.push(c),
         }
     }
@@ -844,7 +882,9 @@ fn align_lyrics(voice: &mut VoiceStream, line: &str, again: bool) {
     let notes = kinds.iter().filter(|k| **k).count();
     let mut sung: Vec<Option<LyricSyllable>> = vec![None; notes];
     let (mut slot, mut note) = (0, 0);
-    let (mut hyphen, mut last): (bool, Option<usize>) = (false, None);
+    // A word a verse's last line left open goes on here.
+    let mut hyphen = voice.open_words.contains(&verse);
+    let mut last: Option<usize> = None;
     for tok in toks {
         if let Tok::Bar = tok {
             // On to the note after the next bar line.
@@ -870,11 +910,12 @@ fn align_lyrics(voice: &mut VoiceStream, line: &str, again: bool) {
                     (true, false) => SyllabicType::End,
                 };
                 sung[note] = Some(LyricSyllable {
+                    elision: text.contains('\u{203F}'),
                     text,
                     syllabic,
                     number: verse,
                     extend: false,
-                    elision: false,
+                    name: None,
                 });
                 (hyphen, last) = (h, Some(note));
             }
@@ -899,6 +940,10 @@ fn align_lyrics(voice: &mut VoiceStream, line: &str, again: bool) {
     });
     voice.verse = Some((from, verse));
     voice.lyric_from = voice.events.len();
+    voice.open_words.retain(|v| *v != verse);
+    if hyphen {
+        voice.open_words.push(verse);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -991,6 +1036,7 @@ struct KeyField {
     alters: Option<[i32; 7]>,
     octave: Option<i32>,
     clef: Option<Clef>,
+    transpose: Option<i32>,
 }
 
 /// Parse a `K:` value: `G`, `F#m`, `Bb mix`, `D Phr ^f`, `D exp _b _e ^f`,
@@ -1027,8 +1073,10 @@ fn parse_key_field(value: &str) -> KeyField {
             out.octave = parse_octave(o);
         } else if let Some(c) = t.strip_prefix("clef=") {
             out.clef = parse_clef(c).or(out.clef);
+        } else if let Some(n) = t.strip_prefix("transpose=") {
+            out.transpose = parse_transpose(n);
         } else if t.contains('=') && !t.starts_with('=') {
-            // middle=, transpose=, stafflines=, …: layout or playback only.
+            // middle=, stafflines=, …: layout only.
         } else if let Some(c) = parse_clef(t) {
             out.clef = Some(c);
         } else if let Some((letter, alter)) = parse_key_accidental(t) {
@@ -1225,6 +1273,8 @@ fn parse_body_line(line: &str, state: &mut TuneState, voice: &mut VoiceStream) {
 fn parse_music(line: &str, state: &mut TuneState, voice: &mut VoiceStream, grace: bool) {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
+    // A line's end ends a beam.
+    voice.beam_from = None;
     // Open tuplet: (actual, normal, sounding events still to collect, start index).
     let mut tuplet: Option<(u8, u8, usize, usize)> = None;
     // Broken rhythm (`A>B`): the factor the next note, chord or rest takes.
@@ -1472,8 +1522,13 @@ fn parse_music(line: &str, state: &mut TuneState, voice: &mut VoiceStream, grace
                 .count();
             *rem = rem.saturating_sub(n);
         }
+        if !grace {
+            beam_by_spacing(voice, before, c);
+        }
         if matches!(tuplet, Some((_, _, 0, _))) {
             close_tuplet(&mut tuplet, &mut voice.events);
+            // The tuplet's notes moved into it: a beam goes no further.
+            voice.beam_from = None;
         }
     }
     // ponytail: a tuplet left open at end of line is closed here; ABC allows a
@@ -1500,6 +1555,12 @@ fn decoration(name: &str) -> Option<Annotation> {
         Some(Annotation::Wedge(Wedge {
             wedge_type: w.to_string(),
             placement: Placement::default(),
+        }))
+    };
+    let technical = |n: &str, value: &str| {
+        Some(Annotation::Technical(Technical {
+            name: n.to_string(),
+            value: value.to_string(),
         }))
     };
     let fermata = |inverted| {
@@ -1530,18 +1591,20 @@ fn decoration(name: &str) -> Option<Annotation> {
         "invertedturn" => orn("inverted-turn"),
         "fermata" | "H" => fermata(false),
         "invertedfermata" => fermata(true),
+        "upbow" | "u" => technical("up-bow", ""),
+        "downbow" | "v" => technical("down-bow", ""),
+        "0" | "1" | "2" | "3" | "4" | "5" => technical("fingering", name),
         _ => None,
     }
 }
 
-/// A quoted string: a chord symbol (`Am7`, `F#m7b5`, `G/B`) when it starts
-/// with a note letter, else an annotation — `^` above, `_` below, the other
-/// placements (`<`, `>`, `@`) above too.
+/// A quoted string: a chord symbol (`Am7`, `F#m7b5`, `G/B`, `C6/9`) when it
+/// reads as one, `N.C.` for none, else an annotation — `^` above, `_` below,
+/// the other placements (`<`, `>`, `@`) and a plain string (`"Fine"`) above.
 fn quoted(text: &str) -> Option<Music> {
-    let mut chars = text.chars();
-    let first = chars.next()?;
-    if let Some(words) = text.strip_prefix(['^', '_', '<', '>', '@']) {
-        return (!words.trim().is_empty()).then(|| {
+    let first = text.chars().next()?;
+    let annotation = |words: &str| -> Option<Music> {
+        (!words.trim().is_empty()).then(|| {
             Music::Direction(Box::new(Direction {
                 text: Some(TextDirection {
                     text: words.trim().to_string(),
@@ -1555,15 +1618,27 @@ fn quoted(text: &str) -> Option<Music> {
                 }),
                 ..Direction::default()
             }))
-        });
+        })
+    };
+    if let Some(words) = text.strip_prefix(['^', '_', '<', '>', '@']) {
+        return annotation(words);
     }
     let pitch = |s: &str| -> Option<(ChordPitch, usize)> {
         let step = s.chars().next().filter(|c| ('A'..='G').contains(c))?;
-        let (alter, n) = match s[1..].chars().next() {
-            Some('#' | '♯') => (1.0, 1 + s[1..].chars().next().map_or(0, char::len_utf8)),
-            Some('b' | '♭') => (-1.0, 1 + s[1..].chars().next().map_or(0, char::len_utf8)),
-            _ => (0.0, 1),
+        // Up to two of one accidental (`Fbb`, `C##`).
+        let sign = |c: char| match c {
+            '#' | '♯' => 1.0,
+            'b' | '♭' => -1.0,
+            _ => 0.0,
         };
+        let first = s[1..].chars().next().map_or(0.0, sign);
+        let signs: Vec<char> = s[1..]
+            .chars()
+            .take_while(|&c| first != 0.0 && sign(c) == first)
+            .take(2)
+            .collect();
+        let alter = first * signs.len() as f64;
+        let n = 1 + signs.iter().map(|c| c.len_utf8()).sum::<usize>();
         Some((
             ChordPitch {
                 step: step.to_string(),
@@ -1572,19 +1647,41 @@ fn quoted(text: &str) -> Option<Music> {
             n,
         ))
     };
-    let (root, n) = pitch(text)?;
-    let (quality, bass) = match text[n..].split_once('/') {
-        Some((q, b)) => (q, pitch(b.trim()).map(|p| p.0)),
-        None => (&text[n..], None),
+    if matches!(text.trim(), "N.C." | "NC" | "N.C") {
+        return Some(Music::Harmony(Harmony {
+            root: ChordPitch {
+                step: "C".to_string(),
+                alter: 0.0,
+            },
+            kind: "none".to_string(),
+            bass: None,
+            degrees: Vec::new(),
+            offset: 0,
+            function: None,
+        }));
+    }
+    let Some((root, n)) = pitch(text) else {
+        return annotation(text);
     };
-    Some(Music::Harmony(Harmony {
-        root,
-        kind: kind_from_suffix(quality.trim()).to_string(),
-        bass,
-        degrees: Vec::new(),
-        offset: 0,
-        function: None,
-    }))
+    // A bass after the last `/` (`G/B`); `/9` in `C6/9` is the suffix's.
+    let (quality, bass) = match text[n..].rsplit_once('/') {
+        Some((q, b)) if pitch(b.trim()).is_some_and(|(_, len)| len == b.trim().len()) => {
+            (q, pitch(b.trim()).map(|p| p.0))
+        }
+        _ => (&text[n..], None),
+    };
+    match parse_chord_suffix(quality.trim()) {
+        Some((kind, degrees)) => Some(Music::Harmony(Harmony {
+            root,
+            kind: kind.to_string(),
+            bass,
+            degrees,
+            offset: 0,
+            function: None,
+        })),
+        // `"Fine"`, `"D.C. al Fine"`: words, not a chord.
+        None => annotation(text),
+    }
 }
 
 /// Put an annotation on the last note or chord (the last of a tuplet).
@@ -1772,6 +1869,57 @@ fn parse_tuplet_spec(chars: &[char], start: usize, compound: bool) -> ((u8, u8, 
 
 /// Close an open tuplet: wrap the events it collected in `Music::Tuplet` and
 /// stamp the ratio onto their durations (the rest of the IR reads it there).
+/// ABC beams by spacing (§4.7): eighths and shorter written together are
+/// beamed; a space, a rest or a bar line ends the beam. Every note's beaming
+/// is the source's (`NoAutoBeam`). `c` is the character just read, the
+/// events from `before` what it added.
+fn beam_by_spacing(voice: &mut VoiceStream, before: usize, c: char) {
+    if matches!(c, ' ' | '\t') {
+        voice.beam_from = None;
+        return;
+    }
+    fn lead(m: &mut Music) -> Option<&mut Vec<Annotation>> {
+        match m {
+            Music::Note { annotations, .. } => Some(annotations),
+            Music::Chord { pitches, .. } => pitches.first_mut().map(|(_, a)| a),
+            _ => None,
+        }
+    }
+    for k in before.min(voice.events.len())..voice.events.len() {
+        let beamable = match &voice.events[k] {
+            Music::Note { duration, .. } | Music::Chord { duration, .. } => {
+                duration.base < Frac::new(1, 4)
+            }
+            Music::Harmony(_) | Music::Direction(_) | Music::Grace { .. } => continue,
+            _ => {
+                voice.beam_from = None;
+                continue;
+            }
+        };
+        if let Some(a) = lead(&mut voice.events[k]) {
+            a.push(Annotation::NoAutoBeam);
+        }
+        if !beamable {
+            voice.beam_from = None;
+            continue;
+        }
+        if let Some(j) = voice.beam_from {
+            if let Some(a) = lead(&mut voice.events[j]) {
+                match a.iter().position(|x| *x == Annotation::BeamStop) {
+                    Some(p) => {
+                        a.remove(p);
+                    }
+                    None => a.push(Annotation::BeamStart),
+                }
+            }
+            if let Some(a) = lead(&mut voice.events[k]) {
+                a.push(Annotation::BeamStop);
+            }
+        }
+        voice.beam_from = Some(k);
+    }
+}
+
 fn close_tuplet(tuplet: &mut Option<(u8, u8, usize, usize)>, events: &mut Vec<Music>) {
     let Some((actual, normal, _, start)) = tuplet.take() else {
         return;
@@ -2084,6 +2232,33 @@ mod tests {
             }
         }
         inner(&doc.music)
+    }
+
+    /// Each note's beam marks: `[` begins, `]` ends, `.` none.
+    fn beam_marks(doc: &MusicDocument) -> String {
+        events(doc)
+            .iter()
+            .filter_map(|m| match m {
+                Music::Note { annotations, .. } => Some(annotations),
+                _ => None,
+            })
+            .map(|a| {
+                assert!(a.contains(&Annotation::NoAutoBeam), "ABC decides beaming");
+                if a.contains(&Annotation::BeamStart) {
+                    '['
+                } else if a.contains(&Annotation::BeamStop) {
+                    ']'
+                } else {
+                    '.'
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn notes_written_together_are_beamed() {
+        let doc = parse("X:1\nL:1/8\nK:C\ncdef g2 a b|c\"G\"d!p!e z f\n");
+        assert_eq!(beam_marks(&doc), "[..]...[.].");
     }
 
     fn notes(doc: &MusicDocument) -> Vec<Pitch> {

@@ -178,6 +178,7 @@ fn staff_timeline(events: &[(Frac, TimedEvent)]) -> Timeline {
             TimedEvent::TimeSignature(ts) => tl.add(t, Event::Time(ts.clone())),
             TimedEvent::Partial(d) => tl.add(t, Event::Partial(*d)),
             TimedEvent::KeySignature(k) => tl.add(t, Event::Key(*k)),
+            TimedEvent::Transposition(tr) => tl.add(t, Event::Transpose(*tr)),
             TimedEvent::Clef(c) => tl.add(t, Event::Clef(1, *c)),
             // A lifted direction sits at its bar's start with its offset
             // inside the bar: place it where it happens.
@@ -381,6 +382,7 @@ fn apply_single_annotation(note: &mut Note, ann: &Annotation) {
             beam_type: "end".to_string(),
             number: 1,
         }),
+        Annotation::NoAutoBeam => note.no_auto_beam = true,
         Annotation::Fermata(f) => note.fermata = Some(f.clone()),
         Annotation::Arpeggio(_) => {} // handled at chord level
         Annotation::Glissando(ss) => note.glissando = Some(*ss),

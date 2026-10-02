@@ -115,6 +115,23 @@ pub struct RehearsalMark {
     pub text: String,
 }
 
+impl RehearsalMark {
+    /// LilyPond's `n`th default mark (from 1): A, B, … H, J (no I) … Z,
+    /// AA, AB, …
+    pub fn lilypond_default(n: u32) -> String {
+        const LETTERS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
+        let mut n = n.max(1) as usize;
+        let mut out = Vec::new();
+        while n > 0 {
+            n -= 1;
+            out.push(LETTERS[n % LETTERS.len()]);
+            n /= LETTERS.len();
+        }
+        out.reverse();
+        String::from_utf8(out).unwrap_or_default()
+    }
+}
+
 /// An ottava (octave shift) indication.
 ///
 /// From lytk-py's `OctaveShift`.
@@ -204,6 +221,10 @@ pub struct Direction {
     pub layout_break: Option<LayoutBreakType>,
     /// Mid-part instrument change.
     pub instrument_change: Option<InstrumentRef>,
+    /// A clef change inside the bar, on `staff` (a bar's opening clef is in
+    /// its attributes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clef: Option<super::measure::Clef>,
 }
 
 impl Default for Direction {
@@ -226,6 +247,7 @@ impl Default for Direction {
             dal_segno: None,
             layout_break: None,
             instrument_change: None,
+            clef: None,
         }
     }
 }

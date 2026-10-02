@@ -18,6 +18,7 @@ use crate::ir::score::Score;
 use super::{AdapterError, FromIrAdapter, Result};
 
 use helpers::compute_score_divisions;
+use musicxml_internal::{ElementSerializer, XmlElement};
 
 /// Default MusicXML divisions per quarter note.
 const DEFAULT_DIVISIONS: u16 = 4;
@@ -55,7 +56,11 @@ impl IrToMxmlAdapter {
             version: self.version.clone(),
             divisions: effective_divisions,
         };
-        adapter.build_score_partwise(score)
+        // MusicXML spells stems and beams out: what the source left to the
+        // engraver is engraved here.
+        let mut score = score.clone();
+        crate::ir::beams::engrave(&mut score);
+        adapter.build_score_partwise(&score)
     }
 }
 
@@ -99,12 +104,8 @@ impl IrToMxmlAdapter {
 impl FromIrAdapter for IrToMxmlAdapter {
     fn convert(&self, score: &Score) -> Result<String> {
         let mxml_score = self.build(score);
-
-        let bytes = musicxml::write_partwise_score_data(&mxml_score, false, false)
-            .map_err(AdapterError::Parse)?;
-
-        let text = String::from_utf8(bytes).expect("MusicXML output is valid UTF-8");
-        Ok(crate::adapters::decode_fractional_alters(text))
+        let tree = <musicxml::elements::ScorePartwise as ElementSerializer>::serialize(&mxml_score);
+        Ok(crate::adapters::decode_fractional_alters(render_xml(&tree)))
     }
 
     fn write(&self, score: &Score, path: &Path) -> Result<()> {
@@ -123,6 +124,65 @@ impl FromIrAdapter for IrToMxmlAdapter {
         }
 
         Ok(())
+    }
+}
+
+/// A score tree as MusicXML text, laid out as the `musicxml` crate lays it
+/// out, every text and attribute value escaped: the crate writes them raw,
+/// so a `&` in a title made XML that no parser reads.
+fn render_xml(xml: &XmlElement) -> String {
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    out.push_str(
+        "<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 4.0 Partwise//EN\" \
+         \"http://www.musicxml.org/dtds/partwise.dtd\">\n",
+    );
+    render_element(&mut out, xml, 0);
+    out
+}
+
+fn render_element(out: &mut String, xml: &XmlElement, depth: usize) {
+    let indent = |out: &mut String| (0..depth).for_each(|_| out.push_str("  "));
+    if depth > 0 {
+        out.push('\n');
+    }
+    indent(out);
+    out.push('<');
+    out.push_str(&xml.name);
+    for (key, value) in &xml.attributes {
+        out.push(' ');
+        out.push_str(key);
+        out.push_str("=\"");
+        escape_xml(out, value, true);
+        out.push('"');
+    }
+    if xml.elements.is_empty() && xml.text.is_empty() {
+        out.push_str("/>");
+        return;
+    }
+    out.push('>');
+    for element in &xml.elements {
+        render_element(out, element, depth + 1);
+    }
+    if xml.text.is_empty() {
+        out.push('\n');
+        indent(out);
+    } else {
+        escape_xml(out, &xml.text, false);
+    }
+    out.push_str("</");
+    out.push_str(&xml.name);
+    out.push('>');
+}
+
+fn escape_xml(out: &mut String, text: &str, attribute: bool) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' if attribute => out.push_str("&quot;"),
+            c => out.push(c),
+        }
     }
 }
 

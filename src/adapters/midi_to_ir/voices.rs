@@ -457,12 +457,26 @@ impl Writer<'_> {
     }
 }
 
-/// `la-` is a syllable the next one continues.
+/// Marks a lyric whose word the syllable before began (`Hal-` `le`).
+pub(super) const CONTINUES: char = '\u{1}';
+
+/// `la-` is a syllable the next one continues; one after such a syllable
+/// (marked [`CONTINUES`]) continues a word.
 fn syllable(text: &str) -> crate::ir::articulation::LyricSyllable {
     use crate::ir::articulation::{LyricSyllable, SyllabicType};
-    let (text, syllabic) = match text.strip_suffix('-') {
-        Some(t) => (t, SyllabicType::Begin),
-        None => (text, SyllabicType::Single),
+    let (continues, text) = match text.strip_prefix(CONTINUES) {
+        Some(t) => (true, t),
+        None => (false, text),
+    };
+    let (text, goes_on) = match text.strip_suffix('-') {
+        Some(t) => (t, true),
+        None => (text, false),
+    };
+    let syllabic = match (continues, goes_on) {
+        (false, false) => SyllabicType::Single,
+        (false, true) => SyllabicType::Begin,
+        (true, true) => SyllabicType::Middle,
+        (true, false) => SyllabicType::End,
     };
     LyricSyllable {
         text: text.to_string(),
@@ -470,6 +484,7 @@ fn syllable(text: &str) -> crate::ir::articulation::LyricSyllable {
         number: 1,
         extend: false,
         elision: false,
+        name: None,
     }
 }
 

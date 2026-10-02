@@ -2515,3 +2515,234 @@ fn single_quoted_attributes_are_normalized() {
         "text content apostrophes stay untouched"
     );
 }
+
+#[test]
+fn musescore_glyph_names_in_part_names_become_accidentals() {
+    let score = MxmlToIrAdapter::new()
+        .convert_file(std::path::Path::new(
+            "tests/fixtures/mxl/2340_single_voice_with_chords.mxl",
+        ))
+        .expect("reads");
+    let part = &score.parts()[0];
+    assert_eq!(part.name, "B♭ Trumpet");
+    assert_eq!(part.abbreviation, "B♭ Tpt.");
+}
+
+// ---------------------------------------------------------------------------
+// Epic M, M1: notes at the `<backup>`/`<forward>` cursor
+// ---------------------------------------------------------------------------
+
+/// One part, one 4/4 bar of `body`, `divisions` per quarter.
+fn one_bar(body: &str, divisions: u32) -> crate::ir::Score {
+    let xml = format!(
+        r#"<?xml version="1.0"?><score-partwise version="4.0"><part-list>
+        <score-part id="P1"><part-name>x</part-name></score-part></part-list>
+        <part id="P1"><measure number="1"><attributes><divisions>{divisions}</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time></attributes>{body}</measure></part>
+        </score-partwise>"#
+    );
+    MxmlToIrAdapter::new().convert_str(&xml).expect("reads")
+}
+
+fn n(step: &str, dur: u32, voice: u8, kind: &str) -> String {
+    format!(
+        "<note><pitch><step>{step}</step><octave>4</octave></pitch>\
+         <duration>{dur}</duration><voice>{voice}</voice><type>{kind}</type></note>"
+    )
+}
+
+/// Each voice as (number, [(onset in quarters, "C"/"rest"/"space")]).
+type Layout = Vec<(u8, Vec<(Ratio<i64>, String)>)>;
+
+fn layout(score: &crate::ir::Score) -> Layout {
+    score.parts()[0].measures[0]
+        .voices
+        .iter()
+        .map(|v| {
+            let mut at = Ratio::from_integer(0);
+            let items = v
+                .elements
+                .iter()
+                .map(|e| {
+                    let what = match e {
+                        VoiceElement::Note(n) => format!("{:?}", n.pitch.step),
+                        VoiceElement::Rest(r) if r.is_spacer => "space".to_string(),
+                        VoiceElement::Rest(_) => "rest".to_string(),
+                        VoiceElement::Chord(_) => "chord".to_string(),
+                    };
+                    let item = (at * Ratio::from_integer(4), what);
+                    at += e.metric_duration();
+                    item
+                })
+                .collect();
+            (v.number, items)
+        })
+        .collect()
+}
+
+#[test]
+fn second_voice_starts_where_the_cursor_is() {
+    // MusicXML suite 46e: "Voice 2 should start at 2nd beat".
+    let body = [
+        n("C", 1, 1, "quarter"),
+        n("D", 1, 1, "quarter"),
+        n("E", 1, 1, "quarter"),
+        n("F", 1, 1, "quarter"),
+        "<backup><duration>3</duration></backup>".to_string(),
+        n("G", 1, 2, "quarter"),
+    ]
+    .concat();
+    let v = layout(&one_bar(&body, 1));
+    let q = Ratio::from_integer;
+    assert_eq!(v[1].0, 2);
+    assert_eq!(v[1].1, vec![(q(0), "space".into()), (q(1), "G".into())]);
+}
+
+#[test]
+fn a_voiceless_forward_moves_the_cursor_only() {
+    // MuseScore's `<backup/><forward/>` before a voice entering mid-bar: the
+    // forward belongs to no voice, voice 1 must stay one bar long.
+    let body = [
+        n("C", 4, 1, "whole"),
+        "<backup><duration>4</duration></backup><forward><duration>2</duration></forward>"
+            .to_string(),
+        n("E", 2, 2, "half"),
+    ]
+    .concat();
+    let v = layout(&one_bar(&body, 1));
+    let q = Ratio::from_integer;
+    assert_eq!(v[0].1, vec![(q(0), "C".into())]);
+    assert_eq!(v[1].1, vec![(q(0), "space".into()), (q(2), "E".into())]);
+}
+
+#[test]
+fn a_voiceless_forward_after_a_note_is_its_voices_hidden_rest() {
+    let body = [
+        n("C", 2, 1, "half"),
+        "<forward><duration>2</duration></forward>".to_string(),
+    ]
+    .concat();
+    let v = layout(&one_bar(&body, 1));
+    let q = Ratio::from_integer;
+    assert_eq!(v[0].1, vec![(q(0), "C".into()), (q(2), "space".into())]);
+}
+
+#[test]
+fn chord_symbols_and_figures_sit_at_the_cursor() {
+    let harmony = |root: &str| {
+        format!("<harmony><root><root-step>{root}</root-step></root><kind>major</kind></harmony>")
+    };
+    let body = [
+        harmony("C"),
+        n("C", 2, 1, "half"),
+        harmony("G"),
+        "<figured-bass><figure><figure-number>6</figure-number></figure></figured-bass>"
+            .to_string(),
+        n("D", 2, 1, "half"),
+    ]
+    .concat();
+    let score = one_bar(&body, 1);
+    let m = &score.parts()[0].measures[0];
+    // OFFSET_DIVISIONS (4) per quarter: beat 3 is 8.
+    let offsets: Vec<i32> = m.harmonies.iter().map(|h| h.offset).collect();
+    assert_eq!(offsets, vec![0, 8]);
+    assert_eq!(m.figured_bass[0].offset, 8);
+}
+
+#[test]
+fn chord_symbols_stacked_before_a_note_change_during_it() {
+    // MusicXML suite 71g: subsequent harmonies before one note.
+    let harmony = |root: &str| {
+        format!("<harmony><root><root-step>{root}</root-step></root><kind>major</kind></harmony>")
+    };
+    let body = [
+        harmony("C"),
+        harmony("F"),
+        n("C", 2, 1, "half"),
+        harmony("D"),
+        harmony("G"),
+        n("D", 2, 1, "half"),
+    ]
+    .concat();
+    let score = one_bar(&body, 1);
+    let offsets: Vec<i32> = score.parts()[0].measures[0]
+        .harmonies
+        .iter()
+        .map(|h| h.offset)
+        .collect();
+    assert_eq!(offsets, vec![0, 4, 8, 12]);
+}
+
+#[test]
+fn a_later_attributes_element_keeps_the_bars_key_and_time() {
+    let body = [
+        n("C", 2, 1, "half"),
+        "<attributes><clef><sign>F</sign><line>4</line></clef></attributes>".to_string(),
+        n("D", 2, 1, "half"),
+    ]
+    .concat();
+    let score = one_bar(&body, 1);
+    let attrs = score.parts()[0].measures[0]
+        .attributes
+        .as_ref()
+        .expect("attrs");
+    assert!(
+        attrs.time.is_some(),
+        "the bar's time survives a mid-bar clef"
+    );
+    // The clef keeps its place: beat 3, not the bar's start.
+    let clefs: Vec<_> = score.parts()[0].measures[0]
+        .directions
+        .iter()
+        .filter_map(|d| Some((d.offset_frac, d.clef?.sign)))
+        .collect();
+    assert_eq!(
+        clefs,
+        [(
+            crate::ir::duration::Frac::new(1, 2),
+            crate::ir::measure::ClefSign::F
+        )]
+    );
+}
+
+#[test]
+fn undeclared_divisions_are_inferred_from_the_first_note() {
+    // lytk 0.4.0 wrote files like this: durations in 4 per quarter, no
+    // `<divisions>`.
+    let xml = format!(
+        r#"<?xml version="1.0"?><score-partwise version="4.0"><part-list>
+        <score-part id="P1"><part-name>x</part-name></score-part></part-list>
+        <part id="P1"><measure number="1">{}{}<direction><direction-type>
+        <dynamics><ff/></dynamics></direction-type></direction>{}</measure></part>
+        </score-partwise>"#,
+        n("C", 4, 1, "quarter"),
+        n("D", 4, 1, "quarter"),
+        n("E", 8, 1, "half")
+    );
+    let score = MxmlToIrAdapter::new().convert_str(&xml).expect("reads");
+    let m = &score.parts()[0].measures[0];
+    assert_eq!(m.directions[0].offset_frac, Ratio::new(1, 2));
+    let v = layout(&score);
+    assert_eq!(v[0].1.len(), 3, "no gaps between the notes: {v:?}");
+}
+
+#[test]
+fn written_musicxml_always_declares_divisions() {
+    use crate::adapters::{FromIrAdapter, ToIrAdapter};
+    let from_ly = crate::adapters::ly_to_ir::LyToIrAdapter::new()
+        .convert_str("{ c'4 d' e' f' }")
+        .expect("reads");
+    let from_kern = crate::adapters::humdrum_to_ir::HumdrumToIrAdapter::new()
+        .convert_str("**kern\n4c\n4d\n*-\n")
+        .expect("reads");
+    for score in [from_ly, from_kern] {
+        let xml = crate::adapters::ir_to_mxml::IrToMxmlAdapter::new()
+            .convert(&score)
+            .expect("writes");
+        for part in xml.split("<part id=").skip(1) {
+            let first = &part[..part.find("</measure>").expect("a measure")];
+            let divisions = first.find("<divisions>").expect("divisions declared");
+            assert!(divisions < first.find("<duration>").unwrap_or(usize::MAX));
+        }
+    }
+}

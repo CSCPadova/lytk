@@ -2,7 +2,7 @@
 
 use super::helpers::{alter_to_accidental_value, start_stop_to_mxml, start_stop_to_mxml_ss};
 use super::IrToMxmlAdapter;
-use crate::ir::articulation::StartStop;
+use crate::ir::articulation::{Placement, StartStop};
 use crate::ir::note::{ArpeggioType, Chord, Note, Rest};
 use crate::ir::pitch::AccidentalDisplay;
 
@@ -527,7 +527,7 @@ fn build_note_notations(note: &Note, chord_arpeggio: Option<ArpeggioType>) -> Ve
                 id: None,
                 line_type: None,
                 orientation: None,
-                placement: None,
+                placement: above_below(slur.placement),
                 relative_x: None,
                 relative_y: None,
                 space_length: None,
@@ -571,7 +571,7 @@ fn build_note_notations(note: &Note, chord_arpeggio: Option<ArpeggioType>) -> Ve
         let art_items: Vec<mxml::ArticulationsType> = note
             .articulations
             .iter()
-            .filter_map(|art| str_to_articulation_type(&art.name))
+            .filter_map(|art| str_to_articulation_type(&art.name, above_below(art.placement)))
             .collect();
         if !art_items.is_empty() {
             items.push(mxml::NotationContentTypes::Articulations(
@@ -635,7 +635,7 @@ fn build_note_notations(note: &Note, chord_arpeggio: Option<ArpeggioType>) -> Ve
                         content: (),
                     }))
                 } else {
-                    str_to_ornament_type(&orn.name)
+                    str_to_ornament_type(&orn.name, above_below(orn.placement))
                 }
             })
             .collect();
@@ -797,52 +797,63 @@ fn build_fermata_notation(
     })
 }
 
+/// A `<lyric>`: an elided syllable (`my‿a`) as its texts with `<elision>`
+/// between, each with the syllabic its place in the word gives.
 fn build_lyric(syl: &crate::ir::articulation::LyricSyllable) -> mxml::Lyric {
-    let syllabic_val = match syl.syllabic {
-        crate::ir::articulation::SyllabicType::Single => mdt::Syllabic::Single,
-        crate::ir::articulation::SyllabicType::Begin => mdt::Syllabic::Begin,
-        crate::ir::articulation::SyllabicType::End => mdt::Syllabic::End,
-        crate::ir::articulation::SyllabicType::Middle => mdt::Syllabic::Middle,
+    use crate::ir::articulation::SyllabicType;
+    let syllabic = |s: SyllabicType| {
+        Some(mxml::Syllabic {
+            attributes: (),
+            content: match s {
+                SyllabicType::Single => mdt::Syllabic::Single,
+                SyllabicType::Begin => mdt::Syllabic::Begin,
+                SyllabicType::End => mdt::Syllabic::End,
+                SyllabicType::Middle => mdt::Syllabic::Middle,
+            },
+        })
     };
-
-    let mut additional = Vec::new();
-    if syl.elision {
-        additional.push(mxml::AdditionalTextLyric {
+    let text = |t: &str| mxml::Text {
+        attributes: mxml::TextAttributes::default(),
+        content: t.to_string(),
+    };
+    let words: Vec<&str> = if syl.elision {
+        syl.text.split('\u{203F}').collect()
+    } else {
+        vec![syl.text.as_str()]
+    };
+    // The first word starts as the syllable does, the last ends as it does.
+    let starts = matches!(syl.syllabic, SyllabicType::Single | SyllabicType::Begin);
+    let ends = matches!(syl.syllabic, SyllabicType::Single | SyllabicType::End);
+    let last = words.len() - 1;
+    let syllabic_of = |k: usize| match (k > 0 || starts, k < last || ends) {
+        (true, true) => SyllabicType::Single,
+        (true, false) => SyllabicType::Begin,
+        (false, true) => SyllabicType::End,
+        (false, false) => SyllabicType::Middle,
+    };
+    let additional = (1..=last)
+        .map(|k| mxml::AdditionalTextLyric {
             elision: Some(mxml::Elision {
                 attributes: mxml::ElisionAttributes::default(),
-                content: String::new(),
+                content: "\u{203F}".to_string(),
             }),
-            syllabic: None,
-            text: mxml::Text {
-                attributes: mxml::TextAttributes::default(),
-                content: String::new(),
-            },
-        });
-    }
-
-    let extend = if syl.extend {
-        Some(mxml::Extend {
-            attributes: mxml::ExtendAttributes::default(),
-            content: (),
+            syllabic: syllabic(syllabic_of(k)),
+            text: text(words[k]),
         })
-    } else {
-        None
-    };
-
+        .collect();
+    let extend = syl.extend.then(|| mxml::Extend {
+        attributes: mxml::ExtendAttributes::default(),
+        content: (),
+    });
     mxml::Lyric {
         attributes: mxml::LyricAttributes {
             number: Some(mdt::NmToken(syl.number.to_string())),
+            name: syl.name.clone().map(mdt::Token),
             ..Default::default()
         },
         content: mxml::LyricContents::Text(mxml::TextLyric {
-            syllabic: Some(mxml::Syllabic {
-                attributes: (),
-                content: syllabic_val,
-            }),
-            text: mxml::Text {
-                attributes: mxml::TextAttributes::default(),
-                content: syl.text.clone(),
-            },
+            syllabic: syllabic(syllabic_of(0)),
+            text: text(words[0]),
             additional,
             extend,
             end_line: None,
@@ -945,84 +956,141 @@ fn str_to_notehead_value(s: &str) -> Option<mdt::NoteheadValue> {
     }
 }
 
-fn str_to_articulation_type(name: &str) -> Option<mxml::ArticulationsType> {
+fn str_to_articulation_type(
+    name: &str,
+    placement: Option<mdt::AboveBelow>,
+) -> Option<mxml::ArticulationsType> {
     match name {
         "accent" => Some(mxml::ArticulationsType::Accent(mxml::Accent {
-            attributes: mxml::AccentAttributes::default(),
+            attributes: mxml::AccentAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "strong-accent" => Some(mxml::ArticulationsType::StrongAccent(mxml::StrongAccent {
-            attributes: mxml::StrongAccentAttributes::default(),
+            attributes: mxml::StrongAccentAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "staccato" => Some(mxml::ArticulationsType::Staccato(mxml::Staccato {
-            attributes: mxml::StaccatoAttributes::default(),
+            attributes: mxml::StaccatoAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "tenuto" => Some(mxml::ArticulationsType::Tenuto(mxml::Tenuto {
-            attributes: mxml::TenutoAttributes::default(),
+            attributes: mxml::TenutoAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "detached-legato" => Some(mxml::ArticulationsType::DetachedLegato(
             mxml::DetachedLegato {
-                attributes: mxml::DetachedLegatoAttributes::default(),
+                attributes: mxml::DetachedLegatoAttributes {
+                    placement,
+                    ..Default::default()
+                },
                 content: (),
             },
         )),
         "staccatissimo" => Some(mxml::ArticulationsType::Staccatissimo(
             mxml::Staccatissimo {
-                attributes: mxml::StaccatissimoAttributes::default(),
+                attributes: mxml::StaccatissimoAttributes {
+                    placement,
+                    ..Default::default()
+                },
                 content: (),
             },
         )),
         "spiccato" => Some(mxml::ArticulationsType::Spiccato(mxml::Spiccato {
-            attributes: mxml::SpiccatoAttributes::default(),
+            attributes: mxml::SpiccatoAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "breath-mark" => Some(mxml::ArticulationsType::BreathMark(mxml::BreathMark {
-            attributes: mxml::BreathMarkAttributes::default(),
+            attributes: mxml::BreathMarkAttributes {
+                placement,
+                ..Default::default()
+            },
             content: mdt::BreathMarkValue::Comma,
         })),
         "caesura" => Some(mxml::ArticulationsType::Caesura(mxml::Caesura {
-            attributes: mxml::CaesuraAttributes::default(),
+            attributes: mxml::CaesuraAttributes {
+                placement,
+                ..Default::default()
+            },
             content: mdt::CaesuraValue::Normal,
         })),
         "stress" => Some(mxml::ArticulationsType::Stress(mxml::Stress {
-            attributes: mxml::StressAttributes::default(),
+            attributes: mxml::StressAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "unstress" => Some(mxml::ArticulationsType::Unstress(mxml::Unstress {
-            attributes: mxml::UnstressAttributes::default(),
+            attributes: mxml::UnstressAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         _ => None,
     }
 }
 
-fn str_to_ornament_type(name: &str) -> Option<mxml::OrnamentType> {
+fn str_to_ornament_type(
+    name: &str,
+    placement: Option<mdt::AboveBelow>,
+) -> Option<mxml::OrnamentType> {
     match name {
         "trill-mark" => Some(mxml::OrnamentType::TrillMark(mxml::TrillMark {
-            attributes: mxml::TrillMarkAttributes::default(),
+            attributes: mxml::TrillMarkAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "turn" => Some(mxml::OrnamentType::Turn(mxml::Turn {
-            attributes: mxml::TurnAttributes::default(),
+            attributes: mxml::TurnAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "inverted-turn" => Some(mxml::OrnamentType::InvertedTurn(mxml::InvertedTurn {
-            attributes: mxml::InvertedTurnAttributes::default(),
+            attributes: mxml::InvertedTurnAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "mordent" => Some(mxml::OrnamentType::Mordent(mxml::Mordent {
-            attributes: mxml::MordentAttributes::default(),
+            attributes: mxml::MordentAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "inverted-mordent" => Some(mxml::OrnamentType::InvertedMordent(mxml::InvertedMordent {
-            attributes: mxml::InvertedMordentAttributes::default(),
+            attributes: mxml::InvertedMordentAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         "schleifer" => Some(mxml::OrnamentType::Schleifer(mxml::Schleifer {
-            attributes: mxml::SchleiferAttributes::default(),
+            attributes: mxml::SchleiferAttributes {
+                placement,
+                ..Default::default()
+            },
             content: (),
         })),
         _ => None,
@@ -1080,5 +1148,14 @@ fn str_to_line_type(s: &str) -> Option<mdt::LineType> {
         "dotted" => Some(mdt::LineType::Dotted),
         "wavy" => Some(mdt::LineType::Wavy),
         _ => None,
+    }
+}
+
+/// MusicXML's `placement` for the IR's (none when unspecified).
+fn above_below(p: Placement) -> Option<mdt::AboveBelow> {
+    match p {
+        Placement::Above => Some(mdt::AboveBelow::Above),
+        Placement::Below => Some(mdt::AboveBelow::Below),
+        Placement::Unspecified => None,
     }
 }

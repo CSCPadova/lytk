@@ -1,38 +1,12 @@
 //! Mappings between dynamic marks and MIDI velocities.
 //!
 //! Two ladders are in use:
-//! - the **common** one (MuseScore, Finale: p 49, mf 80, f 96), used by the
-//!   note-array encodings and to read MIDI files written by other tools;
+//! - the **common** one (MuseScore, Finale: p 49, mf 80, f 96), to read MIDI
+//!   files written by other tools;
 //! - **LilyPond's** (`ly/midi-init.ly`, `absolute-volume-alist` × 127: p 69,
 //!   mf 86, f 95; 90 without a dynamic), used by lytk's MIDI export so that
-//!   `ly → MIDI` sounds like LilyPond's own MIDI, and to read files written
-//!   by LilyPond or lytk.
-
-/// Map a dynamic sign (e.g. `"mf"`, `"pp"`, `"sfz"`) to a MIDI velocity 1–127.
-/// Unknown signs fall back to `mf` (80).
-pub(crate) fn dynamic_to_velocity(sign: &str) -> u8 {
-    match sign {
-        "ppppp" => 5,
-        "pppp" => 10,
-        "ppp" => 16,
-        "pp" => 33,
-        "p" => 49,
-        "mp" => 64,
-        "mf" => 80,
-        "f" => 96,
-        "ff" => 112,
-        "fff" => 120,
-        "ffff" => 126,
-        "fffff" => 127,
-        // Accent-like / combined dynamics — treat as strong attacks.
-        "fp" => 96,
-        "sf" | "sfz" | "fz" => 112,
-        "sff" | "sffz" => 120,
-        "rfz" | "rf" => 112,
-        "sfp" | "sfpp" => 96,
-        _ => 80,
-    }
-}
+//!   `ly → MIDI` sounds like LilyPond's own MIDI, by the note arrays so they
+//!   match that export, and to read files written by LilyPond or lytk.
 
 /// Quantize a MIDI velocity (0–127) to the nearest standard dynamic sign.
 pub(crate) fn velocity_to_dynamic(vel: u8) -> &'static str {
@@ -79,6 +53,16 @@ pub(crate) fn lilypond_volume(sign: &str) -> f64 {
         .find(|(s, _)| *s == sign)
         .map_or(LILYPOND_DEFAULT_VOLUME, |(_, v)| *v)
 }
+
+/// The velocity lytk's MIDI export plays a dynamic at before any instrument's
+/// equalizer (LilyPond's volume × 127, truncated as the export does): the
+/// note arrays' velocities, so they match what `to_midi` plays.
+pub(crate) fn lilypond_velocity(sign: &str) -> u8 {
+    (lilypond_volume(sign) * 127.0) as u8
+}
+
+/// The velocity without any dynamic (LilyPond's default volume): 90.
+pub(crate) const LILYPOND_DEFAULT_VELOCITY: u8 = 90;
 
 /// The dynamic whose LilyPond velocity (volume × 127) is nearest to `vel`, for
 /// reading MIDI written by LilyPond or lytk. `sf` is an accent, not a level.

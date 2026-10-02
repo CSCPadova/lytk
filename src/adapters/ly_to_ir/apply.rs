@@ -14,8 +14,13 @@ pub(super) fn apply_note_attachments(
     note: &mut Note,
     attachments: &[String],
 ) {
+    // `^`/`_` before a mark places it (above, below); one mark each.
+    let mut placed = Placement::Unspecified;
     for att in attachments {
+        let here = std::mem::replace(&mut placed, Placement::Unspecified);
         match att.as_str() {
+            "^" => placed = Placement::Above,
+            "_" => placed = Placement::Below,
             "[" => {
                 // Start of manual beam group
                 _state.in_beam_group = true;
@@ -47,23 +52,28 @@ pub(super) fn apply_note_attachments(
                 });
             }
             "(" => {
+                // `^(`, else `\\slurUp`'s direction
+                let placement = match here {
+                    Placement::Unspecified => _state.slur_placement,
+                    p => p,
+                };
                 note.slurs.push(SlurEvent {
                     slur_type: StartStop::Start,
                     number: 1,
-                    placement: Placement::Unspecified,
+                    placement,
                 });
             }
             ")" => {
                 note.slurs.push(SlurEvent {
                     slur_type: StartStop::Stop,
                     number: 1,
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\fermata" => {
                 note.fermata = Some(Fermata {
                     shape: "normal".to_string(),
-                    inverted: false,
+                    inverted: here == Placement::Below,
                 });
             }
             "\\glissando" => {
@@ -80,95 +90,97 @@ pub(super) fn apply_note_attachments(
             "\\arpeggio" => {
                 // Arpeggio on a single note — unusual but valid in LilyPond
             }
-            s if is_dynamic_name(s) => {
-                let sign = s.trim_start_matches('\\').to_string();
+            // Not in an automatic beam: the source decided.
+            "\\noBeam" => note.no_auto_beam = true,
+            s if is_dynamic_name(s) || s.starts_with("dynamic:") => {
+                let sign = s.trim_start_matches("dynamic:").trim_start_matches('\\');
                 note.dynamics.push(DynamicMark {
-                    sign,
-                    placement: Placement::Unspecified,
+                    sign: sign.to_string(),
+                    placement: here,
                 });
             }
             "\\<" | "\\crescendo" => {
                 note.wedges.push(Wedge {
                     wedge_type: "crescendo".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\>" | "\\diminuendo" | "\\decrescendo" => {
                 note.wedges.push(Wedge {
                     wedge_type: "diminuendo".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\!" => {
                 note.wedges.push(Wedge {
                     wedge_type: "stop".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\trill" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
                     name: "trill-mark".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\mordent" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
                     name: "mordent".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\prall" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
                     name: "inverted-mordent".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\turn" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
                     name: "turn".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\reverseturn" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
                     name: "inverted-turn".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\staccato" => {
                 note.articulations.push(Articulation {
                     name: "staccato".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\tenuto" => {
                 note.articulations.push(Articulation {
                     name: "tenuto".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\accent" => {
                 note.articulations.push(Articulation {
                     name: "accent".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\marcato" => {
                 note.articulations.push(Articulation {
                     name: "strong-accent".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\staccatissimo" => {
                 note.articulations.push(Articulation {
                     name: "staccatissimo".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\portato" => {
                 note.articulations.push(Articulation {
                     name: "detached-legato".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             "\\stopped" => {
@@ -204,7 +216,7 @@ pub(super) fn apply_note_attachments(
             "\\breathe" => {
                 note.articulations.push(Articulation {
                     name: "breath-mark".to_string(),
-                    placement: Placement::Unspecified,
+                    placement: here,
                 });
             }
             s if s.starts_with("text:") => {
@@ -237,11 +249,11 @@ pub(super) fn apply_note_attachments(
 }
 
 pub(super) fn apply_rest_attachments(rest: &mut Rest, attachments: &[String]) {
-    for att in attachments {
+    for (k, att) in attachments.iter().enumerate() {
         if att == "\\fermata" {
             rest.fermata = Some(Fermata {
                 shape: "normal".to_string(),
-                inverted: false,
+                inverted: k > 0 && attachments[k - 1] == "_",
             });
         }
     }

@@ -1759,8 +1759,10 @@ fn lift_repeats_graces_and_staff_directions() {
         let doc = LyToIrAdapter::new().convert_str_to_music(src).unwrap();
         IrToLyAdapter::new().convert_music(&doc).unwrap()
     };
+    // One grace group, its implied slur to the main note written out.
     let out = ly(r"{ \acciaccatura { d'16 e'16 } c'4 }");
-    assert_eq!(out.matches("\\acciaccatura").count(), 1, "{out}");
+    assert_eq!(out.matches("\\slashedGrace").count(), 1, "{out}");
+    assert!(out.contains('(') && out.contains(')'), "{out}");
 
     let doc = LyToIrAdapter::new()
         .convert_str_to_music(

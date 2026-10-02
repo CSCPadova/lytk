@@ -7,6 +7,254 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-02
+
+Notation you can trust. A review found that what the note boards didn't
+measure was broken somewhere, so 0.5.0 measures it — lyrics, chord
+symbols, dynamics and clefs at their places, stems and beams against the
+engravers that wrote the files, LilyPond output against LilyPond's own
+MIDI — and fixes what the measurements showed. MusicXML is read where
+`<backup>` and `<forward>` place the notes and written valid; LilyPond
+lyrics are sung where LilyPond sings them and written so that LilyPond
+sings them back; stems and beams follow LilyPond's rules and are drawn only
+where a source left them open; chord symbols keep their beat and their
+extensions; the LilyPond reader no longer drops constructs without a word;
+note arrays give the velocities and sounding pitches MIDI export plays; ABC,
+Humdrum and MIDI keep much more of the notation; `retrograde` and
+`transpose` keep keys right; and the CLI writes every movement.
+
+### Fixed
+
+- MusicXML is read where `<backup>` and `<forward>` place the notes, not
+  in file order: a voice that enters mid-bar (MuseScore's `<backup/>`
+  `<forward/>`) no longer starts on beat 1 and no longer overfills another
+  voice (bars of 9/8 in 6/8 in real files). Chord symbols and figured bass
+  sit at their beat, not at the start of the bar.
+- A second `<attributes>` in a MusicXML bar (a clef change between notes)
+  no longer erases the bar's key and time signature.
+- MusicXML output always declares `<divisions>` (it was missing when a
+  score had no explicit time, key or clef, as LilyPond without `\time` and
+  every Humdrum input, so other programs timed every note wrong) and
+  escapes text: a title or lyric with `&` or `<` made XML nothing could
+  read. Dotted short notes keep their exact duration, and `<backup>` after
+  a voice with grace notes no longer goes back past the bar.
+- MusicXML input: entities (`&amp;`, `&#233;`) are decoded and line breaks
+  inside text kept; ISO-8859-1 and UTF-16 files are read; a file without
+  `<divisions>` (lytk 0.4.0 wrote some) is read with the divisions its
+  notes imply.
+- ABC, Humdrum and MIDI text in Latin-1 is decoded (ABC files were
+  refused, Humdrum and MIDI text mangled).
+- MuseScore 4's glyph names in part names read as accidentals:
+  `BaccidentalFlat Trumpet` is `B♭ Trumpet`.
+- Humdrum output writes a spacer as an invisible rest (`4ryy`) instead of
+  null tokens, which mean "the note before goes on" and moved a voice that
+  enters mid-bar back to beat 1, and gives each spine its own staff's clef.
+  Humdrum input finds a pickup bar on its longest spine, not the leftmost.
+
+- LilyPond input that was misread without a word: `\afterGrace c2 { d16 e }`
+  (the main note was taken for the grace and the graces were timed),
+  `\grace <d f>8` and chords inside grace blocks (a timed chord, or notes
+  one after another), the marks of grace notes (beams, slurs), single-note
+  and two-note `\repeat tremolo` (the first was lost with the note after
+  it, the second read as a volta repeat), `\partial 8*3` (its multiplier),
+  `\time 3,2 5/8` (the signature was dropped), text scripts
+  (`c^"dolce"`), `^`/`_` on articulations, slurs, fermatas, dynamics and
+  fingerings, `\once \stemUp` (it stayed on), `\slurUp`/`\slurDown`,
+  `\mark "Intro"`, `\mark \markup`, `\mark \default`, `\textMark`,
+  `\sectionLabel`, `\jump`, `\fine`, `\segnoMark`, `\codaMark`. `-_` is
+  portato, not tenuto.
+- The LilyPond writers write placement (`^.`, `_\fermata`, `^(`).
+- Note arrays, piano rolls, event sequences, metrics and `Score.notes()`:
+  a dynamic in one part no longer carries into the next part; dynamics
+  written as MusicXML directions are played (every velocity was 64); grace
+  chords take no time (they delayed every later note).
+- Transposing instruments survive the Music tree, ABC (`transpose=`) and
+  Humdrum (`*ITrd-1c-2`), and the Music-path LilyPond writer writes
+  `\transposition`. Humdrum output writes key, meter, clef and
+  transposition changes after the first bar (only the first bar's were
+  written).
+- `MusicDocument.to_score()` and `Score.to_music_document()` keep the
+  LilyPond diagnostics.
+- LilyPond chord names. The writer put the duration after the modifiers
+  (`a:71` for `a1:7`), spread a bar's chords evenly whatever their beats,
+  sized bars by the meter (after a pickup every chord came early), wrote
+  roots in Dutch whatever the output language, a no-chord as a major chord,
+  and dropped added and altered steps. Each chord is now written at its
+  beat as `root duration :modifiers /bass` (`g4:7.9-`), in the output
+  language, and a no-chord as a rest (LilyPond prints N.C.). The
+  LilyPond-to-LilyPond route (the CLI's `convert a.ly -o b.ly`) dropped
+  every chord symbol; it writes them in a ChordNames line. The reader
+  takes a chord-mode rest as a no-chord, reads scaled lengths
+  (`c1*3/4`), and a chord-mode block used as notes gives its roots only
+  (the bass of `f4:maj7/e` was a second note, doubling the bar).
+- Chord-symbol suffixes are read as the chord's steps and matched to the
+  nearest MusicXML kind with degrees, in LilyPond (`c:9^7`, `c:m7+`,
+  `c:3.5.9`) and lead-sheet text (ABC): `7#9`, `add9`, `13b9`, `m(maj7)`,
+  `6/9`, `7sus4` were all read as major.
+- ABC: a quoted string is a chord symbol only when it reads as one
+  (`"Fine"` was an F major chord), `"N.C."` is a no-chord, double-flat and
+  double-sharp roots are kept, and a staff whose bars all have two voices
+  is written (it was dropped as silent).
+- MusicXML: harmonies one after another before a note change during that
+  note, as the MusicXML test suite describes (71g), instead of all sitting
+  at its start; the functional kinds (Neapolitan, Italian, French, German,
+  pedal, Tristan) are written back (they became `other`).
+
+- Stems as LilyPond draws them. The middle line was found in semitones (A4
+  counted as the treble middle line; bass and C clefs off too). A beam
+  group now takes one direction from its farthest note, a chord from its
+  outermost notes, two voices on a staff point up and down, grace notes
+  up, and a whole note has none.
+- Beams as LilyPond draws them: by meter (3/4 eighths as one group, 3/8 and
+  2/8 the whole bar, 5/8 as 3+2, `3+2/8` by its terms, 6/8 and 6/4 by the
+  dotted beat), by the beam's shortest note (sixteenths go by the beat in
+  4/4), ended by rests, quarters and gaps (`6/8 c8 r d` and `2/2 c8 d4 e8`
+  were beamed across), placed from where a pickup sits in its bar, with
+  secondary beams and hooks (a dotted rhythm's sixteenth hooks back), and
+  `c16[ d e f]` gets its second beam.
+- LilyPond `\noBeam` and `\set autoBeaming = ##f` are read; a `\stemDown`
+  written for one bar no longer lasts into the next.
+- MusicXML: a file that beams decides every note's beaming, as MuseScore
+  reads it (unbeamed notes stay unbeamed).
+- ABC beams: notes written together are beamed, and beamed notes are
+  written together (every note had a space after it). Humdrum `L`, `J`,
+  `K`, `k` are read and written.
+- `retrograde` turns beams round (it wrote `e''16] d''16 c''8[`, which
+  LilyPond rejects).
+
+- LilyPond output: church modes keep their tonic (D dorian was written
+  `\key c \dorian`, two flats); a piano part's tempo is written once (it
+  was in both staves and read back twice); `\tempo`, `\mark` and breaks
+  sit at their beat, not at the bar's start; a rehearsal mark keeps its
+  text (`\mark "Intro"` came back as A).
+- The LilyPond-to-LilyPond route (the music tree) wrote a dynamic, hairpin
+  or text that falls between notes after the note before it, which then
+  carried it (a MusicXML `ff` on beat 2 landed on beat 1); it writes them
+  as `<>\ff` at their moment, escapes their text and keeps rehearsal marks,
+  D.C./D.S., segno, coda, ottavas and breaks (all were dropped).
+- LilyPond input: `<>` takes no time and its marks are directions at that
+  moment (it was an empty chord one beat long, pushing every later note).
+- A clef change inside a bar keeps its place, through every reader and
+  writer (it moved to the bar's start: the notes before it were read in
+  the new clef).
+- A MusicXML D.C. or D.S. with words was written twice by every writer.
+- MusicXML output writes the placement of articulations, ornaments and
+  slurs (`^.`, `_(`).
+- ABC output: hairpin ends match their starts (a diminuendo was closed as a
+  crescendo), clefs are written (`K:… clef=bass`, `[K:clef=…]`), and
+  fingerings and bowings are written and read (`!1!`, `!upbow!`, `u`, `v`).
+- Humdrum output: a voice absent from a bar, or ending early, rests there
+  invisibly (null tokens carried its last note on, which kern reads as
+  longer notes), every spine says its `*part` and `*staff`, and
+  articulations and fermatas are written and read (`'`, `` ` ``, `^`,
+  `^^`, `~`, `;`).
+- MIDI output: parts with different programs never share a channel (a
+  MuseScore file's flute and choir both asked for channel 1 and played as
+  one instrument), and the title, composer and copyright are written (and
+  read back).
+
+- Lyrics from LilyPond are sung where LilyPond sings them (31 of 31 cases
+  checked against LilyPond 2.22's own MIDI; 11 before):
+  - slurs and ties are melismas whatever the beaming, manual beams under
+    `\autoBeamOff`; chords too;
+  - `__` extends the syllable before (it used two notes), `~` joins words
+    on one note (`a‿b`), `_` in a word is a space, punctuation stays in its
+    word (`don't` was two syllables), a lone `-` is a word, `la4` has no `4`;
+  - `\skip`, `\repeat unfold`, `\set stanza`, `\set ignoreMelismata`,
+    unquoted `\lyricsto mel`, a lyric variable after `\addlyrics`, and a
+    Lyrics line without `\lyricsto` (placed by its durations);
+  - two `\addlyrics` or `\lyricsto` lines are two verses (they were one,
+    interleaved, or the second replaced the first), in source order;
+  - `\lyricsto "s"` follows the voice named "s", not every voice of its
+    staff; a `<< { } \\ { } >>` passage is new voices, which lyrics skip;
+    music after a `\new Voice` stays in it; lyrics on a NullVoice go on the
+    notes that start with its notes.
+- LilyPond output of lyrics: one token per note under `\set
+  ignoreMelismata = ##t`, so a slurred pair from MusicXML no longer loses
+  its second syllable; a verse starting late stays in place; the lyrics'
+  voice goes on through multi-voice bars (`<< { \voiceOne … } \new Voice {
+  \voiceTwo … } >>`) instead of skipping them; another voice that sings,
+  or a voice on another staff, sings on a NullVoice; elisions are written
+  `a~b`, verse names as `\set stanza`, and any word LilyPond would misread
+  (a digit anywhere: `dominant-11th`) is quoted. LilyPond sings 710 of 710
+  syllables of the test files where lytk has them. The LilyPond-to-LilyPond
+  route does the same with `\addlyrics`.
+- MusicXML lyrics: elided syllables keep both words (`my‿a`), a verse named
+  by `name` or a `number` such as `chorus` is its own verse (several were
+  verse 1), `<extend type="stop"/>` ends an extender instead of starting
+  one, a lyric on a later chord note is kept (on the chord's first), and the
+  writer writes elisions and verse names.
+- ABC lyrics: a verse starting mid-line keeps its leading `*`s, a verse
+  with nothing on a line keeps its `w:` line (later verses were renumbered),
+  every music line gets its `w:` lines, a `w:` line is sung on the music
+  line above it (ABC 2.1; it went on from the last one, so lyrics under bar
+  47 landed on bar 1), a word hyphenated over two `w:` lines stays one, and
+  `- _ * ~ | % \` in a syllable are escaped.
+- MIDI lyrics: a syllable after one ending in `-` continues its word
+  (every syllable was a beginning or alone); a track carries one verse
+  (verses were mixed note by note).
+- Humdrum: `**text` (and `**silbe`) spines are read onto their kern spine
+  and written, one per verse.
+- LilyPond output: a dynamic LilyPond doesn't define (`pppppp`) is written
+  `-#(make-dynamic-script "pppppp")` (`\pppppp` stopped LilyPond), and read
+  back; `\sfp` and `\n` are read.
+
+- `retrograde` moves key, meter, transposition and clef changes with
+  their music (bar 1 kept the first key over what had been the last bar),
+  starts each bar in the clef its music ended in and mirrors clef changes
+  inside it, and turns words round (a word's last syllable begins it).
+- `transpose` by semitones picks the key with fewer accidentals: G major up
+  6 is D-flat (5 flats), not C-sharp (7 sharps).
+
+- CLI: `convert` from LilyPond to LilyPond, the transforms, `abs2rel` and
+  `rel2abs` write every movement (they kept the first, silently); the
+  LilyPond reader's findings are printed on stderr; a folder conversion is
+  refused when two inputs would write one output (`a.mid`, `a.midi`);
+  `positions` counts no time for grace chords.
+
+### Added
+
+- CLI: `-I`/`--include-path` on every command that reads a score.
+- `Note.lyric_syllables` in Python: each syllable's verse, name, syllabic,
+  extender and elision (`Note.lyrics` gives the texts only). Rust:
+  `LyricSyllable.name`.
+- `Direction.clef`: a clef change inside the bar, at its position (a bar's
+  opening clef stays in its attributes). `KeySignature::tonic()`,
+  `RehearsalMark::lilypond_default(n)`.
+- `Annotation::NoAutoBeam` in the Music tree (a note whose beaming the
+  source decided), carried by the lift and the lowering with the source's
+  beams; `VoiceElement::notes()`/`notes_mut()`.
+- Rust: chord symbols as steps, `ir::harmony::{chord_steps,
+  kind_and_degrees, ly_chord_steps, lead_sheet_chord_steps,
+  parse_chord_suffix, lead_sheet_suffix, ly_chord_modifiers}`, and
+  `Measure::content_length`.
+
+### Changed
+
+- `lytk diff` compares every note's onset, duration and sounding pitch,
+  not only the pitches (`--json` adds `notes_equal`).
+- Readers keep only the stems and beams a source states: LilyPond and
+  MIDI input no longer carry inferred ones (in `to_dict`, navigation, the
+  Music tree). The writers that spell them out (MusicXML, ABC, Humdrum)
+  engrave what the source left open when they write, and the LilyPond
+  writer writes a stem command only where the source's stem isn't the one
+  LilyPond draws (it froze every inferred stem: `\stemDown a8[ b c d]`,
+  `\stemDown` in the upper of two voices, `\stemNeutral` before rests).
+- Note arrays (and everything built on them: piano rolls, event
+  sequences, metrics, datasets, `Score.notes()`) give **sounding pitch**: a
+  B♭ clarinet's written D is a C, as MIDI export plays it.
+  `to_note_array(..., pitch="written")` gives written pitch.
+- Note-array velocities are those `to_midi` plays: LilyPond's dynamics
+  table (p 69, mf 86, f 95), and **90** without a dynamic (it was 64, on a
+  different table). Dataset caches refresh by themselves (their key holds
+  lytk's version).
+- MusicXML output declares the MusicXML 4.0 document type (it said 3.0).
+- LilyPond: an acciaccatura or appoggiatura is read as grace notes with a
+  slur to their main note, and the writers write grace notes as `\grace`
+  or `\slashedGrace` with their slurs: they wrote every grace as
+  `\acciaccatura`/`\appoggiatura`, adding a slur that a MusicXML source
+  doesn't have.
+
 ## [0.4.0] - 2026-09-28
 
 LilyPond source you can inspect and edit, and datasets for curated
@@ -577,7 +825,8 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/CSCPadova/lytk/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/CSCPadova/lytk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CSCPadova/lytk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CSCPadova/lytk/compare/v0.1.0...v0.2.0

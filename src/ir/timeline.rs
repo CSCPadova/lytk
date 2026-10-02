@@ -226,7 +226,7 @@ impl Timeline {
                 let elems = elems
                     .into_iter()
                     .map(|(on, mut e)| {
-                        let s = staff(element_staff(&e));
+                        let s = staff(e.staff());
                         set_staff(&mut e, s);
                         set_voice_number(&mut e, lane);
                         (on, e)
@@ -381,14 +381,6 @@ fn set_staff(e: &mut VoiceElement, staff: u8) {
                 n.staff = staff;
             }
         }
-    }
-}
-
-fn element_staff(e: &VoiceElement) -> u8 {
-    match e {
-        VoiceElement::Note(n) => n.staff,
-        VoiceElement::Rest(r) => r.staff,
-        VoiceElement::Chord(c) => c.staff,
     }
 }
 
@@ -699,6 +691,15 @@ fn split_with(
             Event::Time(ts) => attrs(&mut measures[i]).time = Some(ts),
             Event::Key(k) => attrs(&mut measures[i]).key = Some(k),
             Event::Transpose(t) => attrs(&mut measures[i]).transpose = Some(t),
+            // A clef inside the bar keeps its place, as a direction.
+            Event::Clef(staff, c) if within > zero() => {
+                measures[i].directions.push(Direction {
+                    offset_frac: within,
+                    staff,
+                    clef: Some(c),
+                    ..Direction::default()
+                });
+            }
             Event::Clef(staff, c) => {
                 attrs(&mut measures[i]).clefs.insert(staff, c);
             }
@@ -762,11 +763,7 @@ fn split_with(
             }
             let slot = &mut current.as_mut().unwrap().1;
             if on > cursor {
-                let mut gap = Rest::new(Duration::new(on - cursor));
-                gap.is_spacer = true;
-                gap.voice = lane;
-                gap.staff = element_staff(&e);
-                slot.push(VoiceElement::Rest(gap));
+                slot.push(VoiceElement::spacer(on - cursor, lane, e.staff()));
             }
             cursor = cursor.max(on + e.metric_duration());
             slot.push(e);

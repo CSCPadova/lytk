@@ -5,7 +5,7 @@ use crate::ir::articulation::Placement;
 use crate::ir::direction::{Direction, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::parse_pitch_name;
-use crate::ir::note::{Chord, Note};
+use crate::ir::note::{Chord, Note, VoiceElement};
 use crate::ir::pitch::{AccidentalDisplay, Pitch};
 use crate::ir::score::PageLayout;
 
@@ -292,48 +292,84 @@ pub(super) fn consume_attachments(
                         *i += 1;
                     }
                     "^" | "_" | "-" => {
-                        // Direction indicator: check what follows
-                        if let Some(next) = children.get(*i + 1) {
-                            if next.kind() == "escaped_word" && state.text(*next) == "\\markup" {
+                        // A direction (`^` above, `_` below, `-` either) and
+                        // the mark it places, which goes after a `^`/`_`
+                        // marker the attachment reader applies to it.
+                        let Some(&next) = children.get(*i + 1) else {
+                            break;
+                        };
+                        let placement = match ptext.as_str() {
+                            "^" => "above",
+                            "_" => "below",
+                            _ => "unspecified",
+                        };
+                        match next.kind() {
+                            "escaped_word" if state.text(next) == "\\markup" => {
                                 // \markup { "text" } text direction
                                 if let Some(block) = children.get(*i + 2) {
                                     if block.kind() == "expression_block" {
                                         let text = extract_markup_text(state, *block);
                                         if !text.is_empty() {
-                                            let placement = match ptext.as_str() {
-                                                "^" => "above",
-                                                "_" => "below",
-                                                _ => "unspecified",
-                                            };
                                             attachments.push(format!("text:{placement}:{text}"));
                                         }
                                         *i += 3;
                                         continue;
                                     }
                                 }
-                            } else if next.kind() == "escaped_word" {
+                            }
+                            "escaped_word" if is_post_note_command(state.text(next)) => {
                                 // Direction + escaped command, e.g. ^\fermata
-                                let ew = state.text(*next);
-                                if is_post_note_command(ew) {
-                                    attachments.push(ew.to_string());
-                                    *i += 2;
-                                    continue;
-                                }
-                            } else if next.kind() == "punctuation" {
-                                // Shorthand articulation: -. -> -_ -^ -! -+ --
-                                let short = punct_text(state, *next);
-                                if let Some(art) = shorthand_articulation(&short) {
-                                    attachments.push(art.to_string());
-                                    *i += 2;
-                                    continue;
-                                }
-                            } else if next.kind() == "unsigned_integer" {
-                                // Fingering: -1, -2, -3, etc.
-                                let finger = state.text(*next).to_string();
-                                attachments.push(format!("finger:{finger}"));
+                                push_placed(&mut attachments, &ptext, state.text(next).to_string());
                                 *i += 2;
                                 continue;
                             }
+                            "string" => {
+                                // A text script: c^"dolce"
+                                let text = extract_string_value(state, next);
+                                attachments.push(format!("text:{placement}:{text}"));
+                                *i += 2;
+                                continue;
+                            }
+                            "dynamic" => {
+                                push_placed(&mut attachments, &ptext, state.text(next).to_string());
+                                *i += 2;
+                                continue;
+                            }
+                            "punctuation" => {
+                                let short = punct_text(state, next);
+                                if matches!(short.as_str(), "(" | ")" | "~" | "[" | "]") {
+                                    push_placed(&mut attachments, &ptext, short);
+                                    *i += 2;
+                                    continue;
+                                }
+                                // Shorthand articulation: -. -> -_ -^ -! -+ --
+                                if let Some(art) = shorthand_articulation(&short) {
+                                    push_placed(&mut attachments, &ptext, art.to_string());
+                                    *i += 2;
+                                    continue;
+                                }
+                            }
+                            // A dynamic LilyPond doesn't predefine:
+                            // `-#(make-dynamic-script "pppppp")`.
+                            "embedded_scheme" => {
+                                if let Some(sign) = made_dynamic(state.text(next)) {
+                                    push_placed(
+                                        &mut attachments,
+                                        &ptext,
+                                        format!("dynamic:{sign}"),
+                                    );
+                                    *i += 2;
+                                    continue;
+                                }
+                            }
+                            "unsigned_integer" => {
+                                // Fingering: -1, -2, -3, etc.
+                                let finger = state.text(next).to_string();
+                                push_placed(&mut attachments, &ptext, format!("finger:{finger}"));
+                                *i += 2;
+                                continue;
+                            }
+                            _ => {}
                         }
                         break;
                     }
@@ -346,12 +382,33 @@ pub(super) fn consume_attachments(
     attachments
 }
 
+/// The sign of `#(make-dynamic-script "sign")` (a plain string only).
+fn made_dynamic(scheme: &str) -> Option<String> {
+    let rest = scheme.trim_start_matches('#').trim();
+    let rest = rest
+        .strip_prefix('(')?
+        .trim_start()
+        .strip_prefix("make-dynamic-script")?;
+    let quoted = rest.trim().strip_suffix(')')?.trim();
+    let sign = quoted.strip_prefix('"')?.strip_suffix('"')?;
+    (!sign.is_empty() && !sign.contains(['"', '\\'])).then(|| sign.to_string())
+}
+
+/// A mark with its direction: `^` or `_` first (the attachment reader places
+/// the next mark by it), nothing for `-`.
+fn push_placed(attachments: &mut Vec<String>, direction: &str, mark: String) {
+    if direction != "-" {
+        attachments.push(direction.to_string());
+    }
+    attachments.push(mark);
+}
+
 /// Map a LilyPond shorthand articulation character to its long-form escaped command.
 pub(super) fn shorthand_articulation(ch: &str) -> Option<&'static str> {
     match ch {
         "." => Some("\\staccato"),
         ">" => Some("\\accent"),
-        "_" => Some("\\tenuto"),
+        "_" => Some("\\portato"),
         "^" => Some("\\marcato"),
         "!" => Some("\\staccatissimo"),
         "+" => Some("\\stopped"),
@@ -388,6 +445,7 @@ pub(super) fn is_post_note_command(text: &str) -> bool {
             | "\\flageolet"
             | "\\open"
             | "\\snappizzicato"
+            | "\\noBeam"
     ) || is_dynamic_name(text)
 }
 
@@ -572,57 +630,96 @@ pub(super) fn parse_with_block(
 ///   `\mark \markup { \musicglyph "scripts.segno" }`  → segno
 ///   `\mark "D.C."` / `\mark "D.S. al Coda"` etc.     → da_capo / dal_segno
 pub(super) fn consume_mark(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
-    if i >= children.len() {
+    let Some(&node) = children.get(i) else {
         return i;
-    }
-    let node = children[i];
-    if node.kind() == "string" {
-        // \mark "D.C." or \mark "D.S. al Coda"
-        let text = extract_string_value(state, node);
-        i += 1;
-        let dir = if text.starts_with("D.S.") {
-            Direction {
-                dal_segno: Some(text),
-                ..Default::default()
-            }
-        } else if text.starts_with("D.C.") {
-            Direction {
-                da_capo: Some(text),
-                ..Default::default()
-            }
-        } else {
-            // Generic text mark — ignore for now
-            return i;
-        };
-        state.add_event(Event::direction(dir));
-    } else if node.kind() == "escaped_word" && state.text(node) == "\\markup" {
-        // \mark \markup { ... }
-        i += 1;
-        if let Some(block) = children.get(i) {
-            if block.kind() == "expression_block" {
-                // Walk the markup block looking for \musicglyph "scripts.coda" etc.
-                let block_text = state.text(*block);
-                let dir = if block_text.contains("scripts.coda") {
-                    Some(Direction {
-                        coda: true,
-                        ..Default::default()
-                    })
-                } else if block_text.contains("scripts.segno") {
-                    Some(Direction {
-                        segno: true,
-                        ..Default::default()
-                    })
-                } else {
-                    None
-                };
-                if let Some(d) = dir {
-                    state.add_event(Event::direction(d));
-                }
-                i += 1;
-            }
+    };
+    let rehearsal = |text: String| Direction {
+        rehearsal: Some(crate::ir::direction::RehearsalMark { text }),
+        ..Default::default()
+    };
+    let dir = match node.kind() {
+        "escaped_word" if state.text(node) == "\\default" => {
+            i += 1;
+            state.mark_count += 1;
+            Some(rehearsal(
+                crate::ir::direction::RehearsalMark::lilypond_default(state.mark_count),
+            ))
         }
+        "unsigned_integer" | "embedded_scheme" => {
+            // `\mark 3`, `\mark #3`: the third mark, C.
+            let n = state
+                .text(node)
+                .trim_start_matches(['#', '$'])
+                .parse::<u32>()
+                .ok();
+            i += 1;
+            n.map(|n| {
+                state.mark_count = n;
+                rehearsal(crate::ir::direction::RehearsalMark::lilypond_default(n))
+            })
+        }
+        "escaped_word" if state.text(node) == "\\markup" => {
+            // \mark \markup { \musicglyph "scripts.coda" } is a coda sign;
+            // any other markup is the mark's text.
+            let block_text = children.get(i + 1).map(|b| state.text(*b)).unwrap_or("");
+            let dir = if block_text.contains("scripts.coda") {
+                Some(Direction {
+                    coda: true,
+                    ..Default::default()
+                })
+            } else if block_text.contains("scripts.segno") {
+                Some(Direction {
+                    segno: true,
+                    ..Default::default()
+                })
+            } else {
+                mark_text(state, children, i).map(rehearsal)
+            };
+            i = skip_markup(state, children, i + 1);
+            dir
+        }
+        "string" => {
+            // \mark "D.C." or \mark "D.S. al Coda", else a text mark
+            let text = extract_string_value(state, node);
+            i += 1;
+            Some(if text.starts_with("D.S.") {
+                Direction {
+                    dal_segno: Some(text),
+                    ..Default::default()
+                }
+            } else if text.starts_with("D.C.") {
+                Direction {
+                    da_capo: Some(text),
+                    ..Default::default()
+                }
+            } else {
+                rehearsal(text)
+            })
+        }
+        _ => None,
+    };
+    if let Some(d) = dir {
+        state.add_event(Event::direction(d));
     }
     i
+}
+
+/// The text of a string or `\markup` at `children[i]`.
+pub(super) fn mark_text(state: &WalkState, children: &[Node], i: usize) -> Option<String> {
+    let node = children.get(i)?;
+    match node.kind() {
+        "string" => Some(extract_string_value(state, *node)),
+        "escaped_word" if state.text(*node) == "\\markup" => {
+            let block = children.get(i + 1)?;
+            let text = if block.kind() == "expression_block" {
+                extract_markup_text(state, *block)
+            } else {
+                extract_string_value(state, *block)
+            };
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
 }
 
 /// Consume a `\override` command.
@@ -921,42 +1018,71 @@ pub(super) fn build_chord(state: &mut WalkState, chord_node: Node, dur: Duration
     Chord::new(dur, notes)
 }
 
-/// Parse grace notes from a `{ ... }` block.
-pub(super) fn parse_grace_block(state: &mut WalkState, block: Node) -> Vec<Note> {
-    let mut notes = Vec::new();
+/// The grace notes and chords of a `{ ... }` block (nested blocks too),
+/// each with its marks, not yet pushed.
+pub(super) fn parse_grace_block(state: &mut WalkState, block: Node) -> Vec<VoiceElement> {
     let mut cursor = block.walk();
     let children: Vec<Node> = block.children(&mut cursor).collect();
+    let mut out = Vec::new();
     let mut i = 0;
-
     while i < children.len() {
-        let child = children[i];
-        if child.kind() == "symbol" {
-            let sym = state.text(child);
-            if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
-                i += 1;
-                let octave_marks = consume_octave_marks(state, &children, &mut i);
-                let acc_display = consume_accidental_marks(state, &children, &mut i);
-                let dur = consume_duration(state, &children, &mut i);
-                let mut pitch = state.resolve_pitch(step, alter, octave_marks);
-                pitch.accidental = acc_display;
-                let note = Note::new(pitch, dur);
-                notes.push(note);
-                continue;
+        match children[i].kind() {
+            "symbol" | "chord" => {
+                let before = i;
+                out.extend(grace_one(state, &children, &mut i));
+                if i > before {
+                    continue;
+                }
             }
-        } else if child.kind() == "chord" {
-            // A `<...>` inside a grace block — in this corpus these are
-            // single-note fingered pitches (e.g. `<gisis-1>`). Flatten the
-            // chord's notes into the grace stream so they aren't dropped.
-            i += 1;
-            let dur = consume_duration(state, &children, &mut i);
-            let _ = consume_attachments(state, &children, &mut i);
-            let chord = build_chord(state, child, dur);
-            notes.extend(chord.notes);
-            continue;
+            "expression_block" => out.extend(parse_grace_block(state, children[i])),
+            _ => {}
         }
         i += 1;
     }
-    notes
+    out
+}
+
+/// One unbraced grace note or chord at `children[*i]`, with its marks.
+pub(super) fn grace_one(
+    state: &mut WalkState,
+    children: &[Node],
+    i: &mut usize,
+) -> Vec<VoiceElement> {
+    let Some(&node) = children.get(*i) else {
+        return Vec::new();
+    };
+    match node.kind() {
+        "symbol" => {
+            let Some((step, alter)) = parse_pitch_name(state.text(node), state.language) else {
+                return Vec::new();
+            };
+            *i += 1;
+            let octave_marks = consume_octave_marks(state, children, i);
+            let acc_display = consume_accidental_marks(state, children, i);
+            let dur = consume_duration(state, children, i);
+            let attachments = consume_attachments(state, children, i);
+            let mut pitch = state.resolve_pitch(step, alter, octave_marks);
+            pitch.accidental = acc_display;
+            let mut note = Note::new(pitch, dur);
+            super::apply::apply_note_attachments(state, &mut note, &attachments);
+            vec![VoiceElement::Note(Box::new(note))]
+        }
+        "chord" => {
+            *i += 1;
+            let dur = consume_duration(state, children, i);
+            let attachments = consume_attachments(state, children, i);
+            let mut chord = build_chord(state, node, dur);
+            super::apply::apply_chord_attachments(state, &mut chord, &attachments);
+            // A one-note chord (`<gisis-1>`, for its fingering) is a note.
+            if chord.notes.len() == 1 {
+                let note = chord.notes.remove(0);
+                vec![VoiceElement::Note(Box::new(note))]
+            } else {
+                vec![VoiceElement::Chord(chord)]
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Whether a `\xxx` string is a known dynamic marking.
@@ -983,5 +1109,7 @@ pub(super) fn is_dynamic_name(text: &str) -> bool {
             | "\\spp"
             | "\\rfz"
             | "\\fz"
+            | "\\sfp"
+            | "\\n"
     )
 }

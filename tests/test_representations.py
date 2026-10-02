@@ -84,7 +84,7 @@ class TestPianoRoll:
 
     def test_velocity_cells(self):
         pr = lytk.to_piano_roll(_doc(), 4)
-        assert pr[0, 60] == 64  # default velocity
+        assert pr[0, 60] == 90  # default velocity, what to_midi plays
         assert pr[0, 59] == 0
 
     def test_binary_mode(self):

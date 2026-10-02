@@ -4,7 +4,7 @@ use super::IrToMxmlAdapter;
 use crate::ir::articulation::Placement;
 use crate::ir::direction::{BarlineType, Direction};
 use crate::ir::duration::Frac;
-use crate::ir::harmony::FiguredBass;
+use crate::ir::harmony::{FiguredBass, Harmony};
 use crate::ir::measure::{ClefSign, Measure, MeasureAttributes};
 use crate::ir::note::VoiceElement;
 use crate::ir::voice::Voice;
@@ -23,7 +23,8 @@ impl IrToMxmlAdapter {
         let content: Vec<mxml::PartElement> = part
             .measures
             .iter()
-            .map(|m| mxml::PartElement::Measure(self.build_measure(m, part.staves)))
+            .enumerate()
+            .map(|(i, m)| mxml::PartElement::Measure(self.build_measure(m, part.staves, i == 0)))
             .collect();
 
         mxml::Part {
@@ -34,7 +35,7 @@ impl IrToMxmlAdapter {
         }
     }
 
-    fn build_measure(&self, measure: &Measure, part_staves: u8) -> mxml::Measure {
+    fn build_measure(&self, measure: &Measure, part_staves: u8, first: bool) -> mxml::Measure {
         let attrs = mxml::MeasureAttributes {
             number: mdt::Token(
                 measure
@@ -53,7 +54,7 @@ impl IrToMxmlAdapter {
             width: measure.width.map(|w| mdt::Tenths(w as f64)),
         };
 
-        let content = self.build_measure_elements(measure, part_staves);
+        let content = self.build_measure_elements(measure, part_staves, first);
 
         mxml::Measure {
             attributes: attrs,
@@ -71,7 +72,7 @@ impl IrToMxmlAdapter {
                 placement: Placement::Below,
                 ..Direction::default()
             };
-            out.push(mxml::MeasureElement::Direction(self.build_direction(&dir)));
+            out.push(self.direction_element(&dir));
         }
         for wedge in &r.wedges {
             let dir = Direction {
@@ -79,7 +80,7 @@ impl IrToMxmlAdapter {
                 placement: Placement::Below,
                 ..Direction::default()
             };
-            out.push(mxml::MeasureElement::Direction(self.build_direction(&dir)));
+            out.push(self.direction_element(&dir));
         }
         out
     }
@@ -88,6 +89,7 @@ impl IrToMxmlAdapter {
         &self,
         measure: &Measure,
         part_staves: u8,
+        first: bool,
     ) -> Vec<mxml::MeasureElement> {
         let mut elements: Vec<mxml::MeasureElement> = Vec::new();
 
@@ -111,9 +113,12 @@ impl IrToMxmlAdapter {
             }
         }
 
-        // Attributes. A senza-misura measure emits `<time><senza-misura/></time>`
-        // even when it carries no other attribute change.
-        if measure.attributes.is_some()
+        // Attributes. A part's first measure always has them: `<divisions>`
+        // must come before the first `<duration>`. A senza-misura measure
+        // emits `<time><senza-misura/></time>` even when it carries no other
+        // attribute change.
+        if first
+            || measure.attributes.is_some()
             || measure.senza_misura
             || measure.multi_measure_rest.is_some()
             || measure.measure_repeat.is_some()
@@ -171,16 +176,25 @@ impl IrToMxmlAdapter {
         // Per-staff cursor into the sorted directions as we interleave them.
         let mut dir_idx: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
 
-        // Harmony / chord symbols (before notes; offset positions within measure)
-        for harmony in &measure.harmonies {
-            elements.push(mxml::MeasureElement::Harmony(self.build_harmony(harmony)));
-        }
-
-        // Build an index of figured bass keyed by measure-offset (in divisions).
+        // Chord symbols and figures by position in this writer's divisions
+        // (the IR keeps their offsets in OFFSET_DIVISIONS per quarter note;
+        // the score's divisions are a multiple of it).
+        let at_divs =
+            |off: i32| off as i64 * self.divisions as i64 / crate::ir::timeline::OFFSET_DIVISIONS;
+        let mut harmonies: Vec<(i64, &Harmony)> = measure
+            .harmonies
+            .iter()
+            .map(|h| (at_divs(h.offset), h))
+            .collect();
+        harmonies.sort_by_key(|(at, _)| *at);
+        let mut harmony_idx = 0usize;
         let mut fb_by_offset: std::collections::BTreeMap<i32, Vec<&FiguredBass>> =
             std::collections::BTreeMap::new();
         for fb in &measure.figured_bass {
-            fb_by_offset.entry(fb.offset).or_default().push(fb);
+            fb_by_offset
+                .entry(at_divs(fb.offset) as i32)
+                .or_default()
+                .push(fb);
         }
         let mut fb_emitted_up_to: i32 = -1;
 
@@ -263,6 +277,19 @@ impl IrToMxmlAdapter {
                     }
                 }
 
+                // Chord symbols in voice 1's stream, before the element
+                // sounding at their position (with `<offset>` inside it).
+                if vi == 0 {
+                    let ends = fwd_pos + self.element_divisions(elem);
+                    while harmony_idx < harmonies.len() && harmonies[harmony_idx].0 < ends {
+                        let (at, h) = harmonies[harmony_idx];
+                        elements.push(mxml::MeasureElement::Harmony(
+                            self.build_harmony(h, at - fwd_pos),
+                        ));
+                        harmony_idx += 1;
+                    }
+                }
+
                 // Interleave this staff's measure directions right before the
                 // note at their beat, so they anchor to this staff (and a pedal
                 // with placement=below renders under it).
@@ -270,9 +297,7 @@ impl IrToMxmlAdapter {
                     if let Some(dirs) = dirs_by_staff.get(&vstaff) {
                         let idx = dir_idx.entry(vstaff).or_insert(0);
                         while *idx < dirs.len() && dirs[*idx].0 <= fwd_pos {
-                            elements.push(mxml::MeasureElement::Direction(
-                                self.build_direction(dirs[*idx].1),
-                            ));
+                            elements.push(self.direction_element(dirs[*idx].1));
                             *idx += 1;
                         }
                     }
@@ -354,8 +379,14 @@ impl IrToMxmlAdapter {
                 }
             }
 
-            // Emit any remaining figured bass that falls after the last note (voice 1 only)
+            // Chord symbols and figures after voice 1's last note.
             if vi == 0 {
+                for &(at, h) in &harmonies[harmony_idx..] {
+                    elements.push(mxml::MeasureElement::Harmony(
+                        self.build_harmony(h, at - fwd_pos),
+                    ));
+                }
+                harmony_idx = harmonies.len();
                 for (&off, fbs) in fb_by_offset.range(fb_emitted_up_to + 1..) {
                     for fb in fbs {
                         elements.push(mxml::MeasureElement::FiguredBass(
@@ -371,17 +402,19 @@ impl IrToMxmlAdapter {
                 if let Some(dirs) = dirs_by_staff.get(&vstaff) {
                     let idx = dir_idx.entry(vstaff).or_insert(0);
                     while *idx < dirs.len() {
-                        elements.push(mxml::MeasureElement::Direction(
-                            self.build_direction(dirs[*idx].1),
-                        ));
+                        elements.push(self.direction_element(dirs[*idx].1));
                         *idx += 1;
                     }
                 }
             }
         }
 
-        // Fallback: if there are no voices at all, emit figured bass with offsets
+        // Fallback: if there are no voices at all, emit chord symbols and
+        // figured bass with offsets
         if voices.is_empty() {
+            for &(at, h) in &harmonies[harmony_idx..] {
+                elements.push(mxml::MeasureElement::Harmony(self.build_harmony(h, at)));
+            }
             for fbs in fb_by_offset.values() {
                 for fb in fbs {
                     elements.push(mxml::MeasureElement::FiguredBass(
@@ -396,7 +429,7 @@ impl IrToMxmlAdapter {
         for (staff, dirs) in &dirs_by_staff {
             let start = dir_idx.get(staff).copied().unwrap_or(0);
             for (_, dir) in &dirs[start..] {
-                elements.push(mxml::MeasureElement::Direction(self.build_direction(dir)));
+                elements.push(self.direction_element(dir));
             }
         }
 
@@ -408,6 +441,19 @@ impl IrToMxmlAdapter {
         }
 
         elements
+    }
+
+    /// A direction as written: a clef change inside the bar is an
+    /// `<attributes>` with the clef, anything else a `<direction>`.
+    fn direction_element(&self, dir: &Direction) -> mxml::MeasureElement {
+        match dir.clef {
+            Some(clef) => {
+                let mut attrs = MeasureAttributes::default();
+                attrs.clefs.insert(dir.staff.max(1), clef);
+                mxml::MeasureElement::Attributes(self.build_attributes(&attrs, None, None, false))
+            }
+            None => mxml::MeasureElement::Direction(self.build_direction(dir)),
+        }
     }
 
     fn build_attributes(
@@ -519,7 +565,7 @@ impl IrToMxmlAdapter {
             .iter()
             .map(|(&staff_num, c)| {
                 let mut clef_attrs = mxml::ClefAttributes::default();
-                if sorted_clefs.len() > 1 {
+                if sorted_clefs.len() > 1 || staff_num > 1 {
                     clef_attrs.number = Some(mdt::StaffNumber(staff_num));
                 }
                 let sign = match c.sign {
@@ -764,17 +810,19 @@ impl IrToMxmlAdapter {
         *result.numer() / *result.denom()
     }
 
-    /// Calculate the total duration of a voice in divisions.
+    /// An element's length in divisions (a grace note takes none).
+    pub(super) fn element_divisions(&self, elem: &VoiceElement) -> i64 {
+        let d = elem.metric_duration() * Frac::from_integer(4 * self.divisions as i64);
+        *d.numer() / *d.denom()
+    }
+
+    /// The total duration of a voice in divisions: how far `<backup>` goes
+    /// back after it (grace notes move no cursor).
     pub(super) fn voice_duration(&self, voice: &crate::ir::voice::Voice) -> i64 {
-        let mut total = crate::ir::duration::Frac::from_integer(0);
-        for elem in &voice.elements {
-            match elem {
-                VoiceElement::Note(n) => total += n.duration.actual_duration(),
-                VoiceElement::Rest(r) => total += r.duration.actual_duration(),
-                VoiceElement::Chord(c) => total += c.duration.actual_duration(),
-            }
-        }
-        let result = total * crate::ir::duration::Frac::from_integer(4 * self.divisions as i64);
-        *result.numer() / *result.denom()
+        voice
+            .elements
+            .iter()
+            .map(|e| self.element_divisions(e))
+            .sum()
     }
 }

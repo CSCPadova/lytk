@@ -44,7 +44,14 @@ const LY_PITCHES_BASELINE: usize = 35;
 // onset/duration through the Music-path round-trip — a known limitation, gated
 // at the current floor so it can't get worse. 27 → 28 when the multi-staff lift
 // stopped playing a staff's voices one after another (2026-09-24).
-const LY_DUR_BASELINE: usize = 28;
+const LY_DUR_BASELINE: usize = 29;
+// Epic M, M2 (2026-10-02): LY → XML → IR, measured for the first time. The
+// MusicXML writer used to leave out `<divisions>` when a LilyPond score has
+// no `\time`, `\key` or `\clef` (14 of 35 fixtures), so other readers timed
+// every note wrong.
+const LY_XML_NOTES_BASELINE: usize = 35;
+const LY_XML_PITCHES_BASELINE: usize = 35;
+const LY_XML_DUR_BASELINE: usize = 35;
 const XML_NOTES_BASELINE: usize = 152;
 const XML_PITCHES_BASELINE: usize = 152;
 const XML_DUR_BASELINE: usize = 152; // full onset+duration fidelity
@@ -61,12 +68,25 @@ const XML_DUR_BASELINE: usize = 152; // full onset+duration fidelity
                                      // concatenated a staff's two voices into one sequential stream (a one-bar score
                                      // became two bars). With the lift fixed the voices are simultaneous, and the ABC
                                      // writer's documented inner-polyphony limit keeps one of them.
-const XML_ABC_NOTES_BASELINE: usize = 144;
-const XML_ABC_PITCHES_BASELINE: usize = 144;
-const XML_ABC_DUR_BASELINE: usize = 145;
-const XML_KRN_NOTES_BASELINE: usize = 138;
-const XML_KRN_PITCHES_BASELINE: usize = 136;
-const XML_KRN_DUR_BASELINE: usize = 142;
+                                     // Epic M, M1 (2026-10-02): the MusicXML reader places notes at the
+                                     // `<backup>`/`<forward>` cursor instead of in file order (a voice entering
+                                     // mid-bar no longer starts on beat 1 and overfills another voice), and kern
+                                     // writes spacers as invisible rests and finds a pickup on its longest spine:
+                                     // XML→ABC 144/144/145 → 149/149/148, XML→KRN 138/136/142 → 139/137/143.
+                                     // M7: the ABC writer keeps a staff whose bars are all
+                                     // multi-voice (it used to drop it as silent): 152/152/151.
+const XML_ABC_NOTES_BASELINE: usize = 152;
+const XML_ABC_PITCHES_BASELINE: usize = 152;
+const XML_ABC_DUR_BASELINE: usize = 151;
+// Epic M, M6 (2026-10-02): the boards compare sounding pitch (note arrays
+// apply transposition), so ABC and kern now carry it (`transpose=`,
+// `*ITr`); kern also writes key, meter and clef changes after the first
+// bar: XML→KRN 139/137/143 → 146/144/143, bars 134 → 141.
+// M8: kern fills a voice absent from a bar with an invisible rest (null
+// tokens carried its last note on): 149/147/149, bars 145.
+const XML_KRN_NOTES_BASELINE: usize = 149;
+const XML_KRN_PITCHES_BASELINE: usize = 147;
+const XML_KRN_DUR_BASELINE: usize = 149;
 // ABC now includes a multi-voice fixture (multivoice.abc) that round-trips.
 const ABC_NOTES_BASELINE: usize = 4;
 const ABC_PITCHES_BASELINE: usize = 4;
@@ -133,10 +153,11 @@ const MIDI_DUR_BASELINE: usize = 4;
 // does the reader now, where it used to read the note a8. Their bars are short
 // and the LY round trip does not keep them: 27 → 26.
 const LY_BARS_BASELINE: usize = 26;
+const LY_XML_BARS_BASELINE: usize = 35;
 const XML_BARS_BASELINE: usize = 152;
 const ABC_BARS_BASELINE: usize = 4;
-const XML_ABC_BARS_BASELINE: usize = 142;
-const XML_KRN_BARS_BASELINE: usize = 133;
+const XML_ABC_BARS_BASELINE: usize = 148;
+const XML_KRN_BARS_BASELINE: usize = 145;
 const MIDI_BARS_BASELINE: usize = 5;
 
 #[derive(Default)]
@@ -254,6 +275,24 @@ fn fidelity_scoreboard() {
         record(&mut ly, &name, &before, after.as_ref());
     }
 
+    // ----- LY → IR → XML → IR (the MusicXML writer on LilyPond scores) -----
+    let mut ly_xml = Board::default();
+    for path in list("tests/fixtures/ly", &["ly"]) {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(before) = safe(|| LyToIrAdapter::new().convert_str(&src).ok()) else {
+            ly_xml.total += 1;
+            continue;
+        };
+        let after = safe(|| {
+            let out = IrToMxmlAdapter::new().convert(&before).ok()?;
+            MxmlToIrAdapter::new().convert_str(&out).ok()
+        });
+        record(&mut ly_xml, &name, &before, after.as_ref());
+    }
+
     // ----- XML/MXL → IR → XML → IR -----
     let mut xml = Board::default();
     let mut xml_scores: Vec<(String, Score)> = Vec::new();
@@ -352,6 +391,15 @@ fn fidelity_scoreboard() {
         (LY_NOTES_BASELINE, LY_PITCHES_BASELINE, LY_DUR_BASELINE),
     );
     report(
+        "LY  → IR → XML → IR",
+        &ly_xml,
+        (
+            LY_XML_NOTES_BASELINE,
+            LY_XML_PITCHES_BASELINE,
+            LY_XML_DUR_BASELINE,
+        ),
+    );
+    report(
         "XML → IR → XML → IR",
         &xml,
         (XML_NOTES_BASELINE, XML_PITCHES_BASELINE, XML_DUR_BASELINE),
@@ -407,6 +455,15 @@ fn fidelity_scoreboard() {
 
     // ----- Gate: fidelity must not regress below the committed baseline -----
     gate(
+        "LY→XML",
+        &ly_xml,
+        (
+            LY_XML_NOTES_BASELINE,
+            LY_XML_PITCHES_BASELINE,
+            LY_XML_DUR_BASELINE,
+        ),
+    );
+    gate(
         "LY",
         &ly,
         (LY_NOTES_BASELINE, LY_PITCHES_BASELINE, LY_DUR_BASELINE),
@@ -450,6 +507,7 @@ fn fidelity_scoreboard() {
     );
     for (name, b, base) in [
         ("LY", &ly, LY_BARS_BASELINE),
+        ("LY→XML", &ly_xml, LY_XML_BARS_BASELINE),
         ("XML", &xml, XML_BARS_BASELINE),
         ("ABC", &abc, ABC_BARS_BASELINE),
         ("XML→ABC", &xml_abc, XML_ABC_BARS_BASELINE),

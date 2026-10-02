@@ -73,9 +73,20 @@ is reported and skipped, and the exit status is 1 if any failed.
 lytk convert corpus/ -o out/ -f midi -j 8
 ```
 
-**Several movements.** A LilyPond file with several `\score` blocks writes the
-first movement to `OUTPUT` and the others next to it, as `NAME_02.EXT`,
-`NAME_03.EXT`, …. Several movements can't go to stdout.
+**Several movements.** A LilyPond file with several `\score` blocks, or an ABC
+file with several tunes, writes the first movement to `OUTPUT` and the others
+next to it, as `NAME_02.EXT`, `NAME_03.EXT`, …, whatever the output format
+(LilyPond included), and so do the transforms below. Several movements can't
+go to stdout.
+
+**Reading LilyPond.** What the reader finds (syntax errors, commands it does
+not read) goes to stderr, one per line as `FILE:LINE:COLUMN: SEVERITY: MESSAGE
+[CODE]`, as `lytk check` prints it; the conversion goes on. `-I DIR`
+(`--include-path`, repeatable) follows `\include` files from `DIR` (after the
+file's own directory); every command that reads a score takes it.
+
+**Folders** are refused, before anything is written, when two inputs would
+write one output (`a.mid` and `a.midi`).
 
 ## transpose
 
@@ -190,10 +201,11 @@ Writes each part to its own file, `DIR/<input-name>_<part>.<ext>`, in `FORMAT`
 lytk diff A B [--json] [--from FORMAT]
 ```
 
-Compares two scores by what they sound: the number of parts, the number of
-notes and the multiset of pitches. It exits with status 0 when they match and
-1 when they differ, so it can gate a pipeline. `--json` prints `equal`,
-`parts`, `note_count` and `pitch_multiset_equal`.
+Compares two scores by what they sound: the number of parts, and every note's
+onset, duration and sounding pitch (dynamics, notation and layout aside). It
+exits with status 0 when they match and 1 when they differ, so it can gate a
+pipeline. `--json` prints `equal`, `parts`, `note_count`,
+`pitch_multiset_equal` and `notes_equal`.
 
 ```bash
 lytk convert song.ly -o song.xml && lytk diff song.ly song.xml

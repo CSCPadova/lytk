@@ -117,9 +117,9 @@ impl FromIrAdapter for IrToLyAdapter {
                 score.metadata.partial_duration.as_ref(),
                 &mut lines,
             );
-            emit_harmony_variable(part, &mut lines);
+            emit_harmony_variable(part, lang, &mut lines);
             emit_figured_bass_variable(part, &mut lines);
-            emit_lyrics_variable(part, lyrics::lyric_staff(part), &mut lines);
+            emit_lyrics_variable(part, lang, &mut lines);
         }
 
         // Score block
@@ -307,7 +307,14 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
                     "{pad}  \\new Staff = \"{} {}\" << \\new Voice = \"{voice_name}\" \\{staff_var}",
                     part.name, staff_num
                 ));
-                emit_lyrics_refs(part, &voice_name, lyric_staff, indent + 4, lines);
+                emit_lyrics_refs(part, Some(staff_num), &voice_name, indent + 4, lines);
+                lines.push(format!("{pad}  >>"));
+            } else if lyrics::staff_sings(part, Some(staff_num)) {
+                lines.push(format!(
+                    "{pad}  \\new Staff = \"{} {}\" << \\{staff_var}",
+                    part.name, staff_num
+                ));
+                emit_lyrics_refs(part, Some(staff_num), &voice_name, indent + 4, lines);
                 lines.push(format!("{pad}  >>"));
             } else {
                 lines.push(format!(
@@ -328,7 +335,7 @@ fn emit_part_ref(part: &Part, indent: usize, lines: &mut Vec<String>) {
             lines.push(format!("{pad}\\new Staff <<"));
         }
         lines.push(format!("{pad}  \\new Voice = \"{voice_name}\" \\{var}"));
-        emit_lyrics_refs(part, &voice_name, None, indent + 2, lines);
+        emit_lyrics_refs(part, None, &voice_name, indent + 2, lines);
         lines.push(format!("{pad}>>"));
     } else if !part.name.is_empty() {
         lines.push(format!(
@@ -355,6 +362,29 @@ fn relative_is_reliable(part: &Part) -> bool {
 
 /// Returns true if the voice contains any real music content (notes, rests, chords),
 /// not just timing elements (forward/backup).
+/// A bar's voices as the part's (or staff's) music writes them, by index:
+/// those on the staff, the lyrics' voice (`lead`) first.
+pub(super) fn bar_voices(
+    measure: &crate::ir::measure::Measure,
+    staff_filter: Option<u8>,
+    lead: Option<u8>,
+) -> Vec<usize> {
+    let mut out: Vec<usize> = (0..measure.voices.len())
+        .filter(|&i| {
+            let v = &measure.voices[i];
+            staff_filter.is_none_or(|sf| voice_matches_staff(v, sf) && voice_has_content(v))
+        })
+        .collect();
+    if let Some(at) = out
+        .iter()
+        .position(|&i| Some(measure.voices[i].number) == lead)
+    {
+        let first = out.remove(at);
+        out.insert(0, first);
+    }
+    out
+}
+
 fn voice_has_content(voice: &Voice) -> bool {
     voice.elements.iter().any(|e| {
         matches!(

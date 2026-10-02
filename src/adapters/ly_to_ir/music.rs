@@ -18,8 +18,9 @@ use super::apply::{
 use super::consume::{
     build_chord, consume_accidental_marks, consume_attachments, consume_duration,
     consume_duration_scale, consume_mark, consume_octave_marks, consume_override, consume_tempo,
-    consume_tremolo, extract_scheme_string, extract_string_value, is_dynamic_name, parse_fraction,
-    parse_grace_block, parse_ly_make_moment, parse_paper_block, previous, punct_text, skip_markup,
+    consume_tremolo, extract_scheme_string, extract_string_value, grace_one, is_dynamic_name,
+    mark_text, parse_fraction, parse_grace_block, parse_ly_make_moment, parse_paper_block,
+    previous, punct_text, skip_markup,
 };
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
@@ -177,23 +178,21 @@ fn walk_block_contents(state: &mut WalkState, block: Node) {
                 attach_dynamic(state, &dyn_text);
             }
             "chord" => {
-                // < ... >
-                let chord_node = node;
+                i = handle_chord(state, &children, i);
+                continue;
+            }
+            // The rest of a chord's name (`:maj7/e`) is not notes; a text
+            // script after it (`_"…"`) is the chord's.
+            "punctuation" if state.quiet > 0 && matches!(state.text(node), ":" | "/") => {
+                let mut end = node.end_byte();
                 i += 1;
-                // Consume duration after chord
-                let mut dur = consume_duration(state, &children, &mut i);
-                // Apply *N/M duration scaling (factor carries forward, as
-                // for notes)
-                if let Some(scale) = consume_duration_scale(state, &children, &mut i) {
-                    dur.base *= scale;
-                    state.last_duration = dur.clone();
+                while let Some(n) = children
+                    .get(i)
+                    .filter(|n| n.start_byte() == end && !matches!(state.text(**n), "^" | "_"))
+                {
+                    end = n.end_byte();
+                    i += 1;
                 }
-                let attachments = consume_attachments(state, &children, &mut i);
-                let mut chord = build_chord(state, chord_node, dur);
-                apply_chord_attachments(state, &mut chord, &attachments);
-                // Remember the chord's pitches for the `q` repeat shorthand.
-                state.last_chord_pitches = chord.notes.iter().map(|n| n.pitch).collect();
-                state.push_voice_element(VoiceElement::Chord(chord));
                 continue;
             }
             "punctuation" => {
@@ -237,6 +236,90 @@ fn walk_block_contents(state: &mut WalkState, block: Node) {
             _ => {}
         }
         i += 1;
+    }
+}
+
+/// Handle a chord `< … >` with its duration and attachments at
+/// `children[i]`. Returns the next index.
+fn handle_chord(state: &mut WalkState, children: &[Node], i: usize) -> usize {
+    let chord_node = children[i];
+    let mut i = i + 1;
+    let mut dur = consume_duration(state, children, &mut i);
+    // Apply *N/M duration scaling (factor carries forward, as for notes)
+    if let Some(scale) = consume_duration_scale(state, children, &mut i) {
+        dur.base *= scale;
+        state.last_duration = dur.clone();
+    }
+    let attachments = consume_attachments(state, children, &mut i);
+    let mut chord = build_chord(state, chord_node, dur);
+    if chord.notes.is_empty() {
+        // `<>`: no time, only its marks, at this moment.
+        let mut carrier = Note::new(Pitch::default(), chord.duration.clone());
+        apply_note_attachments(state, &mut carrier, &attachments);
+        let marks = carrier
+            .dynamics
+            .into_iter()
+            .map(|d| Direction {
+                placement: d.placement,
+                dynamic: Some(d),
+                ..Direction::default()
+            })
+            .chain(carrier.wedges.into_iter().map(|w| Direction {
+                wedge: Some(w),
+                ..Direction::default()
+            }))
+            .chain(carrier.text_directions.into_iter().map(|t| Direction {
+                placement: t.placement,
+                text: Some(t),
+                ..Direction::default()
+            }));
+        for d in marks {
+            state.add_event(Event::direction(d));
+        }
+        return i;
+    }
+    apply_chord_attachments(state, &mut chord, &attachments);
+    // Remember the chord's pitches for the `q` repeat shorthand.
+    state.last_chord_pitches = chord.notes.iter().map(|n| n.pitch).collect();
+    state.push_voice_element(VoiceElement::Chord(chord));
+    i
+}
+
+/// Read one note, chord or block of music at `children[i]` the usual way
+/// (the music a command applies to). Returns the next index.
+pub(super) fn walk_one(state: &mut WalkState, children: &[Node], i: usize) -> usize {
+    let Some(node) = children.get(i) else {
+        return i;
+    };
+    match node.kind() {
+        "symbol" => {
+            let sym = state.text(*node).to_string();
+            handle_symbol(state, children, i, &sym)
+        }
+        "chord" => handle_chord(state, children, i),
+        "expression_block" => {
+            walk_music_block(state, *node);
+            i + 1
+        }
+        _ => i,
+    }
+}
+
+/// Push a grace group (`\grace`, `\acciaccatura`, `\appoggiatura`,
+/// `\afterGrace`): every note marked as a grace of that kind.
+fn push_graces(state: &mut WalkState, graces: Vec<VoiceElement>, slash: bool, after: bool) {
+    for mut e in graces {
+        let notes: Vec<&mut Note> = match &mut e {
+            VoiceElement::Note(n) => vec![n.as_mut()],
+            VoiceElement::Chord(c) => c.notes.iter_mut().collect(),
+            VoiceElement::Rest(_) => continue,
+        };
+        for n in notes {
+            n.is_grace = true;
+            n.grace_slash = slash;
+            n.after_grace = after;
+        }
+        state.push_voice_element(e);
     }
 }
 
@@ -510,6 +593,22 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
         "\\time" => {
             // \time <fraction>, or compound \time 3+2/8 which the grammar
             // splits into leading `<uint> +` pairs before the final fraction.
+            // A beat structure before the fraction (`\time 3,2 5/8`) only
+            // groups the beams: the signature is the fraction.
+            while i + 1 < children.len()
+                && children[i].kind() == "unsigned_integer"
+                && children[i + 1].kind() == "punctuation"
+                && punct_text(state, children[i + 1]) == ","
+            {
+                i += 2;
+            }
+            if i + 1 < children.len()
+                && children[i].kind() == "unsigned_integer"
+                && children[i + 1].kind() == "fraction"
+                && previous(children, i).is_some_and(|p| state.text(p) == ",")
+            {
+                i += 1;
+            }
             let mut extra_beats: Vec<u32> = Vec::new();
             while i + 1 < children.len()
                 && children[i].kind() == "unsigned_integer"
@@ -627,36 +726,35 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             // \tempo "text" dur = bpm  OR  \tempo dur = bpm  OR  \tempo "text"
             i = consume_tempo(state, children, i);
         }
-        "\\grace" | "\\acciaccatura" | "\\appoggiatura" => {
-            // \grace { notes }  OR  \grace note (single unbraced note)
-            let is_slash = text == "\\acciaccatura";
-            if let Some(next_node) = children.get(i) {
-                if next_node.kind() == "expression_block" {
-                    // Parse grace notes from the block
-                    let grace_notes = parse_grace_block(state, *next_node);
-                    for mut note in grace_notes {
-                        note.is_grace = true;
-                        note.grace_slash = is_slash;
-                        state.push_voice_element(VoiceElement::Note(Box::new(note)));
-                    }
-                    i += 1;
-                } else if next_node.kind() == "symbol" {
-                    // Single unbraced grace note, e.g. \acciaccatura d''8
-                    let sym = state.text(*next_node);
-                    if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
-                        i += 1;
-                        let octave_marks = consume_octave_marks(state, children, &mut i);
-                        let dur = consume_duration(state, children, &mut i);
-                        let attachments = consume_attachments(state, children, &mut i);
-                        let pitch = state.resolve_pitch(step, alter, octave_marks);
-                        let mut note = Note::new(pitch, dur);
-                        apply_note_attachments(state, &mut note, &attachments);
-                        note.is_grace = true;
-                        note.grace_slash = is_slash;
-                        state.push_voice_element(VoiceElement::Note(Box::new(note)));
-                    }
+        "\\grace" | "\\slashedGrace" | "\\acciaccatura" | "\\appoggiatura" => {
+            // \grace { music }  OR  \grace note  OR  \grace <chord>
+            let is_slash = matches!(text, "\\acciaccatura" | "\\slashedGrace");
+            let mut graces = if children
+                .get(i)
+                .is_some_and(|n| n.kind() == "expression_block")
+            {
+                i += 1;
+                parse_grace_block(state, children[i - 1])
+            } else {
+                grace_one(state, children, &mut i)
+            };
+            // An acciaccatura or appoggiatura is slurred to its main note:
+            // read as the slur it is, so every format keeps it.
+            if matches!(text, "\\acciaccatura" | "\\appoggiatura") {
+                if let Some(first) = graces.iter_mut().find_map(|e| match e {
+                    VoiceElement::Note(n) => Some(n.as_mut()),
+                    VoiceElement::Chord(c) => c.notes.first_mut(),
+                    VoiceElement::Rest(_) => None,
+                }) {
+                    first.slurs.push(SlurEvent {
+                        slur_type: StartStop::Start,
+                        number: 1,
+                        placement: Placement::Unspecified,
+                    });
+                    state.grace_slur_to_main = true;
                 }
             }
+            push_graces(state, graces, is_slash, false);
         }
         "\\tuplet" | "\\times" => {
             // \tuplet actual/normal { notes }  OR  \times normal/actual { notes }
@@ -827,6 +925,9 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
         "\\stemNeutral" => {
             state.stem_direction.clear();
         }
+        "\\slurUp" => state.slur_placement = Placement::Above,
+        "\\slurDown" => state.slur_placement = Placement::Below,
+        "\\slurNeutral" => state.slur_placement = Placement::Unspecified,
         "\\voiceOne" => {
             state.current_voice_number = 1;
             state.stem_direction = "up".to_string();
@@ -909,39 +1010,34 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             }
         }
         "\\partial" => {
-            // \partial <dur>  → anacrusis / pickup
-            let dur = consume_duration(state, children, &mut i);
+            // \partial <dur>[*N[/M]]  → anacrusis / pickup
+            let mut dur = consume_duration(state, children, &mut i);
+            if let Some(scale) = consume_duration_scale(state, children, &mut i) {
+                dur.base *= scale;
+            }
             state.add_event(Event::Partial(dur.actual_duration()));
             if state.pos == Frac::from_integer(0) {
                 state.metadata.partial_duration = Some(dur);
             }
         }
         "\\afterGrace" => {
-            // \afterGrace { notes }  OR  \afterGrace note
-            if let Some(next_node) = children.get(i) {
-                if next_node.kind() == "expression_block" {
-                    let grace_notes = parse_grace_block(state, *next_node);
-                    for mut note in grace_notes {
-                        note.is_grace = true;
-                        note.after_grace = true;
-                        state.push_voice_element(VoiceElement::Note(Box::new(note)));
-                    }
+            // `\afterGrace [FRACTION] MAIN { GRACES }`: MAIN is music as
+            // usual; the graces after it are sung at its end.
+            if children.get(i).is_some_and(|n| n.kind() == "fraction") {
+                i += 1;
+            }
+            i = walk_one(state, children, i);
+            match children.get(i).map(|n| n.kind()) {
+                Some("expression_block") => {
+                    let graces = parse_grace_block(state, children[i]);
+                    push_graces(state, graces, false, true);
                     i += 1;
-                } else if next_node.kind() == "symbol" {
-                    let sym = state.text(*next_node);
-                    if let Some((step, alter)) = parse_pitch_name(sym, state.language) {
-                        i += 1;
-                        let octave_marks = consume_octave_marks(state, children, &mut i);
-                        let dur = consume_duration(state, children, &mut i);
-                        let attachments = consume_attachments(state, children, &mut i);
-                        let pitch = state.resolve_pitch(step, alter, octave_marks);
-                        let mut note = Note::new(pitch, dur);
-                        apply_note_attachments(state, &mut note, &attachments);
-                        note.is_grace = true;
-                        note.after_grace = true;
-                        state.push_voice_element(VoiceElement::Note(Box::new(note)));
-                    }
                 }
+                Some("symbol") | Some("chord") => {
+                    let graces = grace_one(state, children, &mut i);
+                    push_graces(state, graces, false, true);
+                }
+                _ => {}
             }
         }
         "\\arpeggioArrowUp" => {
@@ -961,9 +1057,74 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             // \mark "D.C."  /  \mark "D.S. al Coda"
             i = consume_mark(state, children, i);
         }
+        "\\textMark" | "\\textEndMark" | "\\jump" | "\\sectionLabel" | "\\fine" => {
+            // LilyPond 2.24's text marks: a section label is a rehearsal
+            // mark; the others are text above the staff.
+            let mark = if text == "\\fine" {
+                Some("Fine".to_string())
+            } else {
+                let t = mark_text(state, children, i);
+                i = match children.get(i).map(|n| n.kind()) {
+                    Some("string") => i + 1,
+                    Some("escaped_word") => skip_markup(state, children, i + 1),
+                    _ => i,
+                };
+                t
+            };
+            if let Some(t) = mark {
+                let dir = if text == "\\sectionLabel" {
+                    Direction {
+                        rehearsal: Some(crate::ir::direction::RehearsalMark { text: t }),
+                        ..Default::default()
+                    }
+                } else {
+                    Direction {
+                        placement: Placement::Above,
+                        text: Some(crate::ir::direction::TextDirection {
+                            text: t,
+                            placement: Placement::Above,
+                            font_style: None,
+                            font_weight: None,
+                        }),
+                        ..Default::default()
+                    }
+                };
+                state.add_event(Event::direction(dir));
+            }
+        }
+        "\\segnoMark" | "\\codaMark" => {
+            // `\segnoMark \default` / `\codaMark 2`: the sign.
+            if matches!(
+                children.get(i).map(|n| n.kind()),
+                Some("unsigned_integer" | "embedded_scheme")
+            ) || children
+                .get(i)
+                .is_some_and(|n| state.text(*n) == "\\default")
+            {
+                i += 1;
+            }
+            let dir = Direction {
+                segno: text == "\\segnoMark",
+                coda: text == "\\codaMark",
+                ..Default::default()
+            };
+            state.add_event(Event::direction(dir));
+        }
         "\\once" => {
-            // \once — usually followed by \override; just skip it
-            // The \override handler will consume the property setting
+            // `\once \stemUp` and its kind apply to the next note only;
+            // `\once \override` goes on to the \override handler.
+            let next = children.get(i).map(|n| state.text(*n));
+            let stem = match next {
+                Some("\\stemUp") => Some("up"),
+                Some("\\stemDown") => Some("down"),
+                Some("\\stemNeutral") => Some(""),
+                _ => None,
+            };
+            if let Some(stem) = stem {
+                let before = std::mem::replace(&mut state.stem_direction, stem.to_string());
+                state.once_stem = Some(before);
+                i += 1;
+            }
         }
         "\\override" => {
             // \override Glissando.style = #'<style>
@@ -1001,7 +1162,10 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
                             // Handle \set Score.measureLength = #(ly:make-moment N D)
                             // Handle \set Staff.midiInstrument = #"flute"
                             let scheme_text = state.text(*val_node);
-                            if prop_text.contains("measureLength") {
+                            if prop_text.ends_with("autoBeaming") {
+                                // `##f` turns automatic beams off, `##t` on.
+                                state.auto_beam_off = scheme_text.trim_start_matches('#') == "f";
+                            } else if prop_text.contains("measureLength") {
                                 match parse_ly_make_moment(scheme_text) {
                                     Some((_, 0)) => state.error(
                                         *val_node,

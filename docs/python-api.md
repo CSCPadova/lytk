@@ -401,6 +401,13 @@ Tie events: ``"start"`` / ``"stop"`` / ``"continue"``.
 
 #### `Note.lyrics: list[str]`
 
+#### `Note.lyric_syllables: list[dict[str, object]]`
+
+The note's syllables with their verse: dicts of ``verse``, ``name``,
+``text``, ``syllabic`` (``"single"``, ``"begin"``, ``"middle"``,
+``"end"``), ``extend`` and ``elision`` (words sung on one note, joined
+with ``‿``).
+
 ### class `Rest`
 
 A rest or spacer (read-only).
@@ -555,9 +562,13 @@ as they are), a circular include or an expansion past the bounds.
 
 ## ML representations (Epic D)
 
-### `to_note_array(doc: MusicDocument, resolution: int=480) -> npt.NDArray[np.int32]`
+### `to_note_array(doc: MusicDocument, resolution: int=480, *, pitch: str='sounding') -> npt.NDArray[np.int32]`
 
 Encode a document as a ``(N, 4)`` array: (onset, duration, pitch, velocity).
+
+Pitches sound as played (a B♭ clarinet's written D is a C) unless
+``pitch="written"``. Velocities are those ``to_midi`` plays (LilyPond's
+dynamics table, 90 without a dynamic).
 
 ### `from_note_array(array: npt.NDArray[np.int32], resolution: int=480) -> MusicDocument`
 

@@ -4,7 +4,7 @@
 use num::rational::Ratio;
 
 use crate::ir::duration::Duration;
-use crate::ir::harmony::{ChordPitch, Figure};
+use crate::ir::harmony::Figure;
 use crate::ir::language::{pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
 use crate::ir::note::Note;
@@ -74,63 +74,21 @@ pub(super) fn clef_to_ly(clef: &Clef) -> String {
 /// emitted `\language` (a Nederlands "fis" under `\language "english"` would
 /// not compile and was silently dropped on re-parse).
 pub(super) fn key_to_ly(key: &KeySignature, lang: PitchLanguage) -> String {
-    use crate::ir::pitch::PitchStep;
-    // Tonic as (step, alter in semitones) on the circle of fifths.
-    let (step, alter, mode_str): (PitchStep, i32, &str) = match key.mode {
-        KeyMode::Minor | KeyMode::Aeolian => {
-            let (step, alter) = match key.fifths {
-                -7 => (PitchStep::A, -1),
-                -6 => (PitchStep::E, -1),
-                -5 => (PitchStep::B, -1),
-                -4 => (PitchStep::F, 0),
-                -3 => (PitchStep::C, 0),
-                -2 => (PitchStep::G, 0),
-                -1 => (PitchStep::D, 0),
-                1 => (PitchStep::E, 0),
-                2 => (PitchStep::B, 0),
-                3 => (PitchStep::F, 1),
-                4 => (PitchStep::C, 1),
-                5 => (PitchStep::G, 1),
-                6 => (PitchStep::D, 1),
-                7 => (PitchStep::A, 1),
-                _ => (PitchStep::A, 0),
-            };
-            (step, alter, "\\minor")
-        }
-        _ => {
-            let mode_cmd = match key.mode {
-                KeyMode::Dorian => "\\dorian",
-                KeyMode::Phrygian => "\\phrygian",
-                KeyMode::Lydian => "\\lydian",
-                KeyMode::Mixolydian => "\\mixolydian",
-                KeyMode::Locrian => "\\locrian",
-                _ => "\\major",
-            };
-            let (step, alter) = match key.fifths {
-                -7 => (PitchStep::C, -1),
-                -6 => (PitchStep::G, -1),
-                -5 => (PitchStep::D, -1),
-                -4 => (PitchStep::A, -1),
-                -3 => (PitchStep::E, -1),
-                -2 => (PitchStep::B, -1),
-                -1 => (PitchStep::F, 0),
-                1 => (PitchStep::G, 0),
-                2 => (PitchStep::D, 0),
-                3 => (PitchStep::A, 0),
-                4 => (PitchStep::E, 0),
-                5 => (PitchStep::B, 0),
-                6 => (PitchStep::F, 1),
-                7 => (PitchStep::C, 1),
-                _ => (PitchStep::C, 0),
-            };
-            (step, alter, mode_cmd)
-        }
+    let mode = match key.mode {
+        KeyMode::Minor | KeyMode::Aeolian => "\\minor",
+        KeyMode::Dorian => "\\dorian",
+        KeyMode::Phrygian => "\\phrygian",
+        KeyMode::Lydian => "\\lydian",
+        KeyMode::Mixolydian => "\\mixolydian",
+        KeyMode::Locrian => "\\locrian",
+        KeyMode::Major | KeyMode::Ionian => "\\major",
     };
+    let (step, alter) = key.tonic();
     let alter = Ratio::from_integer(alter);
     let tonic = pitch_name(step, alter, lang)
         .or_else(|| pitch_name(step, alter, PitchLanguage::Nederlands))
         .unwrap_or_else(|| step.name().to_lowercase());
-    format!("\\key {tonic} {mode_str}")
+    format!("\\key {tonic} {mode}")
 }
 
 /// Time signature -> LilyPond `\time` command.
@@ -171,9 +129,10 @@ pub(super) fn duration_to_ly(dur: &Duration) -> String {
     format!("{base}{dots}")
 }
 
-/// A `\partial` length: one written value when it is one (`2.`), else a
+/// A length as one LilyPond duration (a `\partial`, a chord-mode chord):
+/// one written value when it is one (`2.`), else a
 /// multiple of its unit (`8*5`, and `4*2/3` for a tuplet's length).
-pub(super) fn partial_to_ly(dur: &Duration) -> String {
+pub(super) fn length_to_ly(dur: &Duration) -> String {
     let len = dur.actual_duration();
     if let [one] = crate::ir::notate::notate(len, None).as_slice() {
         if one.actual_duration() == len {
@@ -280,45 +239,6 @@ pub(super) fn beat_unit_to_ly(unit: &str) -> &str {
     }
 }
 
-/// ChordPitch -> LilyPond note name (Nederlands).
-pub(super) fn chord_pitch_to_ly(cp: &ChordPitch) -> String {
-    let base = cp.step.to_lowercase();
-    let alter = if cp.alter > 0.5 {
-        "is"
-    } else if cp.alter < -0.5 {
-        "es"
-    } else {
-        ""
-    };
-    format!("{base}{alter}")
-}
-
-/// Harmony kind -> LilyPond chordmode suffix.
-pub(super) fn harmony_kind_to_ly(kind: &str) -> &str {
-    match kind {
-        "major" => "",
-        "minor" => ":m",
-        "dominant" => ":7",
-        "major-seventh" => ":maj7",
-        "minor-seventh" => ":m7",
-        "diminished" => ":dim",
-        "augmented" => ":aug",
-        "half-diminished" => ":m7.5-",
-        "diminished-seventh" => ":dim7",
-        "major-sixth" => ":6",
-        "minor-sixth" => ":m6",
-        "dominant-ninth" => ":9",
-        "major-ninth" => ":maj9",
-        "minor-ninth" => ":m9",
-        "dominant-11th" => ":11",
-        "dominant-13th" => ":13",
-        "suspended-second" => ":sus2",
-        "suspended-fourth" => ":sus4",
-        "power" => ":5",
-        _ => "",
-    }
-}
-
 /// Single figured bass figure -> LilyPond string.
 pub(super) fn figure_to_ly(fig: &Figure) -> String {
     let num = match fig.number {
@@ -365,13 +285,29 @@ pub(super) fn tempo_to_ly(tempo: &crate::ir::direction::TempoDirection) -> Strin
     }
 }
 
+/// A dynamic as LilyPond writes it: `\\pp` for the ones it defines,
+/// `-#(make-dynamic-script "pppppp")` (a post-event) for any other.
+pub(super) fn dynamic_to_ly(sign: &str) -> String {
+    // `ly/dynamic-scripts-init.ly`.
+    const DEFINED: [&str; 22] = [
+        "ppppp", "pppp", "ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "ffff", "fffff", "fp",
+        "sf", "sfp", "sff", "sfz", "fz", "sp", "spp", "rfz", "n",
+    ];
+    if DEFINED.contains(&sign) {
+        format!("\\{sign}")
+    } else {
+        let sign = sign.replace(['"', '\\'], "");
+        format!("-#(make-dynamic-script \"{sign}\")")
+    }
+}
+
 #[cfg(test)]
 mod partial_tests {
     use super::*;
 
     #[test]
     fn partial_lengths() {
-        let p = |n, d| partial_to_ly(&Duration::new(Ratio::new(n, d)));
+        let p = |n, d| length_to_ly(&Duration::new(Ratio::new(n, d)));
         assert_eq!(p(1, 4), "4");
         assert_eq!(p(3, 4), "2.");
         assert_eq!(p(5, 8), "8*5");

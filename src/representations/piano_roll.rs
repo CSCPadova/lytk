@@ -155,7 +155,7 @@ mod tests {
         let pr = to_piano_roll(&arr, true);
         assert_eq!(pr.shape(), (4, 128));
         for t in 0..4 {
-            assert_eq!(pr.cell(t, 60), 64, "step {t} should be on");
+            assert_eq!(pr.cell(t, 60), DEFAULT_VELOCITY, "step {t} should be on");
         }
         assert_eq!(pr.cell(0, 59), 0);
         assert_eq!(pr.cell(0, 61), 0);
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(pr.num_steps, 8);
         for &p in &[60u8, 64, 67] {
             for t in 0..8 {
-                assert_eq!(pr.cell(t, p), 64);
+                assert_eq!(pr.cell(t, p), DEFAULT_VELOCITY);
             }
         }
     }

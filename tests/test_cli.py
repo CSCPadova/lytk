@@ -541,3 +541,75 @@ class TestCheck:
         assert result.exit_code == 1
         (row,) = json.loads(result.stdout)
         assert row["file"] == "-" and row["code"] == "invalid-duration" and row["line"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Epic M, M10
+# ---------------------------------------------------------------------------
+
+TWO_MOVEMENTS = r"\score { \new Staff { c'1 } } \score { \new Staff { d'1 } }"
+
+
+class TestEveryMovement:
+    def test_lilypond_to_lilypond_writes_every_movement(self, tmp_path: Path):
+        src = tmp_path / "two.ly"
+        src.write_text(TWO_MOVEMENTS)
+        out = tmp_path / "out.ly"
+        ok("convert", str(src), "-o", str(out))
+        second = tmp_path / "out_02.ly"
+        assert out.exists() and second.exists()
+        assert lytk.from_lilypond(str(second)).iter_parts()[0].notes[0].pitch.name == "D4"
+
+    @pytest.mark.parametrize("ext", [".ly", ".xml"])
+    def test_a_transform_writes_every_movement(self, tmp_path: Path, ext: str):
+        src = tmp_path / "two.ly"
+        src.write_text(TWO_MOVEMENTS)
+        out = tmp_path / f"t{ext}"
+        ok("transpose", str(src), "-o", str(out), "-s", "2")
+        path = str(tmp_path / f"t_02{ext}")
+        second = lytk.from_lilypond(path) if ext == ".ly" else lytk.from_musicxml(path)
+        assert second.iter_parts()[0].notes[0].pitch.name == "E4"
+
+
+class TestReading:
+    def test_lilypond_findings_go_to_stderr(self, tmp_path: Path):
+        src = tmp_path / "w.ly"
+        src.write_text(r"{ c'4 \frobnicate d'4 }")
+        result = ok("convert", str(src), "-o", str(tmp_path / "w.xml"))
+        assert f"{src}:1:" in result.stderr and "[unknown-command]" in result.stderr
+
+    def test_include_paths(self, tmp_path: Path):
+        lib = tmp_path / "lib"
+        lib.mkdir()
+        (lib / "notes.ly").write_text("music = { c'4 d' e' f' }\n")
+        src = tmp_path / "main.ly"
+        src.write_text('\\include "notes.ly"\n\\score { \\new Staff \\music }\n')
+        out = tmp_path / "main.xml"
+        ok("convert", str(src), "-o", str(out), "-I", str(lib))
+        assert len(lytk.from_musicxml(str(out)).iter_parts()[0].notes) == 4
+
+    def test_a_folder_whose_files_would_overwrite_each_other_is_refused(self, tmp_path: Path):
+        src = tmp_path / "in"
+        src.mkdir()
+        (src / "a.abc").write_text("X:1\nK:C\nC|\n")
+        (src / "a.krn").write_text("**kern\n4c\n*-\n")
+        result = run("convert", str(src), "-o", str(tmp_path / "out"))
+        assert result.exit_code == 1
+        assert "would both write" in result.stderr
+
+
+class TestInspection:
+    def test_diff_sees_rhythm(self, tmp_path: Path):
+        a, b = tmp_path / "a.ly", tmp_path / "b.ly"
+        a.write_text("{ c'4 d'2 e'4 }")
+        b.write_text("{ c'2 d'4 e'4 }")
+        result = run("diff", str(a), str(b), "--json")
+        data = json.loads(result.stdout)
+        assert result.exit_code == 1
+        assert data["pitch_multiset_equal"] is True and data["notes_equal"] is False
+
+    def test_positions_grace_chords_take_no_time(self, tmp_path: Path):
+        src = tmp_path / "g.ly"
+        src.write_text("{ \\grace <d' f'>8 c'1 }")
+        bars = json.loads(ok("positions", str(src)).stdout)["parts"][0]["measures"]
+        assert bars[0]["duration"] == 4.0

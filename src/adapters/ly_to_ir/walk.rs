@@ -10,7 +10,9 @@ use super::consume::{
     score_block_output_types, skip_markup,
 };
 use super::figured_bass::parse_figuremode_block;
-use super::lyrics::{extract_lyricsto_voice, parse_lyric_block};
+use super::lyrics::{
+    add_lyrics, extract_lyricsto_voice, lyricsto_name, parse_lyric_block, LyricJob, LyricTarget,
+};
 use super::merge::{assign_piano_direction_staff, part_is_dynamics_only};
 use super::modifiers::{consume_relative, consume_transpose};
 use super::music::walk_music_block;
@@ -114,11 +116,7 @@ fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
                         // `\new Staff { … } \addlyrics { … }` at top level:
                         // the lyrics attach to that staff (and are not music).
                         if let Some(next) = children.get(i + 1) {
-                            if next.kind() == "expression_block" {
-                                let syllables = parse_lyric_block(state, *next);
-                                state.flush_voice();
-                                let uid = state.current_uid();
-                                state.added_lyrics.push((uid, syllables));
+                            if add_lyrics(state, *next) {
                                 i += 1;
                             }
                         }
@@ -481,9 +479,9 @@ fn finish_movement(state: &mut WalkState, anchor: Node) {
     state.current_voice.clear();
     state.part_counter = 0;
     state.pending_lyrics.clear();
-    state.added_lyrics.clear();
     state.pending_harmonies.clear();
-    state.voice_part_map.clear();
+    state.voice_tags.clear();
+    state.null_voices.clear();
     let zero = Frac::from_integer(0);
     (state.pos, state.voice_start, state.origin) = (zero, zero, zero);
     state.metadata.partial_duration = None;
@@ -641,11 +639,7 @@ pub(super) fn walk_score_block(state: &mut WalkState, block: Node) {
                         // measure so the preceding notes land in the part, then
                         // attach the syllables to that (most recent) part.
                         if let Some(next) = children.get(i + 1) {
-                            if next.kind() == "expression_block" {
-                                let syllables = parse_lyric_block(state, *next);
-                                state.flush_voice();
-                                let uid = state.current_uid();
-                                state.added_lyrics.push((uid, syllables));
+                            if add_lyrics(state, *next) {
                                 i += 1;
                             }
                         }
@@ -749,6 +743,7 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
     let saved_last_duration = state.last_duration.clone();
     let saved_tuplet_stack = state.tuplet_stack.clone();
     let saved_auto_beam_off = state.auto_beam_off;
+    let saved_voice_tag = state.voice_tag;
 
     // Split children at parallel_music_separator nodes into voice branches
     let mut branches: Vec<Vec<usize>> = vec![vec![]]; // indices into children
@@ -779,6 +774,8 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
         state.last_duration = saved_last_duration.clone();
         state.tuplet_stack = saved_tuplet_stack.clone();
         state.auto_beam_off = saved_auto_beam_off;
+        // Each branch is a new Voice (LilyPond's "1", "2", …).
+        state.voice_tag = state.fresh_tag();
 
         walk_voice_branch(state, children, branch_indices);
         state.flush_voice();
@@ -793,6 +790,7 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
     state.current_voice_number = saved_voice_number;
     state.tuplet_stack = saved_tuplet_stack;
     state.auto_beam_off = saved_auto_beam_off;
+    state.voice_tag = saved_voice_tag;
     state.set_pos(end);
 }
 
@@ -891,9 +889,12 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
     let saved_origin = std::mem::replace(&mut state.origin, start);
     let mut end = start;
     // Every branch starts at the block's start, in the lane it was entered in.
+    // A branch's Voice is its own: music after the block is not in it.
+    let tag = state.voice_tag;
     let begin_branch = |state: &mut WalkState| {
         state.set_pos(start);
         state.current_voice_number = lane;
+        state.voice_tag = tag;
     };
 
     while i < children.len() {
@@ -1012,11 +1013,7 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                     // block fell through to the music walker and syllables
                     // that are valid pitch names became phantom notes.
                     if let Some(next) = children.get(i + 1) {
-                        if next.kind() == "expression_block" {
-                            let syllables = parse_lyric_block(state, *next);
-                            state.flush_voice();
-                            let uid = state.current_uid();
-                            state.added_lyrics.push((uid, syllables));
+                        if add_lyrics(state, *next) {
                             i += 1;
                         }
                     }
@@ -1053,6 +1050,7 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
 
     state.origin = saved_origin;
     state.current_voice_number = lane;
+    state.voice_tag = tag;
     state.set_pos(end);
 }
 
@@ -1106,12 +1104,20 @@ pub(super) fn walk_context_body(
     // staff (its own lane when it overlaps music already there).
     if context == "Voice" || context == "DrumVoice" {
         i = skip_with_block(state, children, i);
-        i = walk_body(state, children, i);
-        if !name.is_empty() {
-            let uid = state.current_uid();
-            state.voice_part_map.insert(name.to_string(), uid);
-        }
-        return i;
+        // Its own voice for lyrics: a named one continues where it was met
+        // before. Music after it in the staff stays in it (LilyPond keeps
+        // the Voice), unless it was a branch of a `<< >>`.
+        state.voice_tag = match state.voice_tags.get(name) {
+            Some(&tag) => tag,
+            None => {
+                let tag = state.fresh_tag();
+                if !name.is_empty() {
+                    state.voice_tags.insert(name.to_string(), tag);
+                }
+                tag
+            }
+        };
+        return walk_body(state, children, i);
     }
 
     // NullVoice: invisible notes that only carry lyric timing. Walk them for
@@ -1119,20 +1125,29 @@ pub(super) fn walk_context_body(
     if context == "NullVoice" {
         i = skip_with_block(state, children, i);
         state.flush_voice();
-        let host = state.current_uid();
+        let host_voice = state.voice_tag;
         let (pos, voice_start) = (state.pos, state.voice_start);
         let before = state.parts.len();
         state.new_part("NullVoice", "");
+        let tag = state.voice_tag;
         state.pos = pos;
         state.voice_start = pos;
         i = walk_body(state, children, i);
         state.flush_voice();
         let end = state.pos;
-        state.parts.truncate(before);
+        // Its notes are not music: kept aside for the lyrics sung on it.
+        let mut shadow: Vec<(Frac, crate::ir::note::VoiceElement)> = state
+            .parts
+            .drain(before..)
+            .flat_map(|pb| pb.tl.lanes.into_values().flatten())
+            .collect();
+        shadow.sort_by_key(|(on, _)| *on);
+        state.null_voices.insert(tag, shadow);
         state.pos = end;
         state.voice_start = voice_start.max(end);
+        state.voice_tag = host_voice;
         if !name.is_empty() {
-            state.voice_part_map.insert(name.to_string(), host);
+            state.voice_tags.insert(name.to_string(), tag);
         }
         return i;
     }
@@ -1333,69 +1348,49 @@ pub(super) fn walk_context_body(
     i
 }
 
-/// Handle `\context Lyrics = "name" \lyricmode { \lyricsto "voice" ... }`
-/// or `\new Lyrics \lyricsto "voice" \variable`
-/// Consumes tokens after the named_context and stores lyrics for later attachment.
+/// `\new Lyrics [\with { … }] [\lyricmode] [\lyricsto VOICE] { … }` (or a
+/// lyric variable): a lyric line sung on VOICE, which may be named inside
+/// the block.
 fn walk_lyrics_context(
     state: &mut WalkState,
     children: &[Node],
     mut i: usize,
     _name: &str,
 ) -> usize {
-    // After named_context(Lyrics), we may see:
-    //   1. \lyricmode { \lyricsto "voiceName" ... }
-    //   2. \lyricsto "voiceName" \variable
-    let mut is_lyricmode = false;
-    let mut lyricsto_voice: Option<String> = None;
-
-    while i < children.len() {
-        let node = children[i];
+    i = skip_with_block(state, children, i);
+    let mut voice: Option<String> = None;
+    while let Some(&node) = children.get(i) {
         match node.kind() {
-            "escaped_word" => {
-                let text = state.text(node);
-                if text == "\\lyricmode" {
-                    is_lyricmode = true;
-                    i += 1;
-                    continue;
+            "escaped_word" => match state.text(node) {
+                "\\lyricmode" | "\\lyrics" => i += 1,
+                "\\lyricsto" => {
+                    voice = lyricsto_name(state, children, i + 1);
+                    i += 1 + usize::from(voice.is_some());
                 }
-                if text == "\\lyricsto" {
-                    // \lyricsto "voiceName" — consume voice name
-                    i += 1;
-                    if let Some(name_node) = children.get(i) {
-                        if name_node.kind() == "string" {
-                            lyricsto_voice = Some(extract_string_value(state, *name_node));
-                            i += 1;
-                        }
+                var => {
+                    let tokens = state.lyric_definitions.get(var.trim_start_matches('\\'));
+                    if let (Some(voice), Some(tokens)) = (voice, tokens) {
+                        let tokens = tokens.clone();
+                        state.pending_lyrics.push(LyricJob {
+                            target: LyricTarget::Voice(voice),
+                            tokens,
+                        });
                     }
-                    continue;
+                    return i + 1;
                 }
-                // Could be a variable reference like \Itesto
-                if let Some(voice) = &lyricsto_voice {
-                    let var_name = text.trim_start_matches('\\');
-                    if let Some(syllables) = state.lyric_definitions.get(var_name) {
-                        state
-                            .pending_lyrics
-                            .insert(voice.clone(), syllables.clone());
-                    }
-                }
-                i += 1;
-                break;
-            }
+            },
             "expression_block" => {
-                if is_lyricmode || lyricsto_voice.is_some() {
-                    // Parse the lyric block and find the \lyricsto voice name
-                    let voice_name = if lyricsto_voice.is_some() {
-                        lyricsto_voice.clone()
-                    } else {
-                        extract_lyricsto_voice(state, node)
-                    };
-                    let syllables = parse_lyric_block(state, node);
-                    if let Some(voice) = voice_name {
-                        state.pending_lyrics.insert(voice, syllables);
-                    }
-                }
-                i += 1;
-                break;
+                let tokens = parse_lyric_block(state, node);
+                // Without `\lyricsto`, the syllables' own lengths place them.
+                let target = match voice.or_else(|| extract_lyricsto_voice(state, node)) {
+                    Some(voice) => LyricTarget::Voice(voice),
+                    None => LyricTarget::Timed {
+                        tag: state.last_tag,
+                        start: state.pos,
+                    },
+                };
+                state.pending_lyrics.push(LyricJob { target, tokens });
+                return i + 1;
             }
             _ => break,
         }
@@ -1450,14 +1445,10 @@ fn merge_piano_staff_parts(
         let top_lane = pb.tl.lanes.keys().copied().max().unwrap_or(0);
         base.tl.absorb(pb.tl.into_staff(k as u8 + 1, lane_offset)); // k < num_staves ≤ 255
         lane_offset = lane_offset.saturating_add(top_lane);
-        if pb.uid != base.uid {
-            state.part_alias.insert(pb.uid, base.uid);
-        }
     }
     for d in &mut dynamics {
         d.tl.fold_spacer_lanes();
         base.tl.events.append(&mut d.tl.events);
-        state.part_alias.insert(d.uid, base.uid);
     }
     base.part.staves = num_staves;
 
@@ -1567,7 +1558,9 @@ fn capture_variable<R>(
 ) -> (VarDef, R) {
     state.flush_voice();
     let saved_parts = std::mem::take(&mut state.parts);
-    let saved_voices = std::mem::take(&mut state.voice_part_map);
+    // The variable's own music: the voice using it takes it over.
+    let saved_tags = (state.voice_tag, state.last_tag);
+    state.voice_tag = super::state::CAPTURE_VOICE;
     let saved_pos = (state.pos, state.voice_start, state.origin);
     // Parts a variable defines are numbered where it is used.
     let saved_counter = state.part_counter;
@@ -1587,7 +1580,7 @@ fn capture_variable<R>(
     let len = state.pos;
 
     let parts = std::mem::replace(&mut state.parts, saved_parts);
-    let voices = std::mem::replace(&mut state.voice_part_map, saved_voices);
+    (state.voice_tag, state.last_tag) = saved_tags;
     (state.pos, state.voice_start, state.origin) = saved_pos;
     state.part_counter = saved_counter;
     // Restore state so variable definitions don't leak context
@@ -1598,11 +1591,7 @@ fn capture_variable<R>(
     state.current_voice_number = main_lane;
 
     let def = if as_parts {
-        let index = voices
-            .into_iter()
-            .filter_map(|(v, uid)| Some((v, parts.iter().position(|p| p.uid == uid)?)))
-            .collect();
-        VarDef::Parts(parts, index)
+        VarDef::Parts(parts)
     } else {
         let mut tl = Timeline::default();
         for pb in parts {
@@ -1612,7 +1601,6 @@ fn capture_variable<R>(
             tl,
             len,
             main_lane,
-            voices: voices.into_keys().collect(),
             block,
         }
     };

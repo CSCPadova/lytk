@@ -34,7 +34,11 @@ impl IrToHumdrumAdapter {
 
 impl FromIrAdapter for IrToHumdrumAdapter {
     fn convert(&self, score: &Score) -> Result<String> {
-        Ok(emit_kern(score))
+        // Kern spells beams out (`L`, `J`): what the source left to the
+        // engraver is engraved first.
+        let mut score = score.clone();
+        crate::ir::beams::engrave(&mut score);
+        Ok(emit_kern(&score))
     }
 
     fn write(&self, score: &Score, path: &Path) -> Result<()> {
@@ -63,6 +67,38 @@ impl FromMusicAdapter for IrToHumdrumAdapter {
 struct SpineSrc<'a> {
     part: &'a Part,
     voice: u8,
+}
+
+impl SpineSrc<'_> {
+    /// The verses the voice's notes sing.
+    fn verses(&self) -> Vec<u8> {
+        let set: std::collections::BTreeSet<u8> = self
+            .part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .filter(|v| v.number == self.voice)
+            .flat_map(|v| &v.elements)
+            .flat_map(|e| e.notes().first())
+            .flat_map(|n| &n.lyrics)
+            .map(|l| l.number)
+            .collect();
+        set.into_iter().collect()
+    }
+
+    /// The staff the voice is written on (its first element's).
+    fn staff(&self) -> u8 {
+        self.part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .filter(|v| v.number == self.voice)
+            .flat_map(|v| &v.elements)
+            .map(VoiceElement::staff)
+            .next()
+            .unwrap_or(1)
+            .max(1)
+    }
 }
 
 fn emit_kern(score: &Score) -> String {
@@ -94,67 +130,73 @@ fn emit_kern(score: &Score) -> String {
         out.push_str(&format!("!!!OTL: {t}\n"));
     }
 
-    let row = |cells: Vec<String>| cells.join("\t") + "\n";
+    // Each spine's verses: a `**text` spine each, right of its kern spine.
+    let verses: Vec<Vec<u8>> = spines.iter().map(SpineSrc::verses).collect();
+    // A row: each kern spine's cell, then its text spines' (`text(spine,
+    // verse)`).
+    let row_with = |kern: Vec<String>, text: &dyn Fn(usize, u8) -> String| {
+        let mut cells = Vec::new();
+        for (i, cell) in kern.into_iter().enumerate() {
+            cells.push(cell);
+            cells.extend(verses[i].iter().map(|&v| text(i, v)));
+        }
+        cells.join("\t") + "\n"
+    };
+    // Most rows say the same in a text spine as in its kern spine.
+    let row = |kern: Vec<String>| {
+        let same = kern.clone();
+        row_with(kern, &|i, _| same[i].clone())
+    };
+    let interp = |kern: Vec<String>| row_with(kern, &|_, _| "*".to_string());
     let n = spines.len();
-    out.push_str(&row(vec!["**kern".to_string(); n]));
+    out.push_str(&row_with(vec!["**kern".to_string(); n], &|_, _| {
+        "**text".to_string()
+    }));
+
+    // Parts and staves, numbered from the top of the score.
+    let parts = score.parts();
+    let first_staff: Vec<u8> = parts
+        .iter()
+        .scan(0u8, |next, p| {
+            let first = *next;
+            *next = next.saturating_add(p.staves.max(1));
+            Some(first)
+        })
+        .collect();
+    let number = |s: &SpineSrc| {
+        parts
+            .iter()
+            .position(|p| std::ptr::eq(*p, s.part))
+            .unwrap_or(0)
+    };
+    out.push_str(&row(spines
+        .iter()
+        .map(|s| format!("*part{}", number(s) + 1))
+        .collect()));
+    out.push_str(&row(spines
+        .iter()
+        .map(|s| format!("*staff{}", first_staff[number(s)] + s.staff()))
+        .collect()));
 
     // Instrument names (only where the part declares one).
     if spines.iter().any(|s| !s.part.name.is_empty()) {
-        out.push_str(&row(spines
-            .iter()
-            .map(|s| {
-                if s.part.name.is_empty() {
-                    "*".to_string()
-                } else {
-                    format!("*I\"{}", s.part.name)
-                }
-            })
-            .collect()));
+        out.push_str(&interp(
+            spines
+                .iter()
+                .map(|s| {
+                    if s.part.name.is_empty() {
+                        "*".to_string()
+                    } else {
+                        format!("*I\"{}", s.part.name)
+                    }
+                })
+                .collect(),
+        ));
     }
 
-    // Clef / key / time from each spine's first measure attributes.
-    let first_attrs = |s: &SpineSrc| s.part.measures.first().and_then(|m| m.attributes.clone());
-    if spines
-        .iter()
-        .any(|s| first_attrs(s).is_some_and(|a| !a.clefs.is_empty()))
-    {
-        out.push_str(&row(spines
-            .iter()
-            .map(|s| {
-                first_attrs(s)
-                    .and_then(|a| a.clefs.values().next().cloned())
-                    .map(|c| format!("*clef{}", clef_str(&c)))
-                    .unwrap_or_else(|| "*".to_string())
-            })
-            .collect()));
-    }
-    if spines
-        .iter()
-        .any(|s| first_attrs(s).is_some_and(|a| a.key.is_some()))
-    {
-        out.push_str(&row(spines
-            .iter()
-            .map(|s| {
-                first_attrs(s)
-                    .and_then(|a| a.key)
-                    .map(|k| format!("*k[{}]", key_str(&k)))
-                    .unwrap_or_else(|| "*".to_string())
-            })
-            .collect()));
-    }
-    if spines
-        .iter()
-        .any(|s| first_attrs(s).is_some_and(|a| a.time.is_some()))
-    {
-        out.push_str(&row(spines
-            .iter()
-            .map(|s| {
-                first_attrs(s)
-                    .and_then(|a| a.time.clone())
-                    .map(|t| time_str(&t))
-                    .unwrap_or_else(|| "*".to_string())
-            })
-            .collect()));
+    // Clef, key, meter and transposition of the first bar.
+    for r in interpretation_rows(&spines, 0) {
+        out.push_str(&interp(r));
     }
 
     // Measures: aligned time slices with `.` padding.
@@ -164,32 +206,82 @@ fn emit_kern(score: &Score) -> String {
         .max()
         .unwrap_or(0);
     for mi in 0..measure_count {
+        // What changes at this bar (the first bar's are above).
+        if mi > 0 {
+            for r in interpretation_rows(&spines, mi) {
+                out.push_str(&interp(r));
+            }
+        }
         // Per spine: onset (in whole notes from measure start) → tokens.
         // Several events can share an onset — a grace note has zero duration,
         // so it sits on the same onset as the note it decorates. Each gets its
         // own kern data record (the Humdrum spelling), so the value is a Vec:
         // keying by onset alone silently dropped every grace note.
-        let mut streams: Vec<BTreeMap<Frac, Vec<String>>> = Vec::with_capacity(n);
+        // Each token with the note it writes, for its syllables.
+        type Stream<'a> = BTreeMap<Frac, Vec<(String, Option<&'a Note>)>>;
+        let mut streams: Vec<Stream> = Vec::with_capacity(n);
+        let mut ends: Vec<Frac> = Vec::with_capacity(n);
         for s in &spines {
-            let mut events: BTreeMap<Frac, Vec<String>> = BTreeMap::new();
+            let mut events: Stream = BTreeMap::new();
+            let mut end = Frac::from_integer(0);
             if let Some(measure) = s.part.measures.get(mi) {
                 for voice in measure.voices.iter().filter(|v| v.number == s.voice) {
                     let mut onset = Frac::from_integer(0);
                     for elem in &voice.elements {
                         let (token, dur) = element_token(elem);
                         if let Some(tok) = token {
-                            events.entry(onset).or_default().push(tok);
+                            events
+                                .entry(onset)
+                                .or_default()
+                                .push((tok, elem.notes().first()));
                         }
                         onset += dur;
                     }
+                    end = end.max(onset);
                 }
             }
             streams.push(events);
+            ends.push(end);
         }
-        let mut onsets: Vec<Frac> = streams.iter().flat_map(|m| m.keys().copied()).collect();
+        // A voice absent from the bar, or ending early, is silent there: an
+        // invisible rest (`.` would mean its last note goes on).
+        let bar = ends.iter().copied().max().unwrap_or_default();
+        for (events, end) in streams.iter_mut().zip(&ends) {
+            if *end < bar {
+                let rest = format!("{}ryy", recip_str(&Duration::new(bar - *end)));
+                events.entry(*end).or_default().push((rest, None));
+            }
+        }
+        // Clef changes inside the bar, per spine.
+        let clefs: Vec<BTreeMap<Frac, String>> = spines
+            .iter()
+            .map(|s| {
+                s.part
+                    .measures
+                    .get(mi)
+                    .into_iter()
+                    .flat_map(|m| &m.directions)
+                    .filter(|d| d.staff.max(1) == s.staff())
+                    .filter_map(|d| Some((d.offset_frac, format!("*clef{}", clef_str(&d.clef?)))))
+                    .collect()
+            })
+            .collect();
+        let mut onsets: Vec<Frac> = streams
+            .iter()
+            .flat_map(|m| m.keys().copied())
+            .chain(clefs.iter().flat_map(|c| c.keys().copied()))
+            .collect();
         onsets.sort();
         onsets.dedup();
         for onset in onsets {
+            if clefs.iter().any(|c| c.contains_key(&onset)) {
+                out.push_str(&interp(
+                    clefs
+                        .iter()
+                        .map(|c| c.get(&onset).cloned().unwrap_or_else(|| "*".to_string()))
+                        .collect(),
+                ));
+            }
             let depth = streams
                 .iter()
                 .map(|m| m.get(&onset).map_or(0, |v| v.len()))
@@ -198,15 +290,20 @@ fn emit_kern(score: &Score) -> String {
             // Bottom-align: the leading rows hold the graces, the last row holds
             // the metrical event every spine shares.
             for k in 0..depth {
-                out.push_str(&row(streams
-                    .iter()
-                    .map(|m| {
-                        m.get(&onset)
-                            .and_then(|v| k.checked_sub(depth - v.len()).and_then(|i| v.get(i)))
-                            .cloned()
-                            .unwrap_or_else(|| ".".to_string())
-                    })
-                    .collect()));
+                let cell = |s: usize| {
+                    streams[s]
+                        .get(&onset)
+                        .and_then(|v| k.checked_sub(depth - v.len()).and_then(|i| v.get(i)))
+                };
+                let kern = (0..n)
+                    .map(|s| cell(s).map_or_else(|| ".".to_string(), |c| c.0.clone()))
+                    .collect();
+                out.push_str(&row_with(kern, &|i, verse| {
+                    cell(i)
+                        .and_then(|c| c.1)
+                        .and_then(|n| n.lyrics.iter().find(|l| l.number == verse))
+                        .map_or_else(|| ".".to_string(), text_token)
+                }));
             }
         }
         if mi + 1 < measure_count {
@@ -223,6 +320,58 @@ fn emit_kern(score: &Score) -> String {
         .collect()));
     out.push_str(&row(vec!["*-".to_string(); n]));
     out
+}
+
+/// The interpretation rows for what measure `mi` sets, one row per kind
+/// (clef, key, meter, transposition), `*` in the spines it doesn't touch.
+fn interpretation_rows(spines: &[SpineSrc], mi: usize) -> Vec<Vec<String>> {
+    (0..4)
+        .map(|kind| {
+            spines
+                .iter()
+                .map(|s| interpretation(s, mi, kind))
+                .collect::<Vec<_>>()
+        })
+        .filter(|cells| cells.iter().any(Option::is_some))
+        .map(|cells| {
+            cells
+                .into_iter()
+                .map(|c| c.unwrap_or_else(|| "*".to_string()))
+                .collect()
+        })
+        .collect()
+}
+
+/// A syllable in a `**text` spine: `Hal-`, `-le-`, `-lu`, `jah`.
+fn text_token(l: &crate::ir::articulation::LyricSyllable) -> String {
+    use crate::ir::articulation::SyllabicType;
+    let text = l.text.replace(['\t', '\n'], " ");
+    match l.syllabic {
+        SyllabicType::Single => text,
+        SyllabicType::Begin => format!("{text}-"),
+        SyllabicType::Middle => format!("-{text}-"),
+        SyllabicType::End => format!("-{text}"),
+    }
+}
+
+/// What measure `mi` sets for a spine: its clef (0), key (1), meter (2) or
+/// transposition (3), as a kern interpretation.
+fn interpretation(s: &SpineSrc, mi: usize, kind: usize) -> Option<String> {
+    let a = s.part.measures.get(mi)?.attributes.as_ref()?;
+    match kind {
+        0 => a
+            .clefs
+            .get(&s.staff())
+            .map(|c| format!("*clef{}", clef_str(c))),
+        1 => a.key.map(|k| format!("*k[{}]", key_str(&k))),
+        2 => a.time.as_ref().map(time_str),
+        // A transposing instrument: `*ITrd-1c-2` (B♭) sounds a major second
+        // below what is written.
+        _ => a.transpose.map(|t| {
+            let d = i32::from(t.diatonic) + 7 * i32::from(t.octave_change);
+            format!("*ITrd{d}c{}", t.semitones())
+        }),
+    }
 }
 
 /// The repeat signs of the bar line after measure `mi`: `:|!` ends a repeat
@@ -270,8 +419,12 @@ fn element_token(elem: &VoiceElement) -> (Option<String>, Frac) {
         }
         VoiceElement::Rest(rest) => {
             if rest.is_spacer {
-                // Spacers occupy time but have no kern spelling; pad with `.`.
-                (None, rest.duration.actual_duration())
+                // A spacer is an invisible rest (`yy`): a null token would
+                // mean the note before goes on.
+                (
+                    Some(format!("{}ryy", recip_str(&rest.duration))),
+                    rest.duration.actual_duration(),
+                )
             } else {
                 (
                     Some(format!("{}r", recip_str(&rest.duration))),
@@ -307,6 +460,31 @@ fn note_token(note: &Note) -> String {
     tok.push_str(&pitch_str(&note.pitch));
     if note.is_grace {
         tok.push(if note.grace_slash { 'q' } else { 'Q' });
+    }
+    // Articulations and a fermata.
+    for a in &note.articulations {
+        tok.push_str(match a.name.as_str() {
+            "staccato" => "'",
+            "staccatissimo" => "`",
+            "accent" => "^",
+            "strong-accent" => "^^",
+            "tenuto" => "~",
+            _ => "",
+        });
+    }
+    if note.fermata.is_some() {
+        tok.push(';');
+    }
+    // Beams, a sign per level: `L` begins, `J` ends, `K`/`k` hooks forward
+    // and back.
+    for b in &note.beams {
+        match b.beam_type.as_str() {
+            "begin" => tok.push('L'),
+            "end" => tok.push('J'),
+            "forward hook" => tok.push('K'),
+            "backward hook" => tok.push('k'),
+            _ => {}
+        }
     }
     if tie_start && tie_stop {
         tok.push('_');
@@ -401,6 +579,38 @@ mod tests {
         let emitted = IrToHumdrumAdapter::new().convert(&before).unwrap();
         let after = a.convert_str(&emitted).unwrap();
         (before, after)
+    }
+
+    #[test]
+    fn beams_are_written_and_read() {
+        // Kern given no beams: the writer engraves them (2/4: by the beat).
+        let kern = "**kern\n*M2/4\n8c\n8d\n16e\n16f\n8g\n*-\n";
+        let (_, after) = roundtrip(kern);
+        let emitted = IrToHumdrumAdapter::new()
+            .convert(&HumdrumToIrAdapter::new().convert_str(kern).unwrap())
+            .unwrap();
+        let data: Vec<&str> = emitted
+            .lines()
+            .filter(|l| l.starts_with(|c: char| c.is_ascii_digit()))
+            .collect();
+        assert_eq!(
+            data,
+            ["8cL", "8dJ", "16eLL", "16fJ", "8gJ"].map(|t| t.to_string())
+        );
+        let firsts: Vec<String> = after.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .map(|e| {
+                let n = &e.notes()[0];
+                assert!(n.no_auto_beam);
+                n.beams
+                    .first()
+                    .map_or(String::new(), |b| b.beam_type.clone())
+            })
+            .collect();
+        assert_eq!(firsts, ["begin", "end", "begin", "", "end"]);
     }
 
     fn pitch_seq(score: &Score) -> Vec<(PitchStep, i32, i32)> {

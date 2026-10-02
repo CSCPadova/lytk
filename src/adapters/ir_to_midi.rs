@@ -106,7 +106,26 @@ impl IrToMidiAdapter {
             ppq: self.divisions as i64,
         };
 
-        let mut tracks: Vec<Vec<Timed>> = vec![conductor(&bars, &tempo, &clock)];
+        let mut first = conductor(&bars, &tempo, &clock);
+        // The score's title is the sequence's name (the first track's), its
+        // rights a copyright event; MIDI has no composer event, so a text
+        // event says it, as the one naming lytk does.
+        let md = &score.metadata;
+        first.extend(
+            md.title
+                .iter()
+                .map(|t| Timed::meta(0, Meta::TrackName(t.clone()))),
+        );
+        first.extend(
+            md.composer
+                .iter()
+                .map(|c| Timed::meta(0, Meta::Text(format!("composer: {c}")))),
+        );
+        let rights: Vec<&str> = md.rights.iter().map(|(_, r)| r.as_str()).collect();
+        if !rights.is_empty() {
+            first.push(Timed::meta(0, Meta::Copyright(rights.join("\n"))));
+        }
+        let mut tracks: Vec<Vec<Timed>> = vec![first];
         let channels = assign_channels(&parts);
         for (pi, part) in parts.iter().enumerate() {
             let channel = channels[pi];
@@ -590,15 +609,23 @@ fn program_of(part: &Part) -> u8 {
 }
 
 /// One MIDI channel (0-based) per part. `Part.midi_channel` is 1–16 (0 = not
-/// set), as in MusicXML. Percussion plays on channel 10; the others take free
-/// channels around it, and past 15 parts share one with a part of the same
-/// program (LilyPond's `midiChannelMapping = #'instrument`).
+/// set), as in MusicXML. Percussion plays on channel 10. A part keeps its
+/// source channel unless a part with another program has it first (a channel
+/// has one program at a time); the others take free channels around them,
+/// and past 15 parts share one with a part of the same program (LilyPond's
+/// `midiChannelMapping = #'instrument`).
 fn assign_channels(parts: &[&Part]) -> Vec<u8> {
-    let mut used = [false; 16];
-    used[9] = true;
-    for p in parts {
-        if (1..=16).contains(&p.midi_channel) && !is_percussion(p) {
-            used[p.midi_channel as usize - 1] = true;
+    // The program holding each channel.
+    let mut held: [Option<u8>; 16] = [None; 16];
+    held[9] = Some(u8::MAX);
+    let source = |p: &Part| {
+        (1..=16)
+            .contains(&p.midi_channel)
+            .then(|| p.midi_channel - 1)
+    };
+    for p in parts.iter().filter(|p| !is_percussion(p)) {
+        if let Some(c) = source(p) {
+            held[c as usize].get_or_insert(program_of(p));
         }
     }
     let mut by_program: HashMap<u8, u8> = HashMap::new();
@@ -609,10 +636,10 @@ fn assign_channels(parts: &[&Part]) -> Vec<u8> {
             let program = program_of(p);
             let ch = if is_percussion(p) {
                 9
-            } else if (1..=16).contains(&p.midi_channel) {
-                p.midi_channel - 1
-            } else if let Some(c) = (0..16u8).find(|&c| !used[c as usize]) {
-                used[c as usize] = true;
+            } else if let Some(c) = source(p).filter(|&c| held[c as usize] == Some(program)) {
+                c
+            } else if let Some(c) = (0..16u8).find(|&c| held[c as usize].is_none()) {
+                held[c as usize] = Some(program);
                 c
             } else if let Some(&c) = by_program.get(&program) {
                 c
@@ -724,6 +751,18 @@ impl Player<'_> {
         let mut out: Vec<Timed> = Vec::new();
         let mut lanes: HashMap<u8, Lane> = HashMap::new();
         let mut transpose = 0i32;
+        // A track carries one verse: the part's first.
+        let verse = self
+            .part
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .flat_map(|e| e.notes().first())
+            .flat_map(|n| &n.lyrics)
+            .map(|l| l.number)
+            .min()
+            .unwrap_or(1);
 
         for (k, &mi) in self.bars.order.iter().enumerate() {
             let Some(m) = self.part.measures.get(mi) else {
@@ -796,7 +835,7 @@ impl Player<'_> {
                             }
                         }
                         VoiceElement::Note(n) => {
-                            push_lyric(&mut out, clock.tick(pos), &n.lyrics);
+                            push_lyric(&mut out, clock.tick(pos), &n.lyrics, verse);
                             let arts: Vec<&Articulation> = n.articulations.iter().collect();
                             let i = self.sound(
                                 n,
@@ -812,7 +851,7 @@ impl Player<'_> {
                         }
                         VoiceElement::Chord(c) => {
                             if let Some(n) = c.notes.first() {
-                                push_lyric(&mut out, clock.tick(pos), &n.lyrics);
+                                push_lyric(&mut out, clock.tick(pos), &n.lyrics, verse);
                             }
                             // A chord's articulations (stored on any of its notes)
                             // apply to all of them, as in LilyPond.
@@ -947,10 +986,10 @@ impl Player<'_> {
     }
 }
 
-/// A note's first-verse syllable as a lyric event (as LilyPond's lyric
+/// A note's syllable of `verse` as a lyric event (as LilyPond's lyric
 /// performer writes it); a hyphenated syllable keeps its hyphen.
-fn push_lyric(out: &mut Vec<Timed>, tick: u64, lyrics: &[LyricSyllable]) {
-    let Some(l) = lyrics.iter().min_by_key(|l| l.number) else {
+fn push_lyric(out: &mut Vec<Timed>, tick: u64, lyrics: &[LyricSyllable], verse: u8) {
+    let Some(l) = lyrics.iter().find(|l| l.number == verse) else {
         return;
     };
     if l.text.is_empty() {
@@ -1292,6 +1331,7 @@ fn departure(dir: i8, start: f64, end: f64, lo: f64, hi: f64) -> f64 {
 #[derive(Clone, Debug)]
 enum Meta {
     Text(String),
+    Copyright(String),
     TrackName(String),
     Instrument(String),
     Lyric(String),
@@ -1342,6 +1382,7 @@ fn encode(tracks: &[Vec<Timed>], ppq: u16) -> Result<Vec<u8>> {
             let kind = match &t.ev {
                 Ev::Meta(m) => TrackEventKind::Meta(match m {
                     Meta::Text(s) => MetaMessage::Text(s.as_bytes()),
+                    Meta::Copyright(s) => MetaMessage::Copyright(s.as_bytes()),
                     Meta::TrackName(s) => MetaMessage::TrackName(s.as_bytes()),
                     Meta::Instrument(s) => MetaMessage::InstrumentName(s.as_bytes()),
                     Meta::Lyric(s) => MetaMessage::Lyric(s.as_bytes()),
@@ -2039,6 +2080,41 @@ mod tests {
         assert!(melodic.iter().all(|&c| c != 9), "{melodic:?}");
         // Past 15 melodic parts, a part shares a channel with its program.
         assert_eq!(melodic[15], melodic[0]);
+    }
+
+    #[test]
+    fn title_composer_and_copyright_are_written() {
+        use crate::adapters::midi_to_ir::MidiToIrAdapter;
+        let mut score = crate::adapters::ly_to_ir::LyToIrAdapter::new()
+            .convert_str(r"<< \new Staff { c'1 } \new Staff { e'1 } >>")
+            .unwrap();
+        score.metadata.title = Some("Ave Maria".into());
+        score.metadata.composer = Some("Schubert".into());
+        score.metadata.rights = vec![("copyright".into(), "Public domain".into())];
+        let bytes = IrToMidiAdapter::new().convert_bytes(&score).unwrap();
+        let back = MidiToIrAdapter::new().convert_bytes(&bytes).unwrap();
+        assert_eq!(back.metadata.title.as_deref(), Some("Ave Maria"));
+        assert_eq!(back.metadata.composer.as_deref(), Some("Schubert"));
+        assert_eq!(
+            back.metadata.rights,
+            [("copyright".to_string(), "Public domain".to_string())]
+        );
+    }
+
+    #[test]
+    fn parts_with_different_programs_never_share_a_channel() {
+        // Rossini's MuseScore file: flute and choir both on channel 1.
+        let part = |id: &str, ch: u8, program: u8| {
+            let mut p = Part::new(id);
+            p.midi_channel = ch;
+            p.midi_program = program;
+            p
+        };
+        let (flute, choir, flute2) = (part("F", 1, 73), part("C", 1, 52), part("G", 1, 73));
+        let channels = assign_channels(&[&flute, &choir, &flute2]);
+        assert_eq!(channels[0], 0);
+        assert_ne!(channels[1], 0, "{channels:?}");
+        assert_eq!(channels[2], 0, "the same program may share it");
     }
 
     #[test]

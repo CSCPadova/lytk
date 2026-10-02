@@ -23,9 +23,12 @@ from the command line.
   repeats and voltas, cadenzas, lyrics, chord names and figured bass. It writes
   them back out too, in any of LilyPond's 12 note-name languages.
 - **Conversions are measured, not assumed.** Every round trip (LilyPond,
-  MusicXML, ABC, `**kern`, MIDI) is checked in CI against a test corpus for note
-  counts, pitches, onsets and durations. The results can only improve from one
-  release to the next.
+  MusicXML, ABC, `**kern`, MIDI) is checked in CI against a test corpus for
+  notes (onsets, durations, sounding pitches), lyrics, chord symbols, dynamics
+  and clefs at their places; stems and beams against the engravers that wrote
+  the files; LilyPond output against LilyPond itself. The results can only
+  improve from one release to the next
+  ([the numbers](docs/import-export.md#what-survives-a-conversion-measured)).
 - **Built for machine learning.** Encoders for note arrays, piano rolls and
   Performance-RNN event sequences, objective metrics from the muspy family,
   datasets over folders or JSON Lines records with deterministic (or the

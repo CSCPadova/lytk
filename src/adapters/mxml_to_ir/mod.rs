@@ -150,25 +150,72 @@ fn read_partwise_bytes(bytes: Vec<u8>) -> Result<Score> {
         )));
     }
     let xml = xml_bytes_from_input(bytes)?;
-    // Bridge fractional <alter> values (microtones) past the crate's i16 —
-    // see `adapters::encode_fractional_alters`.
-    let xml = match String::from_utf8(xml) {
-        // Also give an id-less <part> a sentinel id: the crate requires the
-        // attribute and silently drops the whole part otherwise (spec allows
-        // omission when one score-part describes the one part).
-        Ok(text) => super::encode_fractional_alters(super::normalize_attribute_quotes(text))
-            .replace("<part>", "<part id=\"__lytk-noid\">")
-            .into_bytes(),
-        Err(e) => e.into_bytes(), // non-UTF-8: hand through unchanged
+    // UTF-8 whatever the file's encoding (UTF-16, ISO-8859-1), entities and
+    // line breaks in text decoded for the crate's raw parser.
+    let text = super::normalize_attribute_quotes(super::decode_text_bytes(xml));
+    let (text, stand_ins) = match super::decode_xml_text(&text) {
+        Some(decoded) => {
+            let used = decoded.contains(|c| super::XML_STAND_INS.iter().any(|(_, s)| *s == c));
+            (decoded, used)
+        }
+        None => (text, false),
     };
+    // Bridge fractional <alter> values (microtones) past the crate's i16 —
+    // see `adapters::encode_fractional_alters`. Also give an id-less <part>
+    // a sentinel id: the crate requires the attribute and silently drops the
+    // whole part otherwise (spec allows omission when one score-part
+    // describes the one part).
+    let xml = super::encode_fractional_alters(text)
+        .replace("<part>", "<part id=\"__lytk-noid\">")
+        .into_bytes();
     // The firewall covers conversion too: panics there would otherwise escape
     // to the PyO3 boundary as aborts instead of AdapterError::Parse.
     let score = catch_read(|| {
         let mxml_score = musicxml::read_score_data_partwise(xml).map_err(AdapterError::Parse)?;
         convert_mxml_score(&mxml_score)
     })?;
+    let mut score = if stand_ins {
+        restore_score_text(score)
+    } else {
+        score
+    };
+    beaming_decided(&mut score);
     super::check_score_length(&score)?;
     Ok(score)
+}
+
+/// A file that beams any note decides every note's beaming (MuseScore reads
+/// it so too): a note it leaves unbeamed stays so, not auto-beamed.
+fn beaming_decided(score: &mut Score) {
+    let mut notes: Vec<&mut crate::ir::note::Note> = score
+        .parts_mut()
+        .into_iter()
+        .flat_map(|p| &mut p.measures)
+        .flat_map(|m| &mut m.voices)
+        .flat_map(|v| &mut v.elements)
+        .flat_map(|e| e.notes_mut())
+        .collect();
+    if notes.iter().any(|n| !n.beams.is_empty()) {
+        notes.iter_mut().for_each(|n| n.no_auto_beam = true);
+    }
+}
+
+/// Every string of a score read from text with [`super::XML_STAND_INS`]
+/// in it, the stand-ins turned back into what they stand for.
+fn restore_score_text(score: Score) -> Score {
+    fn walk(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::String(s) => *s = super::restore_xml_text(s),
+            serde_json::Value::Array(a) => a.iter_mut().for_each(walk),
+            serde_json::Value::Object(o) => o.values_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    let Ok(mut v) = serde_json::to_value(&score) else {
+        return score;
+    };
+    walk(&mut v);
+    serde_json::from_value(v).unwrap_or(score)
 }
 
 impl ToIrAdapter for MxmlToIrAdapter {
@@ -505,16 +552,35 @@ fn parse_defaults(score: &mxml::ScorePartwise) -> Option<PageLayout> {
 // Part-list parsing
 // ---------------------------------------------------------------------------
 
+/// A part name with the accidental glyph names MuseScore 4 writes into it
+/// (`BaccidentalFlat Trumpet`, from its SMuFL `<sym>`) as the accidentals.
+fn accidental_glyphs(name: &str) -> String {
+    if !name.contains("accidental") {
+        return name.to_string();
+    }
+    [
+        ("accidentalDoubleFlat", "𝄫"),
+        ("accidentalDoubleSharp", "𝄪"),
+        ("accidentalFlat", "♭"),
+        ("accidentalSharp", "♯"),
+        ("accidentalNatural", "♮"),
+    ]
+    .iter()
+    .fold(name.to_string(), |n, (glyph, symbol)| {
+        n.replace(glyph, symbol)
+    })
+}
+
 fn parse_score_part(sp: &mxml::ScorePart) -> PartInfo {
     let mut info = PartInfo {
         id: sp.attributes.id.0.clone(),
         ..Default::default()
     };
 
-    info.name = sp.content.part_name.content.clone();
+    info.name = accidental_glyphs(&sp.content.part_name.content);
 
     if let Some(ref abbrev) = sp.content.part_abbreviation {
-        info.abbreviation = abbrev.content.clone();
+        info.abbreviation = accidental_glyphs(&abbrev.content);
     }
 
     // MIDI instrument info (first <midi-instrument> child).

@@ -145,3 +145,14 @@ pub(super) fn roman(n: u8) -> &'static str {
         _ => "X",
     }
 }
+
+/// A rehearsal mark: `\\mark \\default` where LilyPond's next default mark
+/// (after `count` of them) prints its text, else the text.
+pub(super) fn rehearsal_to_ly(text: &str, count: &mut u32) -> String {
+    if text == crate::ir::direction::RehearsalMark::lilypond_default(*count + 1) {
+        *count += 1;
+        "\\mark \\default".to_string()
+    } else {
+        format!("\\mark \"{}\"", escape_ly_string(text))
+    }
+}

@@ -15,7 +15,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::adapters::dynamics_velocity::{dynamic_to_velocity, velocity_to_dynamic};
+use crate::adapters::dynamics_velocity::{
+    lilypond_dynamic, lilypond_velocity, LILYPOND_DEFAULT_VELOCITY,
+};
 use crate::ir::annotation::Annotation;
 use crate::ir::articulation::DynamicMark;
 use crate::ir::duration::{Duration, Frac};
@@ -26,8 +28,9 @@ use crate::ir::pitch::{Pitch, PitchStep};
 /// (down to 128th notes and simple tuplets) land on integer ticks.
 pub const DEFAULT_RESOLUTION: u16 = 480;
 
-/// Default note velocity (MIDI), used when no dynamic is in effect.
-pub(crate) const DEFAULT_VELOCITY: u8 = 64;
+/// Default note velocity (MIDI), used when no dynamic is in effect: what
+/// lytk's MIDI export plays (LilyPond's default volume).
+pub(crate) const DEFAULT_VELOCITY: u8 = LILYPOND_DEFAULT_VELOCITY;
 
 /// A single note in the note-based representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,14 +98,22 @@ fn pitch_from_midi(midi: u8) -> Pitch {
     Pitch::new(PitchStep::C, -1).transposed(midi as i32)
 }
 
+/// What the walk carries along a voice: the velocity of the dynamic in
+/// force (LilyPond's table, as the MIDI export plays it) and the
+/// transposition (semitones from written to sounding pitch).
+#[derive(Clone, Copy)]
+struct Perf {
+    vel: u8,
+    transpose: i32,
+    /// Whether transpositions apply (sounding pitch) or not (written).
+    sounding: bool,
+}
+
 /// Update the running velocity from a note/chord's dynamic annotations.
 fn apply_dynamics(vel: &mut u8, annotations: &[Annotation]) {
     for ann in annotations {
         if let Annotation::Dynamic(DynamicMark { sign, .. }) = ann {
-            let v = dynamic_to_velocity(sign);
-            if v > 0 {
-                *vel = v;
-            }
+            *vel = lilypond_velocity(sign);
         }
     }
 }
@@ -170,12 +181,12 @@ fn has_tie_start(annotations: &[Annotation]) -> bool {
 }
 
 /// Recursively flatten `music` into absolute-timed notes. `time` is the start
-/// position (whole-note `Frac`); returns the end position. `vel` carries the
-/// running velocity across the walk.
+/// position (whole-note `Frac`); returns the end position. `perf` carries the
+/// dynamic and the transposition in force along the walk.
 fn walk(
     music: &Music,
     time: Frac,
-    vel: &mut u8,
+    perf: &mut Perf,
     open: &mut HashMap<i32, usize>,
     out: &mut Vec<FlatNote>,
 ) -> Frac {
@@ -183,7 +194,7 @@ fn walk(
         Music::Sequential(items) => {
             let mut t = time;
             for m in items {
-                t = walk(m, t, vel, open, out);
+                t = walk(m, t, perf, open, out);
             }
             t
         }
@@ -192,16 +203,23 @@ fn walk(
             // latest branch end. A tie from before may end in any branch (a
             // bar that splits into voices), and one may run on after it: the
             // ties the branches close and open are the block's.
+            // Each branch starts with the block's dynamic and transposition
+            // (a part's dynamics don't reach the next part); the first
+            // branch, the voice that goes on, carries its own on after it.
             let mut end = time;
             let mut closed: Vec<i32> = Vec::new();
             let mut opened: HashMap<i32, usize> = HashMap::new();
+            let entry = *perf;
+            let mut after: Option<Perf> = None;
             for m in items {
+                let mut branch = entry;
                 let mut branch_open = open.clone();
                 let held: Vec<(i32, usize, Frac)> = open
                     .iter()
                     .map(|(p, &i)| (*p, i, out[i].duration))
                     .collect();
-                let e = walk(m, time, vel, &mut branch_open, out);
+                let e = walk(m, time, &mut branch, &mut branch_open, out);
+                after.get_or_insert(branch);
                 // A tie this branch carried on and ended (another voice's note
                 // of the same pitch doesn't end it).
                 closed.extend(
@@ -222,14 +240,17 @@ fn walk(
                 open.remove(&p);
             }
             open.extend(opened);
+            if let Some(a) = after {
+                *perf = a;
+            }
             end
         }
         Music::Context { content, .. }
         | Music::Variable { content, .. }
-        | Music::Tuplet { content, .. } => walk(content, time, vel, open, out),
+        | Music::Tuplet { content, .. } => walk(content, time, perf, open, out),
         Music::Grace { content, .. } => {
             // Grace notes do not consume time; they sound at `time`.
-            walk(content, time, vel, open, out);
+            walk(content, time, perf, open, out);
             time
         }
         Music::Note {
@@ -237,12 +258,12 @@ fn walk(
             duration,
             annotations,
         } => {
-            apply_dynamics(vel, annotations);
+            apply_dynamics(&mut perf.vel, annotations);
             let dur = duration.actual_duration();
             emit_or_fuse(
-                pitch.midi_number(),
+                pitch.midi_number() + perf.transpose,
                 dur,
-                own_velocity(annotations).unwrap_or(*vel),
+                own_velocity(annotations).unwrap_or(perf.vel),
                 time,
                 has_tie_start(annotations),
                 open,
@@ -255,17 +276,17 @@ fn walk(
             duration,
             annotations,
         } => {
-            apply_dynamics(vel, annotations);
+            apply_dynamics(&mut perf.vel, annotations);
             let dur = duration.actual_duration();
             // A chord-level tie ties every pitch; a pitch may also carry its own.
             let chord_tie = has_tie_start(annotations);
             for (p, pitch_anns) in pitches {
                 emit_or_fuse(
-                    p.midi_number(),
+                    p.midi_number() + perf.transpose,
                     dur,
                     own_velocity(pitch_anns)
                         .or(own_velocity(annotations))
-                        .unwrap_or(*vel),
+                        .unwrap_or(perf.vel),
                     time,
                     chord_tie || has_tie_start(pitch_anns),
                     open,
@@ -282,7 +303,20 @@ fn walk(
             body,
             alternatives,
             ..
-        } => walk_repeat(*count, body, alternatives, time, vel, open, out),
+        } => walk_repeat(*count, body, alternatives, time, perf, open, out),
+        // A dynamic between notes (a MusicXML direction) sets the level.
+        Music::Direction(d) => {
+            if let Some(dm) = &d.dynamic {
+                perf.vel = lilypond_velocity(&dm.sign);
+            }
+            time
+        }
+        Music::Transposition(t) => {
+            if perf.sounding {
+                perf.transpose = t.semitones();
+            }
+            time
+        }
         // Attribute events / directions carry no notes and no time.
         _ => time,
     }
@@ -296,7 +330,7 @@ fn walk_repeat(
     body: &Music,
     alternatives: &[Music],
     time: Frac,
-    vel: &mut u8,
+    perf: &mut Perf,
     open: &mut HashMap<i32, usize>,
     out: &mut Vec<FlatNote>,
 ) -> Frac {
@@ -304,28 +338,38 @@ fn walk_repeat(
     let mut t = time;
     if alternatives.is_empty() {
         for _ in 0..reps {
-            t = walk(body, t, vel, open, out);
+            t = walk(body, t, perf, open, out);
         }
     } else {
         for i in 0..reps {
-            t = walk(body, t, vel, open, out);
+            t = walk(body, t, perf, open, out);
             let alt = &alternatives[i.min(alternatives.len() - 1)];
-            t = walk(alt, t, vel, open, out);
+            t = walk(alt, t, perf, open, out);
         }
     }
     t
 }
 
 /// Encode a Music document as a [`NoteArray`] at the given resolution
-/// (time steps per quarter note).
+/// (time steps per quarter note). Pitches are sounding pitches: a B♭
+/// clarinet's written D is a C.
 pub fn to_note_array(doc: &MusicDocument, resolution: u16) -> NoteArray {
+    to_note_array_pitched(doc, resolution, true)
+}
+
+/// [`to_note_array`], with written pitches when `sounding` is false.
+pub fn to_note_array_pitched(doc: &MusicDocument, resolution: u16, sounding: bool) -> NoteArray {
     let mut flat: Vec<FlatNote> = Vec::new();
-    let mut vel = DEFAULT_VELOCITY;
+    let mut perf = Perf {
+        vel: DEFAULT_VELOCITY,
+        transpose: 0,
+        sounding,
+    };
     let mut open: HashMap<i32, usize> = HashMap::new();
     walk(
         &doc.music,
         Frac::from_integer(0),
-        &mut vel,
+        &mut perf,
         &mut open,
         &mut flat,
     );
@@ -365,7 +409,7 @@ pub fn from_note_array(arr: &NoteArray) -> MusicDocument {
             let mut annotations = Vec::new();
             if n.velocity != DEFAULT_VELOCITY {
                 annotations.push(Annotation::Dynamic(DynamicMark {
-                    sign: velocity_to_dynamic(n.velocity).to_string(),
+                    sign: lilypond_dynamic(n.velocity).to_string(),
                     placement: Default::default(),
                 }));
                 annotations.push(Annotation::Velocity(n.velocity));

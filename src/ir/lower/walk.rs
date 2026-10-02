@@ -110,6 +110,10 @@ pub(super) fn walk_music(music: &Music, state: &mut LowerState) {
             state.push_event(TimedEvent::KeySignature(*ks));
         }
 
+        Music::Transposition(t) => {
+            state.push_event(TimedEvent::Transposition(*t));
+        }
+
         Music::Clef(clef) => {
             state.push_event(TimedEvent::Clef(*clef));
         }

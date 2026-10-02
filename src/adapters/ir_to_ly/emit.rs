@@ -9,7 +9,7 @@ use crate::ir::voice::Voice;
 use crate::ir::Part;
 
 use super::maps::{
-    articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, ornament_to_ly, partial_to_ly,
+    articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, length_to_ly, ornament_to_ly,
     pitch_to_ly, tempo_to_ly, time_to_ly, tremolo_suffix,
 };
 
@@ -23,6 +23,19 @@ pub(super) struct EmitState {
     /// are written after its bar check (a bar check between two grace
     /// groups aborts LilyPond).
     pub(super) grace_carry: Option<String>,
+    /// The main voice's stem command in force ("" for none).
+    pub(super) stem: String,
+    /// `\mark \default` marks written so far.
+    pub(super) marks: u32,
+}
+
+/// A bar's marks for its first voice, by place in the bar: commands
+/// written before the note there (`\\mark`, `\\tempo`, `\\break`) and
+/// post-events after it (dynamics, hairpins, text).
+#[derive(Default)]
+struct Marks {
+    before: std::collections::BTreeMap<Frac, Vec<String>>,
+    after: std::collections::BTreeMap<Frac, Vec<String>>,
 }
 
 /// Extract the tuplet display hint from a voice element, if present.
@@ -50,6 +63,7 @@ pub(super) fn emit_measures(
     lang: PitchLanguage,
     mode: PitchMode,
     staff_filter: Option<u8>,
+    lead: Option<u8>,
     partial_dur: Option<&Duration>,
     relative_ref: Option<&Pitch>,
     indent: usize,
@@ -57,6 +71,9 @@ pub(super) fn emit_measures(
 ) {
     let pad = " ".repeat(indent);
     let mut emit_state = EmitState::default();
+    // The stems LilyPond draws by itself: a stem command only where the
+    // source's differ.
+    let defaults = crate::ir::beams::default_stems(part);
     // In relative mode the body is wrapped in `\relative REF { … }` (REF is the
     // part's first pitch, chosen in parts.rs). The first note's octave marks must
     // be computed relative to REF, not absolute — otherwise `\relative a' { a' }`
@@ -108,7 +125,7 @@ pub(super) fn emit_measures(
         // Anacrusis: emit \partial before first measure
         if is_first_measure {
             if let Some(dur) = partial_dur {
-                lines.push(format!("{pad}\\partial {}", partial_to_ly(dur)));
+                lines.push(format!("{pad}\\partial {}", length_to_ly(dur)));
             }
             is_first_measure = false;
         }
@@ -138,54 +155,70 @@ pub(super) fn emit_measures(
             }
         }
 
-        // Separate directions into standalone (tempo, rehearsal) and note-attached (dynamics, wedges, markup).
-        // Note-attached directions are grouped by their forward-position offset
-        // (populated in mxml_to_ir) so they attach to the correct voice element.
-        // (position in the bar, in divisions or exactly) → marks there.
-        let mut dir_parts: Vec<(i32, Frac, Vec<String>)> = Vec::new();
+        // Compute divisions for mapping direction offsets to voice element indices.
+        let divisions: i64 = measure
+            .attributes
+            .as_ref()
+            .map(|a| a.divisions as i64)
+            .unwrap_or(last_divisions);
+        last_divisions = divisions;
+        // Score-wide marks (tempo, rehearsal marks, D.C., breaks) go in the
+        // part's first staff only, a staff's own marks in that staff: a piano
+        // part's tempo was written into both staves and read back twice.
+        let first_staff = staff_filter.is_none_or(|s| s == 1);
+        let mut marks = Marks::default();
         for dir in &measure.directions {
-            // Tempo and rehearsal marks can stand alone
-            if let Some(tempo) = &dir.tempo {
-                lines.push(format!("{pad}{}", tempo_to_ly(tempo)));
-            }
-            if dir.rehearsal.is_some() {
-                lines.push(format!("{pad}\\mark \\default"));
-            }
-            if dir.coda {
-                lines.push(format!(
-                    "{pad}\\mark \\markup {{ \\musicglyph \"scripts.coda\" }}"
-                ));
-            }
-            if dir.segno {
-                lines.push(format!(
-                    "{pad}\\mark \\markup {{ \\musicglyph \"scripts.segno\" }}"
-                ));
-            }
-            if let Some(text) = &dir.da_capo {
-                let text = super::helpers::escape_ly_string(text);
-                lines.push(format!("{pad}\\mark \"{text}\""));
-            }
-            if let Some(text) = &dir.dal_segno {
-                let text = super::helpers::escape_ly_string(text);
-                lines.push(format!("{pad}\\mark \"{text}\""));
-            }
-            if let Some(lb) = &dir.layout_break {
-                match lb {
-                    crate::ir::direction::LayoutBreakType::System => {
-                        lines.push(format!("{pad}\\break"));
-                    }
-                    crate::ir::direction::LayoutBreakType::Page => {
-                        lines.push(format!("{pad}\\pageBreak"));
-                    }
-                    crate::ir::direction::LayoutBreakType::Section => {
-                        lines.push(format!("{pad}\\section"));
-                    }
+            // Each mark at its exact place in the bar: `offset_frac` (every
+            // reader sets it), else the MusicXML divisions `offset`.
+            let at = if dir.offset_frac != Frac::from_integer(0) || dir.offset == 0 {
+                dir.offset_frac
+            } else {
+                Frac::new(i64::from(dir.offset), 4 * divisions.max(1))
+            };
+            if first_staff {
+                let before = marks.before.entry(at).or_default();
+                if let Some(tempo) = &dir.tempo {
+                    before.push(tempo_to_ly(tempo));
                 }
+                // `\mark \default` where it prints the mark's text, else
+                // the text.
+                if let Some(r) = &dir.rehearsal {
+                    before.push(super::helpers::rehearsal_to_ly(
+                        &r.text,
+                        &mut emit_state.marks,
+                    ));
+                }
+                if dir.coda {
+                    before.push("\\mark \\markup { \\musicglyph \"scripts.coda\" }".to_string());
+                }
+                if dir.segno {
+                    before.push("\\mark \\markup { \\musicglyph \"scripts.segno\" }".to_string());
+                }
+                for text in dir.da_capo.iter().chain(&dir.dal_segno) {
+                    let text = super::helpers::escape_ly_string(text);
+                    before.push(format!("\\mark \"{text}\""));
+                }
+                if let Some(lb) = &dir.layout_break {
+                    before.push(
+                        match lb {
+                            crate::ir::direction::LayoutBreakType::System => "\\break",
+                            crate::ir::direction::LayoutBreakType::Page => "\\pageBreak",
+                            crate::ir::direction::LayoutBreakType::Section => "\\section",
+                        }
+                        .to_string(),
+                    );
+                }
+            }
+            if staff_filter.is_some_and(|sf| dir.staff.max(1) != sf) {
+                continue;
+            }
+            if let Some(clef) = &dir.clef {
+                marks.before.entry(at).or_default().push(clef_to_ly(clef));
             }
             // Dynamics, wedges, text, pedal, octave shifts must attach to a note
             let mut parts: Vec<String> = Vec::new();
             if let Some(dyn_mark) = &dir.dynamic {
-                parts.push(format!("\\{}", dyn_mark.sign));
+                parts.push(super::maps::dynamic_to_ly(&dyn_mark.sign));
             }
             if let Some(wedge) = &dir.wedge {
                 let cmd = match wedge.wedge_type.as_str() {
@@ -224,30 +257,10 @@ pub(super) fn emit_measures(
                     parts.push(format!("\\ottava #{}", oct.octaves()));
                 }
             }
-            if !parts.is_empty() {
-                dir_parts.push((dir.offset, dir.offset_frac, parts));
-            }
+            marks.after.entry(at).or_default().extend(parts);
         }
-
-        // Compute divisions for mapping direction offsets to voice element indices.
-        let divisions: i64 = measure
-            .attributes
-            .as_ref()
-            .map(|a| a.divisions as i64)
-            .unwrap_or(last_divisions);
-        last_divisions = divisions;
-        // Each mark at its exact place in the bar: `offset_frac` (every
-        // reader sets it), else the MusicXML divisions `offset`.
-        let mut dir_at_offset: std::collections::BTreeMap<Frac, Vec<String>> =
-            std::collections::BTreeMap::new();
-        for (offset, exact, parts) in dir_parts {
-            let at = if exact != Frac::from_integer(0) || offset == 0 {
-                exact
-            } else {
-                Frac::new(i64::from(offset), 4 * divisions.max(1))
-            };
-            dir_at_offset.entry(at).or_default().extend(parts);
-        }
+        marks.before.retain(|_, v| !v.is_empty());
+        marks.after.retain(|_, v| !v.is_empty());
 
         let pre = lines.split_off(pre_start);
         // Left barline
@@ -286,48 +299,54 @@ pub(super) fn emit_measures(
         lines.extend(pre);
 
         // Voices
-        let voices: Vec<&Voice> = if let Some(sf) = staff_filter {
-            measure
-                .voices
-                .iter()
-                .filter(|v| super::voice_matches_staff(v, sf))
-                .filter(|v| super::voice_has_content(v))
-                .collect()
-        } else {
-            measure.voices.iter().collect()
-        };
+        let voices: Vec<(&Voice, &Voice)> = super::bar_voices(measure, staff_filter, lead)
+            .into_iter()
+            .map(|i| (&measure.voices[i], &defaults.measures[mi].voices[i]))
+            .collect();
 
         if voices.len() <= 1 {
-            if let Some(voice) = voices.first() {
+            if let Some(&(voice, default)) = voices.first() {
                 emit_voice_elements(
                     voice,
+                    default,
+                    None,
                     lang,
                     mode,
                     &mut emit_state,
                     &pad,
-                    &dir_at_offset,
+                    &marks,
                     lines,
                 );
             }
         } else {
-            // Multi-voice: << \\ >> syntax
+            // Multi-voice: `<< { } \\ { } >>`. With lyrics, the voice they
+            // follow goes on through the bar and the others are new voices:
+            // every `\\` voice is new, and lyrics skip it.
             lines.push(format!("{pad}<<"));
-            let empty_dirs = std::collections::BTreeMap::new();
-            for (i, voice) in voices.iter().enumerate() {
-                if i > 0 {
-                    lines.push(format!("{pad}  \\\\"));
+            let no_marks = Marks::default();
+            for (i, &(voice, default)) in voices.iter().enumerate() {
+                if lead.is_some() {
+                    let cmd = ["\\voiceOne", "\\voiceTwo", "\\voiceThree", "\\voiceFour"][i.min(3)];
+                    let new = if i > 0 { "\\new Voice " } else { "" };
+                    lines.push(format!("{pad}  {new}{{ {cmd}"));
+                } else {
+                    if i > 0 {
+                        lines.push(format!("{pad}  \\\\"));
+                    }
+                    lines.push(format!("{pad}  {{"));
                 }
-                lines.push(format!("{pad}  {{"));
                 let inner_pad = format!("{pad}    ");
                 // Only attach directions to the first voice
-                let dirs_for_voice = if i == 0 { &dir_at_offset } else { &empty_dirs };
+                let marks_for_voice = if i == 0 { &marks } else { &no_marks };
                 emit_voice_elements(
                     voice,
+                    default,
+                    Some(i),
                     lang,
                     mode,
                     &mut emit_state,
                     &inner_pad,
-                    dirs_for_voice,
+                    marks_for_voice,
                     lines,
                 );
                 // Only a lone voice carries graces on.
@@ -337,6 +356,9 @@ pub(super) fn emit_measures(
                 lines.push(format!("{pad}  }}"));
             }
             lines.push(format!("{pad}>>"));
+            if lead.is_some() {
+                lines.push(format!("{pad}\\oneVoice"));
+            }
         }
 
         // Right barline
@@ -422,23 +444,47 @@ pub(super) fn emit_measures(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One voice's music in a bar: `default` is the voice as LilyPond would
+/// stem it, `branch` its place in a `<< \\ >>` block (`None` for the main
+/// voice).
+#[allow(clippy::too_many_arguments)]
 fn emit_voice_elements(
     voice: &Voice,
+    default: &Voice,
+    branch: Option<usize>,
     lang: PitchLanguage,
     mode: PitchMode,
     state: &mut EmitState,
     pad: &str,
-    dir_at_offset: &std::collections::BTreeMap<Frac, Vec<String>>,
+    marks: &Marks,
     lines: &mut Vec<String>,
 ) {
-    let mut tokens: Vec<String> = state.grace_carry.take().into_iter().collect();
+    let dir_at_offset = &marks.after;
+    // Commands go before the note at their place (before its graces); those
+    // at the bar's start before graces carried from the bar before too.
+    let mut commands = marks.before.iter().peekable();
+    let mut tokens: Vec<String> = Vec::new();
+    while let Some((_, c)) = commands.next_if(|(at, _)| **at <= Frac::from_integer(0)) {
+        tokens.extend(c.iter().cloned());
+    }
+    tokens.extend(state.grace_carry.take());
     let mut in_tuplet = false;
     let mut open_ratio: (u8, u8) = (1, 1);
     // Open duration-ratio tuplet (actual, normal) for elements that carry a
     // tuplet ratio in their Duration but no explicit TupletDisplay — see the
     // fallback below.
     let mut dur_tuplet: Option<(u8, u8)> = None;
-    let mut current_stem: String = String::new(); // track stem direction changes
+    // The stem command in force: the main voice's carries on from bar to
+    // bar; a `\\` voice starts at its own direction, which `reset` restores.
+    let mut current_stem = match branch {
+        None => std::mem::take(&mut state.stem),
+        Some(_) => String::new(),
+    };
+    let reset = match branch {
+        None => "\\stemNeutral",
+        Some(k) if k % 2 == 0 => "\\stemUp",
+        Some(_) => "\\stemDown",
+    };
 
     // Running position in the bar, in wholes (grace notes take none).
     let mut fwd_pos = Frac::from_integer(0);
@@ -456,6 +502,9 @@ fn emit_voice_elements(
     let mut idx = 0;
     while idx < voice.elements.len() {
         let elem = &voice.elements[idx];
+        while let Some((_, c)) = commands.next_if(|(at, _)| **at <= fwd_pos) {
+            tokens.extend(c.iter().cloned());
+        }
 
         // Two-note tremolo: a start note paired with the following stop note
         // emits `\repeat tremolo N { a b }` (both consumed together).
@@ -533,25 +582,30 @@ fn emit_voice_elements(
         // Collect any directions that should attach at the current position.
         let dir_suffix = dirs_at(fwd_pos);
 
-        // Emit stem direction change if needed
-        let elem_stem: &str = match elem {
-            VoiceElement::Note(n) => &n.stem_direction,
-            VoiceElement::Chord(c) => c.notes.first().map_or("", |n| &n.stem_direction),
-            _ => "",
-        };
-        if !elem_stem.is_empty() && elem_stem != current_stem {
-            let cmd = match elem_stem {
-                "up" => "\\stemUp",
-                "down" => "\\stemDown",
+        // A stem command where the source's stem isn't LilyPond's own
+        // (grace notes keep theirs: up, or their voice's).
+        let graced = elem.notes().first().is_some_and(|n| n.is_grace);
+        if !matches!(elem, VoiceElement::Rest(_)) && !graced {
+            let source = crate::ir::beams::stem_of(elem);
+            let own = default
+                .elements
+                .get(idx)
+                .map_or("", crate::ir::beams::stem_of);
+            let want = match source {
+                "up" | "down" if source != own => source,
                 _ => "",
             };
-            if !cmd.is_empty() {
-                tokens.push(cmd.to_string());
-                current_stem = elem_stem.to_string();
+            if want != current_stem {
+                tokens.push(
+                    match want {
+                        "up" => "\\stemUp",
+                        "down" => "\\stemDown",
+                        _ => reset,
+                    }
+                    .to_string(),
+                );
+                current_stem = want.to_string();
             }
-        } else if elem_stem.is_empty() && !current_stem.is_empty() {
-            tokens.push("\\stemNeutral".to_string());
-            current_stem.clear();
         }
 
         // Emit \autoBeamOff / \autoBeamOn state changes
@@ -661,12 +715,21 @@ fn emit_voice_elements(
         }
     }
 
+    // Commands at the bar's end (a D.C.) come after its last note.
+    for (_, c) in commands {
+        tokens.extend(c.iter().cloned());
+    }
+
     // Safety: close any unclosed tuplet (explicit or duration-ratio).
     if in_tuplet || dur_tuplet.is_some() {
         tokens.push("}".to_string());
     } else if matches!(voice.elements.last(), Some(VoiceElement::Note(n)) if n.is_grace && !n.after_grace)
     {
         state.grace_carry = tokens.pop();
+    }
+
+    if branch.is_none() {
+        state.stem = current_stem;
     }
 
     // Group tokens into lines of ~72 chars.
@@ -712,7 +775,7 @@ fn push_grace(tokens: &mut Vec<String>, token: String) {
     // Mixed kinds join the group too (it keeps the first one's command).
     let joined = token.split_once(' ').and_then(|(_, body)| {
         let last = tokens.last()?;
-        let (cmd, prev) = ["\\acciaccatura", "\\appoggiatura", "\\grace"]
+        let (cmd, prev) = ["\\slashedGrace", "\\grace"]
             .into_iter()
             .find_map(|c| Some((c, last.strip_prefix(c)?.strip_prefix(' ')?)))?;
         let group = match prev.strip_prefix("{ ").and_then(|p| p.strip_suffix(" }")) {
@@ -753,10 +816,11 @@ fn grace_note_to_ly(
         // The main note is emitted separately; we emit only the grace part.
         return format!("\\afterGrace {{ {p}{d}{attach} }}");
     }
+    // No slur implied: one the source has is written as a slur.
     let cmd = if note.grace_slash {
-        "\\acciaccatura"
+        "\\slashedGrace"
     } else {
-        "\\appoggiatura"
+        "\\grace"
     };
     format!("{cmd} {p}{d}{attach}")
 }
@@ -811,16 +875,15 @@ pub(super) fn chord_to_ly(
 }
 
 pub(super) fn attachments_to_ly(note: &Note) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    let mut owned: Vec<String> = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
 
     // Beam brackets (must come immediately after pitch+duration)
     // Look at level-1 beam only; `[` for begin, `]` for end
     for beam in &note.beams {
         if beam.number == 1 {
             match beam.beam_type.as_str() {
-                "begin" => parts.push("["),
-                "end" => parts.push("]"),
+                "begin" => parts.push("[".into()),
+                "end" => parts.push("]".into()),
                 _ => {}
             }
         }
@@ -829,15 +892,15 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
     // Ties
     for tie in &note.ties {
         if tie.tie_type == StartStop::Start {
-            parts.push("~");
+            parts.push("~".into());
         }
     }
 
     // Slurs
     for slur in &note.slurs {
         match slur.slur_type {
-            StartStop::Start => parts.push("("),
-            StartStop::Stop => parts.push(")"),
+            StartStop::Start => parts.push(placed(slur.placement, "(")),
+            StartStop::Stop => parts.push(")".into()),
             _ => {}
         }
     }
@@ -846,13 +909,20 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
     for art in &note.articulations {
         let ly = articulation_to_ly(&art.name);
         if !ly.is_empty() {
-            parts.push(ly);
+            parts.push(placed(art.placement, ly));
         }
     }
 
-    // Fermata
-    if note.fermata.is_some() {
-        parts.push("\\fermata");
+    // Fermata (below: inverted)
+    if let Some(f) = &note.fermata {
+        parts.push(
+            if f.inverted {
+                "_\\fermata"
+            } else {
+                "\\fermata"
+            }
+            .into(),
+        );
     }
 
     // Ornaments
@@ -863,13 +933,16 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
         }
         let ly = ornament_to_ly(&orn.name);
         if !ly.is_empty() {
-            parts.push(ly);
+            parts.push(placed(orn.placement, ly));
         }
     }
 
     // Dynamics (note-attached)
     for dyn_mark in &note.dynamics {
-        owned.push(format!("\\{}", dyn_mark.sign));
+        parts.push(placed(
+            dyn_mark.placement,
+            &super::maps::dynamic_to_ly(&dyn_mark.sign),
+        ));
     }
 
     // Wedges (note-attached)
@@ -881,48 +954,50 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
             _ => "",
         };
         if !cmd.is_empty() {
-            parts.push(cmd);
+            parts.push(placed(wedge.placement, cmd));
         }
     }
 
     // Glissando (the style override is emitted as a prefix in emit_voice_elements)
     if note.glissando == Some(StartStop::Start) || note.slide == Some(StartStop::Start) {
-        parts.push("\\glissando");
+        parts.push("\\glissando".into());
     }
 
     // Technicals (fingering, bow marks, etc.)
     for tech in &note.technicals {
         match tech.name.as_str() {
-            "fingering" => {
-                owned.push(format!("-{}", tech.value));
-            }
-            "up-bow" => parts.push("\\upbow"),
-            "down-bow" => parts.push("\\downbow"),
-            "open-string" => parts.push("\\open"),
-            "snap-pizzicato" => parts.push("\\snappizzicato"),
-            "harmonic" => parts.push("\\flageolet"),
-            "stopped" => parts.push("-+"),
-            "string" => {
-                owned.push(format!("\\{}", tech.value));
-            }
+            "fingering" => parts.push(format!("-{}", tech.value)),
+            "up-bow" => parts.push("\\upbow".into()),
+            "down-bow" => parts.push("\\downbow".into()),
+            "open-string" => parts.push("\\open".into()),
+            "snap-pizzicato" => parts.push("\\snappizzicato".into()),
+            "harmonic" => parts.push("\\flageolet".into()),
+            "stopped" => parts.push("-+".into()),
+            "string" => parts.push(format!("\\{}", tech.value)),
             _ => {}
         }
     }
 
     // Text written at the note (`^\markup { "dolce" }`)
     for td in &note.text_directions {
-        let dir = match td.placement {
-            crate::ir::articulation::Placement::Above => '^',
-            crate::ir::articulation::Placement::Below => '_',
-            _ => '-',
-        };
         let text = super::helpers::escape_ly_string(&td.text);
-        owned.push(format!("{dir}\\markup {{ \"{text}\" }}"));
+        parts.push(placed(td.placement, &format!("-\\markup {{ \"{text}\" }}")));
     }
 
-    let mut result: String = parts.join("");
-    for o in &owned {
-        result.push_str(o);
+    parts.concat()
+}
+
+/// A post-event with its direction: `^` above, `_` below, LilyPond's own
+/// choice (`-`, or nothing) when unspecified.
+fn placed(placement: crate::ir::articulation::Placement, mark: &str) -> String {
+    use crate::ir::articulation::Placement;
+    let dir = match placement {
+        Placement::Above => '^',
+        Placement::Below => '_',
+        Placement::Unspecified => return mark.to_string(),
+    };
+    match mark.strip_prefix('-') {
+        Some(rest) => format!("{dir}{rest}"),
+        None => format!("{dir}{mark}"),
     }
-    result
 }

@@ -431,53 +431,132 @@ fn convert_tuplet_display(tuplet: &mxml::Tuplet) -> TupletDisplay {
     }
 }
 
+/// A `<lyric>`: its texts joined with `‿` when elided (`my‿a` on one note),
+/// the syllabic from the first's start and the last's end. A `number` that
+/// is no number (`chorus`) is the verse's name, numbered later per part
+/// (`number_verses`); `number` 0 until then.
 fn parse_lyric(lyric: &mxml::Lyric) -> Option<LyricSyllable> {
-    let mut text = String::new();
-    let mut syllabic_type = SyllabicType::Single;
-    let mut extend = false;
-    let elision;
-
-    match &lyric.content {
-        mxml::LyricContents::Text(text_lyric) => {
-            text = text_lyric.text.content.clone();
-            if let Some(ref syl) = text_lyric.syllabic {
-                syllabic_type = match syl.content {
-                    mdt::Syllabic::Single => SyllabicType::Single,
-                    mdt::Syllabic::Begin => SyllabicType::Begin,
-                    mdt::Syllabic::Middle => SyllabicType::Middle,
-                    mdt::Syllabic::End => SyllabicType::End,
-                };
-            }
-            extend = text_lyric.extend.is_some();
-            elision = !text_lyric.additional.is_empty();
-        }
-        mxml::LyricContents::Extend(_) => {
-            extend = true;
-            elision = false;
-        }
-        _ => {
-            elision = false;
-        }
-    }
-
-    if text.is_empty() {
+    let mxml::LyricContents::Text(text_lyric) = &lyric.content else {
+        // An extend-only lyric goes on an extender a syllable already has;
+        // humming and laughing have no text.
+        return None;
+    };
+    let syllabic = |s: &Option<mxml::Syllabic>| match s.as_ref().map(|s| &s.content) {
+        Some(mdt::Syllabic::Begin) => SyllabicType::Begin,
+        Some(mdt::Syllabic::Middle) => SyllabicType::Middle,
+        Some(mdt::Syllabic::End) => SyllabicType::End,
+        _ => SyllabicType::Single,
+    };
+    let mut texts = vec![text_lyric.text.content.clone()];
+    texts.extend(text_lyric.additional.iter().map(|a| a.text.content.clone()));
+    texts.retain(|t| !t.is_empty());
+    if texts.is_empty() {
         return None;
     }
-
-    let number: u8 = lyric
-        .attributes
-        .number
+    let first = syllabic(&text_lyric.syllabic);
+    let last = text_lyric
+        .additional
+        .last()
+        .map_or(first, |a| syllabic(&a.syllabic));
+    let starts_word = matches!(first, SyllabicType::Single | SyllabicType::Begin);
+    let ends_word = matches!(last, SyllabicType::Single | SyllabicType::End);
+    let syllabic = match (starts_word, ends_word) {
+        (true, true) => SyllabicType::Single,
+        (true, false) => SyllabicType::Begin,
+        (false, true) => SyllabicType::End,
+        (false, false) => SyllabicType::Middle,
+    };
+    // `<extend type="stop"/>` ends an extender; it starts none.
+    let extend = text_lyric
+        .extend
         .as_ref()
-        .and_then(|n| n.0.parse().ok())
-        .unwrap_or(1);
-
+        .is_some_and(|e| e.attributes.r#type != Some(mdt::StartStopContinue::Stop));
+    let token = lyric.attributes.number.as_ref().map(|n| n.0.trim());
+    let (number, named) = match token.map(|t| t.parse::<u8>()) {
+        None => (1, None),
+        Some(Ok(n)) if n > 0 => (n, None),
+        _ => (0, token.map(str::to_string)),
+    };
+    let name = lyric
+        .attributes
+        .name
+        .as_ref()
+        .map(|n| n.0.clone())
+        .or(named);
     Some(LyricSyllable {
-        text,
-        syllabic: syllabic_type,
+        elision: texts.len() > 1,
+        text: texts.join("\u{203F}"),
+        syllabic,
         number,
         extend,
-        elision,
+        name,
     })
+}
+
+/// One lyric line per (number, name, repetition on its note): MusicXML says
+/// nothing of how `number` and `name` combine (suite 61g), and two
+/// syllables of one line on one note can't be written. A line keeps its
+/// number when it is the first with it (a `number` that is no number reads
+/// as 0); the others take the first numbers left.
+pub(super) fn number_verses(part: &mut crate::ir::Part) {
+    type Line = (u8, Option<String>, usize);
+    fn lines_of(lyrics: &[LyricSyllable]) -> Vec<Line> {
+        lyrics
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let before = lyrics[..i]
+                    .iter()
+                    .filter(|o| o.number == l.number && o.name == l.name)
+                    .count();
+                (l.number, l.name.clone(), before)
+            })
+            .collect()
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    for n in part
+        .measures
+        .iter()
+        .flat_map(|m| &m.voices)
+        .flat_map(|v| &v.elements)
+        .flat_map(|e| e.notes())
+    {
+        for line in lines_of(&n.lyrics) {
+            if !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
+    }
+    let mut used = std::collections::BTreeSet::new();
+    let mut number: std::collections::HashMap<&Line, u8> = Default::default();
+    for line in &lines {
+        if line.0 > 0 && used.insert(line.0) {
+            number.insert(line, line.0);
+        }
+    }
+    for line in &lines {
+        if !number.contains_key(line) {
+            let n = (1..=u8::MAX).find(|n| !used.contains(n)).unwrap_or(u8::MAX);
+            used.insert(n);
+            number.insert(line, n);
+        }
+    }
+    if number.iter().all(|(line, n)| line.0 == *n) {
+        return;
+    }
+    for e in part
+        .measures
+        .iter_mut()
+        .flat_map(|m| &mut m.voices)
+        .flat_map(|v| &mut v.elements)
+    {
+        for n in e.notes_mut() {
+            let renumbered: Vec<u8> = lines_of(&n.lyrics).iter().map(|l| number[l]).collect();
+            for (l, v) in n.lyrics.iter_mut().zip(renumbered) {
+                l.number = v;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

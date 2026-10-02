@@ -1,262 +1,292 @@
-//! Lyrics emission.
+//! Lyrics emission: one `\lyricmode` line per verse, sung on the voice that
+//! carries the lyrics, one token per note it sings. The line says
+//! `\set ignoreMelismata = ##t` (as musicxml2ly does): the IR already says
+//! which note sings what, so LilyPond's slur, tie and beam rules must not
+//! choose again.
+
+use std::collections::BTreeMap;
 
 use crate::ir::articulation::{LyricSyllable, StartStop, SyllabicType};
-use crate::ir::note::VoiceElement;
+use crate::ir::duration::{Duration, Frac};
+use crate::ir::language::{PitchLanguage, PitchMode};
+use crate::ir::note::{Note, VoiceElement};
 use crate::ir::Part;
 
 use super::helpers::{index_to_alpha, part_var_name};
+use super::maps::{length_to_ly, pitch_to_ly};
 
-#[derive(Debug, Clone)]
-pub(super) enum LyricEvent {
-    Syllable(LyricSyllable),
-    Skip,
-}
-
-/// Extract lyrics from a part's notes, grouped by lyric number.
-///
-/// Walks notes in the same order as `attach_lyrics_to_part` in `ly_to_ir.rs`:
-/// grace notes, tied continuations, `in_melisma` notes, and slur-interior notes
-/// (when `no_auto_beam` is set) are automatically skipped by the voice -- no `_`
-/// skip is needed in lyricmode for these. Only notes that *should* consume a
-/// syllable but have no lyric attached get a `_` skip.
-fn extract_lyrics(
-    part: &Part,
-    staff_filter: Option<u8>,
-) -> std::collections::BTreeMap<u8, Vec<LyricEvent>> {
-    let mut lyrics_by_number: std::collections::BTreeMap<u8, Vec<LyricEvent>> =
-        std::collections::BTreeMap::new();
-
-    let mut open_slurs: u32 = 0;
-
-    for measure in &part.measures {
-        for voice in &measure.voices {
-            for elem in &voice.elements {
-                // In a multi-staff part, only the lyric-bearing staff's notes
-                // form the syllable stream.
-                if let Some(sf) = staff_filter {
-                    let staff = match elem {
-                        VoiceElement::Note(n) => n.staff,
-                        VoiceElement::Chord(c) => c.staff,
-                        VoiceElement::Rest(r) => r.staff,
-                    };
-                    if staff != sf {
-                        continue;
-                    }
-                }
-                match elem {
-                    VoiceElement::Note(note) => {
-                        let starts = note
-                            .slurs
-                            .iter()
-                            .filter(|s| s.slur_type == StartStop::Start)
-                            .count() as u32;
-                        let stops = note
-                            .slurs
-                            .iter()
-                            .filter(|s| s.slur_type == StartStop::Stop)
-                            .count() as u32;
-
-                        if note.is_grace {
-                            open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
-                            continue;
-                        }
-
-                        let is_tied_cont = note.ties.iter().any(|t| t.tie_type == StartStop::Stop);
-                        let in_slur_melisma = note.no_auto_beam
-                            && open_slurs > 0
-                            && !note.slurs.iter().any(|s| s.slur_type == StartStop::Start);
-
-                        open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
-
-                        // These notes are automatically skipped -- no lyric event needed
-                        if is_tied_cont || note.in_melisma || in_slur_melisma {
-                            continue;
-                        }
-
-                        // This note consumes a syllable position
-                        if !note.lyrics.is_empty() {
-                            for syl in &note.lyrics {
-                                lyrics_by_number
-                                    .entry(syl.number)
-                                    .or_default()
-                                    .push(LyricEvent::Syllable(syl.clone()));
-                            }
-                        } else {
-                            // Note consumes a position but has no lyric -- emit skip
-                            for lyrics in lyrics_by_number.values_mut() {
-                                lyrics.push(LyricEvent::Skip);
-                            }
-                        }
-                    }
-                    VoiceElement::Chord(chord) => {
-                        if let Some(first) = chord.notes.first() {
-                            let starts = first
-                                .slurs
-                                .iter()
-                                .filter(|s| s.slur_type == StartStop::Start)
-                                .count() as u32;
-                            let stops = first
-                                .slurs
-                                .iter()
-                                .filter(|s| s.slur_type == StartStop::Stop)
-                                .count() as u32;
-                            open_slurs = open_slurs.saturating_add(starts).saturating_sub(stops);
-
-                            if !first.lyrics.is_empty() {
-                                for syl in &first.lyrics {
-                                    lyrics_by_number
-                                        .entry(syl.number)
-                                        .or_default()
-                                        .push(LyricEvent::Syllable(syl.clone()));
-                                }
-                            } else {
-                                for lyrics in lyrics_by_number.values_mut() {
-                                    lyrics.push(LyricEvent::Skip);
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+/// Every voice of a part that sings, as (staff, voice number), the one with
+/// the most syllables first; the staff is `None` in a one-staff part.
+fn lyric_voices(part: &Part) -> Vec<(Option<u8>, u8)> {
+    let mut count: BTreeMap<(u8, u8), usize> = BTreeMap::new();
+    for v in part.measures.iter().flat_map(|m| &m.voices) {
+        for e in &v.elements {
+            if e.notes().first().is_some_and(|n| !n.lyrics.is_empty()) {
+                *count.entry((e.staff().max(1), v.number)).or_default() += 1;
             }
         }
     }
-
-    lyrics_by_number
+    let mut voices: Vec<((u8, u8), usize)> = count.into_iter().collect();
+    voices.sort_by_key(|&(key, n)| (std::cmp::Reverse(n), key));
+    voices
+        .into_iter()
+        .map(|((staff, voice), _)| ((part.staves > 1).then_some(staff), voice))
+        .collect()
 }
 
-/// Check if a part has any lyrics on its notes.
+/// The voice a part's lyrics are sung on: its music carries it through
+/// every bar (see `bar_voices`). Others that sing get a NullVoice.
+pub(super) fn lyric_voice(part: &Part) -> Option<(Option<u8>, u8)> {
+    lyric_voices(part).first().copied()
+}
+
+/// Whether a part has any lyrics on its notes.
 pub(super) fn part_has_lyrics(part: &Part) -> bool {
-    part.measures.iter().any(|m| {
-        m.voices.iter().any(|v| {
-            v.elements.iter().any(|e| match e {
-                VoiceElement::Note(n) => !n.lyrics.is_empty(),
-                VoiceElement::Chord(c) => c.notes.first().is_some_and(|n| !n.lyrics.is_empty()),
-                _ => false,
-            })
-        })
-    })
+    lyric_voice(part).is_some()
 }
 
-/// For a multi-staff part with lyrics, the staff number whose notes carry the
-/// lyrics (`\lyricsto` must target a voice on that staff). Returns `None` for
-/// single-staff parts (the whole part is the lyric stream) or when there are
-/// no lyrics.
+/// For a multi-staff part, the staff whose voice sings the lyrics.
 pub(super) fn lyric_staff(part: &Part) -> Option<u8> {
-    if part.staves <= 1 {
-        return None;
-    }
-    for m in &part.measures {
-        for v in &m.voices {
-            for e in &v.elements {
-                let (has, staff) = match e {
-                    VoiceElement::Note(n) => (!n.lyrics.is_empty(), n.staff),
-                    VoiceElement::Chord(c) => (
-                        c.notes.first().is_some_and(|n| !n.lyrics.is_empty()),
-                        c.staff,
-                    ),
-                    _ => (false, 0),
-                };
-                if has {
-                    return Some(staff);
-                }
-            }
-        }
-    }
-    None
+    lyric_voice(part).and_then(|(staff, _)| staff)
 }
 
-/// Emit a lyrics variable for a part.
-pub(super) fn emit_lyrics_variable(part: &Part, staff_filter: Option<u8>, lines: &mut Vec<String>) {
-    let lyrics_map = extract_lyrics(part, staff_filter);
-    if lyrics_map.is_empty() {
-        return;
-    }
+/// The notes the lyrics' voice sings, in order: in each bar the voice the
+/// music writes first (the lyrics' voice when the bar has it, see
+/// `bar_voices`), without grace notes and rests.
+fn sung_notes(part: &Part, staff: Option<u8>, voice: u8) -> Vec<&Note> {
+    part.measures
+        .iter()
+        .filter_map(|m| {
+            super::bar_voices(m, staff, Some(voice))
+                .first()
+                .map(|&i| &m.voices[i].elements)
+        })
+        .flatten()
+        .filter_map(|e| e.notes().first().filter(|n| !n.is_grace))
+        .collect()
+}
 
+/// The notes of one voice on a staff, without grace notes and rests: what
+/// its NullVoice sings.
+fn voice_notes(part: &Part, staff: Option<u8>, voice: u8) -> Vec<&Note> {
+    part.measures
+        .iter()
+        .flat_map(|m| &m.voices)
+        .filter(|v| v.number == voice)
+        .flat_map(|v| &v.elements)
+        .filter(|e| staff.is_none_or(|s| e.staff().max(1) == s))
+        .filter_map(|e| e.notes().first().filter(|n| !n.is_grace))
+        .collect()
+}
+
+/// Each verse (by number): its name and a token per sung note.
+type Verses = BTreeMap<u8, (Option<String>, Vec<String>)>;
+
+fn verses(notes: &[&Note]) -> Verses {
+    let mut verses = Verses::new();
+    for s in notes.iter().flat_map(|n| &n.lyrics) {
+        let name = &mut verses.entry(s.number).or_default().0;
+        if name.is_none() {
+            name.clone_from(&s.name);
+        }
+    }
+    for (&number, (_, tokens)) in verses.iter_mut() {
+        tokens.extend(notes.iter().map(|n| {
+            n.lyrics
+                .iter()
+                .find(|s| s.number == number)
+                .map_or_else(|| "_".to_string(), syllable_to_ly)
+        }));
+        while tokens.last().is_some_and(|t| t == "_") {
+            tokens.pop();
+        }
+    }
+    verses
+}
+
+/// A part's lyric lines: (the staff, the voice `\lyricsto` follows — the
+/// part's own or a NullVoice's name and variable —, its verses, each with
+/// its variable).
+struct Line {
+    staff: Option<u8>,
+    voice: u8,
+    /// `None` for the part's own voice; the NullVoice's name otherwise.
+    null_voice: Option<String>,
+    verses: Vec<(String, Option<String>, Vec<String>)>,
+}
+
+fn lines(part: &Part) -> Vec<Line> {
     let var = part_var_name(part);
-
-    for (&number, events) in &lyrics_map {
-        let suffix = if lyrics_map.len() > 1 {
-            format!("Verse{}", index_to_alpha(number as usize))
-        } else {
-            "Lyrics".to_string()
-        };
-        let lyrics_var = format!("{var}{suffix}");
-        lines.push(format!("{lyrics_var} = \\lyricmode {{"));
-
-        let mut tokens: Vec<String> = Vec::new();
-        let mut i = 0;
-        while i < events.len() {
-            match &events[i] {
-                LyricEvent::Skip => {
-                    tokens.push("_".to_string());
-                }
-                LyricEvent::Syllable(syl) => {
-                    let text = escape_lyric_text(&syl.text);
-                    match syl.syllabic {
-                        SyllabicType::Begin | SyllabicType::Middle => {
-                            tokens.push(format!("{text} --"));
-                        }
-                        SyllabicType::End | SyllabicType::Single => {
-                            tokens.push(text);
-                        }
-                    }
-                    if syl.extend {
-                        tokens.push("__".to_string());
-                    }
-                }
+    lyric_voices(part)
+        .into_iter()
+        .enumerate()
+        .map(|(k, (staff, voice))| {
+            let (notes, null_voice, prefix) = if k == 0 {
+                (sung_notes(part, staff, voice), None, var.clone())
+            } else {
+                let name = format!("{var}NullVoice{}", index_to_alpha(k));
+                (voice_notes(part, staff, voice), Some(name.clone()), name)
+            };
+            let verses = verses(&notes);
+            let count = verses.len();
+            let verses = verses
+                .into_iter()
+                .map(|(number, (name, tokens))| {
+                    let v = if count > 1 {
+                        format!("{prefix}Verse{}", index_to_alpha(number as usize))
+                    } else {
+                        format!("{prefix}Lyrics")
+                    };
+                    (v, name, tokens)
+                })
+                .collect();
+            Line {
+                staff,
+                voice,
+                null_voice,
+                verses,
             }
-            i += 1;
+        })
+        .collect()
+}
+
+/// A NullVoice: one voice's rhythm in absolute pitches, a spacer for each
+/// bar it is not in (it is not printed or played; lyrics follow it).
+fn null_voice_music(part: &Part, staff: Option<u8>, voice: u8, lang: PitchLanguage) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut meter = Frac::from_integer(1);
+    for m in &part.measures {
+        if let Some(ts) = m.attributes.as_ref().and_then(|a| a.time.as_ref()) {
+            meter = ts.beats_fraction();
         }
+        let len = match m.content_length() {
+            l if l > Frac::from_integer(0) => l,
+            _ => meter,
+        };
+        let mut at = Frac::from_integer(0);
+        let elements = m
+            .voices
+            .iter()
+            .filter(|v| v.number == voice)
+            .flat_map(|v| &v.elements)
+            .filter(|e| staff.is_none_or(|s| e.staff().max(1) == s));
+        for e in elements {
+            let d = e.metric_duration();
+            if d == Frac::from_integer(0) {
+                continue;
+            }
+            let dur = length_to_ly(&Duration::new(d));
+            let pitch = |n: &Note| pitch_to_ly(&n.pitch, lang, None, PitchMode::Absolute);
+            let tie = |n: &Note| {
+                if n.ties.iter().any(|t| t.tie_type == StartStop::Start) {
+                    "~"
+                } else {
+                    ""
+                }
+            };
+            tokens.push(match e {
+                VoiceElement::Note(n) => format!("{}{dur}{}", pitch(n), tie(n)),
+                VoiceElement::Chord(c) => format!(
+                    "<{}>{dur}{}",
+                    c.notes.iter().map(pitch).collect::<Vec<_>>().join(" "),
+                    c.notes.first().map_or("", tie)
+                ),
+                VoiceElement::Rest(_) => format!("s{dur}"),
+            });
+            at += d;
+        }
+        if at < len {
+            tokens.push(format!("s{}", length_to_ly(&Duration::new(len - at))));
+        }
+        tokens.push("|".to_string());
+    }
+    tokens
+}
 
-        // Group tokens into lines of ~72 chars.
-        super::helpers::push_wrapped(&tokens, "  ", lines);
-
-        lines.push("}".to_string());
-        lines.push(String::new());
+/// Emit a part's lyric variables (one per verse) and its NullVoices.
+pub(super) fn emit_lyrics_variable(part: &Part, lang: PitchLanguage, lines_out: &mut Vec<String>) {
+    for line in lines(part) {
+        if let Some(name) = &line.null_voice {
+            lines_out.push(format!("{name} = {{"));
+            let music = null_voice_music(part, line.staff, line.voice, lang);
+            super::helpers::push_wrapped(&music, "  ", lines_out);
+            lines_out.push("}".to_string());
+            lines_out.push(String::new());
+        }
+        for (var, name, tokens) in &line.verses {
+            lines_out.push(format!("{var} = \\lyricmode {{"));
+            lines_out.push("  \\set ignoreMelismata = ##t".to_string());
+            if let Some(name) = name {
+                let name = super::helpers::escape_ly_string(name);
+                lines_out.push(format!("  \\set stanza = \"{name}\""));
+            }
+            super::helpers::push_wrapped(tokens, "  ", lines_out);
+            lines_out.push("}".to_string());
+            lines_out.push(String::new());
+        }
     }
 }
 
-/// Escape special characters in lyric text for LilyPond: quoted when
-/// `\lyricmode` would read it as something else — a duration (`0/0/1`,
-/// `2nd`), a hyphen or extender, a brace, Scheme, or several words.
-pub(super) fn escape_lyric_text(text: &str) -> String {
-    let special = text.is_empty()
-        || text.starts_with(|c: char| c.is_ascii_digit())
-        || matches!(text, "--" | "__" | "_")
-        || text.contains(|c: char| c.is_whitespace() || "\"\\{}#$".contains(c));
-    if special {
-        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+/// Whether anything on this staff sings (the part's voice or a NullVoice).
+pub(super) fn staff_sings(part: &Part, staff: Option<u8>) -> bool {
+    lyric_voices(part).iter().any(|(s, _)| *s == staff)
+}
+
+/// One syllable: `my~a` for words sung on one note, `Hal --`, `jah __`.
+pub(super) fn syllable_to_ly(s: &LyricSyllable) -> String {
+    let words: Vec<&str> = s.text.split('\u{203F}').collect();
+    let mut out = if words.len() > 1 && words.iter().all(|w| escape_lyric_text(w) == *w) {
+        words.join("~")
     } else {
+        escape_lyric_text(&s.text)
+    };
+    if matches!(s.syllabic, SyllabicType::Begin | SyllabicType::Middle) {
+        out.push_str(" --");
+    }
+    if s.extend {
+        out.push_str(" __");
+    }
+    out
+}
+
+/// Lyric text for `\lyricmode`, quoted when LilyPond would read it as
+/// something else: a duration (any digit: `a1`, `2nd`, `dominant-11th`), a
+/// hyphen or extender, a space (`_`), words on one note (`~`), a brace, a
+/// comment, Scheme, or several words.
+pub(super) fn escape_lyric_text(text: &str) -> String {
+    let plain = !text.is_empty()
+        && !matches!(text, "--" | "__" | "_")
+        && !text.contains(|c: char| {
+            c.is_ascii_digit() || c.is_whitespace() || "\"\\{}#$%~_|*=<>\u{203F}".contains(c)
+        });
+    if plain {
         text.to_string()
+    } else {
+        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
     }
 }
 
-/// Emit lyrics references in the score block for a part.
+/// The score block's lyrics for a staff: its NullVoices, and a
+/// `\new Lyrics` for each verse sung on it (`voice_name`: the part's own
+/// voice).
 pub(super) fn emit_lyrics_refs(
     part: &Part,
+    staff: Option<u8>,
     voice_name: &str,
-    staff_filter: Option<u8>,
     indent: usize,
-    lines: &mut Vec<String>,
+    lines_out: &mut Vec<String>,
 ) {
-    let lyrics_map = extract_lyrics(part, staff_filter);
-    if lyrics_map.is_empty() {
-        return;
-    }
-
     let pad = " ".repeat(indent);
-    let var = part_var_name(part);
-
-    for &number in lyrics_map.keys() {
-        let suffix = if lyrics_map.len() > 1 {
-            format!("Verse{}", index_to_alpha(number as usize))
-        } else {
-            "Lyrics".to_string()
+    for line in lines(part).into_iter().filter(|l| l.staff == staff) {
+        let target = match &line.null_voice {
+            Some(name) => {
+                lines_out.push(format!("{pad}\\new NullVoice = \"{name}\" \\{name}"));
+                name.clone()
+            }
+            None => super::helpers::escape_ly_string(voice_name),
         };
-        let lyrics_var = format!("{var}{suffix}");
-        lines.push(format!(
-            "{pad}\\new Lyrics \\lyricsto \"{voice_name}\" \\{lyrics_var}"
-        ));
+        for (var, _, _) in &line.verses {
+            lines_out.push(format!("{pad}\\new Lyrics \\lyricsto \"{target}\" \\{var}"));
+        }
     }
 }

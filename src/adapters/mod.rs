@@ -175,6 +175,192 @@ pub(crate) const ALTER_ENC_BASE: i32 = 1000;
 pub(crate) const ALTER_ENC_MIN: i32 = 700;
 pub(crate) const ALTER_ENC_MAX: i32 = 1300;
 
+// ---------------------------------------------------------------------------
+// Text
+// ---------------------------------------------------------------------------
+
+/// A text file's bytes as UTF-8: as they are when they are UTF-8 (a leading
+/// byte-order mark dropped), decoded by their byte-order mark when UTF-16,
+/// else Latin-1 (each byte its own character), the usual encoding of older
+/// ABC, Humdrum and MIDI files.
+pub(crate) fn decode_text_bytes(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(s) => match s.strip_prefix('\u{feff}') {
+            Some(rest) => rest.to_string(),
+            None => s,
+        },
+        Err(e) => {
+            let b = e.into_bytes();
+            let utf16 = |rest: &[u8], big_endian: bool| -> String {
+                let units = rest.chunks_exact(2).map(|p| {
+                    if big_endian {
+                        u16::from_be_bytes([p[0], p[1]])
+                    } else {
+                        u16::from_le_bytes([p[0], p[1]])
+                    }
+                });
+                char::decode_utf16(units)
+                    .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+                    .collect()
+            };
+            match b.as_slice() {
+                [0xFF, 0xFE, rest @ ..] => utf16(rest, false),
+                [0xFE, 0xFF, rest @ ..] => utf16(rest, true),
+                _ => b.iter().map(|&c| char::from(c)).collect(),
+            }
+        }
+    }
+}
+
+/// Unicode noncharacters standing in, inside MusicXML text, for what the
+/// `musicxml` crate's parser cannot keep: `<` (it would start a tag), `"`
+/// (it would end an attribute value) and the line breaks and tabs it deletes
+/// from text. Noncharacters never occur in interchanged text, unlike the
+/// private-use area that SMuFL's music glyphs live in.
+pub(crate) const XML_STAND_INS: [(char, char); 4] = [
+    ('<', '\u{FDD0}'),
+    ('"', '\u{FDD1}'),
+    ('\n', '\u{FDD2}'),
+    ('\t', '\u{FDD3}'),
+];
+
+fn stand_in(c: char) -> char {
+    XML_STAND_INS
+        .iter()
+        .find(|(raw, _)| *raw == c)
+        .map_or(c, |(_, s)| *s)
+}
+
+/// One character reference or predefined entity at the start of `s` (just
+/// past its `&`): the character and the bytes it took, `;` included.
+fn xml_entity(s: &str) -> Option<(char, usize)> {
+    let end = s.get(..12).unwrap_or(s).find(';')?;
+    let name = &s[..end];
+    let c = match name {
+        "lt" => '<',
+        "gt" => '>',
+        "amp" => '&',
+        "quot" => '"',
+        "apos" => '\'',
+        _ => {
+            let code = match name.strip_prefix("#x").or_else(|| name.strip_prefix("#X")) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => name.strip_prefix('#')?.parse().ok()?,
+            };
+            char::from_u32(code)?
+        }
+    };
+    Some((c, end + 1))
+}
+
+/// `s` with its entities decoded, characters that can't stay as themselves
+/// as [`XML_STAND_INS`]; `keep` lists the raw characters left as they are.
+fn decode_xml_chars(s: &str, keep: &[char], out: &mut String) {
+    let mut rest = s;
+    while let Some(c) = rest.chars().next() {
+        if c == '&' {
+            if let Some((d, len)) = xml_entity(&rest[1..]) {
+                out.push(if keep.contains(&d) { d } else { stand_in(d) });
+                rest = &rest[1 + len..];
+                continue;
+            }
+        }
+        out.push(if keep.contains(&c) { c } else { stand_in(c) });
+        rest = &rest[c.len_utf8()..];
+    }
+}
+
+/// MusicXML ready for the `musicxml` crate, which reads text and attribute
+/// values raw: their entities decoded (`&amp;` was kept as `&amp;` in a
+/// title, `&#233;` as `&#233;`), CDATA sections made text, and line breaks
+/// inside text kept, all with [`XML_STAND_INS`] where needed.
+/// [`restore_xml_text`] turns the stand-ins back. `None` when nothing
+/// changes.
+pub(crate) fn decode_xml_text(xml: &str) -> Option<String> {
+    if !xml.contains(['&', '\n', '\t']) && !xml.contains("<![CDATA[") {
+        return None;
+    }
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while !rest.is_empty() {
+        // Text up to the next markup: inner whitespace is content, the
+        // whitespace around it is layout the parser trims.
+        let text_end = rest.find('<').unwrap_or(rest.len());
+        let text = &rest[..text_end];
+        let core = text.trim();
+        if core.is_empty() {
+            out.push_str(text);
+        } else {
+            let lead = &text[..text.len() - text.trim_start().len()];
+            let trail = &text[text.trim_end().len()..];
+            out.push_str(lead);
+            decode_xml_chars(&core.replace('\r', ""), &['>', '"', '&', '\''], &mut out);
+            out.push_str(trail);
+        }
+        rest = &rest[text_end..];
+        if rest.is_empty() {
+            break;
+        }
+        if let Some(body) = rest.strip_prefix("<![CDATA[") {
+            let end = body.find("]]>").unwrap_or(body.len());
+            for c in body[..end].chars().filter(|&c| c != '\r') {
+                out.push(if c == '"' { c } else { stand_in(c) });
+            }
+            rest = body.get(end + 3..).unwrap_or("");
+        } else if rest.starts_with("<!--") {
+            let end = rest.find("-->").map_or(rest.len(), |e| e + 3);
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+        } else {
+            // A tag, its quoted attribute values decoded (`<` and `"` as
+            // stand-ins: either would break the tag).
+            let keep = ['>', '&', '\'', '\n', '\t'];
+            let mut quote: Option<char> = None;
+            let mut value = String::new();
+            let mut end = rest.len();
+            for (i, c) in rest.char_indices() {
+                match quote {
+                    None => {
+                        out.push(c);
+                        if c == '>' {
+                            end = i + 1;
+                            break;
+                        }
+                        if c == '"' || c == '\'' {
+                            quote = Some(c);
+                            value.clear();
+                        }
+                    }
+                    Some(q) if c == q => {
+                        decode_xml_chars(&value, &keep, &mut out);
+                        out.push(c);
+                        quote = None;
+                    }
+                    Some(_) => value.push(c),
+                }
+            }
+            if quote.is_some() {
+                out.push_str(&value); // an unterminated value, as it was
+            }
+            rest = &rest[end..];
+        }
+    }
+    Some(out)
+}
+
+/// A string of a score read through [`decode_xml_text`], its stand-ins
+/// turned back into the characters they stand for.
+pub(crate) fn restore_xml_text(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            XML_STAND_INS
+                .iter()
+                .find(|(_, stand)| *stand == c)
+                .map_or(c, |(raw, _)| *raw)
+        })
+        .collect()
+}
+
 /// Rewrite fractional `<alter>` contents in raw MusicXML to encoded integers.
 pub(crate) fn encode_fractional_alters(xml: String) -> String {
     if !xml.contains("<alter>") {
@@ -282,4 +468,75 @@ pub(crate) fn normalize_attribute_quotes(xml: String) -> String {
         }
     }
     String::from_utf8(out).unwrap_or(xml)
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    use crate::ir::articulation::{LyricSyllable, SyllabicType};
+
+    #[test]
+    fn text_bytes_in_any_encoding_become_utf8() {
+        assert_eq!(decode_text_bytes("Grüß".as_bytes().to_vec()), "Grüß");
+        assert_eq!(decode_text_bytes(b"\xEF\xBB\xBFT:Tune".to_vec()), "T:Tune");
+        // Latin-1 (`ü` = 0xFC, `ß` = 0xDF) isn't UTF-8.
+        assert_eq!(decode_text_bytes(b"Gr\xFC\xDF".to_vec()), "Grüß");
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("Ré".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(decode_text_bytes(utf16), "Ré");
+    }
+
+    #[test]
+    fn xml_text_is_decoded_for_the_crate() {
+        let xml =
+            "<a t=\"x &quot;y&quot;\">\n  <b>Tom &amp; Jerry &lt;live&gt; &#233;&#x41;</b>\n  \
+                   <c>one\ntwo</c><!-- a &amp; b --><d><![CDATA[x < y]]></d>\n</a>";
+        let out = decode_xml_text(xml).expect("changed");
+        assert_eq!(
+            out,
+            "<a t=\"x \u{FDD1}y\u{FDD1}\">\n  <b>Tom & Jerry \u{FDD0}live> éA</b>\n  \
+             <c>one\u{FDD2}two</c><!-- a &amp; b --><d>x \u{FDD0} y</d>\n</a>"
+        );
+        assert_eq!(
+            restore_xml_text("x \u{FDD0} y\u{FDD2}\u{FDD1}"),
+            "x < y\n\""
+        );
+        assert_eq!(decode_xml_text("<a>plain</a>"), None);
+    }
+
+    #[test]
+    fn musicxml_text_round_trips_whatever_its_characters() {
+        use crate::ir::duration::Duration;
+        use crate::ir::note::{Note, VoiceElement};
+        use crate::ir::pitch::{Pitch, PitchStep};
+        let mut score = crate::adapters::ly_to_ir::LyToIrAdapter::new()
+            .convert_str("{ c'4 }")
+            .expect("reads");
+        let title = "Tom & Jerry <live> \"quoted\" 'apos'";
+        score.metadata.title = Some(title.to_string());
+        let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
+        note.lyrics.push(LyricSyllable {
+            text: "<a> & b".to_string(),
+            syllabic: SyllabicType::Single,
+            number: 1,
+            extend: false,
+            elision: false,
+            name: None,
+        });
+        score.parts_mut()[0].measures[0].voices[0].elements[0] = VoiceElement::Note(Box::new(note));
+        let xml = crate::adapters::ir_to_mxml::IrToMxmlAdapter::new()
+            .convert(&score)
+            .expect("writes");
+        assert!(xml.contains("Tom &amp; Jerry &lt;live&gt;"), "{xml}");
+        let back = crate::adapters::mxml_to_ir::MxmlToIrAdapter::new()
+            .convert_str(&xml)
+            .expect("reads back");
+        assert_eq!(back.metadata.title.as_deref(), Some(title));
+        let VoiceElement::Note(n) = &back.parts()[0].measures[0].voices[0].elements[0] else {
+            panic!("a note");
+        };
+        assert_eq!(n.lyrics[0].text, "<a> & b");
+    }
 }

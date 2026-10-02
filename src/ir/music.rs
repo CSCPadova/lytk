@@ -182,6 +182,9 @@ pub enum Music {
     /// `\partial`, an ABC bar shorter or longer than `M:`. (The opening pickup
     /// is `ScoreMetadata::partial_duration`.)
     Partial(Duration),
+    /// A transposing instrument from here on: its written pitches sound this
+    /// far away (MusicXML `<transpose>`, LilyPond `\transposition`).
+    Transposition(super::measure::Transpose),
 
     // ── Directions ──────────────────────────────────────────
     /// A standalone direction not attached to a note (dynamics, pedal, text, etc.)

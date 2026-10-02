@@ -36,6 +36,35 @@ impl Default for KeySignature {
     }
 }
 
+impl KeySignature {
+    /// The key's tonic as a step and its alteration in semitones: D for
+    /// two sharps in major, B in minor, E in dorian. A mode can reach past
+    /// the major keys (G♯ minor is 8 fifths up, F♭ lydian 8 down).
+    pub fn tonic(&self) -> (PitchStep, i32) {
+        let offset = match self.mode {
+            KeyMode::Major | KeyMode::Ionian => 0,
+            KeyMode::Minor | KeyMode::Aeolian => -3,
+            KeyMode::Dorian => -2,
+            KeyMode::Phrygian => -4,
+            KeyMode::Lydian => 1,
+            KeyMode::Mixolydian => -1,
+            KeyMode::Locrian => -5,
+        };
+        // On the circle of fifths from F: F C G D A E B, then sharps.
+        let i = i32::from(self.fifths) - offset + 1;
+        let step = [
+            PitchStep::F,
+            PitchStep::C,
+            PitchStep::G,
+            PitchStep::D,
+            PitchStep::A,
+            PitchStep::E,
+            PitchStep::B,
+        ][i.rem_euclid(7) as usize];
+        (step, i.div_euclid(7))
+    }
+}
+
 /// Key mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum KeyMode {
@@ -184,6 +213,25 @@ pub struct Transpose {
 }
 
 impl Transpose {
+    /// Semitones from written to sounding pitch.
+    pub fn semitones(&self) -> i32 {
+        i32::from(self.chromatic) + 12 * i32::from(self.octave_change)
+    }
+
+    /// The transposition `n` semitones up (down when negative), spelled as
+    /// the usual interval (2 → a major second, -9 → down a major sixth), with
+    /// whole octaves in `octave_change`: ABC's `transpose=` says no more.
+    pub fn from_semitones(n: i32) -> Self {
+        const DIATONIC: [i32; 12] = [0, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 6];
+        let (octaves, rest) = (n.abs() / 12, n.abs() % 12);
+        let sign = n.signum();
+        Transpose {
+            diatonic: (sign * DIATONIC[rest as usize]) as i8,
+            chromatic: (sign * rest) as i8,
+            octave_change: (sign * octaves).clamp(-127, 127) as i8,
+        }
+    }
+
     /// The pitch a written c' sounds at (LilyPond's `\transposition`).
     pub fn sounding_c(&self) -> Pitch {
         let o = i32::from(self.octave_change);
@@ -314,6 +362,20 @@ impl Measure {
             voices: Vec::new(),
         }
     }
+
+    /// How long the bar's music is: its longest voice (zero when empty).
+    pub fn content_length(&self) -> Ratio<i64> {
+        self.voices
+            .iter()
+            .map(|v| {
+                v.elements
+                    .iter()
+                    .map(super::note::VoiceElement::metric_duration)
+                    .sum()
+            })
+            .max()
+            .unwrap_or_else(|| Ratio::from_integer(0))
+    }
 }
 
 impl std::fmt::Display for Measure {
@@ -325,6 +387,16 @@ impl std::fmt::Display for Measure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_knows_its_tonic_in_any_mode() {
+        let tonic = |fifths, mode| KeySignature { fifths, mode }.tonic();
+        assert_eq!(tonic(2, KeyMode::Major), (PitchStep::D, 0));
+        assert_eq!(tonic(2, KeyMode::Minor), (PitchStep::B, 0));
+        assert_eq!(tonic(0, KeyMode::Dorian), (PitchStep::D, 0));
+        assert_eq!(tonic(5, KeyMode::Minor), (PitchStep::G, 1));
+        assert_eq!(tonic(-7, KeyMode::Locrian), (PitchStep::B, -1));
+    }
 
     #[test]
     fn key_signature_default() {

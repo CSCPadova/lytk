@@ -31,10 +31,17 @@ pub(super) enum HarmonyEntry {
     Skip(Duration),
 }
 
-/// Map a LilyPond chord quality suffix (the text after `:`, e.g. `m`, `maj7`,
-/// `m7.5-`) to the IR harmony kind string (shared with the ABC reader).
-pub(super) fn ly_quality_to_kind(suffix: &str) -> String {
-    crate::ir::harmony::kind_from_suffix(suffix).to_string()
+/// A LilyPond chord's modifiers (the text after `:`, e.g. `m`, `maj7`,
+/// `m7.5-`, `7.9-`) as a MusicXML kind and degrees; `other` when they can't
+/// be read.
+pub(super) fn ly_quality(modifiers: &str) -> (String, Vec<crate::ir::harmony::ChordDegree>) {
+    match crate::ir::harmony::ly_chord_steps(modifiers) {
+        Some(steps) => {
+            let (kind, degrees) = crate::ir::harmony::kind_and_degrees(&steps);
+            (kind.to_string(), degrees)
+        }
+        None => ("other".to_string(), Vec::new()),
+    }
 }
 
 /// Parse a pitch-name string (e.g. `c`, `cis`, `bes`, German `h`) into a
@@ -78,10 +85,14 @@ fn parse_chord_token(token: &str, lang: PitchLanguage) -> Option<(Harmony, Optio
         return None;
     }
 
-    // Split off the bass (after the first '/'), the quality (after the first ':')
-    // from the head (root + octave + duration).
-    let (main, bass_str) = match token.split_once('/') {
-        Some((m, b)) => (m, Some(b)),
+    // Split off the bass (after a '/' before a note name: `1*3/4` is a
+    // length), the quality (after the first ':') from the head (root +
+    // octave + duration).
+    let bass_at = token.char_indices().find(|&(i, c)| {
+        c == '/' && token[i + 1..].starts_with(|n: char| n.is_ascii_alphabetic() || n == '+')
+    });
+    let (main, bass_str) = match bass_at {
+        Some((i, _)) => (&token[..i], Some(&token[i + 1..])),
         None => (token, None),
     };
     let (head, quality) = match main.split_once(':') {
@@ -119,27 +130,38 @@ fn parse_chord_token(token: &str, lang: PitchLanguage) -> Option<(Harmony, Optio
         parse_chord_pitch(&b[..blen], lang)
     });
 
+    let (kind, degrees) = ly_quality(quality.trim());
     let harmony = Harmony {
         root,
-        kind: ly_quality_to_kind(quality.trim()),
+        kind,
         bass,
-        degrees: Vec::new(),
+        degrees,
         offset: 0,
         function: None,
     };
     Some((harmony, dur))
 }
 
-/// Parse a duration substring like `4`, `2.`, `16..` into a `Duration`.
+/// Parse a duration substring like `4`, `2.`, `16..`, `1*3/4` into a `Duration`.
 fn parse_duration_text(s: &str) -> Option<Duration> {
     let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
     let val: u32 = digits.parse().ok()?;
     if !matches!(val, 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128) {
         return None;
     }
-    let dots = s[digits.len()..].chars().take_while(|&c| c == '.').count() as u8;
+    let rest = &s[digits.len()..];
+    let dots = rest.chars().take_while(|&c| c == '.').count();
     let mut dur = Duration::from_lilypond_number(val, 0)?;
-    dur.dots = dots;
+    dur.dots = dots as u8;
+    // A scale factor `*N` or `*N/M` multiplies the length.
+    if let Some(factor) = rest[dots..].strip_prefix('*') {
+        let (n, d) = factor.split_once('/').unwrap_or((factor, "1"));
+        let (n, d): (i64, i64) = (n.parse().ok()?, d.parse().ok()?);
+        if n <= 0 || d <= 0 {
+            return None;
+        }
+        dur = Duration::new(dur.actual_duration() * Frac::new(n, d));
+    }
     Some(dur)
 }
 
@@ -162,9 +184,12 @@ pub(super) fn parse_chordmode_block(state: &WalkState, block: Node) -> Vec<Harmo
         if tok.starts_with('\\') {
             continue;
         }
-        // Spacer: `s`, `s2`, `s4.` etc.
+        // Spacer: `s`, `s2`, `s4.`, `s1*3/4` etc.
         if tok == "s"
-            || (tok.starts_with('s') && tok[1..].chars().all(|c| c.is_ascii_digit() || c == '.'))
+            || (tok.starts_with('s')
+                && tok[1..]
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || matches!(c, '.' | '*' | '/')))
         {
             let dur = parse_duration_text(&tok[1..]).unwrap_or_else(|| last_dur.clone());
             last_dur = dur.clone();
@@ -172,6 +197,16 @@ pub(super) fn parse_chordmode_block(state: &WalkState, block: Node) -> Vec<Harmo
             continue;
         }
 
+        // A rest is a no-chord (ChordNames prints N.C.).
+        if let Some(d) = tok.strip_prefix(['r', 'R']).filter(|d| {
+            d.chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '.' | '*' | '/'))
+        }) {
+            let dur = parse_duration_text(d).unwrap_or_else(|| last_dur.clone());
+            last_dur = dur.clone();
+            entries.push(HarmonyEntry::Chord(no_chord(), dur));
+            continue;
+        }
         if let Some((harmony, dur)) = parse_chord_token(tok, lang) {
             let d = dur.unwrap_or_else(|| last_dur.clone());
             last_dur = d.clone();
@@ -180,6 +215,21 @@ pub(super) fn parse_chordmode_block(state: &WalkState, block: Node) -> Vec<Harmo
     }
 
     entries
+}
+
+/// The no-chord of a chord-mode rest.
+fn no_chord() -> Harmony {
+    Harmony {
+        root: ChordPitch {
+            step: "C".to_string(),
+            alter: 0.0,
+        },
+        kind: "none".to_string(),
+        bass: None,
+        degrees: Vec::new(),
+        offset: 0,
+        function: None,
+    }
 }
 
 /// Place a flat stream of harmony entries one after another from `start`.
