@@ -6,6 +6,7 @@
 //! # Influences
 //! - From lytk-py's `Voice(IRNode)` (`lytk-py/ir/voice.py`).
 
+use super::serde_defaults::is_default;
 use serde::{Deserialize, Serialize};
 
 use super::note::VoiceElement;
@@ -18,6 +19,7 @@ pub struct Voice {
     /// Voice number (1-based, matches MusicXML `<voice>` element).
     pub number: u8,
     /// Ordered sequence of notes, rests, and chords.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub elements: Vec<VoiceElement>,
 }
 

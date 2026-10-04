@@ -2,10 +2,13 @@
 
 use super::helpers::{alter_to_accidental_value, start_stop_to_mxml, start_stop_to_mxml_ss};
 use super::IrToMxmlAdapter;
-use crate::ir::articulation::{Placement, StartStop};
-use crate::ir::note::{ArpeggioType, Chord, Note, Rest};
+use crate::ir::articulation::{
+    ArticulationType, BeamValue, OrnamentType, Placement, StartStop, TechnicalType,
+};
+use crate::ir::note::{ArpeggioType, Chord, LineType, Note, Notehead, Rest, StemDirection};
 use crate::ir::pitch::AccidentalDisplay;
 
+use crate::ir::duration::NoteType;
 use musicxml::datatypes as mdt;
 use musicxml::elements as mxml;
 
@@ -117,14 +120,10 @@ impl IrToMxmlAdapter {
         });
 
         // Type (quarter, half, etc.)
-        let note_type = note
-            .duration
-            .musicxml_type()
-            .and_then(str_to_note_type_value)
-            .map(|v| mxml::Type {
-                attributes: mxml::TypeAttributes::default(),
-                content: v,
-            });
+        let note_type = note.duration.note_type().map(|t| mxml::Type {
+            attributes: mxml::TypeAttributes::default(),
+            content: note_type_value(t),
+        });
 
         // Dots
         let dot: Vec<mxml::Dot> = (0..note.duration.dots)
@@ -135,14 +134,13 @@ impl IrToMxmlAdapter {
             .collect();
 
         // Notehead
-        let notehead = if !note.notehead.is_empty() && note.notehead != "normal" {
-            str_to_notehead_value(&note.notehead).map(|v| mxml::Notehead {
+        let notehead = note
+            .notehead
+            .filter(|h| *h != Notehead::Normal)
+            .map(|head| mxml::Notehead {
                 attributes: mxml::NoteheadAttributes::default(),
-                content: v,
-            })
-        } else {
-            None
-        };
+                content: notehead_value(head),
+            });
 
         // Accidental display
         let accidental = if note.pitch.accidental != AccidentalDisplay::None {
@@ -188,14 +186,10 @@ impl IrToMxmlAdapter {
             };
 
         // Stem
-        let stem = if !note.stem_direction.is_empty() {
-            str_to_stem_value(&note.stem_direction).map(|v| mxml::Stem {
-                attributes: mxml::StemAttributes::default(),
-                content: v,
-            })
-        } else {
-            None
-        };
+        let stem = note.stem_direction.map(|s| mxml::Stem {
+            attributes: mxml::StemAttributes::default(),
+            content: stem_value(s),
+        });
 
         // Staff
         let staff = if part_staves > 1 || note.staff > 1 {
@@ -211,14 +205,12 @@ impl IrToMxmlAdapter {
         let beam: Vec<mxml::Beam> = note
             .beams
             .iter()
-            .filter_map(|b| {
-                str_to_beam_value(&b.beam_type).map(|bv| mxml::Beam {
-                    attributes: mxml::BeamAttributes {
-                        number: Some(mdt::BeamLevel(b.number)),
-                        ..Default::default()
-                    },
-                    content: bv,
-                })
+            .map(|b| mxml::Beam {
+                attributes: mxml::BeamAttributes {
+                    number: Some(mdt::BeamLevel(b.number)),
+                    ..Default::default()
+                },
+                content: beam_value(b.beam_type),
             })
             .collect();
 
@@ -271,11 +263,9 @@ impl IrToMxmlAdapter {
         voice_num: u8,
         part_staves: u8,
     ) -> mxml::Note {
-        let display_step = rest.display_step.as_ref().and_then(|s| {
-            ir_step_str_to_mxml(s).map(|step| mxml::DisplayStep {
-                attributes: (),
-                content: step,
-            })
+        let display_step = rest.display_step.map(|s| mxml::DisplayStep {
+            attributes: (),
+            content: ir_step_to_mxml(&s),
         });
         let display_octave = rest.display_octave.map(|oct| mxml::DisplayOctave {
             attributes: (),
@@ -313,14 +303,10 @@ impl IrToMxmlAdapter {
             content: voice_num.to_string(),
         });
 
-        let note_type = rest
-            .duration
-            .musicxml_type()
-            .and_then(str_to_note_type_value)
-            .map(|v| mxml::Type {
-                attributes: mxml::TypeAttributes::default(),
-                content: v,
-            });
+        let note_type = rest.duration.note_type().map(|t| mxml::Type {
+            attributes: mxml::TypeAttributes::default(),
+            content: note_type_value(t),
+        });
 
         let dot: Vec<mxml::Dot> = (0..rest.duration.dots)
             .map(|_| mxml::Dot {
@@ -589,7 +575,7 @@ fn build_note_notations(note: &Note, chord_arpeggio: Option<ArpeggioType>) -> Ve
             .ornaments
             .iter()
             .filter_map(|orn| {
-                if orn.name == "tremolo" {
+                if orn.name == OrnamentType::Tremolo {
                     let trem_type = if note.two_note_tremolo {
                         if note.tremolo_start {
                             mdt::TremoloType::Start
@@ -606,13 +592,12 @@ fn build_note_notations(note: &Note, chord_arpeggio: Option<ArpeggioType>) -> Ve
                         },
                         content: mdt::TremoloMarks(note.tremolo_marks),
                     }))
-                } else if let Some(wl_type) = orn.name.strip_prefix("wavy-line-") {
-                    let ssc = match wl_type {
-                        "start" => mdt::StartStopContinue::Start,
-                        "stop" => mdt::StartStopContinue::Stop,
-                        "continue" => mdt::StartStopContinue::Continue,
-                        _ => mdt::StartStopContinue::Start,
-                    };
+                } else if let Some(ssc) = match orn.name {
+                    OrnamentType::WavyLineStart => Some(mdt::StartStopContinue::Start),
+                    OrnamentType::WavyLineStop => Some(mdt::StartStopContinue::Stop),
+                    OrnamentType::WavyLineContinue => Some(mdt::StartStopContinue::Continue),
+                    _ => None,
+                } {
                     Some(mxml::OrnamentType::WavyLine(mxml::WavyLine {
                         attributes: mxml::WavyLineAttributes {
                             r#type: ssc,
@@ -667,10 +652,7 @@ fn build_note_notations(note: &Note, chord_arpeggio: Option<ArpeggioType>) -> Ve
 
     // Glissando
     if let Some(gliss) = &note.glissando {
-        let line_type = note
-            .glissando_line_type
-            .as_ref()
-            .and_then(|lt| str_to_line_type(lt));
+        let line_type = note.glissando_line_type.map(line_type);
         items.push(mxml::NotationContentTypes::Glissando(mxml::Glissando {
             attributes: mxml::GlissandoAttributes {
                 r#type: start_stop_to_mxml_ss(gliss),
@@ -776,16 +758,16 @@ fn build_note_notations(note: &Note, chord_arpeggio: Option<ArpeggioType>) -> Ve
 fn build_fermata_notation(
     fermata: &crate::ir::articulation::Fermata,
 ) -> mxml::NotationContentTypes {
-    let shape = match fermata.shape.as_str() {
-        "normal" | "" => mdt::FermataShape::Normal,
-        "angled" => mdt::FermataShape::Angled,
-        "square" => mdt::FermataShape::Square,
-        "double-angled" => mdt::FermataShape::DoubleAngled,
-        "double-square" => mdt::FermataShape::DoubleSquare,
-        "double-dot" => mdt::FermataShape::DoubleDot,
-        "half-curve" => mdt::FermataShape::HalfCurve,
-        "curlew" => mdt::FermataShape::Curlew,
-        _ => mdt::FermataShape::Empty,
+    use crate::ir::articulation::FermataShape as S;
+    let shape = match fermata.shape {
+        S::Normal => mdt::FermataShape::Normal,
+        S::Angled => mdt::FermataShape::Angled,
+        S::Square => mdt::FermataShape::Square,
+        S::DoubleAngled => mdt::FermataShape::DoubleAngled,
+        S::DoubleSquare => mdt::FermataShape::DoubleSquare,
+        S::DoubleDot => mdt::FermataShape::DoubleDot,
+        S::HalfCurve => mdt::FermataShape::HalfCurve,
+        S::Curlew => mdt::FermataShape::Curlew,
     };
     let mut attrs = mxml::FermataAttributes::default();
     if fermata.inverted {
@@ -868,7 +850,7 @@ fn build_lyric(syl: &crate::ir::articulation::LyricSyllable) -> mxml::Lyric {
 // String-to-enum conversion helpers
 // ---------------------------------------------------------------------------
 
-fn ir_step_to_mxml(step: &crate::ir::pitch::PitchStep) -> mdt::Step {
+pub(super) fn ir_step_to_mxml(step: &crate::ir::pitch::PitchStep) -> mdt::Step {
     match step {
         crate::ir::pitch::PitchStep::C => mdt::Step::C,
         crate::ir::pitch::PitchStep::D => mdt::Step::D,
@@ -880,116 +862,124 @@ fn ir_step_to_mxml(step: &crate::ir::pitch::PitchStep) -> mdt::Step {
     }
 }
 
-fn ir_step_str_to_mxml(s: &str) -> Option<mdt::Step> {
-    match s {
-        "C" => Some(mdt::Step::C),
-        "D" => Some(mdt::Step::D),
-        "E" => Some(mdt::Step::E),
-        "F" => Some(mdt::Step::F),
-        "G" => Some(mdt::Step::G),
-        "A" => Some(mdt::Step::A),
-        "B" => Some(mdt::Step::B),
-        _ => None,
+pub(super) fn note_type_value(t: NoteType) -> mdt::NoteTypeValue {
+    use mdt::NoteTypeValue as V;
+    match t {
+        NoteType::Maxima => V::Maxima,
+        NoteType::Long => V::Long,
+        NoteType::Breve => V::Breve,
+        NoteType::Whole => V::Whole,
+        NoteType::Half => V::Half,
+        NoteType::Quarter => V::Quarter,
+        NoteType::Eighth => V::Eighth,
+        NoteType::Sixteenth => V::Sixteenth,
+        NoteType::ThirtySecond => V::ThirtySecond,
+        NoteType::SixtyFourth => V::SixtyFourth,
+        NoteType::OneHundredTwentyEighth => V::OneHundredTwentyEighth,
+        NoteType::TwoHundredFiftySixth => V::TwoHundredFiftySixth,
+        NoteType::FiveHundredTwelfth => V::FiveHundredTwelfth,
+        NoteType::OneThousandTwentyFourth => V::OneThousandTwentyFourth,
     }
 }
 
-fn str_to_note_type_value(s: &str) -> Option<mdt::NoteTypeValue> {
-    match s {
-        "maxima" => Some(mdt::NoteTypeValue::Maxima),
-        "long" => Some(mdt::NoteTypeValue::Long),
-        "breve" => Some(mdt::NoteTypeValue::Breve),
-        "whole" => Some(mdt::NoteTypeValue::Whole),
-        "half" => Some(mdt::NoteTypeValue::Half),
-        "quarter" => Some(mdt::NoteTypeValue::Quarter),
-        "eighth" => Some(mdt::NoteTypeValue::Eighth),
-        "16th" => Some(mdt::NoteTypeValue::Sixteenth),
-        "32nd" => Some(mdt::NoteTypeValue::ThirtySecond),
-        "64th" => Some(mdt::NoteTypeValue::SixtyFourth),
-        "128th" => Some(mdt::NoteTypeValue::OneHundredTwentyEighth),
-        "256th" => Some(mdt::NoteTypeValue::TwoHundredFiftySixth),
-        "512th" => Some(mdt::NoteTypeValue::FiveHundredTwelfth),
-        "1024th" => Some(mdt::NoteTypeValue::OneThousandTwentyFourth),
-        _ => None,
+fn stem_value(stem: StemDirection) -> mdt::StemValue {
+    match stem {
+        StemDirection::Up => mdt::StemValue::Up,
+        StemDirection::Down => mdt::StemValue::Down,
+        StemDirection::Double => mdt::StemValue::Double,
+        StemDirection::NoStem => mdt::StemValue::None,
     }
 }
 
-fn str_to_stem_value(s: &str) -> Option<mdt::StemValue> {
-    match s {
-        "up" => Some(mdt::StemValue::Up),
-        "down" => Some(mdt::StemValue::Down),
-        "double" => Some(mdt::StemValue::Double),
-        "none" => Some(mdt::StemValue::None),
-        _ => None,
+fn beam_value(beam: BeamValue) -> mdt::BeamValue {
+    match beam {
+        BeamValue::Begin => mdt::BeamValue::Begin,
+        BeamValue::Continue => mdt::BeamValue::Continue,
+        BeamValue::End => mdt::BeamValue::End,
+        BeamValue::ForwardHook => mdt::BeamValue::ForwardHook,
+        BeamValue::BackwardHook => mdt::BeamValue::BackwardHook,
     }
 }
 
-fn str_to_beam_value(s: &str) -> Option<mdt::BeamValue> {
-    match s {
-        "begin" => Some(mdt::BeamValue::Begin),
-        "continue" => Some(mdt::BeamValue::Continue),
-        "end" => Some(mdt::BeamValue::End),
-        "forward hook" => Some(mdt::BeamValue::ForwardHook),
-        "backward hook" => Some(mdt::BeamValue::BackwardHook),
-        _ => None,
+fn notehead_value(head: Notehead) -> mdt::NoteheadValue {
+    use mdt::NoteheadValue as V;
+    match head {
+        Notehead::Slash => V::Slash,
+        Notehead::Triangle => V::Triangle,
+        Notehead::Diamond => V::Diamond,
+        Notehead::Square => V::Square,
+        Notehead::Cross => V::Cross,
+        Notehead::X => V::X,
+        Notehead::CircleX => V::CircleX,
+        Notehead::InvertedTriangle => V::InvertedTriangle,
+        Notehead::ArrowDown => V::ArrowDown,
+        Notehead::ArrowUp => V::ArrowUp,
+        Notehead::Circled => V::Circled,
+        Notehead::Slashed => V::Slashed,
+        Notehead::BackSlashed => V::BackSlashed,
+        Notehead::Normal => V::Normal,
+        Notehead::Cluster => V::Cluster,
+        Notehead::CircleDot => V::CircleDot,
+        Notehead::LeftTriangle => V::LeftTriangle,
+        Notehead::Rectangle => V::Rectangle,
+        Notehead::NoHead => V::None,
+        Notehead::Do => V::Do,
+        Notehead::Re => V::Re,
+        Notehead::Mi => V::Mi,
+        Notehead::Fa => V::Fa,
+        Notehead::FaUp => V::FaUp,
+        Notehead::So => V::So,
+        Notehead::La => V::La,
+        Notehead::Ti => V::Ti,
+        Notehead::Other => V::Other,
     }
 }
 
-fn str_to_notehead_value(s: &str) -> Option<mdt::NoteheadValue> {
-    match s {
-        "x" => Some(mdt::NoteheadValue::X),
-        "diamond" => Some(mdt::NoteheadValue::Diamond),
-        "square" => Some(mdt::NoteheadValue::Square),
-        "cross" => Some(mdt::NoteheadValue::Cross),
-        "triangle" => Some(mdt::NoteheadValue::Triangle),
-        "circle-x" => Some(mdt::NoteheadValue::CircleX),
-        "slash" => Some(mdt::NoteheadValue::Slash),
-        "none" => Some(mdt::NoteheadValue::None),
-        "normal" => Some(mdt::NoteheadValue::Normal),
-        "do" => Some(mdt::NoteheadValue::Do),
-        "re" => Some(mdt::NoteheadValue::Re),
-        "mi" => Some(mdt::NoteheadValue::Mi),
-        "fa" => Some(mdt::NoteheadValue::Fa),
-        "so" => Some(mdt::NoteheadValue::So),
-        "la" => Some(mdt::NoteheadValue::La),
-        "ti" => Some(mdt::NoteheadValue::Ti),
-        _ => None,
+fn line_type(line: LineType) -> mdt::LineType {
+    match line {
+        LineType::Solid => mdt::LineType::Solid,
+        LineType::Dashed => mdt::LineType::Dashed,
+        LineType::Dotted => mdt::LineType::Dotted,
+        LineType::Wavy => mdt::LineType::Wavy,
     }
 }
 
 fn str_to_articulation_type(
-    name: &str,
+    name: &ArticulationType,
     placement: Option<mdt::AboveBelow>,
 ) -> Option<mxml::ArticulationsType> {
     match name {
-        "accent" => Some(mxml::ArticulationsType::Accent(mxml::Accent {
+        ArticulationType::Accent => Some(mxml::ArticulationsType::Accent(mxml::Accent {
             attributes: mxml::AccentAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "strong-accent" => Some(mxml::ArticulationsType::StrongAccent(mxml::StrongAccent {
-            attributes: mxml::StrongAccentAttributes {
-                placement,
-                ..Default::default()
-            },
-            content: (),
-        })),
-        "staccato" => Some(mxml::ArticulationsType::Staccato(mxml::Staccato {
+        ArticulationType::StrongAccent => {
+            Some(mxml::ArticulationsType::StrongAccent(mxml::StrongAccent {
+                attributes: mxml::StrongAccentAttributes {
+                    placement,
+                    ..Default::default()
+                },
+                content: (),
+            }))
+        }
+        ArticulationType::Staccato => Some(mxml::ArticulationsType::Staccato(mxml::Staccato {
             attributes: mxml::StaccatoAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "tenuto" => Some(mxml::ArticulationsType::Tenuto(mxml::Tenuto {
+        ArticulationType::Tenuto => Some(mxml::ArticulationsType::Tenuto(mxml::Tenuto {
             attributes: mxml::TenutoAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "detached-legato" => Some(mxml::ArticulationsType::DetachedLegato(
+        ArticulationType::DetachedLegato => Some(mxml::ArticulationsType::DetachedLegato(
             mxml::DetachedLegato {
                 attributes: mxml::DetachedLegatoAttributes {
                     placement,
@@ -998,7 +988,7 @@ fn str_to_articulation_type(
                 content: (),
             },
         )),
-        "staccatissimo" => Some(mxml::ArticulationsType::Staccatissimo(
+        ArticulationType::Staccatissimo => Some(mxml::ArticulationsType::Staccatissimo(
             mxml::Staccatissimo {
                 attributes: mxml::StaccatissimoAttributes {
                     placement,
@@ -1007,35 +997,37 @@ fn str_to_articulation_type(
                 content: (),
             },
         )),
-        "spiccato" => Some(mxml::ArticulationsType::Spiccato(mxml::Spiccato {
+        ArticulationType::Spiccato => Some(mxml::ArticulationsType::Spiccato(mxml::Spiccato {
             attributes: mxml::SpiccatoAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "breath-mark" => Some(mxml::ArticulationsType::BreathMark(mxml::BreathMark {
-            attributes: mxml::BreathMarkAttributes {
-                placement,
-                ..Default::default()
-            },
-            content: mdt::BreathMarkValue::Comma,
-        })),
-        "caesura" => Some(mxml::ArticulationsType::Caesura(mxml::Caesura {
+        ArticulationType::BreathMark => {
+            Some(mxml::ArticulationsType::BreathMark(mxml::BreathMark {
+                attributes: mxml::BreathMarkAttributes {
+                    placement,
+                    ..Default::default()
+                },
+                content: mdt::BreathMarkValue::Comma,
+            }))
+        }
+        ArticulationType::Caesura => Some(mxml::ArticulationsType::Caesura(mxml::Caesura {
             attributes: mxml::CaesuraAttributes {
                 placement,
                 ..Default::default()
             },
             content: mdt::CaesuraValue::Normal,
         })),
-        "stress" => Some(mxml::ArticulationsType::Stress(mxml::Stress {
+        ArticulationType::Stress => Some(mxml::ArticulationsType::Stress(mxml::Stress {
             attributes: mxml::StressAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "unstress" => Some(mxml::ArticulationsType::Unstress(mxml::Unstress {
+        ArticulationType::Unstress => Some(mxml::ArticulationsType::Unstress(mxml::Unstress {
             attributes: mxml::UnstressAttributes {
                 placement,
                 ..Default::default()
@@ -1047,46 +1039,48 @@ fn str_to_articulation_type(
 }
 
 fn str_to_ornament_type(
-    name: &str,
+    name: &OrnamentType,
     placement: Option<mdt::AboveBelow>,
 ) -> Option<mxml::OrnamentType> {
     match name {
-        "trill-mark" => Some(mxml::OrnamentType::TrillMark(mxml::TrillMark {
+        OrnamentType::TrillMark => Some(mxml::OrnamentType::TrillMark(mxml::TrillMark {
             attributes: mxml::TrillMarkAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "turn" => Some(mxml::OrnamentType::Turn(mxml::Turn {
+        OrnamentType::Turn => Some(mxml::OrnamentType::Turn(mxml::Turn {
             attributes: mxml::TurnAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "inverted-turn" => Some(mxml::OrnamentType::InvertedTurn(mxml::InvertedTurn {
+        OrnamentType::InvertedTurn => Some(mxml::OrnamentType::InvertedTurn(mxml::InvertedTurn {
             attributes: mxml::InvertedTurnAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "mordent" => Some(mxml::OrnamentType::Mordent(mxml::Mordent {
+        OrnamentType::Mordent => Some(mxml::OrnamentType::Mordent(mxml::Mordent {
             attributes: mxml::MordentAttributes {
                 placement,
                 ..Default::default()
             },
             content: (),
         })),
-        "inverted-mordent" => Some(mxml::OrnamentType::InvertedMordent(mxml::InvertedMordent {
-            attributes: mxml::InvertedMordentAttributes {
-                placement,
-                ..Default::default()
-            },
-            content: (),
-        })),
-        "schleifer" => Some(mxml::OrnamentType::Schleifer(mxml::Schleifer {
+        OrnamentType::InvertedMordent => {
+            Some(mxml::OrnamentType::InvertedMordent(mxml::InvertedMordent {
+                attributes: mxml::InvertedMordentAttributes {
+                    placement,
+                    ..Default::default()
+                },
+                content: (),
+            }))
+        }
+        OrnamentType::Schleifer => Some(mxml::OrnamentType::Schleifer(mxml::Schleifer {
             attributes: mxml::SchleiferAttributes {
                 placement,
                 ..Default::default()
@@ -1097,56 +1091,46 @@ fn str_to_ornament_type(
     }
 }
 
-fn str_to_technical_type(name: &str, value: &str) -> Option<mxml::TechnicalContents> {
+fn str_to_technical_type(name: &TechnicalType, value: &str) -> Option<mxml::TechnicalContents> {
     match name {
-        "fingering" => Some(mxml::TechnicalContents::Fingering(mxml::Fingering {
+        TechnicalType::Fingering => Some(mxml::TechnicalContents::Fingering(mxml::Fingering {
             attributes: mxml::FingeringAttributes::default(),
             content: value.to_string(),
         })),
-        "up-bow" => Some(mxml::TechnicalContents::UpBow(mxml::UpBow {
+        TechnicalType::UpBow => Some(mxml::TechnicalContents::UpBow(mxml::UpBow {
             attributes: mxml::UpBowAttributes::default(),
             content: (),
         })),
-        "down-bow" => Some(mxml::TechnicalContents::DownBow(mxml::DownBow {
+        TechnicalType::DownBow => Some(mxml::TechnicalContents::DownBow(mxml::DownBow {
             attributes: mxml::DownBowAttributes::default(),
             content: (),
         })),
-        "harmonic" => Some(mxml::TechnicalContents::Harmonic(mxml::Harmonic {
+        TechnicalType::Harmonic => Some(mxml::TechnicalContents::Harmonic(mxml::Harmonic {
             attributes: mxml::HarmonicAttributes::default(),
             content: mxml::HarmonicContents::default(),
         })),
-        "open-string" => Some(mxml::TechnicalContents::OpenString(mxml::OpenString {
+        TechnicalType::OpenString => Some(mxml::TechnicalContents::OpenString(mxml::OpenString {
             attributes: mxml::OpenStringAttributes::default(),
             content: (),
         })),
-        "snap-pizzicato" => Some(mxml::TechnicalContents::SnapPizzicato(
+        TechnicalType::SnapPizzicato => Some(mxml::TechnicalContents::SnapPizzicato(
             mxml::SnapPizzicato {
                 attributes: mxml::SnapPizzicatoAttributes::default(),
                 content: (),
             },
         )),
-        "stopped" => Some(mxml::TechnicalContents::Stopped(mxml::Stopped {
+        TechnicalType::Stopped => Some(mxml::TechnicalContents::Stopped(mxml::Stopped {
             attributes: mxml::StoppedAttributes::default(),
             content: (),
         })),
-        "string" => Some(mxml::TechnicalContents::StringNumber(mxml::StringNumber {
+        TechnicalType::String => Some(mxml::TechnicalContents::StringNumber(mxml::StringNumber {
             attributes: mxml::StringAttributes::default(),
             content: mdt::StringNumber(value.parse().unwrap_or(0)),
         })),
-        "fret" => Some(mxml::TechnicalContents::Fret(mxml::Fret {
+        TechnicalType::Fret => Some(mxml::TechnicalContents::Fret(mxml::Fret {
             attributes: mxml::FretAttributes::default(),
             content: mdt::NonNegativeInteger(value.parse().unwrap_or(0)),
         })),
-        _ => None,
-    }
-}
-
-fn str_to_line_type(s: &str) -> Option<mdt::LineType> {
-    match s {
-        "solid" => Some(mdt::LineType::Solid),
-        "dashed" => Some(mdt::LineType::Dashed),
-        "dotted" => Some(mdt::LineType::Dotted),
-        "wavy" => Some(mdt::LineType::Wavy),
         _ => None,
     }
 }

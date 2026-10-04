@@ -12,15 +12,11 @@
 use tree_sitter::Node;
 
 use crate::ir::duration::{Duration, Frac};
-use crate::ir::harmony::{ChordPitch, Harmony};
+use crate::ir::harmony::{ChordKind, ChordPitch, Harmony};
 use crate::ir::language::{parse_pitch_name, PitchLanguage};
 
 use super::state::WalkState;
 use crate::ir::timeline::{Event, Timeline};
-
-/// Divisions per quarter note used when computing harmony offsets.
-/// Must match `FIGURED_BASS_DIVISIONS` / `DEFAULT_DIVISIONS`.
-pub(super) const HARMONY_DIVISIONS: i64 = crate::ir::timeline::OFFSET_DIVISIONS;
 
 /// A chordmode entry with its duration, used during distribution.
 #[derive(Debug, Clone)]
@@ -34,13 +30,10 @@ pub(super) enum HarmonyEntry {
 /// A LilyPond chord's modifiers (the text after `:`, e.g. `m`, `maj7`,
 /// `m7.5-`, `7.9-`) as a MusicXML kind and degrees; `other` when they can't
 /// be read.
-pub(super) fn ly_quality(modifiers: &str) -> (String, Vec<crate::ir::harmony::ChordDegree>) {
+pub(super) fn ly_quality(modifiers: &str) -> (ChordKind, Vec<crate::ir::harmony::ChordDegree>) {
     match crate::ir::harmony::ly_chord_steps(modifiers) {
-        Some(steps) => {
-            let (kind, degrees) = crate::ir::harmony::kind_and_degrees(&steps);
-            (kind.to_string(), degrees)
-        }
-        None => ("other".to_string(), Vec::new()),
+        Some(steps) => crate::ir::harmony::kind_and_degrees(&steps),
+        None => (ChordKind::Other, Vec::new()),
     }
 }
 
@@ -50,7 +43,7 @@ fn parse_chord_pitch(name: &str, lang: PitchLanguage) -> Option<ChordPitch> {
     let (step, alter) = parse_pitch_name(name, lang)?;
     let alter_f = *alter.numer() as f64 / *alter.denom() as f64;
     Some(ChordPitch {
-        step: step.name().to_string(),
+        step,
         alter: alter_f,
     })
 }
@@ -136,7 +129,7 @@ fn parse_chord_token(token: &str, lang: PitchLanguage) -> Option<(Harmony, Optio
         kind,
         bass,
         degrees,
-        offset: 0,
+        offset: Frac::from_integer(0),
         function: None,
     };
     Some((harmony, dur))
@@ -221,13 +214,13 @@ pub(super) fn parse_chordmode_block(state: &WalkState, block: Node) -> Vec<Harmo
 fn no_chord() -> Harmony {
     Harmony {
         root: ChordPitch {
-            step: "C".to_string(),
+            step: crate::ir::pitch::PitchStep::C,
             alter: 0.0,
         },
-        kind: "none".to_string(),
+        kind: ChordKind::NoChord,
         bass: None,
         degrees: Vec::new(),
-        offset: 0,
+        offset: Frac::from_integer(0),
         function: None,
     }
 }

@@ -14,7 +14,9 @@
 use std::collections::HashMap;
 
 use crate::ir::annotation::Annotation;
-use crate::ir::articulation::{Placement, SyllabicType};
+use crate::ir::articulation::{
+    ArticulationType, OrnamentType, Placement, SyllabicType, TechnicalType, WedgeType,
+};
 use crate::ir::direction::{Barline, BarlineType, RepeatDirection, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::harmony::{lead_sheet_suffix, Harmony};
@@ -23,6 +25,9 @@ use crate::ir::music::{ContextType, Music, MusicDocument, RepeatType};
 use crate::ir::pitch::{respell, Pitch};
 
 use super::{FromIrAdapter, FromMusicAdapter, Result};
+use crate::ir::direction::{BarlineLocation, EndingType};
+use crate::ir::harmony::ChordKind;
+use crate::ir::measure::TimeSymbol;
 
 /// Bars per output line — ABC convention, and it keeps lines readable.
 const BARS_PER_LINE: usize = 4;
@@ -744,31 +749,33 @@ fn decorations(m: &Music, hairpin: &mut Option<char>) -> (String, String) {
         let sign = match a {
             Annotation::Dynamic(d) => format!("!{}!", d.sign),
             Annotation::Wedge(w) => wedge_sign(&w.wedge_type, hairpin).to_string(),
-            Annotation::Articulation(a) => match a.name.as_str() {
-                "staccato" => ".",
-                "accent" => "!>!",
-                "strong-accent" => "!marcato!",
-                "tenuto" => "!tenuto!",
-                "staccatissimo" => "!wedge!",
-                "breath-mark" => "!breath!",
+            Annotation::Articulation(a) => match a.name {
+                ArticulationType::Staccato => ".",
+                ArticulationType::Accent => "!>!",
+                ArticulationType::StrongAccent => "!marcato!",
+                ArticulationType::Tenuto => "!tenuto!",
+                ArticulationType::Staccatissimo => "!wedge!",
+                ArticulationType::BreathMark => "!breath!",
                 _ => "",
             }
             .to_string(),
-            Annotation::Ornament(o) => match o.name.as_str() {
-                "trill-mark" => "!trill!",
-                "mordent" => "!mordent!",
-                "inverted-mordent" => "!uppermordent!",
-                "turn" => "!turn!",
-                "inverted-turn" => "!invertedturn!",
+            Annotation::Ornament(o) => match o.name {
+                OrnamentType::TrillMark => "!trill!",
+                OrnamentType::Mordent => "!mordent!",
+                OrnamentType::InvertedMordent => "!uppermordent!",
+                OrnamentType::Turn => "!turn!",
+                OrnamentType::InvertedTurn => "!invertedturn!",
                 _ => "",
             }
             .to_string(),
-            Annotation::Technical(t) => match t.name.as_str() {
-                "fingering" if matches!(t.value.as_str(), "0" | "1" | "2" | "3" | "4" | "5") => {
+            Annotation::Technical(t) => match t.name {
+                TechnicalType::Fingering
+                    if matches!(t.value.as_str(), "0" | "1" | "2" | "3" | "4" | "5") =>
+                {
                     format!("!{}!", t.value)
                 }
-                "up-bow" => "!upbow!".to_string(),
-                "down-bow" => "!downbow!".to_string(),
+                TechnicalType::UpBow => "!upbow!".to_string(),
+                TechnicalType::DownBow => "!downbow!".to_string(),
                 _ => continue,
             },
             Annotation::Fingering(f) if matches!(f.as_str(), "0" | "1" | "2" | "3" | "4" | "5") => {
@@ -849,17 +856,18 @@ fn clef_to_abc(c: &Clef) -> String {
 
 /// A hairpin's start, or the end of the one `open` (`!>)!` ends a
 /// diminuendo).
-fn wedge_sign(kind: &str, open: &mut Option<char>) -> &'static str {
+fn wedge_sign(kind: &WedgeType, open: &mut Option<char>) -> &'static str {
     match kind {
-        "crescendo" => {
+        WedgeType::Crescendo => {
             *open = Some('<');
             "!<(!"
         }
-        "diminuendo" | "decrescendo" => {
+        WedgeType::Diminuendo => {
             *open = Some('>');
             "!>(!"
         }
-        _ => match open.take() {
+        WedgeType::Continue => "",
+        WedgeType::Stop => match open.take() {
             Some('>') => "!>)!",
             _ => "!<)!",
         },
@@ -872,33 +880,24 @@ fn chord_symbol(h: &Harmony) -> String {
         n if n > 0 => "#".repeat(n as usize),
         n => "b".repeat(n.unsigned_abs() as usize),
     };
-    if h.kind == "none" {
+    if h.kind == ChordKind::NoChord {
         return "N.C.".to_string();
     }
     let mut s = format!(
         "{}{}{}",
-        h.root.step,
+        h.root.step.name(),
         alter(h.root.alter),
-        lead_sheet_suffix(&h.kind, &h.degrees)
+        lead_sheet_suffix(h.kind, &h.degrees)
     );
     if let Some(b) = &h.bass {
-        s.push_str(&format!("/{}{}", b.step, alter(b.alter)));
+        s.push_str(&format!("/{}{}", b.step.name(), alter(b.alter)));
     }
     s
 }
 
 /// A `Q:` value: `"Allegro" 1/4=120`, `3/8=80`.
 fn tempo_to_abc(t: &TempoDirection) -> Option<String> {
-    let unit = t.beat_unit.as_deref().and_then(|u| match u {
-        "whole" => Some(Frac::new(1, 1)),
-        "half" => Some(Frac::new(1, 2)),
-        "quarter" => Some(Frac::new(1, 4)),
-        "eighth" => Some(Frac::new(1, 8)),
-        "16th" => Some(Frac::new(1, 16)),
-        "32nd" => Some(Frac::new(1, 32)),
-        "breve" => Some(Frac::new(2, 1)),
-        _ => None,
-    });
+    let unit = t.beat_unit.map(|u| u.length());
     let beat = unit.map(|u| u * crate::ir::duration::dot_multiplier(t.dots));
     let mut parts = Vec::new();
     if let Some(text) = t.text.as_ref().filter(|s| !s.contains('"')) {
@@ -1028,7 +1027,7 @@ fn walk(music: &Music, out: &mut Vec<Music>) {
             }
             out.push(Music::Barline(Barline {
                 style: BarlineType::RepeatForward,
-                location: "left".to_string(),
+                location: BarlineLocation::Left,
                 repeat_direction: Some(RepeatDirection::Forward),
                 ..Barline::default()
             }));
@@ -1049,9 +1048,9 @@ fn walk(music: &Music, out: &mut Vec<Music>) {
             for (k, alt) in alternatives.iter().enumerate() {
                 let number = u8::try_from(k + 1).unwrap_or(u8::MAX);
                 out.push(Music::Barline(Barline {
-                    location: "left".to_string(),
+                    location: BarlineLocation::Left,
                     ending_number: Some(number),
-                    ending_type: Some("start".to_string()),
+                    ending_type: Some(EndingType::Start),
                     ..Barline::default()
                 }));
                 walk(alt, out);
@@ -1066,7 +1065,7 @@ fn walk(music: &Music, out: &mut Vec<Music>) {
                     }
                 };
                 close.ending_number = Some(number);
-                close.ending_type = Some("stop".to_string());
+                close.ending_type = Some(EndingType::Stop);
                 out.push(Music::Barline(close));
             }
         }
@@ -1270,15 +1269,15 @@ fn duration_suffix(dur: Frac) -> String {
 }
 
 fn meter_to_abc(ts: &TimeSignature) -> String {
-    match ts.symbol.as_deref() {
-        Some("common") => "C".to_string(),
-        Some("cut") => "C|".to_string(),
+    match ts.symbol {
+        Some(TimeSymbol::Common) => "C".to_string(),
+        Some(TimeSymbol::Cut) => "C|".to_string(),
         _ => format!("{}/{}", ts.beats, ts.beat_type),
     }
 }
 
 fn barline_to_abc(b: &Barline) -> String {
-    if b.ending_type.as_deref() == Some("start") {
+    if b.ending_type == Some(EndingType::Start) {
         return format!("[{}", b.ending_number.unwrap_or(1));
     }
     // The repeat sign first: MusicXML reads `light-heavy` + backward repeat

@@ -1,9 +1,9 @@
 //! Measure, voice element, note/chord/rest emission.
 
-use crate::ir::articulation::{StartStop, TupletDisplay};
+use crate::ir::articulation::{BeamValue, OrnamentType, StartStop, TupletDisplay};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::{PitchLanguage, PitchMode};
-use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
+use crate::ir::note::{ArpeggioType, Chord, LineType, Note, Rest, StemDirection, VoiceElement};
 use crate::ir::pitch::Pitch;
 use crate::ir::voice::Voice;
 use crate::ir::Part;
@@ -12,6 +12,8 @@ use super::maps::{
     articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, length_to_ly, ornament_to_ly,
     pitch_to_ly, tempo_to_ly, time_to_ly, tremolo_suffix,
 };
+use crate::ir::direction::EndingType;
+use crate::ir::direction::OctaveShiftType;
 
 /// Persistent state across measure boundaries during LilyPond emission.
 #[derive(Default)]
@@ -23,8 +25,8 @@ pub(super) struct EmitState {
     /// are written after its bar check (a bar check between two grace
     /// groups aborts LilyPond).
     pub(super) grace_carry: Option<String>,
-    /// The main voice's stem command in force ("" for none).
-    pub(super) stem: String,
+    /// The main voice's stem command in force (none: LilyPond's own).
+    pub(super) stem: Option<StemDirection>,
     /// `\mark \default` marks written so far.
     pub(super) marks: u32,
 }
@@ -83,7 +85,6 @@ pub(super) fn emit_measures(
         emit_state.prev_pitch = relative_ref.cloned();
     }
     let mut is_first_measure = true;
-    let mut last_divisions: i64 = 1;
 
     // Repeat-brace balancing. `repeat_depth` counts open `\repeat volta {` blocks
     // (the non-alternative ones); `section_start` marks where the current section
@@ -107,7 +108,7 @@ pub(super) fn emit_measures(
     let ending_start_of = |m: &crate::ir::measure::Measure| -> Option<u8> {
         m.left_barline
             .as_ref()
-            .filter(|bl| bl.ending_type.as_deref() == Some("start"))
+            .filter(|bl| bl.ending_type == Some(EndingType::Start))
             .and_then(|bl| bl.ending_number)
     };
 
@@ -155,26 +156,13 @@ pub(super) fn emit_measures(
             }
         }
 
-        // Compute divisions for mapping direction offsets to voice element indices.
-        let divisions: i64 = measure
-            .attributes
-            .as_ref()
-            .map(|a| a.divisions as i64)
-            .unwrap_or(last_divisions);
-        last_divisions = divisions;
         // Score-wide marks (tempo, rehearsal marks, D.C., breaks) go in the
         // part's first staff only, a staff's own marks in that staff: a piano
         // part's tempo was written into both staves and read back twice.
         let first_staff = staff_filter.is_none_or(|s| s == 1);
         let mut marks = Marks::default();
         for dir in &measure.directions {
-            // Each mark at its exact place in the bar: `offset_frac` (every
-            // reader sets it), else the MusicXML divisions `offset`.
-            let at = if dir.offset_frac != Frac::from_integer(0) || dir.offset == 0 {
-                dir.offset_frac
-            } else {
-                Frac::new(i64::from(dir.offset), 4 * divisions.max(1))
-            };
+            let at = dir.offset;
             if first_staff {
                 let before = marks.before.entry(at).or_default();
                 if let Some(tempo) = &dir.tempo {
@@ -221,12 +209,7 @@ pub(super) fn emit_measures(
                 parts.push(super::maps::dynamic_to_ly(&dyn_mark.sign));
             }
             if let Some(wedge) = &dir.wedge {
-                let cmd = match wedge.wedge_type.as_str() {
-                    "crescendo" => "\\<",
-                    "diminuendo" => "\\>",
-                    "stop" => "\\!",
-                    _ => "",
-                };
+                let cmd = super::maps::wedge_to_ly(wedge.wedge_type);
                 if !cmd.is_empty() {
                     parts.push(cmd.to_string());
                 }
@@ -245,15 +228,13 @@ pub(super) fn emit_measures(
                 }
             }
             if let Some(pedal) = &dir.pedal {
-                match pedal.pedal_type.as_str() {
-                    "start" => parts.push("\\sustainOn".to_string()),
-                    "stop" => parts.push("\\sustainOff".to_string()),
-                    "change" => parts.push("\\sustainOff\\sustainOn".to_string()),
-                    _ => {}
+                let cmd = super::maps::pedal_to_ly(pedal.pedal_type);
+                if !cmd.is_empty() {
+                    parts.push(cmd.to_string());
                 }
             }
             if let Some(oct) = &dir.octave_shift {
-                if matches!(oct.shift_type.as_str(), "up" | "down" | "stop") {
+                if oct.shift_type != OctaveShiftType::Continue {
                     parts.push(format!("\\ottava #{}", oct.octaves()));
                 }
             }
@@ -270,7 +251,7 @@ pub(super) fn emit_measures(
                 lines.push(format!("{pad}\\repeat volta {times} {{"));
                 repeat_depth += 1;
             }
-            if bl.ending_number.is_some() && bl.ending_type.as_deref() == Some("start") {
+            if bl.ending_number.is_some() && bl.ending_type == Some(EndingType::Start) {
                 if !in_alternative {
                     // Close the repeat body and open \alternative. If no
                     // forward `|:` was ever emitted (repeat from the top of
@@ -372,8 +353,8 @@ pub(super) fn emit_measures(
                 let next_continues_same = open_ending.is_some()
                     && part.measures.get(mi + 1).and_then(ending_start_of) == open_ending;
                 if matches!(
-                    bl.ending_type.as_deref(),
-                    Some("stop") | Some("discontinue")
+                    bl.ending_type,
+                    Some(EndingType::Stop | EndingType::Discontinue)
                 ) && open_ending.is_some()
                     && !next_continues_same
                 {
@@ -476,8 +457,8 @@ fn emit_voice_elements(
     // The stem command in force: the main voice's carries on from bar to
     // bar; a `\\` voice starts at its own direction, which `reset` restores.
     let mut current_stem = match branch {
-        None => std::mem::take(&mut state.stem),
-        Some(_) => String::new(),
+        None => state.stem.take(),
+        Some(_) => None,
     };
     let reset = match branch {
         None => "\\stemNeutral",
@@ -589,21 +570,20 @@ fn emit_voice_elements(
             let own = default
                 .elements
                 .get(idx)
-                .map_or("", crate::ir::beams::stem_of);
-            let want = match source {
-                "up" | "down" if source != own => source,
-                _ => "",
-            };
+                .and_then(crate::ir::beams::stem_of);
+            let want = source.filter(|s| {
+                matches!(s, StemDirection::Up | StemDirection::Down) && Some(*s) != own
+            });
             if want != current_stem {
                 tokens.push(
                     match want {
-                        "up" => "\\stemUp",
-                        "down" => "\\stemDown",
+                        Some(StemDirection::Up) => "\\stemUp",
+                        Some(StemDirection::Down) => "\\stemDown",
                         _ => reset,
                     }
                     .to_string(),
                 );
-                current_stem = want.to_string();
+                current_stem = want;
             }
         }
 
@@ -623,11 +603,11 @@ fn emit_voice_elements(
                 // Glissando style override (must precede the note)
                 if note.glissando == Some(StartStop::Start) {
                     if let Some(lt) = &note.glissando_line_type {
-                        let style = match lt.as_str() {
-                            "dashed" => Some("dashed-line"),
-                            "dotted" => Some("dotted-line"),
-                            "wavy" => Some("trill"),
-                            _ => None,
+                        let style = match lt {
+                            LineType::Dashed => Some("dashed-line"),
+                            LineType::Dotted => Some("dotted-line"),
+                            LineType::Wavy => Some("trill"),
+                            LineType::Solid => None,
                         };
                         if let Some(s) = style {
                             tokens.push(format!("\\once \\override Glissando.style = #'{s}"));
@@ -880,9 +860,9 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
     // Look at level-1 beam only; `[` for begin, `]` for end
     for beam in &note.beams {
         if beam.number == 1 {
-            match beam.beam_type.as_str() {
-                "begin" => parts.push("[".into()),
-                "end" => parts.push("]".into()),
+            match beam.beam_type {
+                BeamValue::Begin => parts.push("[".into()),
+                BeamValue::End => parts.push("]".into()),
                 _ => {}
             }
         }
@@ -927,7 +907,7 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
     // Ornaments
     for orn in &note.ornaments {
         // Tremolo is handled by tremolo_suffix(), not as an attachment
-        if orn.name == "tremolo" {
+        if orn.name == OrnamentType::Tremolo {
             continue;
         }
         let ly = ornament_to_ly(&orn.name);
@@ -946,12 +926,7 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
 
     // Wedges (note-attached)
     for wedge in &note.wedges {
-        let cmd = match wedge.wedge_type.as_str() {
-            "crescendo" => "\\<",
-            "diminuendo" => "\\>",
-            "stop" => "\\!",
-            _ => "",
-        };
+        let cmd = super::maps::wedge_to_ly(wedge.wedge_type);
         if !cmd.is_empty() {
             parts.push(placed(wedge.placement, cmd));
         }
@@ -963,19 +938,11 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
     }
 
     // Technicals (fingering, bow marks, etc.)
-    for tech in &note.technicals {
-        match tech.name.as_str() {
-            "fingering" => parts.push(format!("-{}", tech.value)),
-            "up-bow" => parts.push("\\upbow".into()),
-            "down-bow" => parts.push("\\downbow".into()),
-            "open-string" => parts.push("\\open".into()),
-            "snap-pizzicato" => parts.push("\\snappizzicato".into()),
-            "harmonic" => parts.push("\\flageolet".into()),
-            "stopped" => parts.push("-+".into()),
-            "string" => parts.push(format!("\\{}", tech.value)),
-            _ => {}
-        }
-    }
+    parts.extend(
+        note.technicals
+            .iter()
+            .filter_map(super::maps::technical_to_ly),
+    );
 
     // Text written at the note (`^\markup { "dolce" }`)
     for td in &note.text_directions {

@@ -3,6 +3,60 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-10-04 — Epic N (0.6.0): typed IR
+
+Every step was checked by
+snapshotting every writer's output on the 198 fixtures (1,619 files)
+before and after it, and by `tests/ir_json.rs`.
+
+- **N0, safety net.** `tests/ir_json.rs`: every fixture's score, its lifted
+  music and (LilyPond) its music tree read back equal from JSON; bytes per
+  note are a baseline that may only fall. It found page sizes coming back a
+  rounding step off: serde_json now parses floats exactly
+  (`float_roundtrip`).
+- **N1, one meter parser.** `TimeSignature::parse_terms` is the only parser
+  of `beats`; `terms`, `numerator`, `denominator` and `is_compound` are
+  built on it. The LilyPond figured-bass writer divided by an unguarded
+  `beat_type`.
+- **N4, one position.** `Direction.offset` is the `Frac` (it was
+  `offset_frac`; the integer `offset`, in the MusicXML file's divisions,
+  went stale after a lift → lower), and so are harmonies' and figures'.
+  `OFFSET_DIVISIONS` is gone; the MusicXML writer's divisions hold every
+  position. Stacked chord symbols (suite 71g) now change at exact thirds.
+- **N2, N3, typed names.** `named_enum!` and `open_named_enum!`
+  (`src/ir/names.rs`): one table gives `as_str`, `from_name` or
+  `From<&str>`, and serde as the name, so the JSON kept its values; 23
+  enums. What the typed matches turned up:
+  - MusicXML names an octave sign by where the notes are printed: an 8va
+    is `type="down"`. It was read as an 8vb, both ways.
+  - A wedge's `continue` was a crescendo in MusicXML and a stop in MIDI
+    and ABC; a pedal's `discontinue` was written as a `start` (25 marks in
+    `3840_multi_part_piano_score.mxl`).
+  - The MusicXML writer dropped 12 of the 28 noteheads, a group symbol
+    `none` and beat units past a 16th.
+  - The Score and Music LilyPond writers each had their own technicals,
+    figures, wedges and pedals tables; there is one of each now.
+- **N6, compact, versioned JSON.** Every field with a default is left out
+  (`serde_defaults.rs`): 810 bytes a note fall to 174, a plain note is 60.
+  `ir::json` writes `"schema": 1` and refuses JSON without it. Fractions
+  are read in lowest terms.
+- **N5, one home.** `ir::marks::hoist` and `sink`. Readers hang marks on
+  elements as they read them and hoist them out at their exits:
+  LilyPond's `assemble_score`, `lower`, MIDI, and MusicXML right after
+  conversion, before `restore_score_text` round-trips the score through
+  JSON (which leaves the scratch fields out: hoisting after it lost two
+  fixtures' note dynamics). The writers, `lift` and `retrograde` sink the
+  voiced marks back. `sink(hoist(x)) == x`, except that a mark on a grace
+  note goes back to the main note at its onset. Every output stayed byte
+  for byte.
+
+- **N7.** Version 0.6.0 (`Cargo.toml`, `Cargo.lock`), changelog
+  `[0.6.0]`; the stubs document the JSON and its schema, and
+  `docs/python-api.md` is regenerated. Tagging and publishing are left.
+
+Not done: the MusicXML reader still drops `unstress`, `soft-accent`,
+`scoop`, `plop`, `doit` and `falloff`. Next: the Python API (0.7.0).
+
 ## 2026-10-04 — 0.5.0: CI
 
 CI failed on the 0.5.0 commit in three jobs; all three are fixed.

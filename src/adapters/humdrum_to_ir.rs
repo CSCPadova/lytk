@@ -16,7 +16,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::ir::annotation::Annotation;
-use crate::ir::articulation::{Articulation, Fermata, LyricSyllable, Placement, SyllabicType};
+use crate::ir::articulation::{
+    Articulation, ArticulationType, Fermata, FermataShape, LyricSyllable, Placement, SyllabicType,
+};
 use crate::ir::direction::{Barline, BarlineType, RepeatDirection, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
@@ -25,6 +27,7 @@ use crate::ir::pitch::{Alter, Pitch, PitchStep};
 use crate::ir::score::ScoreMetadata;
 
 use super::{AdapterError, Result, ToIrAdapter, ToMusicAdapter};
+use crate::ir::duration::NoteType;
 
 /// Adapter that reads Humdrum `**kern`.
 #[derive(Default)]
@@ -338,7 +341,7 @@ fn parse_interpretation(t: &str, spine: &mut Spine) {
             // *MM<n> — metronome marking.
             spine.events.push(Music::Tempo(TempoDirection {
                 text: None,
-                beat_unit: Some("quarter".to_string()),
+                beat_unit: Some(NoteType::Quarter),
                 per_minute: Some(bpm),
                 dots: 0,
                 placement: Placement::Above,
@@ -446,7 +449,7 @@ struct TokenFlags {
     /// `y`: an invisible token (an invisible rest is a spacer).
     hidden: bool,
     /// Articulations, by MusicXML name.
-    articulations: Vec<&'static str>,
+    articulations: Vec<ArticulationType>,
 }
 
 /// A `**text` token: `Hal-` begins a word, `-le-` goes on with it, `-lu`
@@ -532,13 +535,13 @@ fn parse_data_token(token: &str) -> Option<Music> {
         }
         for name in &f.articulations {
             a.push(Annotation::Articulation(Articulation {
-                name: name.to_string(),
+                name: name.clone(),
                 placement: Placement::Unspecified,
             }));
         }
         if f.fermata {
             a.push(Annotation::Fermata(Fermata {
-                shape: String::new(),
+                shape: FermataShape::Normal,
                 inverted: false,
             }));
         }
@@ -602,13 +605,13 @@ fn split_subtoken(sub: &str) -> (Duration, TokenFlags, String) {
             'q' => flags.grace = Some(true),
             'Q' => flags.grace = Some(false),
             'y' => flags.hidden = true,
-            '\'' => flags.articulations.push("staccato"),
-            '`' => flags.articulations.push("staccatissimo"),
-            '~' => flags.articulations.push("tenuto"),
+            '\'' => flags.articulations.push(ArticulationType::Staccato),
+            '`' => flags.articulations.push(ArticulationType::Staccatissimo),
+            '~' => flags.articulations.push(ArticulationType::Tenuto),
             // `^` an accent, `^^` a heavy one.
             '^' => match flags.articulations.last_mut() {
-                Some(a) if *a == "accent" => *a = "strong-accent",
-                _ => flags.articulations.push("accent"),
+                Some(a) if *a == ArticulationType::Accent => *a = ArticulationType::StrongAccent,
+                _ => flags.articulations.push(ArticulationType::Accent),
             },
             '0'..='9' => {
                 if let Some((_, den)) = &mut rational {

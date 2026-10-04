@@ -1,6 +1,8 @@
 use tree_sitter::Node;
 
-use crate::ir::articulation::{Placement, SlurEvent, StartStop, TieEvent};
+use crate::ir::articulation::{
+    ArticulationType, FermataShape, OrnamentType, Placement, SlurEvent, StartStop, TieEvent,
+};
 use crate::ir::direction::{
     Barline, BarlineType, Direction, LayoutBreakType, OctaveShift, PedalEvent, RepeatDirection,
 };
@@ -8,12 +10,12 @@ use crate::ir::duration::Frac;
 use crate::ir::language::parse_pitch_name;
 use crate::ir::language::PitchMode;
 use crate::ir::measure::{Clef, KeyMode, KeySignature, TimeSignature, Transpose};
-use crate::ir::note::{ArpeggioType, Chord, Note, Rest, VoiceElement};
+use crate::ir::note::{ArpeggioType, Chord, Note, Rest, StemDirection, VoiceElement};
 use crate::ir::pitch::Pitch;
 
 use super::apply::{
     apply_chord_attachments, apply_note_attachments, apply_rest_attachments, attach_articulation,
-    attach_dynamic, attach_fermata,
+    attach_dynamic, attach_fermata, attach_ornament,
 };
 use super::consume::{
     build_chord, consume_accidental_marks, consume_attachments, consume_duration,
@@ -25,6 +27,7 @@ use super::consume::{
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
 use super::state::WalkState;
+use crate::ir::direction::PedalType;
 use crate::ir::timeline::Event;
 
 /// If attachments contain `\rest`, convert the note to a pitched rest
@@ -33,7 +36,7 @@ use crate::ir::timeline::Event;
 fn note_or_pitched_rest(note: Note, attachments: &[String]) -> VoiceElement {
     if attachments.iter().any(|a| a == "\\rest") {
         let mut rest = Rest::new(note.duration.clone());
-        rest.display_step = Some(format!("{:?}", note.pitch.step));
+        rest.display_step = Some(note.pitch.step);
         rest.display_octave = Some(note.pitch.octave);
         rest.voice = note.voice;
         rest.staff = note.staff;
@@ -453,7 +456,7 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 } else if att == "\\fermata" {
                     if let Some(VoiceElement::Rest(r)) = state.current_voice.last_mut() {
                         r.fermata = Some(crate::ir::articulation::Fermata {
-                            shape: "normal".to_string(),
+                            shape: FermataShape::Normal,
                             inverted: false,
                         });
                     }
@@ -534,7 +537,7 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 if tremolo > 0 {
                     note.tremolo_marks = tremolo;
                     note.ornaments.push(crate::ir::articulation::Ornament {
-                        name: "tremolo".to_string(),
+                        name: OrnamentType::Tremolo,
                         placement: Default::default(),
                     });
                 }
@@ -857,25 +860,25 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
         }
         "\\breathe" => {
             // Attach breath mark as articulation to last note
-            attach_articulation(state, "breath-mark");
+            attach_articulation(state, ArticulationType::BreathMark);
         }
-        "\\trill" => attach_articulation(state, "trill-mark"),
-        "\\mordent" => attach_articulation(state, "mordent"),
-        "\\prall" => attach_articulation(state, "inverted-mordent"),
-        "\\turn" => attach_articulation(state, "turn"),
-        "\\reverseturn" => attach_articulation(state, "inverted-turn"),
+        "\\trill" => attach_ornament(state, OrnamentType::TrillMark),
+        "\\mordent" => attach_ornament(state, OrnamentType::Mordent),
+        "\\prall" => attach_ornament(state, OrnamentType::InvertedMordent),
+        "\\turn" => attach_ornament(state, OrnamentType::Turn),
+        "\\reverseturn" => attach_ornament(state, OrnamentType::InvertedTurn),
         "\\sustainOn" | "\\sustainOff" => {
             let pedal_type = if text == "\\sustainOn" {
-                "start"
+                PedalType::Start
             } else {
-                "stop"
+                PedalType::Stop
             };
             // Pedal commands attach to the note they follow and occur at that
             // note's onset (LilyPond post-event semantics), not after its
             // duration has elapsed.
             let dir = Direction {
                 pedal: Some(PedalEvent {
-                    pedal_type: pedal_type.to_string(),
+                    pedal_type,
                     line: false,
                 }),
                 placement: Placement::Below,
@@ -917,36 +920,36 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             state.add_event(Event::direction(dir));
         }
         "\\stemUp" => {
-            state.stem_direction = "up".to_string();
+            state.stem_direction = Some(StemDirection::Up);
         }
         "\\stemDown" => {
-            state.stem_direction = "down".to_string();
+            state.stem_direction = Some(StemDirection::Down);
         }
         "\\stemNeutral" => {
-            state.stem_direction.clear();
+            state.stem_direction = None;
         }
         "\\slurUp" => state.slur_placement = Placement::Above,
         "\\slurDown" => state.slur_placement = Placement::Below,
         "\\slurNeutral" => state.slur_placement = Placement::Unspecified,
         "\\voiceOne" => {
             state.current_voice_number = 1;
-            state.stem_direction = "up".to_string();
+            state.stem_direction = Some(StemDirection::Up);
         }
         "\\voiceTwo" => {
             state.current_voice_number = 2;
-            state.stem_direction = "down".to_string();
+            state.stem_direction = Some(StemDirection::Down);
         }
         "\\voiceThree" => {
             state.current_voice_number = 3;
-            state.stem_direction = "up".to_string();
+            state.stem_direction = Some(StemDirection::Up);
         }
         "\\voiceFour" => {
             state.current_voice_number = 4;
-            state.stem_direction = "down".to_string();
+            state.stem_direction = Some(StemDirection::Down);
         }
         "\\oneVoice" => {
             state.current_voice_number = 1;
-            state.stem_direction.clear();
+            state.stem_direction = None;
         }
         "\\repeat" => {
             i = consume_repeat(state, children, i);
@@ -1115,13 +1118,13 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             // `\once \override` goes on to the \override handler.
             let next = children.get(i).map(|n| state.text(*n));
             let stem = match next {
-                Some("\\stemUp") => Some("up"),
-                Some("\\stemDown") => Some("down"),
-                Some("\\stemNeutral") => Some(""),
+                Some("\\stemUp") => Some(Some(StemDirection::Up)),
+                Some("\\stemDown") => Some(Some(StemDirection::Down)),
+                Some("\\stemNeutral") => Some(None),
                 _ => None,
             };
             if let Some(stem) = stem {
-                let before = std::mem::replace(&mut state.stem_direction, stem.to_string());
+                let before = std::mem::replace(&mut state.stem_direction, stem);
                 state.once_stem = Some(before);
                 i += 1;
             }

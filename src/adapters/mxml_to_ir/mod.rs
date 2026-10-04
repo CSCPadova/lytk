@@ -18,6 +18,7 @@ use num::rational::Ratio;
 
 use super::{AdapterError, Result, ToIrAdapter};
 use crate::ir::duration::Duration;
+use crate::ir::music::ContextType;
 use crate::ir::note::*;
 use crate::ir::score::*;
 
@@ -170,10 +171,12 @@ fn read_partwise_bytes(bytes: Vec<u8>) -> Result<Score> {
         .into_bytes();
     // The firewall covers conversion too: panics there would otherwise escape
     // to the PyO3 boundary as aborts instead of AdapterError::Parse.
-    let score = catch_read(|| {
+    let mut score = catch_read(|| {
         let mxml_score = musicxml::read_score_data_partwise(xml).map_err(AdapterError::Parse)?;
         convert_mxml_score(&mxml_score)
     })?;
+    // Before any JSON round trip: element marks aren't serialized.
+    crate::ir::marks::hoist(&mut score);
     let mut score = if stand_ins {
         restore_score_text(score)
     } else {
@@ -611,7 +614,7 @@ fn parse_score_part(sp: &mxml::ScorePart) -> PartInfo {
 }
 
 fn parse_part_group(pg: &mxml::PartGroup) -> PartGroup {
-    let mut group = PartGroup::new("StaffGroup");
+    let mut group = PartGroup::new(ContextType::StaffGroup);
 
     if let Some(ref name) = pg.content.group_name {
         group.name = name.content.clone();
@@ -619,14 +622,14 @@ fn parse_part_group(pg: &mxml::PartGroup) -> PartGroup {
     if let Some(ref sym) = pg.content.group_symbol {
         use musicxml::datatypes::GroupSymbolValue as G;
         let (bracket, group_type) = match sym.content {
-            G::Brace => ("brace", "PianoStaff"),
-            G::Bracket => ("bracket", "StaffGroup"),
-            G::Line => ("line", "ChoirStaff"),
-            G::Square => ("square", "StaffGroup"),
-            G::None => ("none", "StaffGroup"),
+            G::Brace => (GroupSymbol::Brace, ContextType::PianoStaff),
+            G::Bracket => (GroupSymbol::Bracket, ContextType::StaffGroup),
+            G::Line => (GroupSymbol::Line, ContextType::ChoirStaff),
+            G::Square => (GroupSymbol::Square, ContextType::StaffGroup),
+            G::None => (GroupSymbol::NoSymbol, ContextType::StaffGroup),
         };
-        group.bracket = bracket.to_string();
-        group.group_type = group_type.to_string();
+        group.bracket = bracket;
+        group.group_type = group_type;
     }
     if let Some(ref num) = pg.attributes.number {
         group.number = num.0.parse().unwrap_or(1);

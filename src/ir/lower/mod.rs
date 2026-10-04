@@ -28,12 +28,16 @@ use walk::walk_music;
 pub fn lower_to_score(doc: &MusicDocument) -> Score {
     let mut state = LowerState::new(doc.metadata.clone());
     walk_music(&doc.music, &mut state);
-    build_score(&mut state)
+    let mut score = build_score(&mut state);
+    super::marks::hoist(&mut score);
+    score
 }
 
 /// Convert a bare `Music` tree to a `Score` with default metadata.
 pub fn lower_music_to_score(music: &Music) -> Score {
     let mut state = LowerState::new(ScoreMetadata::default());
     walk_music(music, &mut state);
-    build_score(&mut state)
+    let mut score = build_score(&mut state);
+    super::marks::hoist(&mut score);
+    score
 }

@@ -2,7 +2,7 @@
 //! direction placement, and the few score-level passes that still work on
 //! measures (tempo propagation, barline sharing).
 
-use crate::ir::articulation::{Placement, StartStop, TupletDisplay};
+use crate::ir::articulation::{Placement, ShowNumber, StartStop, TupletDisplay};
 use crate::ir::direction::Direction;
 use crate::ir::note::VoiceElement;
 
@@ -164,13 +164,13 @@ pub(super) fn apply_tuplet_display(elements: &mut [VoiceElement], _actual: u8) {
                     n.tuplet = Some(TupletDisplay {
                         tuplet_type: StartStop::Start,
                         bracket: true,
-                        show_number: "actual".to_string(),
+                        show_number: Some(ShowNumber::Actual),
                     });
                 } else if is_last {
                     n.tuplet = Some(TupletDisplay {
                         tuplet_type: StartStop::Stop,
                         bracket: true,
-                        show_number: String::new(),
+                        show_number: None,
                     });
                 }
             }
@@ -179,13 +179,13 @@ pub(super) fn apply_tuplet_display(elements: &mut [VoiceElement], _actual: u8) {
                     r.tuplet = Some(TupletDisplay {
                         tuplet_type: StartStop::Start,
                         bracket: true,
-                        show_number: "actual".to_string(),
+                        show_number: Some(ShowNumber::Actual),
                     });
                 } else if is_last {
                     r.tuplet = Some(TupletDisplay {
                         tuplet_type: StartStop::Stop,
                         bracket: true,
-                        show_number: String::new(),
+                        show_number: None,
                     });
                 }
             }
@@ -195,13 +195,13 @@ pub(super) fn apply_tuplet_display(elements: &mut [VoiceElement], _actual: u8) {
                         first_note.tuplet = Some(TupletDisplay {
                             tuplet_type: StartStop::Start,
                             bracket: true,
-                            show_number: "actual".to_string(),
+                            show_number: Some(ShowNumber::Actual),
                         });
                     } else if is_last {
                         first_note.tuplet = Some(TupletDisplay {
                             tuplet_type: StartStop::Stop,
                             bracket: true,
-                            show_number: String::new(),
+                            show_number: None,
                         });
                     }
                 }

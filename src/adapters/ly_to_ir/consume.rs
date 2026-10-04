@@ -5,11 +5,12 @@ use crate::ir::articulation::Placement;
 use crate::ir::direction::{Direction, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::parse_pitch_name;
-use crate::ir::note::{Chord, Note, VoiceElement};
+use crate::ir::note::{Chord, LineType, Note, VoiceElement};
 use crate::ir::pitch::{AccidentalDisplay, Pitch};
 use crate::ir::score::PageLayout;
 
 use super::state::WalkState;
+use crate::ir::duration::NoteType;
 use crate::ir::timeline::Event;
 
 /// Consume octave marks (' and ,) after a pitch symbol. Returns net marks.
@@ -485,7 +486,7 @@ pub(super) fn punct_text(state: &WalkState, node: Node) -> String {
 /// Consume a `\tempo` command (various forms).
 pub(super) fn consume_tempo(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
     let mut text_label: Option<String> = None;
-    let mut beat_unit: Option<String> = None;
+    let mut beat_unit: Option<NoteType> = None;
     let mut per_minute: Option<u32> = None;
     let mut dots: u8 = 0;
 
@@ -546,18 +547,16 @@ pub(super) fn consume_tempo(state: &mut WalkState, children: &[Node], mut i: usi
 }
 
 /// Convert LilyPond duration number to beat unit string.
-pub(super) fn ly_number_to_beat_unit(num: &str) -> String {
+pub(super) fn ly_number_to_beat_unit(num: &str) -> NoteType {
     match num {
-        "1" => "whole",
-        "2" => "half",
-        "4" => "quarter",
-        "8" => "eighth",
-        "16" => "16th",
-        "32" => "32nd",
-        "64" => "64th",
-        _ => "quarter",
+        "1" => NoteType::Whole,
+        "2" => NoteType::Half,
+        "8" => NoteType::Eighth,
+        "16" => NoteType::Sixteenth,
+        "32" => NoteType::ThirtySecond,
+        "64" => NoteType::SixtyFourth,
+        _ => NoteType::Quarter,
     }
-    .to_string()
 }
 
 /// The decoded text of a `string` node (see [`super::text::string_value`]).
@@ -782,18 +781,11 @@ pub(super) fn consume_override(state: &mut WalkState, children: &[Node], mut i: 
             .trim_start_matches("#'")
             .trim_start_matches("#\u{2018}"); // curly quote edge case
         match style {
-            "dashed-line" => {
-                state.pending_glissando_style = Some("dashed".to_string());
-            }
-            "dotted-line" => {
-                state.pending_glissando_style = Some("dotted".to_string());
-            }
-            "trill" => {
-                state.pending_slide = true;
-            }
-            _ => {
-                state.pending_glissando_style = Some(style.to_string());
-            }
+            "dashed-line" => state.pending_glissando_style = Some(LineType::Dashed),
+            "dotted-line" => state.pending_glissando_style = Some(LineType::Dotted),
+            "trill" => state.pending_slide = true,
+            // `'line` is the default, and no writer draws `'zigzag`.
+            _ => {}
         }
     }
 

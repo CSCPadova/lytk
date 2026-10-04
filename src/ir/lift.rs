@@ -16,11 +16,11 @@ use super::annotation::Annotation;
 use super::articulation::*;
 use super::direction::{Barline, BarlineType, Direction, RepeatDirection};
 use super::duration::{Duration, Frac};
-use super::harmony::Harmony;
 use super::measure::{KeySignature, Measure, TimeSignature};
 use super::music::{ContextType, Music, MusicDocument, RepeatType};
 use super::note::{Note, VoiceElement};
 use super::score::*;
+use crate::ir::direction::EndingType;
 
 /// Convert a `Score` to a `MusicDocument` with a Music tree.
 pub fn lift_to_music(score: &Score) -> MusicDocument {
@@ -33,6 +33,9 @@ pub fn lift_to_music(score: &Score) -> MusicDocument {
 
 /// Convert a `Score` to a bare `Music` tree.
 pub fn lift_score(score: &Score) -> Music {
+    // A note's marks are its annotations.
+    let sunk = super::marks::sunk(score);
+    let score: &Score = &sunk;
     let mut parts = Vec::new();
 
     for child in &score.children {
@@ -55,10 +58,10 @@ pub fn lift_score(score: &Score) -> Music {
 
 /// Lift a PartGroup to a Music tree.
 fn lift_part_group(pg: &PartGroup) -> Music {
-    let ctx_type = match pg.group_type.as_str() {
-        "PianoStaff" => ContextType::PianoStaff,
-        "GrandStaff" => ContextType::GrandStaff,
-        "ChoirStaff" => ContextType::ChoirStaff,
+    let ctx_type = match pg.group_type {
+        ContextType::PianoStaff | ContextType::GrandStaff | ContextType::ChoirStaff => {
+            pg.group_type
+        }
         _ => ContextType::StaffGroup,
     };
 
@@ -234,14 +237,17 @@ fn is_repeat_backward(m: &Measure) -> bool {
 fn is_alternative_start(m: &Measure) -> bool {
     m.left_barline
         .as_ref()
-        .is_some_and(|b| b.ending_type.as_deref() == Some("start"))
+        .is_some_and(|b| b.ending_type == Some(EndingType::Start))
 }
 
 /// An ending closes here (`discontinue` is a closed ending drawn open).
 fn is_alternative_stop(m: &Measure) -> bool {
-    m.right_barline
-        .as_ref()
-        .is_some_and(|b| matches!(b.ending_type.as_deref(), Some("stop" | "discontinue")))
+    m.right_barline.as_ref().is_some_and(|b| {
+        matches!(
+            b.ending_type,
+            Some(EndingType::Stop | EndingType::Discontinue)
+        )
+    })
 }
 
 /// How many times a repeat plays, from its forward sign or else the backward
@@ -326,21 +332,15 @@ fn lift_one_measure(
         .filter(|d| on_staff(staff, d.staff))
         .map(|d| {
             let mut d = d.clone();
-            let at = std::mem::take(&mut d.offset_frac);
+            let at = std::mem::take(&mut d.offset);
             (at, lift_direction(&d))
         })
         .collect();
     if staff.is_none_or(|s| s == 1) {
         marks.extend(measure.harmonies.iter().map(|h| {
-            let per_whole = 4 * super::timeline::OFFSET_DIVISIONS;
-            let at = Frac::new(h.offset.max(0) as i64, per_whole);
-            (
-                at,
-                Music::Harmony(Harmony {
-                    offset: 0,
-                    ..h.clone()
-                }),
-            )
+            let mut h = h.clone();
+            let at = std::mem::take(&mut h.offset).max(Frac::from_integer(0));
+            (at, Music::Harmony(h))
         }));
     }
     marks.sort_by_key(|m| m.0);
@@ -624,9 +624,9 @@ fn note_to_annotations(note: &Note) -> Vec<Annotation> {
     }
     // The source's beams, as groups: the levels are the engraver's.
     for b in note.beams.iter().filter(|b| b.number == 1) {
-        match b.beam_type.as_str() {
-            "begin" => anns.push(Annotation::BeamStart),
-            "end" => anns.push(Annotation::BeamStop),
+        match b.beam_type {
+            BeamValue::Begin => anns.push(Annotation::BeamStart),
+            BeamValue::End => anns.push(Annotation::BeamStop),
             _ => {}
         }
     }

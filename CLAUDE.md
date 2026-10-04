@@ -81,6 +81,9 @@ Six layers:
 - **Multi-voice** `<< { } \\ { } >>` and `<< {…} {…} >>`: every branch starts at the block's start; branch *k* of a `\\` block writes lane *k*. Simultaneous music never needs merging.
 - **Multi-staff parts** (piano): `Part.staves` > 1, voices carry `staff` numbers. `ir_to_ly` filters voices by staff using `voice_matches_staff` + `voice_has_content`. `ir_to_mxml` threads `part_staves` to conditionally emit `<staff>` elements.
 - **Assembly** (`ly_to_ir::assemble_score`): spacer-only lanes and `\new Dynamics` parts fold into directions; PianoStaff staves are unioned with staff numbers (`merge_piano_staff_parts`); lyrics attach after splitting; then `post_process_beams_and_stems`, ties, slurs, clefs.
+- **One home for marks**: a note's dynamics, hairpins and text are `Measure.directions` with its `voice`, at its onset (`Direction.voice`; `None` is the staff's). Readers may hang them on elements (crate-private scratch fields) and must `ir::marks::hoist` before returning; code that works note by note (the LilyPond, MusicXML and MIDI writers, `lift`, `retrograde`) calls `marks::sink`/`sunk` first.
+- **Typed names**: an enum-like IR value is an enum from `named_enum!` (closed) or `open_named_enum!` (with `Other(String)`), serialized as its name (MusicXML's word). Each format's own names stay in its adapter.
+- **Compact JSON**: every field that has a default carries `#[serde(default, skip_serializing_if = "is_default")]` (`one`/`is_one`, `yes`/`is_yes` for defaults 1 and `true`); `ir::json` writes and checks `"schema"`. `tests/ir_json.rs` gates round trips and bytes per note.
 
 ### General
 - **TDD** — every feature must have tests before implementation.
@@ -127,5 +130,5 @@ Six layers:
 - `tree-sitter-lilypond/` is read-only reference; build reads only `src/tree-sitter/`
 - MXL files are ZIP archives — the `musicxml` crate handles them natively via `read_score_partwise()` / `write_partwise_score()`
 - LilyPond `\relative` changes pitch semantics — tracked via `in_relative` / `relative_ref` state
-- `TimeSignature.beats` is a String, not a number — always use `.beats_fraction()` for arithmetic
+- `TimeSignature.beats` is a String, not a number — always use `.beats_fraction()`, `.terms()`, `.numerator()` or `.is_compound()`; never parse it by hand
 - Round-trip fidelity: test semantic equivalence (pitch, duration, structure), not string equality

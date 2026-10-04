@@ -1,14 +1,10 @@
 use tree_sitter::Node;
 
-use crate::ir::duration::Duration;
-use crate::ir::harmony::{Figure, FiguredBass};
+use crate::ir::duration::{Duration, Frac};
+use crate::ir::harmony::{Figure, FigureAccidental, FiguredBass};
 
 use super::state::{WalkState, MAX_ELEMENTS};
 use super::FiguredBassEntry;
-
-/// Divisions per quarter note used when computing figured bass offsets.
-/// Must match `DEFAULT_DIVISIONS` in `ir_to_mxml.rs`.
-pub(super) const FIGURED_BASS_DIVISIONS: i64 = crate::ir::timeline::OFFSET_DIVISIONS;
 
 /// Parse a `\figuremode { ... }` expression block into a flat stream of figured bass entries.
 ///
@@ -42,7 +38,7 @@ pub(super) fn parse_figuremode_block(state: &WalkState, block: Node) -> Vec<Figu
                     figures,
                     duration: dur,
                     parentheses: false,
-                    offset: 0,
+                    offset: Frac::from_integer(0),
                 }));
                 continue;
             }
@@ -134,7 +130,11 @@ fn parse_figure_chord(state: &WalkState, chord_node: Node) -> Vec<Figure> {
 /// Consume a run of accidental-modifier punctuation following a figure number
 /// or placeholder, advancing `idx`. Maps to MusicXML figured-bass suffix values:
 /// `+`→sharp, `++`→double-sharp, `-`→flat, `--`→double-flat, `!`→natural.
-fn consume_accidental_run(state: &WalkState, children: &[Node], idx: &mut usize) -> Option<String> {
+fn consume_accidental_run(
+    state: &WalkState,
+    children: &[Node],
+    idx: &mut usize,
+) -> Option<FigureAccidental> {
     let mut plus = 0u32;
     let mut minus = 0u32;
     let mut natural = false;
@@ -150,15 +150,14 @@ fn consume_accidental_run(state: &WalkState, children: &[Node], idx: &mut usize)
         }
         *idx += 1;
     }
-    let s = match (plus, minus, natural) {
-        (0, 0, true) => "natural",
-        (1, 0, _) => "sharp",
-        (n, 0, _) if n >= 2 => "double-sharp",
-        (0, 1, _) => "flat",
-        (0, n, _) if n >= 2 => "double-flat",
+    Some(match (plus, minus, natural) {
+        (0, 0, true) => FigureAccidental::Natural,
+        (1, 0, _) => FigureAccidental::Sharp,
+        (n, 0, _) if n >= 2 => FigureAccidental::DoubleSharp,
+        (0, 1, _) => FigureAccidental::Flat,
+        (0, n, _) if n >= 2 => FigureAccidental::FlatFlat,
         _ => return None,
-    };
-    Some(s.to_string())
+    })
 }
 
 /// Consume duration tokens without mutating WalkState (for figuremode parsing).

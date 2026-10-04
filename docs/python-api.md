@@ -246,7 +246,11 @@ Notes as ``(onset, duration, pitch, velocity)`` tuples in time steps.
 
 #### `MusicDocument.to_json() -> str`
 
+The document's IR as JSON, as :meth:`Score.to_json`.
+
 #### static `MusicDocument.from_json(json: str) -> MusicDocument`
+
+A document from :meth:`to_json`'s JSON, as :meth:`Score.from_json`.
 
 #### `MusicDocument.to_score() -> Score`
 
@@ -288,11 +292,22 @@ others (``copyright``, ``opus``, ``texidoc``, …) by key.
 
 #### `Score.to_json() -> str`
 
+The score's IR as JSON, marked ``"schema": 1``. Values at their
+default are left out: read a key with its default
+(``syllable.get("number", 1)``).
+
 #### static `Score.from_json(json: str) -> Score`
+
+A score from :meth:`to_json`'s JSON. JSON without ``"schema": 1``
+(written by lytk 0.5 or earlier) is a :class:`ParseError`.
 
 #### `Score.to_dict() -> dict[str, Any]`
 
+:meth:`to_json` as a dict.
+
 #### static `Score.from_dict(dict: dict[str, Any]) -> Score`
+
+:meth:`from_json` from a dict.
 
 #### `Score.to_music_document() -> MusicDocument`
 

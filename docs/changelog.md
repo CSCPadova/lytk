@@ -7,6 +7,83 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-04
+
+The typed IR. Every enum-like name in the IR is an enum; directions,
+chord symbols and figured bass sit at one exact position; a note's
+dynamics, hairpins and text live in the bar's directions with its voice;
+and the JSON leaves defaults out, 4.7 times smaller, and says which shape
+it is in. This changes the JSON and dict shape once (see Changed); the
+navigation API and every writer's output stay as they were, except where
+something was fixed (MusicXML octave signs, noteheads, pedals, hairpins
+and metronome beats; stacked chord symbols; string numbers from
+`to_lilypond_music`; see Fixed).
+
+### Changed
+
+- **The IR's JSON and dict shape (breaking).** `to_json` and `to_dict`
+  leave out every value at its default (an empty list, `None`, `false`,
+  0; 1 for a voice, staff, verse, beam level or tuplet ratio; `true` for
+  `print_object`), so a score's JSON is 4.7 times smaller (174 bytes a
+  note over the fixtures, from 810): read a key with its default
+  (`syl.get("number", 1)`). The JSON says its shape, `"schema": 1`, and
+  `from_json`/`from_dict` refuse JSON without it, which lytk 0.5 or
+  earlier wrote. A direction, chord symbol or figured-bass figure has one
+  position, `offset`, in whole notes from the start of its bar (`[1, 2]`:
+  half a bar in): a direction's `offset_frac` is now `offset`, and the
+  integer offsets are gone (a direction's in the MusicXML file's
+  divisions, a chord symbol's and a figure's in 16ths). Fractions are
+  read in lowest terms (`[2, 16]` is `[1, 8]`).
+- **Dynamics, hairpins and text have one home** (breaking): the bar's
+  directions. One written on a note (LilyPond's `c4\f`, a MusicXML
+  `<notations><dynamics>`, an ABC `!f!`) is a direction at the note's
+  onset with its `voice`; one between notes (a MusicXML `<direction>`)
+  has no voice and belongs to its staff. A note's or rest's `dynamics`,
+  `wedges` and `text_directions` are gone from the JSON and from Rust.
+  Every writer writes them as before.
+- **Typed IR.** Every enum-like name in the IR is an enum, written in
+  JSON as the name it had (`"staccato"`, `"forward hook"`, `"quarter"`):
+  articulations, ornaments, technicals and dynamics (with `Other` for a
+  name outside their lists), stems, noteheads, glissando lines, beams,
+  hairpins, tuplet numbers, fermatas, barline sides and voltas, tempo beat
+  units, text styles, octave signs, pedals, time symbols, chord kinds and
+  degrees, figure accidentals and part-group brackets. Hand-written JSON
+  with a name outside a closed list is refused. A chord symbol's root and
+  bass and a rest's display step are pitch steps (`"C"`); a part group's
+  type is a LilyPond context (`"PianoStaff"`, as before). Rust:
+  `ArticulationType`, `OrnamentType`, `TechnicalType`, `DynamicType`,
+  `StemDirection`, `Notehead`, `LineType`, `BeamValue`, `WedgeType`,
+  `ShowNumber`, `FermataShape`, `BarlineLocation`, `EndingType`,
+  `NoteType`, `FontStyle`, `FontWeight`, `OctaveShiftType`, `PedalType`,
+  `TimeSymbol`, `ChordKind`, `DegreeType`, `FigureAccidental` and
+  `GroupSymbol`; `TimeSignature::{terms, numerator, denominator,
+  is_compound}`.
+
+### Fixed
+
+- MusicXML octave signs keep their octave: an 8va (MusicXML's
+  `type="down"`, the notes printed down) was read as an 8vb and written
+  to LilyPond as `\ottava #-1`, and LilyPond's `\ottava #1` was written
+  to MusicXML as an 8vb.
+- The MusicXML writer writes every notehead (`arrow down`, `cluster`,
+  `slashed` and 9 others were dropped), a pedal's `discontinue` (it was a
+  `start`), a metronome's beat of a `long` or a 32nd (it was a quarter), a
+  part group without a symbol (it got a bracket), and a hairpin going on
+  past a line break (it was a new crescendo; MIDI and ABC ended it there).
+- ABC and MIDI keep a metronome's beat of a `long`, `maxima` or 64th: ABC
+  dropped it and MIDI played it as a quarter.
+- `to_lilypond_music` writes string numbers (`c4\1`), as `to_lilypond`
+  does.
+- LilyPond figured bass `<4-->` is MusicXML's `flat-flat` (it was
+  `double-flat`, which MusicXML doesn't have).
+- Chord symbols stacked before one MusicXML note (several `<harmony>`
+  without `<offset>`) change exactly at their share of it, and LilyPond
+  figured bass keeps each figure's exact length: both were rounded to
+  16th notes.
+- A score read back from its own JSON equals it
+  (`Score.from_json(score.to_json())`): page sizes came back a rounding
+  step off.
+
 ## [0.5.0] - 2026-10-04
 
 Notation you can trust. A review found that what the note boards didn't
@@ -825,7 +902,8 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/CSCPadova/lytk/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CSCPadova/lytk/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/CSCPadova/lytk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CSCPadova/lytk/compare/v0.2.0...v0.3.0

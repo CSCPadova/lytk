@@ -2,7 +2,19 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-10-04, Epic M done: 0.5.0 released)
+## Latest status (2026-10-04, Epic N done: 0.6.0)
+
+**Epic N is done and is version 0.6.0** (not tagged yet). Every
+enum-like name in the IR is an enum (23, by their MusicXML names, so the
+JSON kept its values); directions, chord symbols and figures sit at one
+`Frac` position; a note's dynamics, hairpins and text are directions with
+its voice; the JSON leaves defaults out (810 → 174 bytes a note) and
+carries `"schema": 1`. Every writer's output on the 198 fixtures is byte
+for byte what it was, except where a fix changed it (MusicXML octave
+signs, noteheads, pedals, wedges, beat units, stacked chord symbols).
+Next: the Python API as 0.7.0 (below).
+
+## Previous status (2026-10-04, Epic M done: 0.5.0 released)
 
 **Epic M is done and released as 0.5.0** (tag `v0.5.0`, 2026-10-04). The
 2026-10-01 review found that what the note boards didn't measure was broken
@@ -794,6 +806,28 @@ use, and raises the notation board. JSON stays backward compatible.
 | M9 | **Transforms.** Retrograde moves key/time/clef changes; transposition prefers fewer accidentals | S | ✅ 2026-10-02 (also: mid-bar clefs mirrored, syllabic swapped in both trees; directions keep their offsets in the bar) |
 | M10 | **CLI.** Every movement for ly→ly and transforms; warnings; `-I`; safe folder output | S | ✅ 2026-10-02 (also: `diff` compares timing; `positions` skips grace chords; abs2rel/rel2abs every movement) |
 | M11 | **Release 0.5.0.** Docs state measured support | S | ✅ 2026-10-02 (`docs/import-export.md` opens with the measured boards; version 0.5.0; released 2026-10-04 after three CI fixes, devlog 2026-10-04) |
+
+### Epic N — 0.6.0: typed IR (P5+, ✅ 2026-10-04)
+
+Planned 2026-10-04 from roadmap P5 and the 2026-10-01 review (F10), widened
+to every enum-like string of the IR. It is the one release that breaks the
+IR's JSON and dict shape; the navigation API (`Score.iter_parts()` and its
+`Note`, `Measure`, … objects) keeps its strings. Every task is a refactor
+that must leave every writer's output unchanged unless it says otherwise:
+all writers on all 198 fixtures are snapshotted before and after (1,619
+files, `diff -r`). Every fixture's IR must read back equal from its JSON,
+and the JSON's size per note may only fall (`tests/ir_json.rs`).
+
+| Task | Description | Size | Status |
+|------|-------------|------|--------|
+| N0 | **Safety net.** `tests/ir_json.rs`: every fixture's score, lifted music and LilyPond music tree read back equal from JSON; bytes per note a falling baseline (810); serde_json `float_roundtrip` (page sizes came back a rounding step off) | S | ✅ 2026-10-04 |
+| N1 | **One meter parser.** `TimeSignature::parse_terms`, `terms`, `numerator`, `denominator`, `is_compound`; the beam rules, LilyPond figured bass, MIDI, ABC, the MIDI reader and the Python check use them. `beats` stays text (MusicXML writes `3+2`) | S | ✅ 2026-10-04 |
+| N2 | **Notation vocabularies typed** (P5 T5.1–T5.5). `ArticulationType`, `OrnamentType`, `TechnicalType`, `DynamicType`, each with `Other(String)`, by their MusicXML names | M | ✅ 2026-10-04 (`open_named_enum!`; each format's names stay in its adapter; the JSON keeps the names; one LilyPond technical table, so `to_lilypond_music` writes string numbers) |
+| N3 | **Every other enum-like string typed.** Stem, beam, wedge, pedal, octave shift, barline location and ending, tempo beat unit, notehead, glissando line, fermata shape, tuplet number display, time symbol, font style and weight, harmony root and degree type, figure accidentals, part-group type and bracket, rest display step | M | ✅ 2026-10-04 (`named_enum!`; `NoteType` with `Duration::note_type`; roots, basses and rest steps are `PitchStep`, group types `ContextType`. Fixed on the way: MusicXML 8va read as 8vb, a wedge's continuation, pedal `discontinue`, group symbol `none`, beat units past whole…16th, 12 noteheads not written) |
+| N4 | **One position.** Directions, harmonies and figured bass at a `Frac` from the bar start; the integer `Direction.offset`, `Harmony.offset` and `FiguredBass.offset` and `OFFSET_DIVISIONS` go | M | ✅ 2026-10-04 (`Direction.offset_frac` renamed `offset`; outputs unchanged but for stacked chord symbols, now exact; the MusicXML writer's divisions hold every position) |
+| N5 | **One home for dynamics, hairpins and text.** `Measure.directions` (with a voice); notes and rests no longer carry them; the Music tree keeps its annotations | L | ✅ 2026-10-04 (`ir::marks::{hoist, sink}`: readers hang marks on elements and hoist them out at the end; the LilyPond, MusicXML and MIDI writers, lift and retrograde sink the voiced ones back. Every output unchanged; the element fields are crate-private scratch) |
+| N6 | **Compact, versioned JSON.** Defaults skipped (a note is 622 bytes today); a schema version written and checked; fractions read reduced; `check_ir_values` follows the new keys | M | ✅ 2026-10-04 (`ir::json::{to_value, from_value, SCHEMA}`; 810 → 174 bytes a note; a plain note is 60; the checked keys kept their names) |
+| N7 | **Release 0.6.0.** Stubs, `docs/python-api.md`, migration notes in the changelog | S | ✅ 2026-10-04 (version 0.6.0, changelog `[0.6.0]`; the stubs document the JSON; tagging and publishing left) |
 
 ### After 0.4.0
 

@@ -545,12 +545,7 @@ fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
         .into_iter()
         .map(|pb| {
             let mut part = pb.part;
-            part.measures = split(
-                pb.tl,
-                &grid,
-                chord_mode::HARMONY_DIVISIONS,
-                figured_bass::FIGURED_BASS_DIVISIONS,
-            );
+            part.measures = split(pb.tl, &grid);
             if part.staves > 1 {
                 if let Some(m) = part.measures.first_mut() {
                     m.attributes.get_or_insert_with(Default::default).staves = Some(part.staves);
@@ -586,6 +581,7 @@ fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
             }
         }
     }
+    crate::ir::marks::hoist(&mut score);
     Some(score)
 }
 

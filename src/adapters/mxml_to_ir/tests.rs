@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::ir::articulation::StartStop;
+use crate::ir::duration::Frac;
 use crate::ir::note::VoiceElement;
 use crate::ir::pitch::{AccidentalDisplay, Alter, PitchStep};
 use num::rational::Ratio;
@@ -312,12 +313,12 @@ fn test_parse_directions() {
 
     // First direction: dynamics f
     let dyn_mark = measure.directions[0].dynamic.as_ref().unwrap();
-    assert_eq!(dyn_mark.sign, "f");
+    assert_eq!(dyn_mark.sign.as_str(), "f");
 
     // Second direction: tempo
     assert!(measure.directions[1].tempo.is_some());
     let tempo = measure.directions[1].tempo.as_ref().unwrap();
-    assert_eq!(tempo.beat_unit.as_deref(), Some("quarter"));
+    assert_eq!(tempo.beat_unit.map(|v| v.as_str()), Some("quarter"));
     assert_eq!(tempo.per_minute, Some(120.0));
 }
 
@@ -496,9 +497,9 @@ fn test_parse_harmony() {
     let score = adapter.convert_str(xml).unwrap();
     let m = &score.parts()[0].measures[0];
     assert_eq!(m.harmonies.len(), 1);
-    assert_eq!(m.harmonies[0].root.step, "C");
-    assert_eq!(m.harmonies[0].kind, "major");
-    assert_eq!(m.harmonies[0].bass.as_ref().unwrap().step, "E");
+    assert_eq!(m.harmonies[0].root.step.name(), "C");
+    assert_eq!(m.harmonies[0].kind.as_str(), "major");
+    assert_eq!(m.harmonies[0].bass.as_ref().unwrap().step.name(), "E");
 }
 
 #[test]
@@ -583,7 +584,7 @@ fn test_parse_glissando() {
     match &elems[0] {
         VoiceElement::Note(n) => {
             assert_eq!(n.glissando, Some(StartStop::Start));
-            assert_eq!(n.glissando_line_type.as_deref(), Some("dashed"));
+            assert_eq!(n.glissando_line_type.map(|l| l.as_str()), Some("dashed"));
         }
         _ => panic!("expected Note"),
     }
@@ -927,11 +928,13 @@ fn parse_wavy_line() {
     let note = &score.parts()[0].measures[0].voices[0].elements[0];
     if let crate::ir::note::VoiceElement::Note(n) = note {
         assert!(
-            n.ornaments.iter().any(|o| o.name == "trill-mark"),
+            n.ornaments.iter().any(|o| o.name.as_str() == "trill-mark"),
             "should have trill-mark"
         );
         assert!(
-            n.ornaments.iter().any(|o| o.name == "wavy-line-start"),
+            n.ornaments
+                .iter()
+                .any(|o| o.name.as_str() == "wavy-line-start"),
             "should have wavy-line-start"
         );
     } else {
@@ -1133,10 +1136,10 @@ fn test_parse_articulations() {
         _ => panic!("expected Note"),
     };
     assert_eq!(note.articulations.len(), 3);
-    assert_eq!(note.articulations[0].name, "staccato");
+    assert_eq!(note.articulations[0].name.as_str(), "staccato");
     assert_eq!(note.articulations[0].placement, crate::ir::Placement::Above);
-    assert_eq!(note.articulations[1].name, "accent");
-    assert_eq!(note.articulations[2].name, "tenuto");
+    assert_eq!(note.articulations[1].name.as_str(), "accent");
+    assert_eq!(note.articulations[2].name.as_str(), "tenuto");
     assert_eq!(note.articulations[2].placement, crate::ir::Placement::Below);
 }
 
@@ -1201,8 +1204,8 @@ fn test_parse_technicals() {
     assert!(note
         .technicals
         .iter()
-        .any(|t| t.name == "fingering" && t.value == "3"));
-    assert!(note.technicals.iter().any(|t| t.name == "up-bow"));
+        .any(|t| t.name.as_str() == "fingering" && t.value == "3"));
+    assert!(note.technicals.iter().any(|t| t.name.as_str() == "up-bow"));
 }
 
 #[test]
@@ -1228,7 +1231,7 @@ fn test_parse_fermata() {
         _ => panic!("expected Note"),
     };
     let fermata = note.fermata.as_ref().expect("should have fermata");
-    assert_eq!(fermata.shape, "angled");
+    assert_eq!(fermata.shape.as_str(), "angled");
     assert!(fermata.inverted);
 }
 
@@ -1302,7 +1305,7 @@ fn test_parse_beams() {
     match &elems[0] {
         VoiceElement::Note(n) => {
             assert_eq!(n.beams.len(), 1);
-            assert_eq!(n.beams[0].beam_type, "begin");
+            assert_eq!(n.beams[0].beam_type.as_str(), "begin");
             assert_eq!(n.beams[0].number, 1);
         }
         _ => panic!("expected Note"),
@@ -1354,7 +1357,7 @@ fn test_parse_stem_direction() {
 
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     match &score.parts()[0].measures[0].voices[0].elements[0] {
-        VoiceElement::Note(n) => assert_eq!(n.stem_direction, "down"),
+        VoiceElement::Note(n) => assert_eq!(n.stem_direction.map(|s| s.as_str()), Some("down")),
         _ => panic!("expected Note"),
     }
 }
@@ -1407,7 +1410,7 @@ fn test_parse_wedge() {
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     let dir = &score.parts()[0].measures[0].directions[0];
     let wedge = dir.wedge.as_ref().expect("should have wedge");
-    assert_eq!(wedge.wedge_type, "crescendo");
+    assert_eq!(wedge.wedge_type.as_str(), "crescendo");
     assert_eq!(dir.placement, crate::ir::Placement::Below);
 }
 
@@ -1437,7 +1440,7 @@ fn test_parse_pedal() {
     let dirs = &score.parts()[0].measures[0].directions;
     let start = dirs.iter().find(|d| d.pedal.is_some()).unwrap();
     let pedal = start.pedal.as_ref().unwrap();
-    assert_eq!(pedal.pedal_type, "start");
+    assert_eq!(pedal.pedal_type.as_str(), "start");
     assert!(pedal.line);
 }
 
@@ -1463,7 +1466,10 @@ fn test_parse_octave_shift() {
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     let dir = &score.parts()[0].measures[0].directions[0];
     let ott = dir.octave_shift.as_ref().expect("should have octave shift");
-    assert_eq!(ott.shift_type, "down");
+    // MusicXML's "down" is an 8va: the notes sound an octave up, as
+    // LilyPond's `\ottava #1` (it was read as an 8vb).
+    assert_eq!(ott.shift_type, crate::ir::direction::OctaveShiftType::Up);
+    assert_eq!(ott.octaves(), 1);
     assert_eq!(ott.size, 8);
 }
 
@@ -1515,8 +1521,8 @@ fn test_parse_words_direction() {
     let dir = &score.parts()[0].measures[0].directions[0];
     let text = dir.text.as_ref().expect("should have text direction");
     assert_eq!(text.text, "dolce");
-    assert_eq!(text.font_style.as_deref(), Some("italic"));
-    assert_eq!(text.font_weight.as_deref(), Some("bold"));
+    assert_eq!(text.font_style.map(|v| v.as_str()), Some("italic"));
+    assert_eq!(text.font_weight.map(|v| v.as_str()), Some("bold"));
 }
 
 #[test]
@@ -1661,7 +1667,7 @@ fn test_parse_volta_ending() {
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     let barline = score.parts()[0].measures[0].left_barline.as_ref().unwrap();
     assert_eq!(barline.ending_number, Some(1));
-    assert_eq!(barline.ending_type.as_deref(), Some("start"));
+    assert_eq!(barline.ending_type.map(|v| v.as_str()), Some("start"));
 }
 
 // --- Attributes parsing ---
@@ -1949,8 +1955,8 @@ fn test_parse_part_group() {
     assert_eq!(score.children.len(), 1);
     match &score.children[0] {
         ScoreChild::PartGroup(pg) => {
-            assert_eq!(pg.bracket, "brace");
-            assert_eq!(pg.group_type, "PianoStaff");
+            assert_eq!(pg.bracket.as_str(), "brace");
+            assert_eq!(pg.group_type.ly_name(), "PianoStaff");
             assert_eq!(pg.children.len(), 2);
         }
         _ => panic!("expected PartGroup"),
@@ -1983,13 +1989,13 @@ fn test_parse_harmony_with_degrees() {
 
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     let h = &score.parts()[0].measures[0].harmonies[0];
-    assert_eq!(h.root.step, "G");
+    assert_eq!(h.root.step.name(), "G");
     assert_eq!(h.root.alter, -1.0);
-    assert_eq!(h.kind, "dominant");
+    assert_eq!(h.kind.as_str(), "dominant");
     assert_eq!(h.degrees.len(), 1);
     assert_eq!(h.degrees[0].value, 9);
     assert_eq!(h.degrees[0].alter, 1.0);
-    assert_eq!(h.degrees[0].degree_type, "add");
+    assert_eq!(h.degrees[0].degree_type.as_str(), "add");
 }
 
 #[test]
@@ -2012,7 +2018,10 @@ fn test_parse_figured_bass_parentheses() {
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     let fb = &score.parts()[0].measures[0].figured_bass[0];
     assert!(fb.parentheses);
-    assert_eq!(fb.figures[0].suffix.as_deref(), Some("sharp"));
+    assert_eq!(
+        fb.figures[0].suffix.as_ref().map(|v| v.as_str()),
+        Some("sharp")
+    );
 }
 
 #[test]
@@ -2034,7 +2043,7 @@ fn test_parse_rest_with_display_step() {
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     match &score.parts()[0].measures[0].voices[0].elements[0] {
         VoiceElement::Rest(r) => {
-            assert_eq!(r.display_step.as_deref(), Some("B"));
+            assert_eq!(r.display_step.map(|s| s.name()), Some("B"));
             assert_eq!(r.display_octave, Some(4));
         }
         _ => panic!("expected Rest"),
@@ -2134,7 +2143,7 @@ fn test_parse_notehead() {
     let xml2 = xml.replace("</score-port>", "</score-part>");
     let score = MxmlToIrAdapter::new().convert_str(&xml2).unwrap();
     match &score.parts()[0].measures[0].voices[0].elements[0] {
-        VoiceElement::Note(n) => assert_eq!(n.notehead, "x"),
+        VoiceElement::Note(n) => assert_eq!(n.notehead.map(|h| h.as_str()), Some("x")),
         _ => panic!("expected Note"),
     }
 }
@@ -2297,7 +2306,7 @@ fn test_parse_time_symbol() {
         .time
         .as_ref()
         .unwrap();
-    assert_eq!(time.symbol.as_deref(), Some("common"));
+    assert_eq!(time.symbol.map(|v| v.as_str()), Some("common"));
 }
 
 #[test]
@@ -2330,7 +2339,7 @@ fn test_mid_measure_direction_position_roundtrip() {
     let score = MxmlToIrAdapter::new().convert_str(xml).unwrap();
     let dir = &score.parts()[0].measures[0].directions[0];
     assert_eq!(
-        dir.offset_frac,
+        dir.offset,
         crate::ir::duration::Frac::new(1, 2),
         "direction after two quarters sits at 1/2 whole note"
     );
@@ -2343,7 +2352,7 @@ fn test_mid_measure_direction_position_roundtrip() {
     let score2 = MxmlToIrAdapter::new().convert_str(&out).unwrap();
     let dir2 = &score2.parts()[0].measures[0].directions[0];
     assert_eq!(
-        dir2.offset_frac,
+        dir2.offset,
         crate::ir::duration::Frac::new(1, 2),
         "mid-measure direction must not snap to measure start on round-trip"
     );
@@ -2643,10 +2652,10 @@ fn chord_symbols_and_figures_sit_at_the_cursor() {
     .concat();
     let score = one_bar(&body, 1);
     let m = &score.parts()[0].measures[0];
-    // OFFSET_DIVISIONS (4) per quarter: beat 3 is 8.
-    let offsets: Vec<i32> = m.harmonies.iter().map(|h| h.offset).collect();
-    assert_eq!(offsets, vec![0, 8]);
-    assert_eq!(m.figured_bass[0].offset, 8);
+    // Beat 3 is half a bar in.
+    let offsets: Vec<Frac> = m.harmonies.iter().map(|h| h.offset).collect();
+    assert_eq!(offsets, vec![Frac::from_integer(0), Frac::new(1, 2)]);
+    assert_eq!(m.figured_bass[0].offset, Frac::new(1, 2));
 }
 
 #[test]
@@ -2665,12 +2674,13 @@ fn chord_symbols_stacked_before_a_note_change_during_it() {
     ]
     .concat();
     let score = one_bar(&body, 1);
-    let offsets: Vec<i32> = score.parts()[0].measures[0]
+    let offsets: Vec<Frac> = score.parts()[0].measures[0]
         .harmonies
         .iter()
         .map(|h| h.offset)
         .collect();
-    assert_eq!(offsets, vec![0, 4, 8, 12]);
+    let quarters: Vec<Frac> = (0..4).map(|q| Frac::new(q, 4)).collect();
+    assert_eq!(offsets, quarters);
 }
 
 #[test]
@@ -2694,7 +2704,7 @@ fn a_later_attributes_element_keeps_the_bars_key_and_time() {
     let clefs: Vec<_> = score.parts()[0].measures[0]
         .directions
         .iter()
-        .filter_map(|d| Some((d.offset_frac, d.clef?.sign)))
+        .filter_map(|d| Some((d.offset, d.clef?.sign)))
         .collect();
     assert_eq!(
         clefs,
@@ -2721,7 +2731,7 @@ fn undeclared_divisions_are_inferred_from_the_first_note() {
     );
     let score = MxmlToIrAdapter::new().convert_str(&xml).expect("reads");
     let m = &score.parts()[0].measures[0];
-    assert_eq!(m.directions[0].offset_frac, Ratio::new(1, 2));
+    assert_eq!(m.directions[0].offset, Ratio::new(1, 2));
     let v = layout(&score);
     assert_eq!(v[0].1.len(), 3, "no gaps between the notes: {v:?}");
 }

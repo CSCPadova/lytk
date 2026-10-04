@@ -30,11 +30,16 @@
 //! - Conversion traits (Note ↔ MIDI ↔ LilyPond string) from lilypond-rs
 //! - Integer time steps and annotation model from PDMX
 
+#[macro_use]
+mod names;
+mod serde_defaults;
+
 pub mod articulation;
 pub mod direction;
 pub mod duration;
 pub mod harmony;
 pub mod interval;
+pub mod json;
 pub mod language;
 pub mod measure;
 pub mod note;
@@ -53,6 +58,7 @@ pub mod music;
 pub(crate) mod beams;
 pub mod lift;
 pub mod lower;
+pub(crate) mod marks;
 pub(crate) mod notate;
 pub(crate) mod timeline;
 

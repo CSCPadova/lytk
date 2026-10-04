@@ -1,6 +1,7 @@
 use crate::ir::articulation::{
-    Articulation, BeamEvent, DynamicMark, Fermata, Placement, SlurEvent, StartStop, Technical,
-    TieEvent, Wedge,
+    Articulation, ArticulationType, BeamEvent, BeamValue, DynamicMark, Fermata, FermataShape,
+    OrnamentType, Placement, SlurEvent, StartStop, Technical, TechnicalType, TieEvent, Wedge,
+    WedgeType,
 };
 use crate::ir::direction::{Direction, TextDirection};
 use crate::ir::note::{Chord, Note, Rest, VoiceElement};
@@ -28,7 +29,7 @@ pub(super) fn apply_note_attachments(
                 let level = beam_level_for_duration(&note.duration);
                 if level > 0 {
                     note.beams.push(BeamEvent {
-                        beam_type: "begin".to_string(),
+                        beam_type: BeamValue::Begin,
                         number: 1,
                     });
                 }
@@ -40,7 +41,7 @@ pub(super) fn apply_note_attachments(
                 let level = beam_level_for_duration(&note.duration);
                 if level > 0 {
                     note.beams.push(BeamEvent {
-                        beam_type: "end".to_string(),
+                        beam_type: BeamValue::End,
                         number: 1,
                     });
                 }
@@ -72,7 +73,7 @@ pub(super) fn apply_note_attachments(
             }
             "\\fermata" => {
                 note.fermata = Some(Fermata {
-                    shape: "normal".to_string(),
+                    shape: FermataShape::Normal,
                     inverted: here == Placement::Below,
                 });
             }
@@ -95,127 +96,127 @@ pub(super) fn apply_note_attachments(
             s if is_dynamic_name(s) || s.starts_with("dynamic:") => {
                 let sign = s.trim_start_matches("dynamic:").trim_start_matches('\\');
                 note.dynamics.push(DynamicMark {
-                    sign: sign.to_string(),
+                    sign: sign.into(),
                     placement: here,
                 });
             }
             "\\<" | "\\crescendo" => {
                 note.wedges.push(Wedge {
-                    wedge_type: "crescendo".to_string(),
+                    wedge_type: WedgeType::Crescendo,
                     placement: here,
                 });
             }
             "\\>" | "\\diminuendo" | "\\decrescendo" => {
                 note.wedges.push(Wedge {
-                    wedge_type: "diminuendo".to_string(),
+                    wedge_type: WedgeType::Diminuendo,
                     placement: here,
                 });
             }
             "\\!" => {
                 note.wedges.push(Wedge {
-                    wedge_type: "stop".to_string(),
+                    wedge_type: WedgeType::Stop,
                     placement: here,
                 });
             }
             "\\trill" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
-                    name: "trill-mark".to_string(),
+                    name: OrnamentType::TrillMark,
                     placement: here,
                 });
             }
             "\\mordent" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
-                    name: "mordent".to_string(),
+                    name: OrnamentType::Mordent,
                     placement: here,
                 });
             }
             "\\prall" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
-                    name: "inverted-mordent".to_string(),
+                    name: OrnamentType::InvertedMordent,
                     placement: here,
                 });
             }
             "\\turn" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
-                    name: "turn".to_string(),
+                    name: OrnamentType::Turn,
                     placement: here,
                 });
             }
             "\\reverseturn" => {
                 note.ornaments.push(crate::ir::articulation::Ornament {
-                    name: "inverted-turn".to_string(),
+                    name: OrnamentType::InvertedTurn,
                     placement: here,
                 });
             }
             "\\staccato" => {
                 note.articulations.push(Articulation {
-                    name: "staccato".to_string(),
+                    name: ArticulationType::Staccato,
                     placement: here,
                 });
             }
             "\\tenuto" => {
                 note.articulations.push(Articulation {
-                    name: "tenuto".to_string(),
+                    name: ArticulationType::Tenuto,
                     placement: here,
                 });
             }
             "\\accent" => {
                 note.articulations.push(Articulation {
-                    name: "accent".to_string(),
+                    name: ArticulationType::Accent,
                     placement: here,
                 });
             }
             "\\marcato" => {
                 note.articulations.push(Articulation {
-                    name: "strong-accent".to_string(),
+                    name: ArticulationType::StrongAccent,
                     placement: here,
                 });
             }
             "\\staccatissimo" => {
                 note.articulations.push(Articulation {
-                    name: "staccatissimo".to_string(),
+                    name: ArticulationType::Staccatissimo,
                     placement: here,
                 });
             }
             "\\portato" => {
                 note.articulations.push(Articulation {
-                    name: "detached-legato".to_string(),
+                    name: ArticulationType::DetachedLegato,
                     placement: here,
                 });
             }
             "\\stopped" => {
                 note.technicals.push(Technical {
-                    name: "stopped".to_string(),
+                    name: TechnicalType::Stopped,
                     value: String::new(),
                 });
             }
             "\\upbow" => {
                 note.technicals.push(Technical {
-                    name: "up-bow".to_string(),
+                    name: TechnicalType::UpBow,
                     value: String::new(),
                 });
             }
             "\\downbow" => {
                 note.technicals.push(Technical {
-                    name: "down-bow".to_string(),
+                    name: TechnicalType::DownBow,
                     value: String::new(),
                 });
             }
             "\\flageolet" | "\\open" => {
                 note.technicals.push(Technical {
-                    name: "open-string".to_string(),
+                    name: TechnicalType::OpenString,
                     value: String::new(),
                 });
             }
             "\\snappizzicato" => {
                 note.technicals.push(Technical {
-                    name: "snap-pizzicato".to_string(),
+                    name: TechnicalType::SnapPizzicato,
                     value: String::new(),
                 });
             }
             "\\breathe" => {
                 note.articulations.push(Articulation {
-                    name: "breath-mark".to_string(),
+                    name: ArticulationType::BreathMark,
                     placement: here,
                 });
             }
@@ -239,7 +240,7 @@ pub(super) fn apply_note_attachments(
             s if s.starts_with("finger:") => {
                 let value = s["finger:".len()..].to_string();
                 note.technicals.push(Technical {
-                    name: "fingering".to_string(),
+                    name: TechnicalType::Fingering,
                     value,
                 });
             }
@@ -252,7 +253,7 @@ pub(super) fn apply_rest_attachments(rest: &mut Rest, attachments: &[String]) {
     for (k, att) in attachments.iter().enumerate() {
         if att == "\\fermata" {
             rest.fermata = Some(Fermata {
-                shape: "normal".to_string(),
+                shape: FermataShape::Normal,
                 inverted: k > 0 && attachments[k - 1] == "_",
             });
         }
@@ -336,22 +337,22 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
             // measures with a different time signature).
             if sign == "<" {
                 rest.wedges.push(Wedge {
-                    wedge_type: "crescendo".to_string(),
+                    wedge_type: WedgeType::Crescendo,
                     placement: Placement::Unspecified,
                 });
             } else if sign == ">" {
                 rest.wedges.push(Wedge {
-                    wedge_type: "diminuendo".to_string(),
+                    wedge_type: WedgeType::Diminuendo,
                     placement: Placement::Unspecified,
                 });
             } else if sign == "!" {
                 rest.wedges.push(Wedge {
-                    wedge_type: "stop".to_string(),
+                    wedge_type: WedgeType::Stop,
                     placement: Placement::Unspecified,
                 });
             } else {
                 rest.dynamics.push(DynamicMark {
-                    sign,
+                    sign: sign.into(),
                     placement: Placement::Unspecified,
                 });
             }
@@ -362,7 +363,7 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
                 Direction {
                     placement: Placement::Below,
                     wedge: Some(Wedge {
-                        wedge_type: "crescendo".to_string(),
+                        wedge_type: WedgeType::Crescendo,
                         placement: Placement::Below,
                     }),
                     ..Default::default()
@@ -371,7 +372,7 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
                 Direction {
                     placement: Placement::Below,
                     wedge: Some(Wedge {
-                        wedge_type: "diminuendo".to_string(),
+                        wedge_type: WedgeType::Diminuendo,
                         placement: Placement::Below,
                     }),
                     ..Default::default()
@@ -380,7 +381,7 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
                 Direction {
                     placement: Placement::Below,
                     wedge: Some(Wedge {
-                        wedge_type: "stop".to_string(),
+                        wedge_type: WedgeType::Stop,
                         placement: Placement::Below,
                     }),
                     ..Default::default()
@@ -389,7 +390,7 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
                 Direction {
                     placement: Placement::Below,
                     dynamic: Some(DynamicMark {
-                        sign,
+                        sign: sign.into(),
                         placement: Placement::Below,
                     }),
                     ..Default::default()
@@ -403,22 +404,22 @@ pub(super) fn attach_dynamic(state: &mut WalkState, dyn_text: &str) {
 fn attach_dynamic_sign_to_note(note: &mut crate::ir::note::Note, sign: String) {
     if sign == "<" {
         note.wedges.push(Wedge {
-            wedge_type: "crescendo".to_string(),
+            wedge_type: WedgeType::Crescendo,
             placement: Placement::Unspecified,
         });
     } else if sign == ">" {
         note.wedges.push(Wedge {
-            wedge_type: "diminuendo".to_string(),
+            wedge_type: WedgeType::Diminuendo,
             placement: Placement::Unspecified,
         });
     } else if sign == "!" {
         note.wedges.push(Wedge {
-            wedge_type: "stop".to_string(),
+            wedge_type: WedgeType::Stop,
             placement: Placement::Unspecified,
         });
     } else {
         note.dynamics.push(DynamicMark {
-            sign,
+            sign: sign.into(),
             placement: Placement::Unspecified,
         });
     }
@@ -429,13 +430,13 @@ pub(super) fn attach_fermata(state: &mut WalkState) {
     match state.current_voice.last_mut() {
         Some(VoiceElement::Note(note)) => {
             note.fermata = Some(Fermata {
-                shape: "normal".to_string(),
+                shape: FermataShape::Normal,
                 inverted: false,
             });
         }
         Some(VoiceElement::Rest(rest)) => {
             rest.fermata = Some(Fermata {
-                shape: "normal".to_string(),
+                shape: FermataShape::Normal,
                 inverted: false,
             });
         }
@@ -443,11 +444,21 @@ pub(super) fn attach_fermata(state: &mut WalkState) {
     }
 }
 
-/// Attach an articulation by name to the most recent note.
-pub(super) fn attach_articulation(state: &mut WalkState, name: &str) {
+/// Attach an articulation to the most recent note.
+pub(super) fn attach_articulation(state: &mut WalkState, name: ArticulationType) {
     if let Some(VoiceElement::Note(note)) = state.current_voice.last_mut() {
         note.articulations.push(Articulation {
-            name: name.to_string(),
+            name,
+            placement: Placement::Unspecified,
+        });
+    }
+}
+
+/// Attach an ornament to the most recent note.
+pub(super) fn attach_ornament(state: &mut WalkState, name: OrnamentType) {
+    if let Some(VoiceElement::Note(note)) = state.current_voice.last_mut() {
+        note.ornaments.push(crate::ir::articulation::Ornament {
+            name,
             placement: Placement::Unspecified,
         });
     }

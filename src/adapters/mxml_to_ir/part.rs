@@ -7,7 +7,7 @@ use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::*;
 use crate::ir::note::*;
 use crate::ir::part::Part;
-use crate::ir::timeline::{Timeline, OFFSET_DIVISIONS};
+use crate::ir::timeline::Timeline;
 use crate::ir::voice::Voice;
 
 use super::direction::{convert_direction, convert_figured_bass_elem, convert_harmony_elem};
@@ -15,6 +15,9 @@ use super::note::{convert_note, NoteOrRest};
 use super::PartInfo;
 use super::Result;
 
+use crate::ir::direction::BarlineLocation;
+use crate::ir::direction::EndingType;
+use crate::ir::measure::TimeSymbol;
 use musicxml::datatypes as mdt;
 use musicxml::elements as mxml;
 
@@ -152,9 +155,7 @@ fn convert_measure(
                 if cursor > Frac::from_integer(0) {
                     for (staff, clef) in std::mem::take(&mut ir_attrs.clefs) {
                         measure.directions.push(Direction {
-                            offset: (cursor * Frac::from_integer(4 * divisions)).to_integer()
-                                as i32,
-                            offset_frac: cursor,
+                            offset: cursor,
                             staff,
                             clef: Some(clef),
                             ..Default::default()
@@ -225,7 +226,7 @@ fn convert_measure(
                         let n = stacked.len() as i64;
                         for (k, &i) in stacked.iter().enumerate() {
                             let at = cursor + dur * Frac::new(k as i64, n);
-                            measure.harmonies[i].offset = ir_offset(at);
+                            measure.harmonies[i].offset = at;
                         }
                     }
                     stacked.clear();
@@ -308,38 +309,36 @@ fn convert_measure(
             }
             mxml::MeasureElement::Direction(dir) => {
                 if let Some(mut ir_dir) = convert_direction(dir) {
-                    ir_dir.offset =
-                        (cursor * Frac::from_integer(4 * divisions)).to_integer() as i32;
-                    ir_dir.offset_frac = cursor;
+                    ir_dir.offset = cursor;
                     measure.directions.push(ir_dir);
                 }
             }
             mxml::MeasureElement::Harmony(harm) => {
-                if let Some(mut harmony) = convert_harmony_elem(harm) {
-                    // At the cursor, displaced by its `<offset>` (divisions).
-                    let at = cursor + whole(harmony.offset as i64, divisions);
-                    if harmony.offset != 0 {
+                if let Some(mut harmony) = convert_harmony_elem(harm, divisions) {
+                    // At the cursor, displaced by its `<offset>`.
+                    let at = cursor + harmony.offset;
+                    if harmony.offset != Frac::from_integer(0) {
                         stacked.clear();
                     } else if stacked
                         .last()
-                        .is_some_and(|&i| measure.harmonies[i].offset != ir_offset(at))
+                        .is_some_and(|&i| measure.harmonies[i].offset != at)
                     {
                         stacked = vec![measure.harmonies.len()];
                     } else {
                         stacked.push(measure.harmonies.len());
                     }
-                    harmony.offset = ir_offset(at);
+                    harmony.offset = at;
                     measure.harmonies.push(harmony);
                 }
             }
             mxml::MeasureElement::FiguredBass(fb) => {
                 let mut figures = convert_figured_bass_elem(fb, divisions);
-                figures.offset = ir_offset(cursor);
+                figures.offset = cursor;
                 measure.figured_bass.push(figures);
             }
             mxml::MeasureElement::Barline(bl) => {
                 let barline = convert_barline(bl);
-                if barline.location == "left" {
+                if barline.location == BarlineLocation::Left {
                     measure.left_barline = Some(barline);
                 } else {
                     measure.right_barline = Some(barline);
@@ -364,15 +363,6 @@ fn convert_measure(
     measure.voices = voices_from_lanes(tl.lanes);
 
     Ok((measure, divisions))
-}
-
-/// A position in the bar in the IR's harmony and figured-bass offset units
-/// ([`OFFSET_DIVISIONS`] per quarter note).
-// ponytail: rounds to 16ths (a chord symbol on a triplet moves a little);
-// the upgrade path is a `Frac` position on `Harmony`/`FiguredBass` (0.6.0).
-fn ir_offset(at: Frac) -> i32 {
-    let at = at.max(Frac::from_integer(0)) * Frac::from_integer(4 * OFFSET_DIVISIONS);
-    at.round().to_integer() as i32
 }
 
 /// A measure's voices from positioned lanes: a gap before or between
@@ -567,16 +557,13 @@ fn convert_attributes(
             .first()
             .map(|b| b.beat_type.content.parse().unwrap_or(4))
             .unwrap_or(4);
-        let symbol = t.attributes.symbol.as_ref().map(|s| {
-            use mdt::TimeSymbol;
-            match s {
-                TimeSymbol::Common => "common".to_string(),
-                TimeSymbol::Cut => "cut".to_string(),
-                TimeSymbol::SingleNumber => "single-number".to_string(),
-                TimeSymbol::Normal => "normal".to_string(),
-                TimeSymbol::Note => "note".to_string(),
-                TimeSymbol::DottedNote => "dotted-note".to_string(),
-            }
+        let symbol = t.attributes.symbol.as_ref().map(|s| match s {
+            mdt::TimeSymbol::Common => TimeSymbol::Common,
+            mdt::TimeSymbol::Cut => TimeSymbol::Cut,
+            mdt::TimeSymbol::SingleNumber => TimeSymbol::SingleNumber,
+            mdt::TimeSymbol::Normal => TimeSymbol::Normal,
+            mdt::TimeSymbol::Note => TimeSymbol::Note,
+            mdt::TimeSymbol::DottedNote => TimeSymbol::DottedNote,
         });
         TimeSignature {
             beats,
@@ -692,29 +679,21 @@ fn convert_barline(bl: &mxml::Barline) -> Barline {
         .ending
         .as_ref()
         .and_then(|e| e.attributes.number.0.parse::<u8>().ok());
-    let ending_type = bl.content.ending.as_ref().map(|e| {
-        use mdt::StartStopDiscontinue;
-        match e.attributes.r#type {
-            StartStopDiscontinue::Start => "start".to_string(),
-            StartStopDiscontinue::Stop => "stop".to_string(),
-            StartStopDiscontinue::Discontinue => "discontinue".to_string(),
-        }
-    });
-
-    let location = bl
-        .attributes
-        .location
+    let ending_type = bl
+        .content
+        .ending
         .as_ref()
-        .map(|l| {
-            use mdt::RightLeftMiddle;
-            match l {
-                RightLeftMiddle::Right => "right",
-                RightLeftMiddle::Left => "left",
-                RightLeftMiddle::Middle => "middle",
-            }
-        })
-        .unwrap_or("right")
-        .to_string();
+        .map(|e| match e.attributes.r#type {
+            mdt::StartStopDiscontinue::Start => EndingType::Start,
+            mdt::StartStopDiscontinue::Stop => EndingType::Stop,
+            mdt::StartStopDiscontinue::Discontinue => EndingType::Discontinue,
+        });
+
+    let location = match bl.attributes.location {
+        Some(mdt::RightLeftMiddle::Left) => BarlineLocation::Left,
+        Some(mdt::RightLeftMiddle::Middle) => BarlineLocation::Middle,
+        _ => BarlineLocation::Right,
+    };
 
     Barline {
         style,

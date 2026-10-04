@@ -17,6 +17,7 @@ use super::maps::{
     articulation_to_ly, clef_to_ly, duration_to_ly, key_to_ly, length_to_ly, ornament_to_ly,
     pitch_to_ly, tempo_to_ly, time_to_ly,
 };
+use crate::ir::direction::OctaveShiftType;
 
 /// State tracked during Music tree emission.
 struct EmitCtx {
@@ -352,23 +353,7 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
         Music::FiguredBass(fb) => {
             // Simplified figured bass emission
             let d = duration_to_ly(&fb.duration);
-            let figs: Vec<String> = fb
-                .figures
-                .iter()
-                .map(|f| {
-                    let num = f.number.map(|n| n.to_string()).unwrap_or_default();
-                    let alter = match (&f.prefix, &f.suffix) {
-                        (_, Some(s)) | (Some(s), _) => match s.as_str() {
-                            "sharp" | "cross" => "+",
-                            "flat" => "-",
-                            "natural" => "!",
-                            _ => "",
-                        },
-                        _ => "",
-                    };
-                    format!("{num}{alter}")
-                })
-                .collect();
+            let figs: Vec<String> = fb.figures.iter().map(super::maps::figure_to_ly).collect();
             lines.push(format!("{}<{}>{d}", ctx.pad(), figs.join(" ")));
         }
         // A chord symbol belongs in a `ChordNames` context, which this
@@ -715,7 +700,7 @@ fn emit_direction(
         lines.push(format!("{pad}\\mark \"{}\"", escape_ly_string(jump)));
     }
     if let Some(oct) = &dir.octave_shift {
-        if matches!(oct.shift_type.as_str(), "up" | "down" | "stop") {
+        if oct.shift_type != OctaveShiftType::Continue {
             lines.push(format!("{pad}\\ottava #{}", oct.octaves()));
         }
     }
@@ -733,23 +718,13 @@ fn emit_direction(
     // after the note before, they were that note's).
     let mut post = String::new();
     if let Some(pedal) = &dir.pedal {
-        post.push_str(match pedal.pedal_type.as_str() {
-            "start" => "\\sustainOn",
-            "stop" => "\\sustainOff",
-            "change" => "\\sustainOff\\sustainOn",
-            _ => "",
-        });
+        post.push_str(super::maps::pedal_to_ly(pedal.pedal_type));
     }
     if let Some(dyn_mark) = &dir.dynamic {
         post.push_str(&super::maps::dynamic_to_ly(&dyn_mark.sign));
     }
     if let Some(wedge) = &dir.wedge {
-        post.push_str(match wedge.wedge_type.as_str() {
-            "crescendo" => "\\<",
-            "diminuendo" => "\\>",
-            "stop" => "\\!",
-            _ => "",
-        });
+        post.push_str(super::maps::wedge_to_ly(wedge.wedge_type));
     }
     if let Some(text) = dir.text.as_ref().filter(|t| !t.text.is_empty()) {
         let at = if dir.placement == Placement::Below || text.placement == Placement::Below {
@@ -785,26 +760,14 @@ fn annotations_to_ly(annotations: &[Annotation]) -> String {
                     parts.push(ly.to_string());
                 }
             }
-            Annotation::Technical(tech) => match tech.name.as_str() {
-                "fingering" => parts.push(format!("-{}", tech.value)),
-                "up-bow" => parts.push("\\upbow".to_string()),
-                "down-bow" => parts.push("\\downbow".to_string()),
-                "open-string" => parts.push("\\open".to_string()),
-                "snap-pizzicato" => parts.push("\\snappizzicato".to_string()),
-                "harmonic" => parts.push("\\flageolet".to_string()),
-                "stopped" => parts.push("-+".to_string()),
-                _ => {}
-            },
+            Annotation::Technical(tech) => {
+                parts.extend(super::maps::technical_to_ly(tech));
+            }
             Annotation::Dynamic(dyn_mark) => {
                 parts.push(super::maps::dynamic_to_ly(&dyn_mark.sign));
             }
             Annotation::Wedge(wedge) => {
-                let cmd = match wedge.wedge_type.as_str() {
-                    "crescendo" => "\\<",
-                    "diminuendo" => "\\>",
-                    "stop" => "\\!",
-                    _ => "",
-                };
+                let cmd = super::maps::wedge_to_ly(wedge.wedge_type);
                 if !cmd.is_empty() {
                     parts.push(cmd.to_string());
                 }
@@ -866,7 +829,9 @@ fn is_leaf(music: &Music) -> bool {
 mod tests {
     use super::*;
     use crate::ir::annotation::Annotation;
-    use crate::ir::articulation::{Articulation, DynamicMark, Placement};
+    use crate::ir::articulation::{
+        Articulation, ArticulationType, DynamicMark, DynamicType, Placement,
+    };
     use crate::ir::duration::Duration;
     use crate::ir::language::{PitchLanguage, PitchMode};
     use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
@@ -1109,11 +1074,11 @@ mod tests {
             duration: Duration::quarter(),
             annotations: vec![
                 Annotation::Articulation(Articulation {
-                    name: "staccato".to_string(),
+                    name: ArticulationType::Staccato,
                     placement: Placement::default(),
                 }),
                 Annotation::Dynamic(DynamicMark {
-                    sign: "f".to_string(),
+                    sign: DynamicType::F,
                     placement: Placement::default(),
                 }),
                 Annotation::SlurStart {

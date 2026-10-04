@@ -235,15 +235,12 @@ fn transpose_chord_pitch(
     mode: TransposeMode,
     fifths: i32,
 ) {
-    let Some(step) = crate::ir::pitch::PitchStep::from_name(&cp.step) else {
-        return;
-    };
     if cp.alter.fract() != 0.0 {
         return; // microtonal chord root — leave untouched
     }
-    let p = Pitch::with_alter(step, Alter::from_integer(cp.alter as i32), 4);
+    let p = Pitch::with_alter(cp.step, Alter::from_integer(cp.alter as i32), 4);
     let t = mode.apply_pitch(p, fifths);
-    cp.step = format!("{:?}", t.step);
+    cp.step = t.step;
     cp.alter = *t.alter.numer() as f64 / *t.alter.denom() as f64;
 }
 
@@ -736,16 +733,16 @@ mod spelling_tests {
         if let ScoreChild::Part(part) = &mut score.children[0] {
             part.measures[0].harmonies.push(Harmony {
                 root: ChordPitch {
-                    step: "C".to_string(),
+                    step: crate::ir::pitch::PitchStep::C,
                     alter: 0.0,
                 },
-                kind: "major".to_string(),
+                kind: crate::ir::harmony::ChordKind::Major,
                 bass: Some(ChordPitch {
-                    step: "E".to_string(),
+                    step: crate::ir::pitch::PitchStep::E,
                     alter: 0.0,
                 }),
                 degrees: vec![],
-                offset: 0,
+                offset: crate::ir::duration::Frac::from_integer(0),
                 function: None,
             });
         }
@@ -753,19 +750,19 @@ mod spelling_tests {
         let result = transpose(&score, 3);
         let h = &result.parts()[0].measures[0].harmonies[0];
         assert_eq!(
-            (h.root.step.as_str(), h.root.alter),
+            (h.root.step.name(), h.root.alter),
             ("E", -1.0),
             "root C → Eb"
         );
         let bass = h.bass.as_ref().unwrap();
-        assert_eq!((bass.step.as_str(), bass.alter), ("G", 0.0), "bass E → G");
+        assert_eq!((bass.step.name(), bass.alter), ("G", 0.0), "bass E → G");
 
         // Diatonic M2: C/E → D/F#.
         let result = transpose_interval(&score, Interval::from_name("M2").unwrap());
         let h = &result.parts()[0].measures[0].harmonies[0];
-        assert_eq!((h.root.step.as_str(), h.root.alter), ("D", 0.0));
+        assert_eq!((h.root.step.name(), h.root.alter), ("D", 0.0));
         let bass = h.bass.as_ref().unwrap();
-        assert_eq!((bass.step.as_str(), bass.alter), ("F", 1.0));
+        assert_eq!((bass.step.name(), bass.alter), ("F", 1.0));
     }
 
     #[test]

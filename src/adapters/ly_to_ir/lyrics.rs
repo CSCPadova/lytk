@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use tree_sitter::Node;
 
-use crate::ir::articulation::{LyricSyllable, StartStop, SyllabicType};
+use crate::ir::articulation::{BeamValue, LyricSyllable, StartStop, SyllabicType};
 use crate::ir::duration::Frac;
 use crate::ir::note::VoiceElement;
 use crate::ir::score::Score;
@@ -441,10 +441,10 @@ fn assign(
             .beams
             .iter()
             .find(|b| b.number == 1)
-            .map(|b| b.beam_type.as_str())
+            .map(|b| b.beam_type)
         {
-            Some("begin") => beam = true,
-            Some("end") => beam = false,
+            Some(BeamValue::Begin) => beam = true,
+            Some(BeamValue::End) => beam = false,
             _ => {}
         }
         if busy && !ignore {

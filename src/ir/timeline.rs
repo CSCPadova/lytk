@@ -63,10 +63,6 @@ fn zero() -> Frac {
     Frac::from_integer(0)
 }
 
-/// Divisions per quarter note of harmony and figured-bass offsets in a
-/// measure (the IR's convention; `DEFAULT_DIVISIONS` in the MusicXML writer).
-pub(crate) const OFFSET_DIVISIONS: i64 = 4;
-
 impl Event {
     pub(crate) fn direction(d: Direction) -> Event {
         Event::Direction(Box::new(d))
@@ -603,11 +599,6 @@ impl Grid {
 // The bar-splitter
 // ---------------------------------------------------------------------------
 
-/// Offset from a bar start in `divisions` per quarter note.
-fn divisions(within: Frac, per_quarter: i64) -> i32 {
-    (within * Frac::from_integer(4 * per_quarter)).to_integer() as i32
-}
-
 /// Combine two barlines on the same edge of the same bar: the one with a
 /// non-regular style wins the style; repeat and ending fields are united.
 fn combine(into: &mut Barline, b: Barline) {
@@ -634,35 +625,19 @@ fn attrs(m: &mut Measure) -> &mut MeasureAttributes {
 }
 
 /// Build a part's measures on the score's grid.
-pub(crate) fn split(
-    tl: Timeline,
-    grid: &Grid,
-    harmony_divs: i64,
-    figure_divs: i64,
-) -> Vec<Measure> {
-    split_with(tl, grid, harmony_divs, figure_divs, false)
+pub(crate) fn split(tl: Timeline, grid: &Grid) -> Vec<Measure> {
+    split_with(tl, grid, false)
 }
 
 /// [`split`], cutting an element that runs past a bar line into tied pieces
 /// (rests into rests), each spelled with [`notate`]. LilyPond input keeps its
 /// own notation, so its reader uses [`split`]; music read from formats that
 /// don't bar their notes (the Layer-1 tree, MIDI) uses this.
-pub(crate) fn split_tied(
-    tl: Timeline,
-    grid: &Grid,
-    harmony_divs: i64,
-    figure_divs: i64,
-) -> Vec<Measure> {
-    split_with(tl, grid, harmony_divs, figure_divs, true)
+pub(crate) fn split_tied(tl: Timeline, grid: &Grid) -> Vec<Measure> {
+    split_with(tl, grid, true)
 }
 
-fn split_with(
-    tl: Timeline,
-    grid: &Grid,
-    harmony_divs: i64,
-    figure_divs: i64,
-    tie_over: bool,
-) -> Vec<Measure> {
+fn split_with(tl: Timeline, grid: &Grid, tie_over: bool) -> Vec<Measure> {
     if grid.bars.is_empty() || (!tl.has_lane_content() && tl.events.is_empty()) {
         return Vec::new();
     }
@@ -694,7 +669,7 @@ fn split_with(
             // A clef inside the bar keeps its place, as a direction.
             Event::Clef(staff, c) if within > zero() => {
                 measures[i].directions.push(Direction {
-                    offset_frac: within,
+                    offset: within,
                     staff,
                     clef: Some(c),
                     ..Direction::default()
@@ -706,7 +681,7 @@ fn split_with(
             Event::Direction(mut d) => {
                 // A line/page break is a break before the bar it lands in
                 // (MusicXML `<print new-system>`), like every other direction.
-                d.offset_frac = within;
+                d.offset = within;
                 measures[i].directions.push(*d);
             }
             Event::LeftBarline(b) => put_barline(&mut measures[i].left_barline, b),
@@ -715,11 +690,11 @@ fn split_with(
                 put_barline(&mut measures[i].right_barline, b);
             }
             Event::Harmony(mut h) => {
-                h.offset = divisions(within, harmony_divs);
+                h.offset = within;
                 measures[i].harmonies.push(h);
             }
             Event::FiguredBass(mut fb) => {
-                fb.offset = divisions(within, figure_divs);
+                fb.offset = within;
                 measures[i].figured_bass.push(fb);
             }
             Event::MeasureLength(_) | Event::CadenzaOn | Event::CadenzaOff | Event::Partial(_) => {}
@@ -1005,7 +980,7 @@ mod tests {
         tl.place_run(1, zero(), vec![note(4), note(4)]);
         tl.place_run(2, Frac::new(1, 2), vec![note(2)]); // enters mid-bar
         let g = Grid::build([&tl]);
-        let ms = split(tl, &g, 4, 4);
+        let ms = split(tl, &g);
         assert_eq!(ms.len(), 2);
         let v2 = &ms[0].voices[1];
         assert!(matches!(&v2.elements[0], VoiceElement::Rest(r) if r.is_spacer));

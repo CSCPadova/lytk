@@ -33,8 +33,8 @@ def ir_notes(score: lytk.Score):
         if isinstance(o, dict):
             if "measures" in o:
                 for m in o["measures"]:
-                    for v in m["voices"]:
-                        for e in v["elements"]:
+                    for v in m.get("voices", []):
+                        for e in v.get("elements", []):
                             if "Note" in e:
                                 out.append(e["Note"])
                             elif "Chord" in e:
@@ -129,7 +129,7 @@ class TestLyricsReading:
     def test_two_addlyrics_are_two_verses(self):
         s = ly(r"{ c'4 d' e' f' } \addlyrics { a b c d } \addlyrics { e f g h }")
         first = ir_notes(s)[0]["lyrics"]
-        assert sorted((syl["number"], syl["text"]) for syl in first) == [
+        assert sorted((syl.get("number", 1), syl["text"]) for syl in first) == [
             (1, "a"),
             (2, "e"),
         ]
@@ -167,14 +167,14 @@ class TestLyricsReading:
     def test_musicxml_named_verse_is_not_verse_one(self):
         x = xml_part(xml_note("C", lyric("one") + lyric("refrain", "chorus")))
         numbers = {
-            syl["number"] for syl in ir_notes(lytk.from_musicxml_string(x))[0]["lyrics"]
+            syl.get("number", 1) for syl in ir_notes(lytk.from_musicxml_string(x))[0]["lyrics"]
         }
         assert len(numbers) == 2
 
     def test_midi_syllabic_follows_the_previous_hyphen(self):
         s = ly(r"\relative c' { c4 d e f } \addlyrics { Hal -- le -- lu jah }")
         back = lytk.from_midi_bytes(lytk.to_midi_bytes(s))
-        kinds = [syl["syllabic"] for n in ir_notes(back) for syl in n["lyrics"]]
+        kinds = [syl.get("syllabic", "Single") for n in ir_notes(back) for syl in n["lyrics"]]
         assert kinds == ["Begin", "Middle", "End", "Single"]
 
     def test_humdrum_text_spine_is_read(self):
@@ -333,7 +333,8 @@ class TestPositions:
             + xml_note("D", dur=2)
         )
         harmonies = ir_measures(lytk.from_musicxml_string(x))[0]["harmonies"]
-        assert [h["offset"] for h in harmonies] == [0, 8]  # 4 per quarter: beat 3
+        # Whole notes from the bar start: beat 3 of 4/4 is half the bar.
+        assert [h.get("offset", [0, 1]) for h in harmonies] == [[0, 1], [1, 2]]
 
     def test_lilypond_chordmode_puts_the_duration_first(self):
         s = ly(r"<< \new ChordNames \chordmode { c2 g2:7 } \new Staff { c'2 d'2 } >>")
@@ -397,7 +398,7 @@ class TestWriters:
         )
         out = lytk.to_lilypond_music(lytk.from_musicxml_string(xml).to_music_document())
         back = ir_notes(lytk.from_lilypond_string(out))
-        assert [n["dynamics"] for n in back] == [[], []]  # a direction at D's onset
+        assert [n.get("dynamics", []) for n in back] == [[], []]  # a direction at D's onset
         assert out.index("c'2") < out.index(r"<>\ff") < out.index("d'2")
 
     def test_musicxml_da_capo_is_written_once(self):

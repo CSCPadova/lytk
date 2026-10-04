@@ -4,6 +4,7 @@ use super::IrToMxmlAdapter;
 use crate::adapters::gm;
 use crate::ir::score::{PageLayout, Score, ScoreChild};
 
+use crate::ir::score::GroupSymbol;
 use musicxml::datatypes as mdt;
 use musicxml::elements as mxml;
 
@@ -210,11 +211,12 @@ impl IrToMxmlAdapter {
                     };
 
                     // part-group start
-                    let symbol = match group.bracket.as_str() {
-                        "brace" => mdt::GroupSymbolValue::Brace,
-                        "line" => mdt::GroupSymbolValue::Line,
-                        "square" => mdt::GroupSymbolValue::Square,
-                        _ => mdt::GroupSymbolValue::Bracket,
+                    let symbol = match group.bracket {
+                        GroupSymbol::Bracket => mdt::GroupSymbolValue::Bracket,
+                        GroupSymbol::Brace => mdt::GroupSymbolValue::Brace,
+                        GroupSymbol::Line => mdt::GroupSymbolValue::Line,
+                        GroupSymbol::Square => mdt::GroupSymbolValue::Square,
+                        GroupSymbol::NoSymbol => mdt::GroupSymbolValue::None,
                     };
                     content.push(mxml::PartListElement::PartGroup(mxml::PartGroup {
                         attributes: mxml::PartGroupAttributes {

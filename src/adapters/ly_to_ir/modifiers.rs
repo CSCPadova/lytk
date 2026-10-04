@@ -9,6 +9,7 @@ use crate::ir::pitch::Pitch;
 use super::consume::consume_octave_marks;
 use super::music::walk_music_block;
 use super::state::WalkState;
+use crate::ir::direction::EndingType;
 use crate::ir::timeline::Event;
 
 /// Consume optional reference pitch after `\relative`, then the music block.
@@ -196,7 +197,7 @@ fn consume_tremolo_repeat(state: &mut WalkState, children: &[Node], i: usize, co
                 n.tremolo_start = k == 0;
                 if !pair {
                     n.ornaments.push(crate::ir::articulation::Ornament {
-                        name: "tremolo".to_string(),
+                        name: crate::ir::articulation::OrnamentType::Tremolo,
                         placement: Default::default(),
                     });
                 }
@@ -384,7 +385,7 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
             start,
             Event::LeftBarline(Barline {
                 ending_number: Some(number),
-                ending_type: Some("start".to_string()),
+                ending_type: Some(EndingType::Start),
                 ..Default::default()
             }),
         );
@@ -397,7 +398,7 @@ fn consume_alternatives(state: &mut WalkState, alt_block: Node, _repeat_count: u
             end,
             Event::RightBarline(Barline {
                 ending_number: Some(number),
-                ending_type: Some("stop".to_string()),
+                ending_type: Some(EndingType::Stop),
                 ..close
             }),
         );

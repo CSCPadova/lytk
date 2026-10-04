@@ -145,9 +145,16 @@ pub fn signature(score: &Score) -> Sig {
                 }
             }
             for h in &m.harmonies {
-                s.harmonies.push((h.root.step.clone(), h.kind.clone()));
+                s.harmonies
+                    .push((h.root.step.name().to_string(), h.kind.to_string()));
             }
             s.figured_bass += m.figured_bass.len();
+            // A note's or rest's dynamics: the directions with its voice.
+            for d in m.directions.iter().filter(|d| d.voice.is_some()) {
+                if let Some(dy) = &d.dynamic {
+                    s.dynamics.push(dy.sign.to_string());
+                }
+            }
             for v in &m.voices {
                 for e in &v.elements {
                     match e {
@@ -156,12 +163,7 @@ pub fn signature(score: &Score) -> Sig {
                             s.pitches.push(n.pitch.midi_number());
                             collect_note(&mut s, n);
                         }
-                        VoiceElement::Rest(r) => {
-                            s.rests += 1;
-                            for d in &r.dynamics {
-                                s.dynamics.push(d.sign.clone());
-                            }
-                        }
+                        VoiceElement::Rest(_) => s.rests += 1,
                         VoiceElement::Chord(c) => {
                             for n in &c.notes {
                                 s.notes += 1;
@@ -179,11 +181,8 @@ pub fn signature(score: &Score) -> Sig {
 
 fn collect_note(s: &mut Sig, n: &_core::ir::note::Note) {
     use _core::ir::articulation::StartStop;
-    for d in &n.dynamics {
-        s.dynamics.push(d.sign.clone());
-    }
     for a in &n.articulations {
-        s.articulations.push(a.name.clone());
+        s.articulations.push(a.name.to_string());
     }
     for l in &n.lyrics {
         s.lyrics.push(l.text.clone());
@@ -238,23 +237,22 @@ pub fn notation_signature(score: &Score) -> NotationSig {
                     ));
                 }
             }
-            // Harmony offsets are in OFFSET_DIVISIONS (4) per quarter note.
             for h in &m.harmonies {
-                let at = bar_start + Frac::new(h.offset as i64, 16);
-                let root = format!("{}{:+}", h.root.step, h.root.alter);
-                let chord = chord_steps(&h.kind, &h.degrees)
-                    .map_or_else(|| h.kind.clone(), |c| format!("{c:?}"));
+                let at = bar_start + h.offset;
+                let root = format!("{}{:+}", h.root.step.name(), h.root.alter);
+                let chord = chord_steps(h.kind, &h.degrees)
+                    .map_or_else(|| h.kind.to_string(), |c| format!("{c:?}"));
                 s.harmonies.push((steps(at), root, chord));
             }
             for d in &m.directions {
                 if let Some(dy) = &d.dynamic {
                     s.dynamics
-                        .push((steps(bar_start + d.offset_frac), dy.sign.clone()));
+                        .push((steps(bar_start + d.offset), dy.sign.to_string()));
                 }
                 // A clef change inside the bar, at its place.
                 if let Some(c) = &d.clef {
                     s.clefs.push((
-                        steps(bar_start + d.offset_frac),
+                        steps(bar_start + d.offset),
                         d.staff.max(1),
                         format!("{:?}", c.sign),
                         c.line,
@@ -269,17 +267,9 @@ pub fn notation_signature(score: &Score) -> NotationSig {
                     let notes: Vec<&_core::ir::note::Note> = match e {
                         VoiceElement::Note(n) => vec![n.as_ref()],
                         VoiceElement::Chord(c) => c.notes.iter().collect(),
-                        VoiceElement::Rest(r) => {
-                            for d in &r.dynamics {
-                                s.dynamics.push((steps(at), d.sign.clone()));
-                            }
-                            vec![]
-                        }
+                        VoiceElement::Rest(_) => vec![],
                     };
                     for n in notes {
-                        for d in &n.dynamics {
-                            s.dynamics.push((steps(at), d.sign.clone()));
-                        }
                         for l in &n.lyrics {
                             s.lyrics.push((
                                 l.number,

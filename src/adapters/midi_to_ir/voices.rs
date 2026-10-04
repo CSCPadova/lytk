@@ -10,7 +10,8 @@
 //! more) or an articulation-shortened note, not a written rest.
 
 use crate::ir::articulation::{
-    Articulation, DynamicMark, Placement, StartStop, TieEvent, TupletDisplay,
+    Articulation, ArticulationType, DynamicMark, DynamicType, Placement, ShowNumber, StartStop,
+    TieEvent, TupletDisplay,
 };
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::notate::notate;
@@ -33,7 +34,7 @@ pub(super) struct Event {
     pub(super) graces: Vec<(u8, u8, Frac)>,
     pub(super) staccato: bool,
     /// A dynamic mark where the part's level changes.
-    pub(super) dynamic: Option<&'static str>,
+    pub(super) dynamic: Option<DynamicType>,
     /// How long its longest note sounds, as played.
     pub(super) sounding: Frac,
 }
@@ -364,13 +365,13 @@ impl Writer<'_> {
                     .collect();
                 if k == 0 && e.staccato {
                     notes[0].articulations.push(Articulation {
-                        name: "staccato".to_string(),
+                        name: ArticulationType::Staccato,
                         placement: Placement::default(),
                     });
                 }
-                if let (0, Some(sign)) = (k, e.dynamic) {
+                if let (0, Some(sign)) = (k, e.dynamic.clone()) {
                     notes[0].dynamics.push(DynamicMark {
-                        sign: sign.to_string(),
+                        sign,
                         placement: Placement::default(),
                     });
                 }
@@ -534,11 +535,7 @@ fn mark(e: &mut VoiceElement, t: StartStop) {
     let d = TupletDisplay {
         tuplet_type: t,
         bracket: true,
-        show_number: if t == StartStop::Start {
-            "actual".to_string()
-        } else {
-            String::new()
-        },
+        show_number: (t == StartStop::Start).then_some(ShowNumber::Actual),
     };
     match e {
         VoiceElement::Note(n) => n.tuplet = Some(d),

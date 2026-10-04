@@ -2,11 +2,13 @@
 
 use super::helpers::format_float;
 use super::IrToMxmlAdapter;
-use crate::ir::articulation::Placement;
+use crate::ir::articulation::{DynamicType, Placement, WedgeType};
 use crate::ir::direction::Direction;
 use crate::ir::harmony::{FiguredBass, Harmony};
 use crate::ir::note::Note;
 
+use crate::ir::direction::{OctaveShiftType, PedalType};
+use crate::ir::harmony::DegreeType;
 use musicxml::datatypes as mdt;
 use musicxml::elements as mxml;
 
@@ -86,11 +88,11 @@ impl IrToMxmlAdapter {
 
         // Wedge
         if let Some(wedge) = &direction.wedge {
-            let wedge_type = match wedge.wedge_type.as_str() {
-                "crescendo" => mdt::WedgeType::Crescendo,
-                "diminuendo" => mdt::WedgeType::Diminuendo,
-                "stop" => mdt::WedgeType::Stop,
-                _ => mdt::WedgeType::Crescendo,
+            let wedge_type = match wedge.wedge_type {
+                WedgeType::Crescendo => mdt::WedgeType::Crescendo,
+                WedgeType::Diminuendo => mdt::WedgeType::Diminuendo,
+                WedgeType::Stop => mdt::WedgeType::Stop,
+                WedgeType::Continue => mdt::WedgeType::Continue,
             };
             direction_types.push(mxml::DirectionType {
                 attributes: mxml::DirectionTypeAttributes::default(),
@@ -155,12 +157,12 @@ impl IrToMxmlAdapter {
 
         // Octave shift
         if let Some(os) = &direction.octave_shift {
-            let shift_type = match os.shift_type.as_str() {
-                "up" => mdt::UpDownStopContinue::Up,
-                "down" => mdt::UpDownStopContinue::Down,
-                "stop" => mdt::UpDownStopContinue::Stop,
-                "continue" => mdt::UpDownStopContinue::Continue,
-                _ => mdt::UpDownStopContinue::Up,
+            // MusicXML names where the notes are printed (an 8va's go down).
+            let shift_type = match os.shift_type {
+                OctaveShiftType::Up => mdt::UpDownStopContinue::Down,
+                OctaveShiftType::Down => mdt::UpDownStopContinue::Up,
+                OctaveShiftType::Stop => mdt::UpDownStopContinue::Stop,
+                OctaveShiftType::Continue => mdt::UpDownStopContinue::Continue,
             };
             direction_types.push(mxml::DirectionType {
                 attributes: mxml::DirectionTypeAttributes::default(),
@@ -177,14 +179,14 @@ impl IrToMxmlAdapter {
 
         // Pedal
         if let Some(ped) = &direction.pedal {
-            let pedal_type = match ped.pedal_type.as_str() {
-                "start" => mdt::PedalType::Start,
-                "stop" => mdt::PedalType::Stop,
-                "sostenuto" => mdt::PedalType::Sostenuto,
-                "change" => mdt::PedalType::Change,
-                "continue" => mdt::PedalType::Continue,
-                "resume" => mdt::PedalType::Resume,
-                _ => mdt::PedalType::Start,
+            let pedal_type = match ped.pedal_type {
+                PedalType::Start => mdt::PedalType::Start,
+                PedalType::Stop => mdt::PedalType::Stop,
+                PedalType::Sostenuto => mdt::PedalType::Sostenuto,
+                PedalType::Change => mdt::PedalType::Change,
+                PedalType::Continue => mdt::PedalType::Continue,
+                PedalType::Discontinue => mdt::PedalType::Discontinue,
+                PedalType::Resume => mdt::PedalType::Resume,
             };
             direction_types.push(mxml::DirectionType {
                 attributes: mxml::DirectionTypeAttributes::default(),
@@ -230,14 +232,7 @@ impl IrToMxmlAdapter {
                 });
             }
             if let (Some(beat_unit), Some(per_min)) = (&tempo.beat_unit, tempo.per_minute) {
-                let beat_unit_val = match beat_unit.as_str() {
-                    "whole" => mdt::NoteTypeValue::Whole,
-                    "half" => mdt::NoteTypeValue::Half,
-                    "quarter" => mdt::NoteTypeValue::Quarter,
-                    "eighth" => mdt::NoteTypeValue::Eighth,
-                    "16th" => mdt::NoteTypeValue::Sixteenth,
-                    _ => mdt::NoteTypeValue::Quarter,
-                };
+                let beat_unit_val = super::note::note_type_value(*beat_unit);
                 let beat_unit_dots: Vec<mxml::BeatUnitDot> = (0..tempo.dots)
                     .map(|_| mxml::BeatUnitDot {
                         attributes: (),
@@ -403,7 +398,7 @@ impl IrToMxmlAdapter {
         // Root
         let root_step = mxml::RootStep {
             attributes: mxml::RootStepAttributes::default(),
-            content: str_to_step(&harmony.root.step),
+            content: super::note::ir_step_to_mxml(&harmony.root.step),
         };
         let root_alter = if harmony.root.alter != 0.0 {
             Some(mxml::RootAlter {
@@ -416,14 +411,14 @@ impl IrToMxmlAdapter {
 
         let kind = mxml::Kind {
             attributes: mxml::KindAttributes::default(),
-            content: str_to_kind_value(&harmony.kind),
+            content: str_to_kind_value(harmony.kind.as_str()),
         };
 
         // Bass
         let bass = harmony.bass.as_ref().map(|b| {
             let bass_step = mxml::BassStep {
                 attributes: mxml::BassStepAttributes::default(),
-                content: str_to_step(&b.step),
+                content: super::note::ir_step_to_mxml(&b.step),
             };
             let bass_alter = if b.alter != 0.0 {
                 Some(mxml::BassAlter {
@@ -448,11 +443,10 @@ impl IrToMxmlAdapter {
             .degrees
             .iter()
             .map(|deg| {
-                let degree_type_val = match deg.degree_type.as_str() {
-                    "add" => mdt::DegreeTypeValue::Add,
-                    "alter" => mdt::DegreeTypeValue::Alter,
-                    "subtract" => mdt::DegreeTypeValue::Subtract,
-                    _ => mdt::DegreeTypeValue::Alter,
+                let degree_type_val = match deg.degree_type {
+                    DegreeType::Add => mdt::DegreeTypeValue::Add,
+                    DegreeType::Alter => mdt::DegreeTypeValue::Alter,
+                    DegreeType::Subtract => mdt::DegreeTypeValue::Subtract,
                 };
                 mxml::Degree {
                     attributes: mxml::DegreeAttributes::default(),
@@ -517,7 +511,7 @@ impl IrToMxmlAdapter {
             .map(|fig| {
                 let prefix = fig.prefix.as_ref().map(|p| mxml::Prefix {
                     attributes: mxml::PrefixAttributes::default(),
-                    content: p.clone(),
+                    content: p.to_string(),
                 });
                 let figure_number = fig.number.map(|n| mxml::FigureNumber {
                     attributes: mxml::FigureNumberAttributes::default(),
@@ -525,7 +519,7 @@ impl IrToMxmlAdapter {
                 });
                 let suffix = fig.suffix.as_ref().map(|s| mxml::Suffix {
                     attributes: mxml::SuffixAttributes::default(),
-                    content: s.clone(),
+                    content: s.to_string(),
                 });
                 mxml::Figure {
                     attributes: (),
@@ -569,132 +563,119 @@ impl IrToMxmlAdapter {
 // String-to-enum helpers
 // ---------------------------------------------------------------------------
 
-fn str_to_step(s: &str) -> mdt::Step {
-    match s {
-        "C" => mdt::Step::C,
-        "D" => mdt::Step::D,
-        "E" => mdt::Step::E,
-        "F" => mdt::Step::F,
-        "G" => mdt::Step::G,
-        "A" => mdt::Step::A,
-        "B" => mdt::Step::B,
-        _ => mdt::Step::C,
-    }
-}
-
 fn str_to_kind_value(s: &str) -> mdt::KindValue {
     musicxml_internal::DatatypeDeserializer::deserialize(s).unwrap_or(mdt::KindValue::Other)
 }
 
-fn str_to_dynamics_type(sign: &str) -> mxml::DynamicsType {
+fn str_to_dynamics_type(sign: &DynamicType) -> mxml::DynamicsType {
     match sign {
-        "p" => mxml::DynamicsType::P(mxml::P {
+        DynamicType::P => mxml::DynamicsType::P(mxml::P {
             attributes: (),
             content: (),
         }),
-        "pp" => mxml::DynamicsType::Pp(mxml::Pp {
+        DynamicType::Pp => mxml::DynamicsType::Pp(mxml::Pp {
             attributes: (),
             content: (),
         }),
-        "ppp" => mxml::DynamicsType::Ppp(mxml::Ppp {
+        DynamicType::Ppp => mxml::DynamicsType::Ppp(mxml::Ppp {
             attributes: (),
             content: (),
         }),
-        "pppp" => mxml::DynamicsType::Pppp(mxml::Pppp {
+        DynamicType::Pppp => mxml::DynamicsType::Pppp(mxml::Pppp {
             attributes: (),
             content: (),
         }),
-        "ppppp" => mxml::DynamicsType::Ppppp(mxml::Ppppp {
+        DynamicType::Ppppp => mxml::DynamicsType::Ppppp(mxml::Ppppp {
             attributes: (),
             content: (),
         }),
-        "pppppp" => mxml::DynamicsType::Pppppp(mxml::Pppppp {
+        DynamicType::Pppppp => mxml::DynamicsType::Pppppp(mxml::Pppppp {
             attributes: (),
             content: (),
         }),
-        "f" => mxml::DynamicsType::F(mxml::F {
+        DynamicType::F => mxml::DynamicsType::F(mxml::F {
             attributes: (),
             content: (),
         }),
-        "ff" => mxml::DynamicsType::Ff(mxml::Ff {
+        DynamicType::Ff => mxml::DynamicsType::Ff(mxml::Ff {
             attributes: (),
             content: (),
         }),
-        "fff" => mxml::DynamicsType::Fff(mxml::Fff {
+        DynamicType::Fff => mxml::DynamicsType::Fff(mxml::Fff {
             attributes: (),
             content: (),
         }),
-        "ffff" => mxml::DynamicsType::Ffff(mxml::Ffff {
+        DynamicType::Ffff => mxml::DynamicsType::Ffff(mxml::Ffff {
             attributes: (),
             content: (),
         }),
-        "fffff" => mxml::DynamicsType::Fffff(mxml::Fffff {
+        DynamicType::Fffff => mxml::DynamicsType::Fffff(mxml::Fffff {
             attributes: (),
             content: (),
         }),
-        "ffffff" => mxml::DynamicsType::Ffffff(mxml::Ffffff {
+        DynamicType::Ffffff => mxml::DynamicsType::Ffffff(mxml::Ffffff {
             attributes: (),
             content: (),
         }),
-        "mp" => mxml::DynamicsType::Mp(mxml::Mp {
+        DynamicType::Mp => mxml::DynamicsType::Mp(mxml::Mp {
             attributes: (),
             content: (),
         }),
-        "mf" => mxml::DynamicsType::Mf(mxml::Mf {
+        DynamicType::Mf => mxml::DynamicsType::Mf(mxml::Mf {
             attributes: (),
             content: (),
         }),
-        "sf" => mxml::DynamicsType::Sf(mxml::Sf {
+        DynamicType::Sf => mxml::DynamicsType::Sf(mxml::Sf {
             attributes: (),
             content: (),
         }),
-        "sfp" => mxml::DynamicsType::Sfp(mxml::Sfp {
+        DynamicType::Sfp => mxml::DynamicsType::Sfp(mxml::Sfp {
             attributes: (),
             content: (),
         }),
-        "sfpp" => mxml::DynamicsType::Sfpp(mxml::Sfpp {
+        DynamicType::Sfpp => mxml::DynamicsType::Sfpp(mxml::Sfpp {
             attributes: (),
             content: (),
         }),
-        "fp" => mxml::DynamicsType::Fp(mxml::Fp {
+        DynamicType::Fp => mxml::DynamicsType::Fp(mxml::Fp {
             attributes: (),
             content: (),
         }),
-        "rf" => mxml::DynamicsType::Rf(mxml::Rf {
+        DynamicType::Rf => mxml::DynamicsType::Rf(mxml::Rf {
             attributes: (),
             content: (),
         }),
-        "rfz" => mxml::DynamicsType::Rfz(mxml::Rfz {
+        DynamicType::Rfz => mxml::DynamicsType::Rfz(mxml::Rfz {
             attributes: (),
             content: (),
         }),
-        "sfz" => mxml::DynamicsType::Sfz(mxml::Sfz {
+        DynamicType::Sfz => mxml::DynamicsType::Sfz(mxml::Sfz {
             attributes: (),
             content: (),
         }),
-        "sffz" => mxml::DynamicsType::Sffz(mxml::Sffz {
+        DynamicType::Sffz => mxml::DynamicsType::Sffz(mxml::Sffz {
             attributes: (),
             content: (),
         }),
-        "fz" => mxml::DynamicsType::Fz(mxml::Fz {
+        DynamicType::Fz => mxml::DynamicsType::Fz(mxml::Fz {
             attributes: (),
             content: (),
         }),
-        "n" => mxml::DynamicsType::N(mxml::N {
+        DynamicType::N => mxml::DynamicsType::N(mxml::N {
             attributes: (),
             content: (),
         }),
-        "pf" => mxml::DynamicsType::Pf(mxml::Pf {
+        DynamicType::Pf => mxml::DynamicsType::Pf(mxml::Pf {
             attributes: (),
             content: (),
         }),
-        "sfzp" => mxml::DynamicsType::Sfzp(mxml::Sfzp {
+        DynamicType::Sfzp => mxml::DynamicsType::Sfzp(mxml::Sfzp {
             attributes: (),
             content: (),
         }),
         _ => mxml::DynamicsType::OtherDynamics(mxml::OtherDynamics {
             attributes: mxml::OtherDynamicsAttributes::default(),
-            content: sign.to_string(),
+            content: sign.as_str().to_string(),
         }),
     }
 }
