@@ -218,6 +218,13 @@ class Note:
     def articulations(self) -> list[str]: ...
     @property
     def lyrics(self) -> list[str]: ...
+    @property
+    def lyric_syllables(self) -> list[dict[str, object]]:
+        """The note's syllables with their verse: dicts of ``verse``, ``name``,
+        ``text``, ``syllabic`` (``"single"``, ``"begin"``, ``"middle"``,
+        ``"end"``), ``extend`` and ``elision`` (words sung on one note, joined
+        with ``‿``)."""
+        ...
     def __repr__(self) -> str: ...
 
 class Rest:
@@ -623,9 +630,13 @@ import numpy as np
 import numpy.typing as npt
 
 def to_note_array(
-    doc: MusicDocument, resolution: int = 480
+    doc: MusicDocument, resolution: int = 480, *, pitch: str = "sounding"
 ) -> npt.NDArray[np.int32]:
-    """Encode a document as a ``(N, 4)`` array: (onset, duration, pitch, velocity)."""
+    """Encode a document as a ``(N, 4)`` array: (onset, duration, pitch, velocity).
+
+    Pitches sound as played (a B♭ clarinet's written D is a C) unless
+    ``pitch="written"``. Velocities are those ``to_midi`` plays (LilyPond's
+    dynamics table, 90 without a dynamic)."""
     ...
 
 def from_note_array(

@@ -129,3 +129,57 @@ fn kern_reads_back_to_back_repeats() {
     assert_eq!(dir(&m[1].left_barline), Some(Forward));
     assert_eq!(dir(&m[1].right_barline), Some(Backward));
 }
+
+/// Sounding (onset, pitch) pairs of a score: what a transposing
+/// instrument plays.
+fn sounding(score: &Score) -> Vec<(u32, u8)> {
+    let doc = _core::ir::lift::lift_to_music(score);
+    let mut v: Vec<(u32, u8)> = _core::representations::to_note_array(&doc, 480)
+        .notes
+        .iter()
+        .map(|n| (n.onset, n.pitch))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn transposing_instruments_sound_the_same_through_abc_and_kern() {
+    use _core::adapters::abc_to_ir::AbcToIrAdapter;
+    use _core::adapters::ir_to_abc::IrToAbcAdapter;
+    use _core::adapters::FromMusicAdapter;
+    for name in [
+        "72a-TransposingInstruments",
+        "72c-TransposingInstruments-Change",
+    ] {
+        let path = format!("tests/fixtures/xml/{name}.xml");
+        let score = MxmlToIrAdapter::new()
+            .convert_file(std::path::Path::new(&path))
+            .unwrap();
+        let kern = IrToHumdrumAdapter::new().convert(&score).unwrap();
+        assert!(kern.contains("*ITrd"), "{name}: {kern}");
+        let back = HumdrumToIrAdapter::new().convert_str(&kern).unwrap();
+        assert_eq!(sounding(&back), sounding(&score), "{name} through kern");
+        let abc = IrToAbcAdapter::new()
+            .convert_music(&_core::ir::lift::lift_to_music(&score))
+            .unwrap();
+        assert!(abc.contains("transpose="), "{name}: {abc}");
+        let back = AbcToIrAdapter::new().convert_str(&abc).unwrap();
+        assert_eq!(sounding(&back), sounding(&score), "{name} through ABC");
+    }
+}
+
+#[test]
+fn transposition_comes_from_semitones_as_the_usual_interval() {
+    use _core::ir::measure::Transpose;
+    let t = |d, c, o| Transpose {
+        diatonic: d,
+        chromatic: c,
+        octave_change: o,
+    };
+    assert_eq!(Transpose::from_semitones(-2), t(-1, -2, 0)); // B♭ clarinet
+    assert_eq!(Transpose::from_semitones(-9), t(-5, -9, 0)); // E♭ alto sax
+    assert_eq!(Transpose::from_semitones(-14), t(-1, -2, -1)); // tenor sax
+    assert_eq!(Transpose::from_semitones(3), t(2, 3, 0)); // E♭ clarinet
+    assert_eq!(Transpose::from_semitones(-14).semitones(), -14);
+}

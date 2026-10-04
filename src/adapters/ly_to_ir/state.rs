@@ -5,7 +5,7 @@ use num::CheckedAdd;
 use tree_sitter::Node;
 
 use crate::diagnostics::{Columns, Diagnostic, Severity};
-use crate::ir::articulation::{BeamEvent, LyricSyllable};
+use crate::ir::articulation::BeamEvent;
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::{PitchLanguage, PitchMode};
 use crate::ir::note::{ArpeggioType, VoiceElement};
@@ -14,6 +14,7 @@ use crate::ir::score::{PageLayout, Score, ScoreMetadata};
 use crate::ir::Part;
 
 use super::chord_mode::HarmonyEntry;
+use super::lyrics::{LyricJob, LyricToken};
 use super::{apply_tuplet_ratio, beam_level_for_duration, find_relative_octave, FiguredBassEntry};
 use crate::ir::timeline::{Event, Timeline};
 
@@ -34,16 +35,14 @@ pub(super) struct PartBuild {
 /// What a variable definition expands to.
 #[derive(Clone)]
 pub(super) enum VarDef {
-    /// Variable contained `\new Staff { ... }` — the parts it built, and the
-    /// voice names defined inside (name → index into the parts).
-    Parts(Vec<PartBuild>, HashMap<String, usize>),
+    /// Variable contained `\new Staff { ... }` — the parts it built.
+    Parts(Vec<PartBuild>),
     /// Bare music, positioned from 0 and `len` long. `main_lane` is the lane its
-    /// music was written in; `voices` are `\new Voice = "…"` names inside it.
+    /// music was written in.
     Music {
         tl: Timeline,
         len: Frac,
         main_lane: u8,
-        voices: Vec<String>,
         /// Byte range of the `{ … }` block that defines it, so a reference
         /// inside `\relative` can read it again there (see `resolve_variable`),
         /// in the pitch language of its definition.
@@ -59,6 +58,10 @@ pub(super) enum VarDef {
 /// and self-doubling variables from hanging or exhausting memory. Past either
 /// one the reading stops and fails.
 pub(super) const MAX_ELEMENTS: u64 = 500_000;
+
+/// The voice tag of a variable's own music while it is defined: the voice
+/// that uses it takes it over.
+pub(super) const CAPTURE_VOICE: u32 = u32::MAX;
 pub(super) const MAX_WHOLE_NOTES: i64 = 100_000;
 /// Octaves a pitch may lie in (middle C is octave 4; MIDI reaches -1..=9).
 /// Far wider than music: LilyPond's own regression tests climb to octave 22
@@ -117,23 +120,30 @@ pub(super) struct WalkState<'src> {
     pub(super) parts: Vec<PartBuild>,
     pub(super) part_counter: u32,
     next_uid: u32,
-    /// Parts folded into another (PianoStaff staves): uid → the uid they joined.
-    pub(super) part_alias: HashMap<u32, u32>,
 
     // Variable definitions: name → either full parts (from \new Staff) or bare music
     pub(super) definitions: HashMap<String, VarDef>,
-    // Lyric variable definitions: name → list of syllables
-    pub(super) lyric_definitions: HashMap<String, Vec<LyricSyllable>>,
-    // Pending lyrics: voice_name → syllables (from \lyricsto)
-    pub(super) pending_lyrics: HashMap<String, Vec<LyricSyllable>>,
-    /// `MUSIC \addlyrics { … }`: (part uid, syllables), attached at assembly.
-    pub(super) added_lyrics: Vec<(u32, Vec<LyricSyllable>)>,
+    /// Lyric variables: name → their tokens.
+    pub(super) lyric_definitions: HashMap<String, Vec<LyricToken>>,
+    /// Lyric lines (`\lyricsto`, `\addlyrics`) in source order, sung on
+    /// their voices once the score is assembled.
+    pub(super) pending_lyrics: Vec<LyricJob>,
     // Chordmode variable definitions: name → harmony entries (from `\chordmode`)
     pub(super) harmony_definitions: HashMap<String, Vec<HarmonyEntry>>,
     // Pending harmonies (from ChordNames contexts) to attach to the melody part
     pub(super) pending_harmonies: Vec<HarmonyEntry>,
-    /// Voice name → uid of the part holding it (for attaching lyrics).
-    pub(super) voice_part_map: HashMap<String, u32>,
+    /// The Voice context notes are written in, stamped on each
+    /// (`Note::lyric_voice`): a staff's own voice, a `\new Voice`, a `\\`
+    /// branch. [`CAPTURE_VOICE`] inside a variable's definition.
+    pub(super) voice_tag: u32,
+    /// The voice of the last note written (what `\addlyrics` follows).
+    pub(super) last_tag: u32,
+    pub(super) next_tag: u32,
+    /// Voice name → its tag.
+    pub(super) voice_tags: HashMap<String, u32>,
+    /// The notes of each NullVoice (by tag), at their places: lyrics sung on
+    /// it go on the score's notes starting with them.
+    pub(super) null_voices: HashMap<u32, Vec<(Frac, VoiceElement)>>,
 
     // Position state
     /// Where the next element goes.
@@ -179,6 +189,14 @@ pub(super) struct WalkState<'src> {
     // Beam/stem state
     /// Current stem direction override: "up", "down", or "" (auto).
     pub(super) stem_direction: String,
+    /// `\once \stemUp`: the stem direction to go back to after one note.
+    pub(super) once_stem: Option<String>,
+    /// `\slurUp`/`\slurDown`: where slurs go when they don't say.
+    pub(super) slur_placement: crate::ir::articulation::Placement,
+    /// Rehearsal marks so far, for `\mark \default`.
+    pub(super) mark_count: u32,
+    /// An acciaccatura's or appoggiatura's slur waits for its main note.
+    pub(super) grace_slur_to_main: bool,
     /// Whether we are inside a manual beam group (after `[`, before `]`).
     pub(super) in_beam_group: bool,
     /// Stack of active tuplet ratios (actual, normal). Innermost is last.
@@ -200,8 +218,8 @@ pub(super) struct WalkState<'src> {
     /// What the walk found wrong, or did not read.
     pub(super) diagnostics: Vec<Diagnostic>,
     columns: Columns,
-    /// Above 0 while music already walked once is walked for another purpose
-    /// (a chord-mode block read as notes): the first walk reported it.
+    /// Above 0 while a chord-mode block is read as notes (its roots): the
+    /// walk for its chord names reported its problems.
     pub(super) quiet: u32,
     /// The text read was flattened with include paths: an `\include` left
     /// in it names a file not found.
@@ -232,14 +250,16 @@ impl<'src> WalkState<'src> {
             parts: Vec::new(),
             part_counter: 0,
             next_uid: 0,
-            part_alias: HashMap::new(),
             definitions: HashMap::new(),
             lyric_definitions: HashMap::new(),
-            pending_lyrics: HashMap::new(),
-            added_lyrics: Vec::new(),
+            pending_lyrics: Vec::new(),
             harmony_definitions: HashMap::new(),
             pending_harmonies: Vec::new(),
-            voice_part_map: HashMap::new(),
+            voice_tag: 1,
+            last_tag: 0,
+            next_tag: 1,
+            voice_tags: HashMap::new(),
+            null_voices: HashMap::new(),
             pos: Frac::from_integer(0),
             voice_start: Frac::from_integer(0),
             origin: Frac::from_integer(0),
@@ -263,6 +283,10 @@ impl<'src> WalkState<'src> {
             page_layout: None,
             completed_scores: Vec::new(),
             stem_direction: String::new(),
+            once_stem: None,
+            slur_placement: Default::default(),
+            mark_count: 0,
+            grace_slur_to_main: false,
             in_beam_group: false,
             tuplet_stack: Vec::new(),
             auto_beam_off: false,
@@ -478,6 +502,11 @@ impl<'src> WalkState<'src> {
         if !self.spend(1) {
             return;
         }
+        // The voice the note is sung in.
+        for n in elem.notes_mut() {
+            n.lyric_voice = self.voice_tag;
+        }
+        self.last_tag = self.voice_tag;
         // Apply active tuplet ratio to the element's duration. For nested
         // tuplets the effective scaling is the product of every enclosing
         // ratio, not just the innermost — so fold the whole stack.
@@ -532,6 +561,36 @@ impl<'src> WalkState<'src> {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // The main note after an acciaccatura or appoggiatura ends its slur.
+        if self.grace_slur_to_main {
+            let main = match &mut elem {
+                VoiceElement::Note(n) if !n.is_grace => Some(n.as_mut()),
+                VoiceElement::Chord(c) if !c.notes.first().is_some_and(|n| n.is_grace) => {
+                    c.notes.first_mut()
+                }
+                VoiceElement::Rest(_) => {
+                    self.grace_slur_to_main = false;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(n) = main {
+                n.slurs.push(crate::ir::articulation::SlurEvent {
+                    slur_type: crate::ir::articulation::StartStop::Stop,
+                    number: 1,
+                    placement: Default::default(),
+                });
+                self.grace_slur_to_main = false;
+            }
+        }
+
+        // `\once` ends with the note it applied to.
+        if matches!(elem, VoiceElement::Note(_) | VoiceElement::Chord(_)) {
+            if let Some(before) = self.once_stem.take() {
+                self.stem_direction = before;
             }
         }
 
@@ -591,6 +650,12 @@ impl<'src> WalkState<'src> {
         });
     }
 
+    /// A new voice tag.
+    pub(super) fn fresh_tag(&mut self) -> u32 {
+        self.next_tag += 1;
+        self.next_tag
+    }
+
     /// Fresh identity for a part copied in from a variable.
     pub(super) fn fresh_uid(&mut self) -> u32 {
         self.next_uid += 1;
@@ -605,23 +670,12 @@ impl<'src> WalkState<'src> {
             part.name = name.to_string();
         }
         self.push_part(context, part);
+        // A staff's music is its own voice.
+        self.voice_tag = self.fresh_tag();
         let origin = self.origin;
         self.pos = origin;
         self.voice_start = origin;
         self.prev_pitch = self.relative_ref;
-    }
-
-    /// uid of the current part (creating it if needed).
-    pub(super) fn current_uid(&mut self) -> u32 {
-        self.ensure_build().uid
-    }
-
-    /// Follow PianoStaff folds to the part a uid now lives in.
-    pub(super) fn resolve_uid(&self, mut uid: u32) -> u32 {
-        while let Some(&to) = self.part_alias.get(&uid) {
-            uid = to;
-        }
-        uid
     }
 
     /// Total musical duration of a (music) variable. Used for the Scheme
@@ -733,15 +787,22 @@ impl<'src> WalkState<'src> {
             let Some(end) = self.end_within_bounds(at, len) else {
                 return true;
             };
-            let uid = self.current_uid();
-            let Some(VarDef::Music { tl, voices, .. }) = self.definitions.get(name) else {
+            self.ensure_build();
+            let Some(VarDef::Music { tl, .. }) = self.definitions.get(name) else {
                 unreachable!()
             };
-            let part = self.parts.last_mut().expect("current_uid made a part");
+            let tag = self.voice_tag;
+            let part = self.parts.last_mut().expect("ensure_build made a part");
             part.tl.splice(tl, at, main_lane, lane);
-            for voice in voices {
-                self.voice_part_map.insert(voice.clone(), uid);
+            // The variable's own music is sung by the voice using it.
+            for e in part.tl.lanes.values_mut().flatten() {
+                for n in e.1.notes_mut() {
+                    if n.lyric_voice == CAPTURE_VOICE {
+                        n.lyric_voice = tag;
+                    }
+                }
             }
+            self.last_tag = tag;
             self.pos = end;
             self.voice_start = self.pos;
             return true;
@@ -750,26 +811,19 @@ impl<'src> WalkState<'src> {
             return false;
         };
         match def {
-            VarDef::Parts(parts, voices) => {
+            VarDef::Parts(parts) => {
                 let count: usize = parts.iter().map(|pb| pb.tl.element_count()).sum();
                 if !self.spend(count as u64) {
                     return true;
                 }
                 self.flush_voice();
                 let at = self.pos;
-                let mut uids = Vec::new();
                 for mut pb in parts {
                     pb.uid = self.fresh_uid();
                     pb.tl = std::mem::take(&mut pb.tl).shifted(at);
                     self.part_counter += 1;
                     pb.part.part_id = format!("P{}", self.part_counter);
-                    uids.push(pb.uid);
                     self.parts.push(pb);
-                }
-                for (voice, idx) in voices {
-                    if let Some(&uid) = uids.get(idx) {
-                        self.voice_part_map.insert(voice, uid);
-                    }
                 }
             }
             VarDef::Music { .. } => unreachable!("handled above"),

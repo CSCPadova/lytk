@@ -64,6 +64,8 @@ struct Voice {
     id: String,
     key: [i32; 7], // alteration per letter C..B
     octave_shift: i32,
+    /// `transpose=N`: played `N` semitones from the written notes (§4.6).
+    transpose: i32,
     unit: Frac,
     meter: Option<Frac>,
     compound: bool,
@@ -116,14 +118,16 @@ fn parse_len(s: &str) -> Result<Frac, String> {
 }
 
 /// Key field: the alterations per letter (`None` when the field sets no key,
-/// e.g. only a clef) and the octave shift (`None` unless `octave=` or a
-/// `-8`/`+8` clef gives one; ABC 2.1 §4.6: "the player will transpose").
-type KeyField = (Option<[i32; 7]>, Option<i32>);
+/// e.g. only a clef), the octave shift (`None` unless `octave=` or a
+/// `-8`/`+8` clef gives one; ABC 2.1 §4.6: "the player will transpose") and
+/// `transpose=` in semitones.
+type KeyField = (Option<[i32; 7]>, Option<i32>, Option<i32>);
 
 fn parse_key(s: &str) -> Result<KeyField, String> {
     let mut key = [0i32; 7];
     let mut shift = None;
     let mut clef_shift = None;
+    let mut transpose = None;
     let mut toks = s.split_whitespace().peekable();
     let mut have_key = false;
     if let Some(&first) = toks.peek() {
@@ -179,6 +183,10 @@ fn parse_key(s: &str) -> Result<KeyField, String> {
             shift = Some(v.parse::<i32>().map_err(|_| format!("octave {v}"))?);
             continue;
         }
+        if let Some(v) = t.strip_prefix("transpose=") {
+            transpose = Some(v.parse::<i32>().map_err(|_| format!("transpose {v}"))?);
+            continue;
+        }
         let clef = t.strip_prefix("clef=").unwrap_or(t);
         if ["treble", "bass", "alto", "tenor"]
             .iter()
@@ -194,7 +202,7 @@ fn parse_key(s: &str) -> Result<KeyField, String> {
             continue;
         }
         if t.contains('=') && !t.starts_with('=') {
-            continue; // middle=, transpose=, stafflines=, …
+            continue; // middle=, stafflines=, …
         }
         // Explicit accidentals: ^f _b =c ^^g __e
         let acc: String = t.chars().take_while(|c| "^_=".contains(*c)).collect();
@@ -206,7 +214,7 @@ fn parse_key(s: &str) -> Result<KeyField, String> {
         key[i] = accidental_value(&acc).ok_or(format!("key token {t}"))?;
         have_key = true;
     }
-    Ok((have_key.then_some(key), shift.or(clef_shift)))
+    Ok((have_key.then_some(key), shift.or(clef_shift), transpose))
 }
 
 fn major_fifths(c: char) -> i32 {
@@ -270,6 +278,7 @@ struct Tune {
     propagation: Propagation,
     default_key: [i32; 7],
     default_shift: i32,
+    default_transpose: i32,
     default_unit: Option<Frac>,
     default_meter: Option<(Frac, bool)>,
 }
@@ -291,6 +300,7 @@ impl Tune {
             id: id.to_string(),
             key: self.default_key,
             octave_shift: self.default_shift,
+            transpose: self.default_transpose,
             unit,
             meter,
             compound,
@@ -307,7 +317,7 @@ impl Tune {
         let value = value.trim();
         match name {
             'K' => {
-                let (key, shift) = parse_key(value)?;
+                let (key, shift, transpose) = parse_key(value)?;
                 if in_body {
                     let v = &mut self.voices[self.current];
                     if let Some(k) = key {
@@ -316,12 +326,18 @@ impl Tune {
                     if let Some(s) = shift {
                         v.octave_shift = s;
                     }
+                    if let Some(t) = transpose {
+                        v.transpose = t;
+                    }
                 } else {
                     if let Some(k) = key {
                         self.default_key = k;
                     }
                     if let Some(s) = shift {
                         self.default_shift = s;
+                    }
+                    if let Some(t) = transpose {
+                        self.default_transpose = t;
                     }
                 }
             }
@@ -351,6 +367,9 @@ impl Tune {
                     if let Some(o) = t.strip_prefix("octave=") {
                         self.voices[i].octave_shift =
                             o.parse().map_err(|_| format!("octave {o}"))?;
+                    } else if let Some(n) = t.strip_prefix("transpose=") {
+                        self.voices[i].transpose =
+                            n.parse().map_err(|_| format!("transpose {n}"))?;
                     } else if t.ends_with("-8") {
                         self.voices[i].octave_shift = -1;
                     } else if t.ends_with("+8") {
@@ -375,6 +394,7 @@ pub fn play(abc: &str, propagation: Propagation) -> Result<Vec<OracleNote>, Stri
         propagation,
         default_key: [0; 7],
         default_shift: 0,
+        default_transpose: 0,
         default_unit: None,
         default_meter: None,
     };
@@ -431,6 +451,9 @@ pub fn play(abc: &str, propagation: Propagation) -> Result<Vec<OracleNote>, Stri
                 for v in &mut tune.voices {
                     v.key = tune.default_key;
                     v.octave_shift += tune.default_shift;
+                    if v.transpose == 0 {
+                        v.transpose = tune.default_transpose;
+                    }
                     v.meter = meter;
                     v.compound = compound;
                     v.unit = unit;
@@ -556,7 +579,7 @@ impl Voice {
         if !grace {
             self.spelled.push((letter, oct, alter, false));
         }
-        (oct + 1 + self.octave_shift) * 12 + SEMIS[letter] + alter
+        (oct + 1 + self.octave_shift) * 12 + SEMIS[letter] + alter + self.transpose
     }
 
     /// A note or chord has sounded: its ties are used up, and any written

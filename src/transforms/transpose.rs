@@ -335,9 +335,10 @@ fn first_key_fifths(score: &Score) -> Option<i32> {
 /// Each semitone maps to a number of fifths steps; every entry in the table
 /// below is already within the valid -7..=7 range, so no clamping is needed.
 fn transpose_key(key: KeySignature, semitones: i32) -> KeySignature {
-    // Semitone-to-fifths mapping: C→0, C#→7, D→2, Eb→-3, E→4, F→-1,
-    // F#→6, G→1, Ab→-4, A→3, Bb→-2, B→5
-    const SEMITONE_TO_FIFTHS: [i32; 12] = [0, 7, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
+    // Semitone-to-fifths mapping, the key with fewer accidentals: C→0,
+    // Db→-5 (not C#, 7), D→2, Eb→-3, E→4, F→-1, F#→6 (as many as Gb),
+    // G→1, Ab→-4, A→3, Bb→-2, B→5 (not Cb, -7).
+    const SEMITONE_TO_FIFTHS: [i32; 12] = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
 
     // Current root pitch in semitones from C (based on fifths position).
     let current_semitones = fifths_to_semitones(key.fifths as i32);
@@ -491,6 +492,22 @@ mod tests {
         let result = transpose_key(key, 2); // C → D = 2 sharps
         assert_eq!(result.fifths, 2);
         assert_eq!(result.mode, KeyMode::Major);
+    }
+
+    #[test]
+    fn transposition_picks_the_key_with_fewer_accidentals() {
+        // G major up a tritone: D-flat (5 flats), not C-sharp (7 sharps).
+        let g = KeySignature {
+            fifths: 1,
+            mode: KeyMode::Major,
+        };
+        assert_eq!(transpose_key(g, 6).fifths, -5);
+        // E minor (one sharp) up a semitone: F minor (4 flats).
+        let e_minor = KeySignature {
+            fifths: 1,
+            mode: KeyMode::Minor,
+        };
+        assert_eq!(transpose_key(e_minor, 1).fifths, -4);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use num::rational::Ratio;
 use std::collections::HashMap;
 
 use emit::{attachments_to_ly, chord_to_ly, rest_to_ly};
-use maps::{clef_to_ly, duration_to_ly, figure_to_ly, harmony_kind_to_ly, key_to_ly, pitch_to_ly};
+use maps::{clef_to_ly, duration_to_ly, figure_to_ly, key_to_ly, pitch_to_ly};
 
 fn make_note(step: PitchStep, octave: i32, dur: Duration) -> Note {
     Note::new(Pitch::new(step, octave), dur)
@@ -633,9 +633,10 @@ fn test_emit_acciaccatura() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
+    // A slashed grace with no slur in the IR: `\\acciaccatura` would add one.
     assert!(
-        ly.contains("\\acciaccatura"),
-        "should emit \\acciaccatura: {}",
+        ly.contains("\\slashedGrace"),
+        "should emit \\slashedGrace: {}",
         ly
     );
 }
@@ -663,8 +664,8 @@ fn consecutive_graces_are_one_group() {
     let mut score = Score::new();
     score.children.push(ScoreChild::Part(part));
     let ly = IrToLyAdapter::new().convert(&score).unwrap();
-    assert_eq!(ly.matches("\\acciaccatura").count(), 1, "{ly}");
-    assert!(ly.contains("\\acciaccatura { e''16 f''16 }"), "{ly}");
+    assert_eq!(ly.matches("\\slashedGrace").count(), 1, "{ly}");
+    assert!(ly.contains("\\slashedGrace { e''16 f''16 }"), "{ly}");
 }
 
 #[test]
@@ -693,11 +694,9 @@ fn test_emit_grace_not_acciaccatura() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(
-        ly.contains("\\appoggiatura"),
-        "should emit \\appoggiatura: {}",
-        ly
-    );
+    // Without a slur in the IR, `\\appoggiatura` would add one.
+    assert!(ly.contains("\\grace e''16"), "should emit \\grace: {}", ly);
+    assert!(!ly.contains("\\appoggiatura"), "{ly}");
     assert!(
         !ly.contains("\\acciaccatura"),
         "should NOT emit \\acciaccatura: {}",
@@ -1085,7 +1084,7 @@ fn test_emit_harmony_minor_with_bass() {
     score.children.push(ScoreChild::Part(part));
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
-    assert!(ly.contains("d:m/f"), "should emit d:m/f for Dm/F: {}", ly);
+    assert!(ly.contains("d1:m/f"), "should emit d1:m/f for Dm/F: {}", ly);
 }
 
 #[test]
@@ -1141,14 +1140,52 @@ fn test_emit_figured_bass() {
 }
 
 #[test]
-fn test_helper_harmony_kind_to_ly() {
-    assert_eq!(harmony_kind_to_ly("major"), "");
-    assert_eq!(harmony_kind_to_ly("minor"), ":m");
-    assert_eq!(harmony_kind_to_ly("dominant"), ":7");
-    assert_eq!(harmony_kind_to_ly("major-seventh"), ":maj7");
-    assert_eq!(harmony_kind_to_ly("diminished"), ":dim");
-    assert_eq!(harmony_kind_to_ly("augmented"), ":aug");
-    assert_eq!(harmony_kind_to_ly("suspended-fourth"), ":sus4");
+fn test_emit_harmony_at_its_beat() {
+    use crate::ir::harmony::{ChordDegree, ChordPitch, Harmony};
+    let chord = |step: &str, kind: &str, degrees, offset| Harmony {
+        root: ChordPitch {
+            step: step.to_string(),
+            alter: 0.0,
+        },
+        kind: kind.to_string(),
+        bass: None,
+        degrees,
+        offset,
+        function: None,
+    };
+    let mut measure = Measure::new(1);
+    measure.attributes = Some(MeasureAttributes {
+        time: Some(TimeSignature {
+            beats: "3".to_string(),
+            beat_type: 4,
+            symbol: None,
+        }),
+        ..Default::default()
+    });
+    // G7(b9) on beat 2, no chord on beat 3 (offsets in 16ths).
+    let flat_nine = ChordDegree {
+        value: 9,
+        alter: -1.0,
+        degree_type: "add".to_string(),
+    };
+    measure
+        .harmonies
+        .push(chord("G", "dominant", vec![flat_nine], 4));
+    measure.harmonies.push(chord("C", "none", vec![], 8));
+    measure.voices.push(Voice {
+        number: 1,
+        elements: vec![VoiceElement::Note(Box::new(make_note(
+            PitchStep::G,
+            4,
+            Duration::dotted(Ratio::new(1, 2), 1),
+        )))],
+    });
+    let mut part = Part::new("P1");
+    part.measures.push(measure);
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    assert!(ly.contains("s4 g4:7.9- r4"), "{ly}");
 }
 
 #[test]
@@ -1340,6 +1377,7 @@ fn test_lyrics_emission() {
         number: 1,
         extend: false,
         elision: false,
+        name: None,
     });
     let mut n2 = make_note(PitchStep::D, 4, Duration::quarter());
     n2.lyrics.push(LyricSyllable {
@@ -1348,6 +1386,7 @@ fn test_lyrics_emission() {
         number: 1,
         extend: false,
         elision: false,
+        name: None,
     });
     let mut n3 = make_note(PitchStep::E, 4, Duration::quarter());
     n3.lyrics.push(LyricSyllable {
@@ -1356,6 +1395,7 @@ fn test_lyrics_emission() {
         number: 1,
         extend: false,
         elision: false,
+        name: None,
     });
     let n4 = make_note(PitchStep::F, 4, Duration::quarter());
 
@@ -1473,6 +1513,7 @@ fn test_multi_staff_lyrics_are_referenced() {
         number: 1,
         extend: false,
         elision: false,
+        name: None,
     });
     let mut n2 = make_note(PitchStep::D, 5, Duration::quarter());
     n2.staff = 1;
@@ -1482,6 +1523,7 @@ fn test_multi_staff_lyrics_are_referenced() {
         number: 1,
         extend: false,
         elision: false,
+        name: None,
     });
     let mut bass = make_note(PitchStep::C, 3, Duration::half());
     bass.staff = 2;
@@ -1538,6 +1580,7 @@ fn test_melisma_emission() {
         number: 1,
         extend: false,
         elision: false,
+        name: None,
     });
     let mut n2 = make_note(PitchStep::D, 4, Duration::quarter());
     n2.in_melisma = true; // melisma
@@ -1550,6 +1593,7 @@ fn test_melisma_emission() {
         number: 1,
         extend: false,
         elision: false,
+        name: None,
     });
 
     let voice = Voice {
@@ -2042,7 +2086,7 @@ fn graces_ending_a_bar_lead_into_the_next() {
     let score = MxmlToIrAdapter::new().convert_str(&xml).unwrap();
     let ly = IrToLyAdapter::new().convert(&score).unwrap();
     assert!(
-        ly.contains("| % 2\n  \\appoggiatura { e''16 e''16 } <f' c''>4"),
+        ly.contains("| % 2\n  \\grace { e''16 e''16 } <f' c''>4"),
         "{ly}"
     );
 }
@@ -2055,7 +2099,7 @@ fn a_one_element_tuplet_closes_before_the_next_note() {
         .convert_str(r"{ \time 3/4 \tuplet 4/2 { r1 } a'4 }")
         .unwrap();
     let ly = IrToLyAdapter::new().convert(&score).unwrap();
-    assert!(ly.contains(r"\tuplet 4/2 { r1 } \stemDown a'4"), "{ly}");
+    assert!(ly.contains(r"\tuplet 4/2 { r1 } a'4"), "{ly}");
 }
 
 #[test]

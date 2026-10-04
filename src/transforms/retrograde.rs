@@ -7,7 +7,7 @@
 //! Retrograde is self-inverse: `R(R(x)) == x`.
 
 use crate::ir::annotation::Annotation;
-use crate::ir::articulation::StartStop;
+use crate::ir::articulation::{StartStop, SyllabicType};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::music::{Music, MusicDocument};
 use crate::ir::note::VoiceElement;
@@ -37,12 +37,11 @@ impl Transform for Retrograde {
         let mut result = score.clone();
 
         for part in result.parts_mut() {
-            // Only musical content travels backwards. Positional properties —
-            // attributes (divisions/key/time/clef), barlines, numbering —
-            // stay on their measure shells, so the reversed score still
-            // declares its key and meter up front instead of ending with
-            // them. (Content swapped between unequal-length measures under a
-            // mid-piece meter change is a known ceiling of this rule.)
+            // The key, meter, transposition and clefs in force in each bar
+            // (clefs at its start and at its end): they go with its music.
+            let forces = in_force(&part.measures);
+            // Musical content travels backwards. Barlines, numbering and
+            // divisions stay on their measure shells.
             let mut contents: Vec<_> = part
                 .measures
                 .iter_mut()
@@ -74,9 +73,108 @@ impl Transform for Retrograde {
                     }
                 }
             }
+            reattribute(&mut part.measures, forces);
         }
 
         result
+    }
+}
+
+/// What is in force in a bar: key, meter, transposition, and each staff's
+/// clef at the bar's start and at its end.
+#[derive(Clone, Default, PartialEq)]
+struct Force {
+    key: Option<crate::ir::measure::KeySignature>,
+    time: Option<crate::ir::measure::TimeSignature>,
+    transpose: Option<crate::ir::measure::Transpose>,
+    clefs_at_start: std::collections::BTreeMap<u8, crate::ir::measure::Clef>,
+    clefs_at_end: std::collections::BTreeMap<u8, crate::ir::measure::Clef>,
+}
+
+fn in_force(measures: &[crate::ir::measure::Measure]) -> Vec<Force> {
+    let mut now = Force::default();
+    measures
+        .iter()
+        .map(|m| {
+            if let Some(a) = &m.attributes {
+                now.key = a.key.or(now.key);
+                now.time = a.time.clone().or(now.time.take());
+                now.transpose = a.transpose.or(now.transpose);
+                now.clefs_at_end
+                    .extend(a.clefs.iter().map(|(s, c)| (*s, *c)));
+            }
+            now.clefs_at_start = now.clefs_at_end.clone();
+            let mut changes: Vec<_> = m
+                .directions
+                .iter()
+                .filter_map(|d| Some((d.offset_frac, d.staff.max(1), d.clef?)))
+                .collect();
+            changes.sort_by_key(|c| c.0);
+            now.clefs_at_end
+                .extend(changes.into_iter().map(|(_, s, c)| (s, c)));
+            now.clone()
+        })
+        .collect()
+}
+
+/// Give each reversed bar (holding the music of bar `n - 1 - i`) what was in
+/// force there, written where it changes: a bar starts with the clef its
+/// music ended with, and a clef change inside it swaps places with the
+/// music around it.
+fn reattribute(measures: &mut [crate::ir::measure::Measure], forces: Vec<Force>) {
+    let n = measures.len();
+    let mut before: Option<Force> = None;
+    for (i, m) in measures.iter_mut().enumerate() {
+        let f = &forces[n - 1 - i];
+        let len = m.content_length();
+        // Clef changes inside the bar: at the mirrored place, back to the
+        // clef before them.
+        let mut changes: Vec<(Frac, u8, crate::ir::measure::Clef)> = m
+            .directions
+            .iter()
+            .filter_map(|d| Some((d.offset_frac, d.staff.max(1), d.clef?)))
+            .collect();
+        changes.sort_by_key(|c| c.0);
+        let mut current = f.clefs_at_start.clone();
+        let mut mirrored = Vec::new();
+        for (at, staff, clef) in changes {
+            // A staff with no clef yet is in the treble clef.
+            let old = current.get(&staff).copied().unwrap_or_default();
+            mirrored.push((len - at, staff, old));
+            current.insert(staff, clef);
+        }
+        m.directions.retain(|d| d.clef.is_none());
+        for (at, staff, clef) in mirrored {
+            m.directions.push(crate::ir::direction::Direction {
+                offset_frac: at,
+                staff,
+                clef: Some(clef),
+                ..Default::default()
+            });
+        }
+        let prev = before.as_ref();
+        let key = f.key.filter(|k| prev.is_none_or(|p| p.key != Some(*k)));
+        let time = f
+            .time
+            .clone()
+            .filter(|t| prev.is_none_or(|p| p.time.as_ref() != Some(t)));
+        let transpose = f
+            .transpose
+            .filter(|t| prev.is_none_or(|p| p.transpose != Some(*t)));
+        // The bar starts with the clef its music ended with; the bar before
+        // ended (reversed) with the clef its music started with.
+        let clefs: std::collections::HashMap<u8, crate::ir::measure::Clef> = f
+            .clefs_at_end
+            .iter()
+            .filter(|(s, c)| prev.is_none_or(|p| p.clefs_at_start.get(s) != Some(c)))
+            .map(|(s, c)| (*s, *c))
+            .collect();
+        let changes = key.is_some() || time.is_some() || transpose.is_some() || !clefs.is_empty();
+        if changes || m.attributes.is_some() {
+            let attrs = m.attributes.get_or_insert_with(Default::default);
+            (attrs.key, attrs.time, attrs.transpose, attrs.clefs) = (key, time, transpose, clefs);
+        }
+        before = Some(f.clone());
     }
 }
 
@@ -94,7 +192,7 @@ fn reanchor_graces(elements: &mut Vec<VoiceElement>) {
             continue;
         }
         let mut run: Vec<VoiceElement> = Vec::new();
-        while iter.peek().is_some_and(&is_grace) {
+        while iter.peek().is_some_and(is_grace) {
             run.push(iter.next().unwrap());
         }
         if run.is_empty() {
@@ -108,8 +206,9 @@ fn reanchor_graces(elements: &mut Vec<VoiceElement>) {
     *elements = out;
 }
 
-/// Swap Start↔Stop on paired events (ties, slurs, tuplet brackets) so every
-/// pair still opens before it closes in the reversed timeline.
+/// Swap Start↔Stop on paired events (ties, slurs, tuplet brackets, beams)
+/// so every pair still opens before it closes in the reversed timeline; a
+/// beam's hooks turn round too.
 fn swap_pairings(elem: &mut VoiceElement) {
     let flip = |t: &mut StartStop| {
         *t = match *t {
@@ -118,35 +217,38 @@ fn swap_pairings(elem: &mut VoiceElement) {
             StartStop::Continue => StartStop::Continue,
         }
     };
-    match elem {
-        VoiceElement::Note(n) => {
-            for tie in &mut n.ties {
-                flip(&mut tie.tie_type);
-            }
-            for slur in &mut n.slurs {
-                flip(&mut slur.slur_type);
-            }
-            if let Some(t) = &mut n.tuplet {
-                flip(&mut t.tuplet_type);
-            }
+    if let VoiceElement::Rest(r) = elem {
+        if let Some(t) = &mut r.tuplet {
+            flip(&mut t.tuplet_type);
         }
-        VoiceElement::Chord(c) => {
-            for n in &mut c.notes {
-                for tie in &mut n.ties {
-                    flip(&mut tie.tie_type);
-                }
-                for slur in &mut n.slurs {
-                    flip(&mut slur.slur_type);
-                }
-                if let Some(t) = &mut n.tuplet {
-                    flip(&mut t.tuplet_type);
-                }
-            }
+    }
+    for n in elem.notes_mut() {
+        for tie in &mut n.ties {
+            flip(&mut tie.tie_type);
         }
-        VoiceElement::Rest(r) => {
-            if let Some(t) = &mut r.tuplet {
-                flip(&mut t.tuplet_type);
-            }
+        for slur in &mut n.slurs {
+            flip(&mut slur.slur_type);
+        }
+        if let Some(t) = &mut n.tuplet {
+            flip(&mut t.tuplet_type);
+        }
+        // A word's last syllable now begins it.
+        for l in &mut n.lyrics {
+            l.syllabic = match l.syllabic {
+                SyllabicType::Begin => SyllabicType::End,
+                SyllabicType::End => SyllabicType::Begin,
+                other => other,
+            };
+        }
+        for b in &mut n.beams {
+            let turned = match b.beam_type.as_str() {
+                "begin" => "end",
+                "end" => "begin",
+                "forward hook" => "backward hook",
+                "backward hook" => "forward hook",
+                _ => continue,
+            };
+            b.beam_type = turned.to_string();
         }
     }
 }
@@ -176,7 +278,8 @@ fn is_attribute_event(m: &Music) -> bool {
     )
 }
 
-/// Swap paired annotations (ties, slurs, beams) on a reversed note/chord.
+/// Swap paired annotations (ties, slurs, beams, a word's syllables) on a
+/// reversed note/chord.
 fn swap_annotations(annotations: &mut [Annotation]) {
     for a in annotations {
         *a = match std::mem::replace(a, Annotation::TieStart) {
@@ -189,6 +292,14 @@ fn swap_annotations(annotations: &mut [Annotation]) {
             },
             Annotation::BeamStart => Annotation::BeamStop,
             Annotation::BeamStop => Annotation::BeamStart,
+            Annotation::Lyric(mut l) => {
+                l.syllabic = match l.syllabic {
+                    SyllabicType::Begin => SyllabicType::End,
+                    SyllabicType::End => SyllabicType::Begin,
+                    other => other,
+                };
+                Annotation::Lyric(l)
+            }
             other => other,
         };
     }
@@ -207,7 +318,7 @@ fn reanchor_grace_nodes(children: &mut Vec<Music>) {
             continue;
         }
         let mut run: Vec<Music> = Vec::new();
-        while iter.peek().is_some_and(&is_grace) {
+        while iter.peek().is_some_and(is_grace) {
             run.push(iter.next().unwrap());
         }
         if run.is_empty() {
@@ -329,6 +440,32 @@ pub fn retrograde_music(doc: &MusicDocument) -> MusicDocument {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keys_and_clefs_go_with_their_music() {
+        use crate::adapters::ly_to_ir::LyToIrAdapter;
+        use crate::adapters::ToIrAdapter;
+        use crate::ir::measure::ClefSign;
+        let score = LyToIrAdapter::new()
+            .convert_str(r"{ \key g \major g'1 | \key f \major f'2 \clef bass f2 }")
+            .unwrap();
+        let r = Retrograde::new().apply(&score);
+        let m = &r.parts()[0].measures;
+        let attrs = |i: usize| m[i].attributes.clone().unwrap_or_default();
+        // Bar 1 holds the F-major bar, which ended in the bass clef; its
+        // clef change comes back to the treble clef halfway.
+        assert_eq!(attrs(0).key.map(|k| k.fifths), Some(-1));
+        assert_eq!(attrs(0).clefs.get(&1).map(|c| c.sign), Some(ClefSign::F));
+        let change: Vec<_> = m[0]
+            .directions
+            .iter()
+            .filter_map(|d| Some((d.offset_frac, d.clef?.sign)))
+            .collect();
+        assert_eq!(change, [(Frac::new(1, 2), ClefSign::G)]);
+        // Bar 2 holds the G-major bar, in the treble clef already in force.
+        assert_eq!(attrs(1).key.map(|k| k.fifths), Some(1));
+        assert!(attrs(1).clefs.is_empty());
+    }
+
     use super::*;
     use crate::ir::duration::Duration;
     use crate::ir::measure::Measure;

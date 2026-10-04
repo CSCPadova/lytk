@@ -41,6 +41,7 @@ pub(super) enum TimedEvent {
     /// The bar starting here lasts this long.
     Partial(Frac),
     KeySignature(KeySignature),
+    Transposition(crate::ir::measure::Transpose),
     Clef(Clef),
     Direction(Box<Direction>),
     Barline(Barline),

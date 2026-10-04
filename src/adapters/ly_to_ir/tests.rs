@@ -782,7 +782,7 @@ pB = { g4 a b c' }
     fn test_parse_after_grace() {
         let adapter = LyToIrAdapter::new();
         let score = adapter
-            .convert_str(r#"{ c'4 \afterGrace { d'16 } }"#)
+            .convert_str(r#"{ \afterGrace c'4 { d'16 } }"#)
             .unwrap();
 
         let notes: Vec<&Note> = score.parts()[0]
@@ -1660,7 +1660,9 @@ melB = { g'4 a' b' c'' }
     fn test_auto_beam_eighths_in_4_4() {
         let adapter = LyToIrAdapter::new();
         let src = "{ \\time 4/4 c'8 d' e' f' g' a' b' c'' }";
-        let score = adapter.convert_str(src).unwrap();
+        // Stems and beams are the engraver's: the IR keeps the source's.
+        let mut score = adapter.convert_str(src).unwrap();
+        crate::ir::beams::engrave(&mut score);
         let parts = score.parts();
         let m = &parts[0].measures[0];
         let notes: Vec<&Note> = m.voices[0]
@@ -1713,7 +1715,9 @@ melB = { g'4 a' b' c'' }
     fn test_auto_beam_compound_6_8() {
         let adapter = LyToIrAdapter::new();
         let src = "{ \\time 6/8 c'8 d' e' f' g' a' }";
-        let score = adapter.convert_str(src).unwrap();
+        // Stems and beams are the engraver's: the IR keeps the source's.
+        let mut score = adapter.convert_str(src).unwrap();
+        crate::ir::beams::engrave(&mut score);
         let parts = score.parts();
         let m = &parts[0].measures[0];
         let notes: Vec<&Note> = m.voices[0]
@@ -1741,7 +1745,9 @@ melB = { g'4 a' b' c'' }
     fn test_stem_direction_commands() {
         let adapter = LyToIrAdapter::new();
         let src = "{ \\stemUp c'8 d' \\stemDown e' f' \\stemNeutral g' a' b' c'' }";
-        let score = adapter.convert_str(src).unwrap();
+        // Stems and beams are the engraver's: the IR keeps the source's.
+        let mut score = adapter.convert_str(src).unwrap();
+        crate::ir::beams::engrave(&mut score);
         let parts = score.parts();
         let m = &parts[0].measures[0];
         let notes: Vec<&Note> = m.voices[0]
@@ -1767,7 +1773,9 @@ melB = { g'4 a' b' c'' }
     fn test_auto_stem_direction() {
         let adapter = LyToIrAdapter::new();
         let src = "{ c'4 b' c'' }";
-        let score = adapter.convert_str(src).unwrap();
+        // Stems and beams are the engraver's: the IR keeps the source's.
+        let mut score = adapter.convert_str(src).unwrap();
+        crate::ir::beams::engrave(&mut score);
         let parts = score.parts();
         let m = &parts[0].measures[0];
         let notes: Vec<&Note> = m.voices[0]
@@ -1804,7 +1812,9 @@ melB = { g'4 a' b' c'' }
     fn test_auto_beam_16ths_grouped_by_4() {
         let adapter = LyToIrAdapter::new();
         let src = "{ \\time 4/4 c'16 d' e' f' g' a' b' c'' d'' e'' f'' g'' a'' b'' c''' d''' }";
-        let score = adapter.convert_str(src).unwrap();
+        // Stems and beams are the engraver's: the IR keeps the source's.
+        let mut score = adapter.convert_str(src).unwrap();
+        crate::ir::beams::engrave(&mut score);
         let parts = score.parts();
         let m = &parts[0].measures[0];
         let notes: Vec<&Note> = m.voices[0]
@@ -1849,7 +1859,9 @@ melB = { g'4 a' b' c'' }
     fn test_tuplet_beam_isolation() {
         let adapter = LyToIrAdapter::new();
         let src = r#"{ \time 4/4 c'4 \tuplet 3/2 { d'8 e' f' } g'4 }"#;
-        let score = adapter.convert_str(src).unwrap();
+        // Stems and beams are the engraver's: the IR keeps the source's.
+        let mut score = adapter.convert_str(src).unwrap();
+        crate::ir::beams::engrave(&mut score);
         let parts = score.parts();
         let m = &parts[0].measures[0];
         let notes: Vec<&Note> = m.voices[0]
@@ -1884,7 +1896,9 @@ melB = { g'4 a' b' c'' }
     fn test_alto_clef_auto_stem() {
         let adapter = LyToIrAdapter::new();
         let src = r#"{ \clef "alto" \time 4/4 b4 c' d' e' }"#;
-        let score = adapter.convert_str(src).unwrap();
+        // Stems and beams are the engraver's: the IR keeps the source's.
+        let mut score = adapter.convert_str(src).unwrap();
+        crate::ir::beams::engrave(&mut score);
         let parts = score.parts();
         let m = &parts[0].measures[0];
         let notes: Vec<&Note> = m.voices[0]
@@ -1949,7 +1963,7 @@ melB = { g'4 a' b' c'' }
     }
 
     #[test]
-    fn test_lyric_single_hyphen_separator() {
+    fn test_lyric_single_hyphen_is_a_word() {
         let adapter = LyToIrAdapter::new();
         let src = r#"
 \score {
@@ -1974,15 +1988,21 @@ melB = { g'4 a' b' c'' }
                 }
             })
             .collect();
-        assert!(notes.len() >= 4);
-        assert_eq!(notes[0].lyrics[0].text, "fi");
-        assert_eq!(notes[0].lyrics[0].syllabic, SyllabicType::Begin);
-        assert_eq!(notes[1].lyrics[0].text, "li");
-        assert_eq!(notes[1].lyrics[0].syllabic, SyllabicType::Middle);
-        assert_eq!(notes[2].lyrics[0].text, "ae");
-        assert_eq!(notes[2].lyrics[0].syllabic, SyllabicType::End);
-        assert_eq!(notes[3].lyrics[0].text, "rest");
-        assert_eq!(notes[3].lyrics[0].syllabic, SyllabicType::Single);
+        // A lone `-` is a word, as LilyPond 2.22 sings it (its MIDI lyrics:
+        // fi, -, li, -, ae, rest); only `--` joins syllables.
+        let sung: Vec<(&str, SyllabicType)> = notes
+            .iter()
+            .map(|n| (n.lyrics[0].text.as_str(), n.lyrics[0].syllabic))
+            .collect();
+        assert_eq!(
+            sung,
+            [
+                ("fi", SyllabicType::Single),
+                ("-", SyllabicType::Single),
+                ("li", SyllabicType::Single),
+                ("-", SyllabicType::Single),
+            ]
+        );
     }
 
     #[test]
@@ -3590,4 +3610,345 @@ mod transposition {
 fn builtins_are_sorted_for_binary_search() {
     let names = super::builtins::BUILTINS;
     assert!(names.windows(2).all(|w| w[0] < w[1]));
+}
+
+/// Epic M, M5: LilyPond constructs that were read wrong without a word.
+mod m5 {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+    use crate::ir::articulation::Placement;
+    use crate::ir::duration::Frac;
+    use crate::ir::note::VoiceElement;
+    use crate::ir::score::Score;
+
+    fn read(src: &str) -> Score {
+        LyToIrAdapter::new().convert_str(src).expect("reads")
+    }
+
+    /// Every element of the first part as (kind, pitch or "", length, grace).
+    fn elements(score: &Score) -> Vec<(String, String, Frac, bool)> {
+        score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .map(|e| match e {
+                VoiceElement::Note(n) => (
+                    "note".into(),
+                    n.pitch.to_string(),
+                    n.duration.actual_duration(),
+                    n.is_grace,
+                ),
+                VoiceElement::Chord(c) => (
+                    "chord".into(),
+                    c.notes.iter().map(|n| n.pitch.to_string()).collect(),
+                    c.duration.actual_duration(),
+                    c.notes[0].is_grace,
+                ),
+                VoiceElement::Rest(r) => (
+                    "rest".into(),
+                    String::new(),
+                    r.duration.actual_duration(),
+                    false,
+                ),
+            })
+            .collect()
+    }
+
+    fn bar_lengths(score: &Score) -> Vec<Frac> {
+        score.parts()[0]
+            .measures
+            .iter()
+            .map(|m| {
+                m.voices
+                    .iter()
+                    .map(|v| {
+                        v.elements
+                            .iter()
+                            .map(VoiceElement::metric_duration)
+                            .sum::<Frac>()
+                    })
+                    .max()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn partial_takes_its_multiplier() {
+        let s = read(r"{ \time 3/4 \partial 8*3 c''8 d'' e'' | f''2. | }");
+        assert_eq!(bar_lengths(&s), vec![Frac::new(3, 8), Frac::new(3, 4)]);
+    }
+
+    #[test]
+    fn time_with_a_beat_structure_keeps_its_signature() {
+        let s = read(r"{ \time 3,2 5/8 c''8 d'' e'' f'' g'' }");
+        let ts = s.parts()[0].measures[0]
+            .attributes
+            .as_ref()
+            .and_then(|a| a.time.clone());
+        assert_eq!(
+            ts.map(|t| (t.beats, t.beat_type)),
+            Some(("5".to_string(), 8))
+        );
+    }
+
+    #[test]
+    fn after_grace_follows_its_main_note() {
+        let s = read(r"{ \afterGrace c'2 { d'16 e' } f'4 g'4 }");
+        let e = elements(&s);
+        assert_eq!(
+            (e[0].1.as_str(), e[0].2, e[0].3),
+            ("C4", Frac::new(1, 2), false)
+        );
+        assert!(e[1].3 && e[2].3, "the block's notes are graces: {e:?}");
+        assert_eq!(bar_lengths(&s), vec![Frac::from_integer(1)]);
+        // With LilyPond's optional fraction too.
+        let s = read(r"{ \afterGrace 7/8 c'2 { d'16 } f'2 }");
+        assert_eq!(bar_lengths(&s), vec![Frac::from_integer(1)]);
+    }
+
+    #[test]
+    fn grace_chords_are_chords_that_take_no_time() {
+        let s = read(r"{ \grace <d' f'>8 c'4 d'4 e'2 }");
+        let e = elements(&s);
+        assert_eq!((e[0].0.as_str(), e[0].3), ("chord", true));
+        assert_eq!(bar_lengths(&s), vec![Frac::from_integer(1)]);
+        let s = read(r"{ \grace { <d' f'>16 e' } c'1 }");
+        let e = elements(&s);
+        assert_eq!((e[0].0.as_str(), e[1].0.as_str()), ("chord", "note"));
+        assert!(e[0].3 && e[1].3);
+    }
+
+    #[test]
+    fn grace_notes_keep_their_marks() {
+        let s = read(r"{ \grace { c''16[( d''] } c''1) }");
+        let VoiceElement::Note(n) = &s.parts()[0].measures[0].voices[0].elements[0] else {
+            panic!("a grace note");
+        };
+        assert!(!n.beams.is_empty() && !n.slurs.is_empty());
+    }
+
+    #[test]
+    fn single_note_tremolo_is_one_note() {
+        let s = read(r"{ \repeat tremolo 8 c'32 d'4 \repeat tremolo 4 { e'16 } f'4 }");
+        let e = elements(&s);
+        let names: Vec<&str> = e.iter().map(|x| x.1.as_str()).collect();
+        assert_eq!(names, ["C4", "D4", "E4", "F4"]);
+        assert!(e.iter().all(|x| x.2 == Frac::new(1, 4)));
+        let VoiceElement::Note(c) = &s.parts()[0].measures[0].voices[0].elements[0] else {
+            panic!("a note");
+        };
+        assert_eq!(c.tremolo_marks, 3);
+        assert!(s.parts()[0].measures[0].left_barline.is_none(), "no repeat");
+    }
+
+    #[test]
+    fn two_note_tremolo_alternates_for_its_length() {
+        let s = read(r"{ \repeat tremolo 4 { c'16 e' } d'2 }");
+        let e = elements(&s);
+        assert_eq!(e.len(), 3);
+        assert_eq!((e[0].2, e[1].2), (Frac::new(1, 4), Frac::new(1, 4)));
+        let notes: Vec<&crate::ir::note::Note> = s.parts()[0].measures[0].voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert!(notes[0].two_note_tremolo && notes[0].tremolo_start);
+        assert!(notes[1].two_note_tremolo && !notes[1].tremolo_start);
+        assert_eq!(notes[0].tremolo_marks, 2);
+        assert_eq!(s.parts()[0].measures.len(), 1, "no repeat signs, one bar");
+        assert!(s.parts()[0].measures[0].left_barline.is_none());
+    }
+
+    #[test]
+    fn text_scripts_are_text_directions() {
+        let s = read(r#"{ c''4^"dolce" d''_"rit." e''-"x" f'' }"#);
+        let texts: Vec<(String, Placement)> = s.parts()[0].measures[0].voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => n
+                    .text_directions
+                    .first()
+                    .map(|t| (t.text.clone(), t.placement)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                ("dolce".into(), Placement::Above),
+                ("rit.".into(), Placement::Below),
+                ("x".into(), Placement::Unspecified)
+            ]
+        );
+    }
+
+    #[test]
+    fn directions_place_their_marks() {
+        let s = read(r"{ c''4^. d''_> e''_\fermata f''^( g'') }");
+        let notes: Vec<&crate::ir::note::Note> = s.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes[0].articulations[0].placement, Placement::Above);
+        assert_eq!(notes[1].articulations[0].placement, Placement::Below);
+        assert!(notes[2].fermata.as_ref().is_some_and(|f| f.inverted));
+        assert_eq!(notes[3].slurs[0].placement, Placement::Above);
+    }
+
+    #[test]
+    fn once_applies_to_one_note() {
+        let s = read(r"{ \once \stemUp c''8 d'' e'' f'' }");
+        let stems: Vec<String> = s.parts()[0].measures[0].voices[0]
+            .elements
+            .iter()
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(n.stem_direction.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stems[0], "up");
+        assert!(stems[1..].iter().all(|d| d != "up"), "{stems:?}");
+    }
+
+    #[test]
+    fn text_marks_are_rehearsal_marks() {
+        let s = read(
+            r#"{ \mark "Intro" c''4 \mark \markup { \bold "B" } d'' \textMark "slow" e'' \sectionLabel "Coda" f'' }"#,
+        );
+        let marks: Vec<String> = s.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.directions)
+            .filter_map(|d| {
+                d.rehearsal
+                    .as_ref()
+                    .map(|r| r.text.clone())
+                    .or_else(|| d.text.as_ref().map(|t| t.text.clone()))
+            })
+            .collect();
+        assert_eq!(marks, ["Intro", "B", "slow", "Coda"]);
+    }
+}
+
+mod m7 {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+
+    #[test]
+    fn chordmode_reads_beats_rests_scaled_lengths_and_bass() {
+        let src = r#"<< \new ChordNames \chordmode { s4 g4:7.9- r4 c1*3/4:m/ees }
+                       \new Staff { \time 3/4 g'2. c'2. } >>"#;
+        let score = LyToIrAdapter::new().convert_str(src).expect("reads");
+        let chords: Vec<_> = score.parts()[0]
+            .measures
+            .iter()
+            .map(|m| {
+                m.harmonies
+                    .iter()
+                    .map(|h| {
+                        let bass = h.bass.as_ref().map(|b| (b.step.clone(), b.alter));
+                        (
+                            h.offset,
+                            h.root.step.clone(),
+                            h.kind.clone(),
+                            h.degrees.len(),
+                            bass,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let g7 = (4, "G".to_string(), "dominant".to_string(), 1, None);
+        let nc = (8, "C".to_string(), "none".to_string(), 0, None);
+        let cm = (
+            0,
+            "C".into(),
+            "minor".into(),
+            0,
+            Some(("E".to_string(), -1.0)),
+        );
+        assert_eq!(chords, vec![vec![g7, nc], vec![cm]]);
+    }
+}
+
+mod m7_notes {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+    use crate::ir::note::VoiceElement;
+
+    #[test]
+    fn chord_names_read_as_notes_are_their_roots_only() {
+        let src = r#"\new Voice \chordmode { f4:maj7/e g:m7.5-/+bes a2:sus4 }"#;
+        let score = LyToIrAdapter::new().convert_str(src).expect("reads");
+        let roots: Vec<String> = score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| match e {
+                VoiceElement::Note(n) => Some(format!("{:?}", n.pitch.step)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(roots, ["F", "G", "A"]);
+    }
+}
+
+mod m4 {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+
+    fn no_auto_beam(src: &str) -> Vec<bool> {
+        let score = LyToIrAdapter::new().convert_str(src).expect("reads");
+        score.parts()[0]
+            .measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .filter_map(|e| e.notes().first().map(|n| n.no_auto_beam))
+            .collect()
+    }
+
+    #[test]
+    fn no_beam_and_auto_beaming_are_read() {
+        assert_eq!(
+            no_auto_beam(r"{ c''8 d''\noBeam <e'' g''>8\noBeam f''8 }"),
+            [false, true, true, false]
+        );
+        assert_eq!(
+            no_auto_beam(r"{ c''8 \set autoBeaming = ##f d''8 \set autoBeaming = ##t e''8 }"),
+            [false, true, false]
+        );
+    }
+
+    #[test]
+    fn the_reader_keeps_only_the_sources_stems_and_beams() {
+        let score = LyToIrAdapter::new()
+            .convert_str(r"{ c''8 d'' \stemUp e''[ f''] }")
+            .expect("reads");
+        let notes: Vec<_> = score.parts()[0].measures[0].voices[0]
+            .elements
+            .iter()
+            .map(|e| {
+                let n = &e.notes()[0];
+                (n.stem_direction.clone(), n.beams.len())
+            })
+            .collect();
+        let stems: Vec<&str> = notes.iter().map(|n| n.0.as_str()).collect();
+        let beams: Vec<usize> = notes.iter().map(|n| n.1).collect();
+        assert_eq!(stems, ["", "", "up", "up"]);
+        assert_eq!(beams, [0, 0, 1, 1]);
+    }
 }

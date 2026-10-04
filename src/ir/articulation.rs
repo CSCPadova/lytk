@@ -123,14 +123,21 @@ pub struct Fermata {
 
 /// A lyric syllable attached to a note.
 ///
+/// `number` is the verse (1, 2, …), `name` what the source calls it (a
+/// LilyPond stanza, a MusicXML `name` or non-numeric `number`). Words sung
+/// on one note (`my‿a`) are one syllable, joined with U+203F and `elision`
+/// set.
+///
 /// From lytk-py's `LyricSyllable`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct LyricSyllable {
     pub text: String,
     pub syllabic: SyllabicType,
     pub number: u8,
     pub extend: bool,
     pub elision: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Syllable position within a word.

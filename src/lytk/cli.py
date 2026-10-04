@@ -112,51 +112,100 @@ def _output_format(path: str, forced: Format | str | None = None) -> str:
         raise CliError(f"cannot infer output format from {suffix or path!r}; use --format") from None
 
 
-def _parse_bytes(data: bytes, fmt: str) -> lytk.Score:
+def _parse_bytes(data: bytes, fmt: str, include: list[str] | None = None) -> lytk.Score:
     if fmt in ("xml", "mxl"):
         return lytk.from_musicxml_bytes(data)  # plain or zipped
     if fmt == "midi":
         return lytk.from_midi_bytes(data)
     text = data.decode("utf-8")
-    parse = {"ly": lytk.from_lilypond_string, "abc": lytk.from_abc_string, "krn": lytk.from_humdrum_string}
+    if fmt == "ly":
+        return lytk.from_lilypond_string(text, include_paths=include)
+    parse = {"abc": lytk.from_abc_string, "krn": lytk.from_humdrum_string}
     return parse[fmt](text)
 
 
-def read_score(path: str, forced: Format | str | None = None) -> lytk.Score:
-    """Read one score from a file, or stdin for ``-``."""
+def _report(source: str, diagnostics: list[Any]) -> None:
+    """What reading LilyPond found, on stderr: ``FILE:LINE:COLUMN: SEVERITY:
+    MESSAGE [CODE]``, as ``lytk check`` prints it."""
+    name = "<stdin>" if source == "-" else source
+    for d in diagnostics:
+        _note(f"{name}:{d}")
+
+
+def read_score(path: str, forced: Format | str | None = None, include: list[str] | None = None) -> lytk.Score:
+    """Read one score from a file, or stdin for ``-``; LilyPond's findings go
+    to stderr. ``include``: directories to search for ``\\include`` files."""
     fmt = _input_format(path, forced)
     if path == "-":
-        return _parse_bytes(sys.stdin.buffer.read(), fmt)
-    if not Path(path).is_file():
+        score = _parse_bytes(sys.stdin.buffer.read(), fmt, include)
+    elif not Path(path).is_file():
         raise CliError(f"no such file: {path}")
-    read = {
-        "ly": lytk.from_lilypond,
-        "xml": lytk.from_musicxml,
-        "mxl": lytk.from_musicxml,
-        "midi": lytk.from_midi,
-        "abc": lytk.from_abc,
-        "krn": lytk.from_humdrum,
-    }
-    return read[fmt](path)
+    elif fmt == "ly":
+        score = lytk.from_lilypond(path, include_paths=include)
+    else:
+        read = {
+            "xml": lytk.from_musicxml,
+            "mxl": lytk.from_musicxml,
+            "midi": lytk.from_midi,
+            "abc": lytk.from_abc,
+            "krn": lytk.from_humdrum,
+        }
+        score = read[fmt](path)
+    _report(path, score.diagnostics)
+    return score
 
 
-def _read_movements(path: str, forced: Format | None) -> list[lytk.Score]:
+def _read_movements(path: str, forced: Format | None, include: list[str] | None = None) -> list[lytk.Score]:
     """Every movement: one per ``\\score`` block or top-level music expression
     of a LilyPond file, one per tune of an ABC file."""
-    if path == "-":
-        return [read_score(path, forced)]
     fmt = _input_format(path, forced)
-    if fmt == "ly":
-        return lytk.from_lilypond_movements(path) or [read_score(path, forced)]
-    if fmt == "abc":
-        return lytk.from_abc_tunes(path) or [read_score(path, forced)]
-    return [read_score(path, forced)]
+    if path == "-" and fmt == "ly":
+        movements = lytk.from_lilypond_movements_string(sys.stdin.buffer.read().decode("utf-8"), include_paths=include)
+    elif path == "-" or fmt not in ("ly", "abc"):
+        return [read_score(path, forced, include)]
+    elif not Path(path).is_file():
+        raise CliError(f"no such file: {path}")
+    elif fmt == "ly":
+        movements = lytk.from_lilypond_movements(path, include_paths=include)
+    else:
+        movements = lytk.from_abc_tunes(path)
+    if not movements:
+        return [read_score(path, forced, include)]
+    # Every movement has the file's findings: report them once.
+    _report(path, movements[0].diagnostics)
+    return movements
 
 
-def _read_music(path: str) -> lytk.MusicDocument:
+def _read_music_movements(path: str, include: list[str] | None = None) -> list[lytk.MusicDocument]:
+    """Every movement of a LilyPond file as a Music tree."""
     if path == "-":
-        return lytk.from_lilypond_music_string(sys.stdin.buffer.read().decode("utf-8"))
-    return lytk.from_lilypond_music(path)
+        text = sys.stdin.buffer.read().decode("utf-8")
+        scores = lytk.from_lilypond_movements_string(text, include_paths=include)
+        docs = [s.to_music_document() for s in scores]
+    elif not Path(path).is_file():
+        raise CliError(f"no such file: {path}")
+    else:
+        docs = lytk.from_lilypond_music_movements(path, include_paths=include)
+    if not docs:
+        raise CliError(f"no music in {path}")
+    _report(path, docs[0].diagnostics)
+    return docs
+
+
+def _write_movements(items: list[bytes], output: str, ext: str) -> None:
+    """Write one movement to ``output``, several as ``output``, then
+    ``NAME_02.EXT``, ``NAME_03.EXT``, … beside it."""
+    if len(items) == 1:
+        write_bytes(output, items[0])
+        return
+    if output == "-":
+        raise CliError(f"{len(items)} movements parsed; cannot write several movements to stdout, use a file path")
+    first = Path(output)
+    for i, data in enumerate(items, start=1):
+        path = first if i == 1 else first.with_name(f"{first.stem}_{i:02d}{first.suffix or ext}")
+        write_bytes(str(path), data)
+        _note(f"Wrote movement {i} → {path}")
+    _note(f"note: input contains {len(items)} movements; movements 2+ were written with _NN suffixes")
 
 
 def render(score: lytk.Score, fmt: str) -> bytes:
@@ -198,12 +247,18 @@ def _transform(
     fmt: Format | None,
     from_: Format | None,
     apply: Callable[[Any], Any],
+    include: list[str] | None = None,
 ) -> None:
-    """Read, apply a transform (they take a Score or a MusicDocument), write."""
+    """Read, apply a transform (they take a Score or a MusicDocument) to every
+    movement, write."""
     if _ly_to_ly(inp, out, fmt, from_):
-        write_bytes(out, lytk.to_lilypond_music(apply(_read_music(inp))).encode("utf-8"))
-    else:
-        write_score(apply(read_score(inp, from_)), out, fmt)
+        docs = _read_music_movements(inp, include)
+        items = [lytk.to_lilypond_music(apply(d)).encode("utf-8") for d in docs]
+        _write_movements(items, out, ".ly")
+        return
+    out_fmt = _output_format(out, fmt)  # fail before parsing
+    items = [render(apply(s), out_fmt) for s in _read_movements(inp, from_, include)]
+    _write_movements(items, out, _FORMAT_EXT[out_fmt])
 
 
 def _note(message: str) -> None:
@@ -265,6 +320,10 @@ FromOpt = Annotated[
     typer.Option("--from", help="Input format (default: from the extension; required for stdin)."),
 ]
 Jobs = Annotated[int, typer.Option("--jobs", "-j", help="Parallel workers (0 = one per CPU).")]
+IncludeOpt = Annotated[
+    Optional[list[str]],
+    typer.Option("--include-path", "-I", help="Directory to search for LilyPond \\include files (repeatable)."),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -273,35 +332,26 @@ Jobs = Annotated[int, typer.Option("--jobs", "-j", help="Parallel workers (0 = o
 
 
 @_command()
-def convert(input: Input, output: Output, format: FormatOpt = None, from_: FromOpt = None, jobs: Jobs = 0) -> None:
+def convert(
+    input: Input,
+    output: Output,
+    format: FormatOpt = None,
+    from_: FromOpt = None,
+    jobs: Jobs = 0,
+    include_path: IncludeOpt = None,
+) -> None:
     """Convert between LilyPond, MusicXML, MXL, MIDI, ABC and Humdrum **kern.
 
     Given a directory, converts every score in it (recursively) into the output
     directory, in parallel; the exit status is non-zero if any file fails.
     A LilyPond file with several \\score blocks, or an ABC file with several
     tunes, writes the first to the output path and the others next to it, as
-    NAME_02.EXT, NAME_03.EXT, …
+    NAME_02.EXT, NAME_03.EXT, … What reading LilyPond finds goes to stderr.
     """
     if input != "-" and Path(input).is_dir():
-        _run_batch(Path(input), Path(output), _value(format), jobs)
+        _run_batch(Path(input), Path(output), _value(format), jobs, include_path)
         return
-    if _ly_to_ly(input, output, format, from_):
-        write_bytes(output, lytk.to_lilypond_music(_read_music(input)).encode("utf-8"))
-        return
-
-    fmt = _output_format(output, format)  # fail before parsing
-    movements = _read_movements(input, from_)
-    if len(movements) == 1:
-        write_score(movements[0], output, fmt)
-        return
-    if output == "-":
-        raise CliError(f"{len(movements)} movements parsed; cannot write several movements to stdout, use a file path")
-    first = Path(output)
-    for i, score in enumerate(movements, start=1):
-        path = first if i == 1 else first.with_name(f"{first.stem}_{i:02d}{first.suffix or _FORMAT_EXT[fmt]}")
-        write_score(score, str(path), fmt)
-        _note(f"Wrote movement {i} → {path}")
-    _note(f"note: input contains {len(movements)} movements; movements 2+ were written with _NN suffixes")
+    _transform(input, output, format, from_, lambda m: m, include_path)
 
 
 def _resolve_jobs(jobs: int) -> int:
@@ -321,10 +371,10 @@ def _run_isolated(fn: Callable[[], None]) -> str | None:
     return None
 
 
-def _convert_file(task: tuple[str, str, str | None]) -> tuple[str, str | None]:
-    """Worker: convert one (input, output, format) task."""
-    src, dst, fmt = task
-    return src, _run_isolated(lambda: write_score(read_score(src), dst, fmt))
+def _convert_file(task: tuple[str, str, str | None, list[str] | None]) -> tuple[str, str | None]:
+    """Worker: convert one (input, output, format, include paths) task."""
+    src, dst, fmt, include = task
+    return src, _run_isolated(lambda: write_score(read_score(src, include=include), dst, fmt))
 
 
 def _map_parallel(fn: Callable[[Any], Any], tasks: list[Any], jobs: int) -> list[Any]:
@@ -336,18 +386,28 @@ def _map_parallel(fn: Callable[[Any], Any], tasks: list[Any], jobs: int) -> list
         return list(pool.map(fn, tasks))
 
 
-def _run_batch(input_dir: Path, output_dir: Path, fmt: str | None, jobs: int = 0) -> None:
+def _run_batch(
+    input_dir: Path, output_dir: Path, fmt: str | None, jobs: int = 0, include: list[str] | None = None
+) -> None:
     files = sorted(p for p in input_dir.rglob("*") if p.is_file() and p.suffix.lower() in _EXT_FORMAT)
     if not files:
         _note(f"No supported files found in {input_dir}")
         return
-    tasks: list[tuple[str, str, str | None]] = []
+    tasks: list[tuple[str, str, str | None, list[str] | None]] = []
+    writes: dict[Path, Path] = {}
+    clashes: list[str] = []
     for file in files:
         # Without --format, LilyPond becomes MusicXML and everything else LilyPond.
         ext = _FORMAT_EXT[fmt] if fmt else (".xml" if _EXT_FORMAT[file.suffix.lower()] == "ly" else ".ly")
         out = (output_dir / file.relative_to(input_dir)).with_suffix(ext)
-        out.parent.mkdir(parents=True, exist_ok=True)  # before the workers start
-        tasks.append((str(file), str(out), fmt))
+        if out in writes:
+            clashes.append(f"{writes[out]} and {file} would both write {out}")
+        writes[out] = file
+        tasks.append((str(file), str(out), fmt, include))
+    if clashes:
+        raise CliError("; ".join(clashes))
+    for _, out, _, _ in tasks:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)  # before the workers start
 
     failures = [(src, err) for src, err in _map_parallel(_convert_file, tasks, jobs) if err]
     for src, err in failures:
@@ -377,6 +437,7 @@ def transpose(
     ] = None,
     format: FormatOpt = None,
     from_: FromOpt = None,
+    include_path: IncludeOpt = None,
 ) -> None:
     """Transpose. Give exactly one of --semitones, --interval, --to-key."""
     modes = [m is not None for m in (semitones, interval, to_key)]
@@ -388,7 +449,7 @@ def transpose(
         apply = lambda m: lytk.transpose_interval(m, interval)
     else:
         apply = lambda m: lytk.transpose_to_key(m, to_key)
-    _transform(input, output, format, from_, apply)
+    _transform(input, output, format, from_, apply, include_path)
 
 
 _AXIS = re.compile(r"^\s*([a-gA-G])([sf#]*)\s*(-?\d+)\s*$")
@@ -412,16 +473,20 @@ def invert(
     axis: Annotated[str, typer.Option("--axis", "-a", help="Axis pitch: c4 (middle C), fs3, bf5.")] = "c4",
     format: FormatOpt = None,
     from_: FromOpt = None,
+    include_path: IncludeOpt = None,
 ) -> None:
     """Invert: mirror every pitch around an axis pitch."""
     step, alter, octave = parse_axis(axis)
-    _transform(input, output, format, from_, lambda m: lytk.invert(m, step=step, alter=alter, octave=octave))
+    apply = lambda m: lytk.invert(m, step=step, alter=alter, octave=octave)  # noqa: E731
+    _transform(input, output, format, from_, apply, include_path)
 
 
 @_command()
-def retrograde(input: Input, output: Output, format: FormatOpt = None, from_: FromOpt = None) -> None:
+def retrograde(
+    input: Input, output: Output, format: FormatOpt = None, from_: FromOpt = None, include_path: IncludeOpt = None
+) -> None:
     """Retrograde: play the music backwards."""
-    _transform(input, output, format, from_, lytk.retrograde)
+    _transform(input, output, format, from_, lytk.retrograde, include_path)
 
 
 @_command(name="change-language")
@@ -433,32 +498,33 @@ def change_language(
     ],
     format: FormatOpt = None,
     from_: FromOpt = None,
+    include_path: IncludeOpt = None,
 ) -> None:
     """Change the LilyPond note-name language (it shows in LilyPond output)."""
-    _transform(input, output, format, from_, lambda m: lytk.change_language(m, language))
+    _transform(input, output, format, from_, lambda m: lytk.change_language(m, language), include_path)
 
 
-def _repitch(input: str, output: str, relative: bool) -> None:
+def _repitch(input: str, output: str, relative: bool, include: list[str] | None) -> None:
     if input != "-" and _EXT_FORMAT.get(Path(input).suffix.lower()) != "ly":
         raise CliError("abs2rel/rel2abs need a LilyPond (.ly) input")
-    score = read_score(input, "ly")
-    write_bytes(output, lytk.to_lilypond(score, relative=relative).encode("utf-8"))
+    items = [lytk.to_lilypond(s, relative=relative).encode("utf-8") for s in _read_movements(input, "ly", include)]
+    _write_movements(items, output, ".ly")
 
 
 @_command()
-def abs2rel(input: Input, output: Output) -> None:
+def abs2rel(input: Input, output: Output, include_path: IncludeOpt = None) -> None:
     """Rewrite a LilyPond file with \\relative octave marks.
 
     Multi-staff and multi-voice parts keep absolute octaves where relative ones
     would be ambiguous.
     """
-    _repitch(input, output, relative=True)
+    _repitch(input, output, relative=True, include=include_path)
 
 
 @_command()
-def rel2abs(input: Input, output: Output) -> None:
+def rel2abs(input: Input, output: Output, include_path: IncludeOpt = None) -> None:
     """Rewrite a LilyPond file with absolute octave marks (no \\relative)."""
-    _repitch(input, output, relative=False)
+    _repitch(input, output, relative=False, include=include_path)
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +537,12 @@ def _pitches(score: lytk.Score) -> list[int]:
     return sorted(n.midi for part in score.iter_parts() for n in part.notes)
 
 
+def _sounding(score: lytk.Score) -> list[tuple[int, int, int]]:
+    """Every note as played: (onset, duration, sounding pitch), sorted."""
+    rows = lytk.to_note_array(score.to_music_document())[:, :3].tolist()
+    return sorted(tuple(r) for r in rows)
+
+
 def _json(data: Any) -> None:
     typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -479,9 +551,10 @@ def _json(data: Any) -> None:
 def info(
     input: Annotated[str, typer.Argument(help="Input file.", show_default=False)],
     as_json: Annotated[bool, typer.Option("--json", help="Machine-readable JSON.")] = False,
+    include_path: IncludeOpt = None,
 ) -> None:
     """Show a score's metadata, counts and parts (``lytk.info``)."""
-    data = lytk.info(read_score(input))
+    data = lytk.info(read_score(input, include=include_path))
     if as_json:
         _json(data)
         return
@@ -499,22 +572,27 @@ def info(
         typer.echo(f"  - {p['name'] or p['id']} ({p['measures']} measures)")
 
 
+def _is_grace(e: Any) -> bool:
+    """A grace note, or a chord of grace notes: no time."""
+    notes = getattr(e, "notes", None)
+    if notes is not None:
+        return bool(notes) and all(n.is_grace for n in notes)
+    return bool(getattr(e, "is_grace", False))
+
+
 def _length(elements: list[Any]) -> Fraction:
-    return sum(
-        (Fraction(*e.duration_fraction) for e in elements if not getattr(e, "is_grace", False)),
-        Fraction(0),
-    )
+    return sum((Fraction(*e.duration_fraction) for e in elements if not _is_grace(e)), Fraction(0))
 
 
 @_command()
-def positions(input: Input, from_: FromOpt = None) -> None:
+def positions(input: Input, from_: FromOpt = None, include_path: IncludeOpt = None) -> None:
     """Each part's bars as JSON: number, start and length in quarter notes.
 
     These are musical positions from the notated durations, not graphical ones.
     A bar lasts as long as its longest voice, so pickups and short bars count
     as written.
     """
-    score = read_score(input, from_)
+    score = read_score(input, from_, include_path)
     parts = []
     for part in score.iter_parts():
         start = Fraction(0)
@@ -549,9 +627,10 @@ def bundle(
     output: Annotated[str, typer.Option("--output", "-o", help="Output directory (created if missing).")],
     format: Annotated[Format, typer.Option("--format", "-f", help="Format of each part file.")] = Format.xml,
     from_: FromOpt = None,
+    include_path: IncludeOpt = None,
 ) -> None:
     """Write each part to its own file: DIR/<input-stem>_<part>.<ext>."""
-    score = read_score(input, from_)
+    score = read_score(input, from_, include_path)
     whole = score.to_dict()
     parts = _dict_parts(whole["children"])
     if not parts:
@@ -574,29 +653,35 @@ def diff(
     from_: Annotated[
         Optional[Format], typer.Option("--from", help="Input format of both (required for stdin).")
     ] = None,
+    include_path: IncludeOpt = None,
 ) -> None:
-    """Compare two scores by what they sound: parts, note count and pitches.
+    """Compare two scores by what they sound: parts, and every note's onset,
+    duration and sounding pitch (dynamics, notation and layout aside).
 
     Exits with status 1 when they differ, so it can gate a pipeline.
     """
-    sa, sb = read_score(a, from_), read_score(b, from_)
+    sa, sb = read_score(a, from_, include_path), read_score(b, from_, include_path)
     pa, pb = _pitches(sa), _pitches(sb)
+    na, nb = _sounding(sa), _sounding(sb)
     parts_a, parts_b = sa.num_parts, sb.num_parts
     same_pitches = pa == pb
-    equal = same_pitches and parts_a == parts_b
+    same_notes = na == nb
+    equal = same_notes and parts_a == parts_b
     if as_json:
         _json(
             {
                 "equal": equal,
                 "parts": {"a": parts_a, "b": parts_b},
-                "note_count": {"a": len(pa), "b": len(pb)},
+                "note_count": {"a": len(na), "b": len(nb)},
                 "pitch_multiset_equal": same_pitches,
+                "notes_equal": same_notes,
             }
         )
     else:
         typer.echo(f"parts:          {parts_a} vs {parts_b}")
-        typer.echo(f"notes:          {len(pa)} vs {len(pb)}")
+        typer.echo(f"notes:          {len(na)} vs {len(nb)}")
         typer.echo(f"pitches equal:  {str(same_pitches).lower()}")
+        typer.echo(f"timing equal:   {str(same_notes).lower()}")
         typer.echo("scores are semantically equal" if equal else "scores differ")
     if not equal:
         raise typer.Exit(1)

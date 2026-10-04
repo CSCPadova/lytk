@@ -17,12 +17,12 @@ use crate::ir::annotation::Annotation;
 use crate::ir::articulation::{Placement, SyllabicType};
 use crate::ir::direction::{Barline, BarlineType, RepeatDirection, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
-use crate::ir::harmony::{suffix_of_kind, Harmony};
-use crate::ir::measure::{KeyMode, KeySignature, TimeSignature};
+use crate::ir::harmony::{lead_sheet_suffix, Harmony};
+use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
 use crate::ir::music::{ContextType, Music, MusicDocument, RepeatType};
 use crate::ir::pitch::{respell, Pitch};
 
-use super::{FromMusicAdapter, Result};
+use super::{FromIrAdapter, FromMusicAdapter, Result};
 
 /// Bars per output line — ABC convention, and it keeps lines readable.
 const BARS_PER_LINE: usize = 4;
@@ -44,6 +44,37 @@ impl FromMusicAdapter for IrToAbcAdapter {
     fn convert_music(&self, doc: &MusicDocument) -> Result<String> {
         emit_tune(doc)
     }
+}
+
+/// A score is written with its beams: ABC beams by spacing, so what the
+/// source left to the engraver is engraved first.
+impl FromIrAdapter for IrToAbcAdapter {
+    fn convert(&self, score: &crate::ir::score::Score) -> Result<String> {
+        let mut score = score.clone();
+        crate::ir::beams::engrave(&mut score);
+        emit_tune(&crate::ir::lift::lift_to_music(&score))
+    }
+
+    fn write(&self, score: &crate::ir::score::Score, path: &std::path::Path) -> Result<()> {
+        std::fs::write(path, self.convert(score)?)?;
+        Ok(())
+    }
+}
+
+/// Marks a token that joins the one before it (no space: a beam).
+const GLUE: char = '\u{1}';
+
+/// Whether a note or chord opens or closes a beam.
+fn beam_marks(m: &Music) -> (bool, bool) {
+    let anns: &[Annotation] = match m {
+        Music::Note { annotations, .. } => annotations,
+        Music::Chord { pitches, .. } => pitches.first().map_or(&[], |(_, a)| a.as_slice()),
+        _ => &[],
+    };
+    (
+        anns.contains(&Annotation::BeamStart),
+        anns.contains(&Annotation::BeamStop),
+    )
 }
 
 /// Most bar lines a voice is written with. A long note is tied over every
@@ -115,12 +146,21 @@ fn emit_tune(doc: &MusicDocument) -> Result<String> {
     if let Some(q) = first_tempo.as_ref().and_then(tempo_to_abc) {
         out.push_str(&format!("Q:{q}\n"));
     }
+    // One voice's opening clef goes on the K: line, several voices' on
+    // their V: lines.
+    let clef_setting = |events: &[Music]| {
+        opening_clef(events).map_or(String::new(), |c| format!(" clef={}", clef_to_abc(&c)))
+    };
     out.push_str(&format!(
-        "K:{}\n",
+        "K:{}{}\n",
         first_key
             .as_ref()
             .map(key_to_abc)
-            .unwrap_or_else(|| "C".to_string())
+            .unwrap_or_else(|| "C".to_string()),
+        match voices.as_slice() {
+            [one] => clef_setting(&one.events),
+            _ => String::new(),
+        }
     ));
 
     match voices.len() {
@@ -145,9 +185,10 @@ fn emit_tune(doc: &MusicDocument) -> Result<String> {
             // header, so a body repeats its leading time/key only if it differs.
             for (i, v) in voices.iter().enumerate() {
                 let id = i + 1;
+                let clef = clef_setting(&v.events);
                 match &v.name {
-                    Some(n) => out.push_str(&format!("V:{id} name=\"{n}\"\n")),
-                    None => out.push_str(&format!("V:{id}\n")),
+                    Some(n) => out.push_str(&format!("V:{id} name=\"{n}\"{clef}\n")),
+                    None => out.push_str(&format!("V:{id}{clef}\n")),
                 }
                 let body = emit_body(
                     &v.events,
@@ -180,7 +221,7 @@ fn emit_body(
     let mut tempo_used = false;
     // Marks a direction puts on the next note (a dynamic, a hairpin).
     let mut carried = String::new();
-    let mut lyrics = Lyrics::default();
+    let mut lyrics = Lyrics::new(events);
     let mut key_used = false;
     let mut acc = Accidentals::new(header_key.map_or(0, |k| k.fifths as i32));
     // Bar accounting: the IR only carries explicit `Music::Barline` events for
@@ -198,6 +239,12 @@ fn emit_body(
     // Sounding events still inside the open tuplet run (0 = not in a tuplet).
     let mut tuplet_left = 0usize;
     let mut queue: std::collections::VecDeque<Music> = events.iter().cloned().collect();
+    // Inside a beam: what is written joins the note before it.
+    let mut in_beam = false;
+    // The hairpin open (`<` or `>`), which its end closes.
+    let mut hairpin: Option<char> = None;
+    // Whether a note or rest has been written.
+    let mut sounded = false;
     // The other voices of the bar being written, as `&` layers (ABC 2.1
     // §7.4) just before its bar line.
     let mut layers: Vec<Vec<Music>> = Vec::new();
@@ -281,6 +328,8 @@ fn emit_body(
             }
             None => tuplet_left = 0,
         }
+        let before = tokens.len();
+        let glued = in_beam && !matches!(ev, Music::Barline(_));
         match &ev {
             Music::TimeSignature(t) => {
                 bar_len = Some(t.beats_fraction());
@@ -297,9 +346,20 @@ fn emit_body(
                 }
                 key_used = true;
             }
+            // A transposing instrument: sounds `transpose=` semitones away
+            // (ABC 2.1 §4.6).
+            Music::Transposition(t) => tokens.push(format!("[K:transpose={}]", t.semitones())),
+            // A clef change (ABC 2.1 §4.6); the clef a voice opens with is
+            // in its K: or V: line.
+            Music::Clef(c) => {
+                if sounded {
+                    tokens.push(format!("[K:clef={}]", clef_to_abc(c)));
+                }
+            }
             Music::Note { .. } | Music::Chord { .. } | Music::Rest { .. } | Music::Skip { .. } => {
                 if let Some(tok) = sounding_token(&ev, &mut acc, false) {
-                    let (pre, post) = decorations(&ev);
+                    sounded = true;
+                    let (pre, post) = decorations(&ev, &mut hairpin);
                     tokens.push(format!("{}{pre}{tok}{post}", std::mem::take(&mut carried)));
                     lyrics.note(&ev);
                 }
@@ -319,7 +379,7 @@ fn emit_body(
                     carried.push_str(&format!("!{}!", dm.sign));
                 }
                 if let Some(w) = &d.wedge {
-                    carried.push_str(wedge_sign(&w.wedge_type));
+                    carried.push_str(wedge_sign(&w.wedge_type, &mut hairpin));
                 }
             }
             Music::Tempo(t) => {
@@ -367,6 +427,17 @@ fn emit_body(
             }
             _ => {}
         }
+        if glued {
+            for t in tokens[before..].iter_mut().filter(|t| *t != "\n") {
+                t.insert(0, GLUE);
+            }
+        }
+        match beam_marks(&ev) {
+            (true, _) => in_beam = true,
+            (_, true) => in_beam = false,
+            _ if matches!(ev, Music::Barline(_)) => in_beam = false,
+            _ => {}
+        }
         // Regular bar line: close the bar as soon as the meter's worth of time
         // has been emitted (explicit barlines above reset the count themselves).
         if let (Some(len), Some(d)) = (this_bar.or(bar_len), sounding_duration(&ev)) {
@@ -397,7 +468,12 @@ fn emit_body(
         tokens.extend(words);
     }
     // Join on spaces, but keep the line breaks we inserted as real newlines.
-    Ok(tokens.join(" ").replace(" \n ", "\n").replace(" \n", "\n"))
+    Ok(tokens
+        .join(" ")
+        .replace(&format!(" {GLUE}"), "")
+        .replace(GLUE, "")
+        .replace(" \n ", "\n")
+        .replace(" \n", "\n"))
 }
 
 /// Write the bar's other voices, each after a `&`, with the accidentals the
@@ -405,6 +481,7 @@ fn emit_body(
 fn push_layers(tokens: &mut Vec<String>, layers: &mut Vec<Vec<Music>>, acc: &mut Accidentals) {
     for layer in layers.drain(..) {
         tokens.push("&".to_string());
+        let mut hairpin = None;
         let mut left = 0usize;
         for (k, m) in layer.iter().enumerate() {
             match tuplet_ratio(m) {
@@ -426,7 +503,7 @@ fn push_layers(tokens: &mut Vec<String>, layers: &mut Vec<Vec<Music>>, acc: &mut
                 Music::Grace { content, slash } => tokens.extend(grace_token(content, *slash, acc)),
                 _ => {
                     if let Some(tok) = sounding_token(m, acc, false) {
-                        let (pre, post) = decorations(m);
+                        let (pre, post) = decorations(m, &mut hairpin);
                         tokens.push(format!("{pre}{tok}{post}"));
                     }
                 }
@@ -535,6 +612,41 @@ struct Lyrics {
 }
 
 impl Lyrics {
+    /// Lyrics for these events: every verse gets a `w:` line under every
+    /// music line, so a reader that sings `w:` lines one after another and
+    /// one that sings each on the line above (ABC 2.1) read the same.
+    fn new(events: &[Music]) -> Self {
+        fn most(m: &Music) -> u8 {
+            let own = match m {
+                Music::Note { annotations, .. } => annotations.iter().collect::<Vec<_>>(),
+                Music::Chord {
+                    pitches,
+                    annotations,
+                    ..
+                } => annotations
+                    .iter()
+                    .chain(pitches.iter().flat_map(|(_, a)| a))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            own.iter()
+                .filter_map(|a| match a {
+                    Annotation::Lyric(l) => Some(l.number.max(1)),
+                    _ => None,
+                })
+                .chain(m.children().iter().map(most))
+                .chain(m.inner().map(most))
+                .max()
+                .unwrap_or(0)
+        }
+        let verses = events.iter().map(most).max().unwrap_or(0) as usize;
+        Lyrics {
+            verses: vec![Vec::new(); verses],
+            notes: 0,
+            held: vec![false; verses],
+        }
+    }
+
     fn note(&mut self, m: &Music) {
         let anns: Vec<&Annotation> = match m {
             Music::Note { annotations, .. } => annotations.iter().collect(),
@@ -552,13 +664,16 @@ impl Lyrics {
             if let Annotation::Lyric(l) = a {
                 let v = (l.number.max(1) - 1) as usize;
                 if self.verses.len() <= v {
-                    self.verses.resize(v + 1, Vec::new());
+                    self.verses.resize(v + 1, vec!["*".to_string(); self.notes]);
                     self.held.resize(v + 1, false);
                 }
                 if self.verses[v].len() <= self.notes {
-                    let text = l.text.replace(' ', "~").replace('-', "\\-");
                     let hyphen = matches!(l.syllabic, SyllabicType::Begin | SyllabicType::Middle);
-                    self.verses[v].push(format!("{text}{}", if hyphen { "-" } else { "" }));
+                    self.verses[v].push(format!(
+                        "{}{}",
+                        lyric_to_abc(&l.text),
+                        if hyphen { "-" } else { "" }
+                    ));
                     self.held[v] = l.extend;
                 }
             }
@@ -571,14 +686,18 @@ impl Lyrics {
         }
     }
 
-    /// The `w:` lines for the notes so far, then a fresh line.
+    /// The `w:` lines for the notes so far, then a fresh line: one per
+    /// verse (they are numbered by their order), `*` for each note a verse
+    /// doesn't sing.
     fn lines(&mut self) -> Vec<String> {
         let mut out = Vec::new();
-        for words in self.verses.iter_mut() {
-            if words.iter().any(|w| w != "*" && w != "_") {
+        if self.notes > 0 {
+            for words in &mut self.verses {
                 out.push(format!("w: {}", words.join(" ")));
                 out.push("\n".to_string());
             }
+        }
+        for words in &mut self.verses {
             words.clear();
         }
         self.notes = 0;
@@ -586,9 +705,27 @@ impl Lyrics {
     }
 }
 
+/// A syllable for a `w:` line: words sung on one note joined with `~` (or
+/// the `‿` they are printed with), the
+/// signs a `w:` line reads (`- _ * ~ | %`) escaped.
+fn lyric_to_abc(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            ' ' => out.push('~'),
+            '-' | '_' | '*' | '~' | '|' | '%' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Decorations and slur starts written before a note, slur ends after it
 /// (ABC 2.1 §4.14).
-fn decorations(m: &Music) -> (String, String) {
+fn decorations(m: &Music, hairpin: &mut Option<char>) -> (String, String) {
     let anns: Vec<&Annotation> = match m {
         Music::Note { annotations, .. } => annotations.iter().collect(),
         Music::Chord {
@@ -606,7 +743,7 @@ fn decorations(m: &Music) -> (String, String) {
     for a in anns {
         let sign = match a {
             Annotation::Dynamic(d) => format!("!{}!", d.sign),
-            Annotation::Wedge(w) => wedge_sign(&w.wedge_type).to_string(),
+            Annotation::Wedge(w) => wedge_sign(&w.wedge_type, hairpin).to_string(),
             Annotation::Articulation(a) => match a.name.as_str() {
                 "staccato" => ".",
                 "accent" => "!>!",
@@ -626,6 +763,17 @@ fn decorations(m: &Music) -> (String, String) {
                 _ => "",
             }
             .to_string(),
+            Annotation::Technical(t) => match t.name.as_str() {
+                "fingering" if matches!(t.value.as_str(), "0" | "1" | "2" | "3" | "4" | "5") => {
+                    format!("!{}!", t.value)
+                }
+                "up-bow" => "!upbow!".to_string(),
+                "down-bow" => "!downbow!".to_string(),
+                _ => continue,
+            },
+            Annotation::Fingering(f) if matches!(f.as_str(), "0" | "1" | "2" | "3" | "4" | "5") => {
+                format!("!{f}!")
+            }
             Annotation::Fermata(f) => if f.inverted {
                 "!invertedfermata!"
             } else {
@@ -652,26 +800,86 @@ fn decorations(m: &Music) -> (String, String) {
     (pre, post)
 }
 
-fn wedge_sign(kind: &str) -> &'static str {
+/// The clef a voice's events set before its first note or rest.
+fn opening_clef(events: &[Music]) -> Option<Clef> {
+    fn first(events: &[Music]) -> Option<Option<Clef>> {
+        for e in events {
+            match e {
+                Music::Clef(c) => return Some(Some(*c)),
+                Music::Sequential(inner) => {
+                    if let Some(found) = first(inner) {
+                        return Some(found);
+                    }
+                }
+                Music::Context { content, .. } => {
+                    if let Some(found) = first(std::slice::from_ref(content)) {
+                        return Some(found);
+                    }
+                }
+                m if sounding_duration(m).is_some() || matches!(m, Music::Simultaneous(_)) => {
+                    return Some(None)
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    first(events).flatten()
+}
+
+/// An ABC clef name: `bass`, `alto`, `bass3`. An octave clef is written
+/// without its `-8`: ABC's player transposes under one, and the notes are
+/// written as they sound.
+// ponytail: `treble-8` with every pitch written an octave up would draw the 8.
+fn clef_to_abc(c: &Clef) -> String {
+    let (name, line) = match c.sign {
+        ClefSign::G => ("treble", 2),
+        ClefSign::F => ("bass", 4),
+        ClefSign::C if c.line == 4 => ("tenor", 4),
+        ClefSign::C => ("alto", 3),
+        ClefSign::Percussion | ClefSign::Tab => ("perc", c.line),
+    };
+    let line = if c.line == line {
+        String::new()
+    } else {
+        c.line.to_string()
+    };
+    format!("{name}{line}")
+}
+
+/// A hairpin's start, or the end of the one `open` (`!>)!` ends a
+/// diminuendo).
+fn wedge_sign(kind: &str, open: &mut Option<char>) -> &'static str {
     match kind {
-        "crescendo" => "!<(!",
-        "diminuendo" | "decrescendo" => "!>(!",
-        _ => "!<)!",
+        "crescendo" => {
+            *open = Some('<');
+            "!<(!"
+        }
+        "diminuendo" | "decrescendo" => {
+            *open = Some('>');
+            "!>(!"
+        }
+        _ => match open.take() {
+            Some('>') => "!>)!",
+            _ => "!<)!",
+        },
     }
 }
 
 /// `Am7`, `F#m7b5`, `G/B`.
 fn chord_symbol(h: &Harmony) -> String {
     let alter = |a: f64| match a.round() as i32 {
-        1 => "#",
-        -1 => "b",
-        _ => "",
+        n if n > 0 => "#".repeat(n as usize),
+        n => "b".repeat(n.unsigned_abs() as usize),
     };
+    if h.kind == "none" {
+        return "N.C.".to_string();
+    }
     let mut s = format!(
         "{}{}{}",
         h.root.step,
         alter(h.root.alter),
-        suffix_of_kind(&h.kind)
+        lead_sheet_suffix(&h.kind, &h.degrees)
     );
     if let Some(b) = &h.bass {
         s.push_str(&format!("/{}{}", b.step, alter(b.alter)));
@@ -755,7 +963,9 @@ fn has_audible(events: &[Music]) -> bool {
         matches!(
             m,
             Music::Note { .. } | Music::Chord { .. } | Music::Rest { .. }
-        )
+        ) || has_audible(m.children())
+            || m.inner()
+                .is_some_and(|i| has_audible(std::slice::from_ref(i)))
     })
 }
 
@@ -1088,29 +1298,22 @@ fn key_to_abc(key: &KeySignature) -> String {
     if key.fifths.abs() > 7 {
         return "C".to_string();
     }
-    let (suffix, offset) = match key.mode {
-        KeyMode::Major | KeyMode::Ionian => ("", 0),
-        KeyMode::Minor | KeyMode::Aeolian => ("m", -3),
-        KeyMode::Dorian => ("dor", -2),
-        KeyMode::Phrygian => ("phr", -4),
-        KeyMode::Lydian => ("lyd", 1),
-        KeyMode::Mixolydian => ("mix", -1),
-        KeyMode::Locrian => ("loc", -5),
+    let suffix = match key.mode {
+        KeyMode::Major | KeyMode::Ionian => "",
+        KeyMode::Minor | KeyMode::Aeolian => "m",
+        KeyMode::Dorian => "dor",
+        KeyMode::Phrygian => "phr",
+        KeyMode::Lydian => "lyd",
+        KeyMode::Mixolydian => "mix",
+        KeyMode::Locrian => "loc",
     };
-    let tonic_fifths = key.fifths - offset;
-    format!("{}{suffix}", tonic_name(tonic_fifths))
-}
-
-/// Map a circle-of-fifths position to a (major-key) tonic name. Modes reach
-/// past the major keys (G♯ minor is the tonic 8 fifths up, F♭ lydian 8 down).
-fn tonic_name(fifths: i8) -> String {
-    let i = fifths as i32 + 1; // F = 0
-    let letter = ['F', 'C', 'G', 'D', 'A', 'E', 'B'][i.rem_euclid(7) as usize];
-    match i.div_euclid(7) {
-        0 => letter.to_string(),
-        n if n > 0 => format!("{letter}{}", "#".repeat(n as usize)),
-        n => format!("{letter}{}", "b".repeat((-n) as usize)),
-    }
+    let (step, alter) = key.tonic();
+    let sign = if alter < 0 { "b" } else { "#" };
+    format!(
+        "{}{}{suffix}",
+        step.name(),
+        sign.repeat(alter.unsigned_abs() as usize)
+    )
 }
 
 #[cfg(test)]

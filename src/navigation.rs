@@ -189,6 +189,37 @@ impl PyNote {
         self.inner.lyrics.iter().map(|l| l.text.clone()).collect()
     }
 
+    /// The note's syllables with their verse: dicts of `verse`, `name`,
+    /// `text`, `syllabic` (`"single"`, `"begin"`, `"middle"`, `"end"`),
+    /// `extend` and `elision` (words sung on one note, joined with `‿`).
+    #[getter]
+    fn lyric_syllables<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Vec<Bound<'py, pyo3::types::PyDict>>> {
+        use crate::ir::articulation::SyllabicType;
+        self.inner
+            .lyrics
+            .iter()
+            .map(|l| {
+                let d = pyo3::types::PyDict::new_bound(py);
+                d.set_item("verse", l.number)?;
+                d.set_item("name", l.name.clone())?;
+                d.set_item("text", l.text.clone())?;
+                let syllabic = match l.syllabic {
+                    SyllabicType::Single => "single",
+                    SyllabicType::Begin => "begin",
+                    SyllabicType::Middle => "middle",
+                    SyllabicType::End => "end",
+                };
+                d.set_item("syllabic", syllabic)?;
+                d.set_item("extend", l.extend)?;
+                d.set_item("elision", l.elision)?;
+                Ok(d)
+            })
+            .collect()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "<Note {} dur={}>",

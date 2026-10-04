@@ -356,7 +356,7 @@ fn note_with_articulations() {
     assert!(xml.contains("<notations>"));
     assert!(xml.contains("<slur type=\"start\""));
     assert!(xml.contains("<articulations>"));
-    assert!(xml.contains("<staccato/>"));
+    assert!(xml.contains("<staccato placement=\"above\"/>"));
 }
 
 #[test]
@@ -1261,7 +1261,7 @@ fn wavy_line_emission() {
     measure.voices.push(voice);
     let xml = emit_measure(measure);
     assert!(
-        xml.contains("<trill-mark/>"),
+        xml.contains("<trill-mark placement=\"above\"/>"),
         "should emit trill-mark: {xml}"
     );
     assert!(
@@ -1374,11 +1374,12 @@ fn pedal_line_attribute() {
 fn lyric_elision() {
     let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
     note.lyrics.push(crate::ir::articulation::LyricSyllable {
-        text: "la".to_string(),
+        text: "my\u{203F}a".to_string(),
         syllabic: crate::ir::articulation::SyllabicType::Single,
         number: 1,
         extend: false,
         elision: true,
+        name: None,
     });
     let voice = Voice {
         number: 1,
@@ -1386,8 +1387,14 @@ fn lyric_elision() {
     };
     let mut measure = make_empty_measure();
     measure.voices.push(voice);
-    let xml = emit_measure(measure);
-    assert!(xml.contains("<elision/>"), "should emit elision: {xml}");
+    let xml: String = emit_measure(measure).split_whitespace().collect();
+    // Both words, an <elision> between (it wrote an empty one and no word).
+    assert!(
+        xml.contains(
+            "<text>my</text><elision>\u{203F}</elision><syllabic>single</syllabic><text>a</text>"
+        ),
+        "{xml}"
+    );
 }
 
 #[test]
@@ -1761,6 +1768,7 @@ fn test_emit_lyrics() {
             number: 1,
             extend: false,
             elision: false,
+            name: None,
         });
         part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(note))];
     }

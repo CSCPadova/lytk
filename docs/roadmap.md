@@ -2,7 +2,31 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-09-28, Epics K and L)
+## Latest status (2026-10-04, Epic M done: 0.5.0 released)
+
+**Epic M is done and released as 0.5.0** (tag `v0.5.0`, 2026-10-04). The
+2026-10-01 review found that what the note boards didn't measure was broken
+somewhere; M0 measured it, M1–M10 fixed it, and every measurement now gates
+CI: lyrics, chord symbols, dynamics and clefs at their places across seven
+directions; stems and beams against the source engravers (98.0 % / 94.1 %);
+LilyPond lyrics against LilyPond's own MIDI (31/31 cases read, 710/710
+syllables written); LilyPond playback of every fixture (148 compile). Every
+confirmed bug of the review is a passing test
+(`tests/test_review_regressions.py`). Next: P5+ as 0.6.0 (below).
+
+---
+
+## Previous status (2026-10-02, Epic M under way)
+
+A full review (2026-10-01) found that what the note boards don't measure
+is broken somewhere: lyric alignment, stems, beams, chord-symbol and voice
+positions in MusicXML, invalid MusicXML (unescaped text, no `<divisions>`),
+Humdrum notation, retrograde, velocities and pitch in note arrays. The owner
+chose to fix silent corruption first: Epic M is 0.5.0, P5 follows.
+
+---
+
+## Previous status (2026-09-28, Epics K and L)
 
 **Epics K and L are done and released as v0.4.0.** Epic L (datasets) ships
 in it too, as the owner chose. Datasets read records as well as folders
@@ -746,10 +770,37 @@ Planned for 0.5.0; the owner chose to ship it in 0.4.0 together with Epic K.
 | L3 | **Identity.** `FolderDataset.ids` (paths relative to the root); `return_ids=True` on the torch and tf adapters | S | ✅ 2026-09-28: `ids` on every dataset (records: their ids); `return_ids` on the two datasets and the two data loaders, whose batches gain the ids |
 | L4 | **Python API reference.** `docs/python-api.md` generated from or checked against the stubs: lytk has none today (README + `_core.pyi`). It states that `from_lilypond_string` and `from_lilypond_music_string` share one parse (the Music tree is lifted from the Score) | S | ✅ 2026-09-28: `scripts/python_api.py` writes it from the stubs and the datasets module, in the sections of `lytk.__all__`; tests fail when it is stale or when a public name of the extension has no stub |
 
+### Epic M — 0.5.0: notation you can trust (✅ 2026-10-02)
+
+Planned 2026-10-01 from the full review (devlog 2026-10-02). Order after
+M2, from the design review: M5 → M6 → M7 → M4 → M8 → M3 → M9 → M10 → M11
+(stems/beams and the kern spine layout come before lyrics, which depend on
+both). Every task
+writes its failing tests first (the review's repros are strict xfails in
+`tests/test_review_regressions.py`), fixes the shared function all callers
+use, and raises the notation board. JSON stays backward compatible.
+
+| Task | Description | Size | Status |
+|------|-------------|------|--------|
+| M0 | **Measure first.** `common::notation_signature` (lyrics, chord symbols, dynamics, clefs at their onsets); `tests/notation_fidelity.rs` boards for XML→{XML, LY, ABC, KRN, MIDI}, LY→LY, LY→XML; overfull-voice gate; lyric oracle against LilyPond's MIDI (`lilypond_oracle.rs`); the review's repros as Python tests | M | ✅ 2026-10-02 |
+| M1 | **MusicXML reader positions.** Notes, harmonies and figures placed at the `<backup>`/`<forward>` cursor; voice-less `<forward>` only moves the cursor; part-name-display text | M | ✅ 2026-10-02 (also: mid-bar `<attributes>` merged; kern spacers as `ryy`, pickups from the longest spine) |
+| M2 | **MusicXML writer validity.** `<divisions>` always; text escaped and entities decoded; ISO-8859-1 and Latin-1 input | S | ✅ 2026-10-02 (LY→XML board added: 35/35) |
+| M3 | **Lyrics.** LilyPond lyric lexer, melismas, verses and voice targets; one verse grid for the LilyPond, ABC and MIDI writers (`ignoreMelismata`); MusicXML elision and verse names; MIDI syllabic; Humdrum `**text` | L | ✅ 2026-10-02 (also: NullVoice read and written for a part's other singing voices, timed `\lyricmode`, `Note.lyric_syllables`; no shared grid module: each writer's stream follows what its format can say) |
+| M4 | **Stems and beams.** The IR keeps the source's; writers compute the rest with LilyPond's rules (staff positions, beam groups, voices, meter table); no inferred `\stemUp`/`[ ]` in LilyPond output; ABC and kern beams; retrograde | L | ✅ 2026-10-02 (typed stem/beam enums moved to P5+; kern `/` `\\` stems and user `beamExceptions` not read) |
+| M5 | **LilyPond reader drops nothing silently.** Text scripts, placement, `\once`, `\partial N*M`, `\time 3,2 5/8`, `\afterGrace`, grace chords, single-note tremolo, text marks | M | ✅ 2026-10-02 (two-note tremolo too; grace slurs explicit) |
+| M6 | **Music tree and representations.** Grace chords, transposition in the Music tree, per-part velocity, direction dynamics, one velocity table, sounding pitch | M | ✅ 2026-10-02 (ABC and kern transposition; kern writes later key/meter/clef changes; melisma and beam flags in the lift move to M3/M4) |
+| M7 | **Chord symbols.** LilyPond chordmode syntax and positions, extended suffixes, ABC text vs chord | M | ✅ 2026-10-02 (also: the ly→ly Music path writes chord names; stacked MusicXML harmonies change during their note; ABC writes all-multi-voice staves, from M8) |
+| M8 | **Writers.** LilyPond church modes, tempo once; ABC voices, hairpins, clefs; Humdrum staves and rests; MIDI channels and metadata; MusicXML placement | M | ✅ 2026-10-02 (also: mid-bar clefs keep their place, `<>` read and written, D.C. once, rehearsal text; kern dynamics/text/harmony/lyrics stay with the Humdrum epic) |
+| M9 | **Transforms.** Retrograde moves key/time/clef changes; transposition prefers fewer accidentals | S | ✅ 2026-10-02 (also: mid-bar clefs mirrored, syllabic swapped in both trees; directions keep their offsets in the bar) |
+| M10 | **CLI.** Every movement for ly→ly and transforms; warnings; `-I`; safe folder output | S | ✅ 2026-10-02 (also: `diff` compares timing; `positions` skips grace chords; abs2rel/rel2abs every movement) |
+| M11 | **Release 0.5.0.** Docs state measured support | S | ✅ 2026-10-02 (`docs/import-export.md` opens with the measured boards; version 0.5.0; released 2026-10-04 after three CI fixes, devlog 2026-10-04) |
+
 ### After 0.4.0
 
-The pre-1.0 queue resumes: **P5** (enumerated notation types, the one
-epic that breaks the Python API) as 0.5.0, then P3 → P4 → P6 → P8 → 1.0.0.
+The pre-1.0 queue resumes after Epic M (0.5.0, owner decision 2026-10-01):
+**P5** (enumerated notation types, the one epic that breaks the Python API)
+as 0.6.0, widened to every enum-like string of the IR, then P3 → P4 → P6 →
+P8 → 1.0.0.
 Decision for the owner: J–L go before P5 because they unblock lilycorpus
 and are backward compatible, whereas the 0.1.0 plan put P5 first. P3's
 import-options object should absorb J3/K2's keywords one to one:
@@ -961,7 +1012,8 @@ notation-exported MIDI (IC).
 | **13** | **I → 0.2.0** | **MIDI and ABC conversion repair (Epic I, with P9 performed MIDI): tagged `v0.2.0` 2026-09-27** |
 | **14** | **J → 0.3.0** | **Trustworthy LilyPond reading: no panics, diagnostics + strict mode, whole strings and headers, pitch-language files: tagged `v0.3.0` 2026-09-27** |
 | **15** | **K + L → 0.4.0** | **Source-level API (`\version`, includes, tokens, statistics, movements) and datasets for curated corpora (records dataset, errors, ids, Python API reference): tagged `v0.4.0` 2026-09-28** |
-| 16 | P5 → 0.5.0, then P3 → P4 → P6 → P8 → 1.0.0 | Pre-1.0 queue resumes (P5 breaks the Python API) |
+| **16** | **M → 0.5.0** | **Notation you can trust (the 2026-10-01 review): measured lyrics, chord symbols, dynamics, clefs, stems and beams; MusicXML positions and validity; LilyPond lyrics, chord names, constructs; note arrays; writers; transforms; CLI movements** |
+| 17 | P5+ → 0.6.0, then the Python API (0.7.0), Humdrum for real corpora (0.8.0), the ML layer (0.9.0), P3 → P4 → P6 → P8 → 1.0.0 | Pre-1.0 queue resumes (P5+ breaks the Python dict/JSON shape once) |
 
 ## Key Decisions
 

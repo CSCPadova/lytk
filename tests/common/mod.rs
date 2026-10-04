@@ -16,6 +16,7 @@ use _core::adapters::ir_to_mxml::IrToMxmlAdapter;
 use _core::adapters::ly_to_ir::LyToIrAdapter;
 use _core::adapters::mxml_to_ir::MxmlToIrAdapter;
 use _core::adapters::{FromIrAdapter, FromMusicAdapter, ToIrAdapter, ToMusicAdapter};
+use _core::ir::harmony::chord_steps;
 use _core::ir::note::VoiceElement;
 use _core::ir::score::Score;
 
@@ -193,6 +194,151 @@ fn collect_note(s: &mut Sig, n: &_core::ir::note::Note) {
         .iter()
         .filter(|x| matches!(x.slur_type, StartStop::Start | StartStop::Stop))
         .count();
+}
+
+/// Notation the note boards don't see, each mark at its onset (note-signature
+/// steps, 480 per quarter, from the start of the piece): lyric syllables,
+/// chord symbols, dynamics (a note's or a measure direction's alike) and
+/// clefs. Every list is sorted and keyed by no part, so a conversion that
+/// splits or merges parts (a piano read back as two ABC voices) still
+/// compares; what it catches is a mark that is lost, gained, altered or
+/// moved to another beat.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NotationSig {
+    /// (verse, onset, text, syllabic, extend).
+    pub lyrics: Vec<(u8, u32, String, String, bool)>,
+    /// (onset, root step and alter, chord steps — the kind when unknown),
+    /// so `m7 add 9` and `m9` are the same chord.
+    pub harmonies: Vec<(u32, String, String)>,
+    /// (onset, sign).
+    pub dynamics: Vec<(u32, String)>,
+    /// (onset, staff, sign, line, octave change).
+    pub clefs: Vec<(u32, u8, String, u8, i8)>,
+}
+
+/// The [`NotationSig`] of a score.
+pub fn notation_signature(score: &Score) -> NotationSig {
+    use _core::ir::duration::Frac;
+    let mut s = NotationSig::default();
+    for part in score.parts() {
+        let mut bar_start = Frac::from_integer(0);
+        let mut meter = Frac::new(1, 1);
+        for m in &part.measures {
+            if let Some(attrs) = &m.attributes {
+                if let Some(ts) = &attrs.time {
+                    meter = ts.beats_fraction();
+                }
+                for (staff, c) in &attrs.clefs {
+                    s.clefs.push((
+                        steps(bar_start),
+                        *staff,
+                        format!("{:?}", c.sign),
+                        c.line,
+                        c.octave_change,
+                    ));
+                }
+            }
+            // Harmony offsets are in OFFSET_DIVISIONS (4) per quarter note.
+            for h in &m.harmonies {
+                let at = bar_start + Frac::new(h.offset as i64, 16);
+                let root = format!("{}{:+}", h.root.step, h.root.alter);
+                let chord = chord_steps(&h.kind, &h.degrees)
+                    .map_or_else(|| h.kind.clone(), |c| format!("{c:?}"));
+                s.harmonies.push((steps(at), root, chord));
+            }
+            for d in &m.directions {
+                if let Some(dy) = &d.dynamic {
+                    s.dynamics
+                        .push((steps(bar_start + d.offset_frac), dy.sign.clone()));
+                }
+                // A clef change inside the bar, at its place.
+                if let Some(c) = &d.clef {
+                    s.clefs.push((
+                        steps(bar_start + d.offset_frac),
+                        d.staff.max(1),
+                        format!("{:?}", c.sign),
+                        c.line,
+                        c.octave_change,
+                    ));
+                }
+            }
+            let mut longest = Frac::from_integer(0);
+            for v in &m.voices {
+                let mut at = bar_start;
+                for e in &v.elements {
+                    let notes: Vec<&_core::ir::note::Note> = match e {
+                        VoiceElement::Note(n) => vec![n.as_ref()],
+                        VoiceElement::Chord(c) => c.notes.iter().collect(),
+                        VoiceElement::Rest(r) => {
+                            for d in &r.dynamics {
+                                s.dynamics.push((steps(at), d.sign.clone()));
+                            }
+                            vec![]
+                        }
+                    };
+                    for n in notes {
+                        for d in &n.dynamics {
+                            s.dynamics.push((steps(at), d.sign.clone()));
+                        }
+                        for l in &n.lyrics {
+                            s.lyrics.push((
+                                l.number,
+                                steps(at),
+                                l.text.clone(),
+                                format!("{:?}", l.syllabic),
+                                l.extend,
+                            ));
+                        }
+                    }
+                    if !is_grace(e) {
+                        at += element_duration(e);
+                    }
+                }
+                longest = longest.max(at - bar_start);
+            }
+            bar_start += if longest > Frac::from_integer(0) {
+                longest
+            } else {
+                meter
+            };
+        }
+    }
+    s.lyrics.sort();
+    s.harmonies.sort();
+    s.dynamics.sort();
+    s.clefs.sort();
+    s
+}
+
+/// Whether a voice of some measure runs past the time signature in force
+/// (cadenzas, senza-misura and implicit bars excepted): `(part, measure
+/// number, voice)` of the first such voice.
+pub fn overfull_voice(score: &Score) -> Option<(String, u32, u8)> {
+    use _core::ir::duration::Frac;
+    for part in score.parts() {
+        let mut meter: Option<Frac> = None;
+        for m in &part.measures {
+            if let Some(ts) = m.attributes.as_ref().and_then(|a| a.time.as_ref()) {
+                meter = Some(ts.beats_fraction());
+            }
+            let Some(bar) = meter else { continue };
+            if m.senza_misura || m.implicit {
+                continue;
+            }
+            for v in &m.voices {
+                let len = v
+                    .elements
+                    .iter()
+                    .filter(|e| !is_grace(e))
+                    .map(element_duration)
+                    .fold(Frac::from_integer(0), |a, d| a + d);
+                if len > bar {
+                    return Some((part.part_id.clone(), m.number, v.number));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Sorted dynamics for order-independent comparison.

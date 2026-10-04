@@ -1,6 +1,7 @@
 //! Utility functions for IR → MusicXML conversion.
 
 use crate::ir::articulation::StartStop;
+use crate::ir::duration::Frac;
 use crate::ir::note::VoiceElement;
 use crate::ir::score::Score;
 
@@ -67,7 +68,10 @@ const FALLBACK_DIVISIONS: u16 = 10080;
 /// the score (including tuplets and short durations), or
 /// [`FALLBACK_DIVISIONS`] when that number does not fit MusicXML's `u16`.
 pub(super) fn compute_score_divisions(score: &Score, base: u16) -> u16 {
-    let mut result = Some(u64::from(base.max(1)));
+    // A multiple of the IR's chord-symbol/figure offset unit, so those
+    // offsets convert exactly.
+    let unit = crate::ir::timeline::OFFSET_DIVISIONS as u64;
+    let mut result = lcm_u64(u64::from(base.max(1)), unit);
     for part in score.parts() {
         for measure in &part.measures {
             for voice in &measure.voices {
@@ -77,17 +81,15 @@ pub(super) fn compute_score_divisions(score: &Score, base: u16) -> u16 {
                         VoiceElement::Rest(r) => &r.duration,
                         VoiceElement::Chord(c) => &c.duration,
                     };
-                    if dur.tuplet_actual > 1 {
-                        result = result.and_then(|r| lcm_u64(r, dur.tuplet_actual as u64));
-                    }
-                    let base_n = *dur.base.numer();
-                    let base_d = *dur.base.denom();
-                    let g = gcd_u64(base_d.unsigned_abs(), (4 * base_n).unsigned_abs());
-                    let needed = base_d.unsigned_abs() / g.max(1);
-                    if needed > 1 {
-                        result = result.and_then(|r| lcm_u64(r, needed));
-                    }
+                    // Every length must be a whole number of divisions: dots
+                    // and tuplets included (a dotted 128th needs 64).
+                    let quarters = dur.actual_duration() * Frac::from_integer(4);
+                    result = result.and_then(|r| lcm_u64(r, quarters.denom().unsigned_abs()));
                 }
+            }
+            for d in &measure.directions {
+                let quarters = d.offset_frac * Frac::from_integer(4);
+                result = result.and_then(|r| lcm_u64(r, quarters.denom().unsigned_abs()));
             }
         }
     }

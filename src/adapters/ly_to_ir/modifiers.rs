@@ -3,6 +3,7 @@ use tree_sitter::Node;
 use crate::ir::direction::{Barline, BarlineType, RepeatDirection};
 use crate::ir::duration::Frac;
 use crate::ir::language::{parse_pitch_name, PitchMode};
+use crate::ir::note::{Note, VoiceElement};
 use crate::ir::pitch::Pitch;
 
 use super::consume::consume_octave_marks;
@@ -105,6 +106,10 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
     };
     let repeat_count = u8::try_from(count).unwrap_or(u8::MAX);
 
+    if repeat_type == "tremolo" {
+        return consume_tremolo_repeat(state, children, i, count);
+    }
+
     // For unfold repeats, walk the body block `repeat_count` times — the music
     // is repeated literally (was previously walked only once, dropping N-1
     // copies).
@@ -160,6 +165,89 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
     state.add_event(Event::RightBarline(backward_repeat()));
 
     i
+}
+
+/// `\repeat tremolo N body`: one note or chord as a tremolo `N` times its
+/// value long (`\repeat tremolo 8 c32` is `c4:32`), or two alternating, each
+/// `N` times its value (`\repeat tremolo 4 { c16 e }`). The written value
+/// gives the strokes. Any other body is played `N` times, with a warning.
+fn consume_tremolo_repeat(state: &mut WalkState, children: &[Node], i: usize, count: u64) -> usize {
+    let (start, start_len, run_start) = (state.pos, state.current_voice.len(), state.voice_start);
+    let body_node = children.get(i).copied();
+    let i = super::music::walk_one(state, children, i);
+    // The body is still in the voice buffer unless something placed it.
+    if state.voice_start != run_start || state.current_voice.len() < start_len {
+        return i;
+    }
+    let mut body = state.current_voice.split_off(start_len);
+    let timed: Vec<usize> = (0..body.len())
+        .filter(|&k| {
+            !matches!(body[k], VoiceElement::Rest(_)) && body[k].metric_duration() > zero()
+        })
+        .collect();
+    let factor = Frac::from_integer(i64::try_from(count.max(1)).unwrap_or(i64::MAX).min(1 << 20));
+    if (1..=2).contains(&timed.len()) && timed.len() == body.len() {
+        let pair = timed.len() == 2;
+        for (k, e) in body.iter_mut().enumerate() {
+            let marks = beam_level(e);
+            let tremolo = |n: &mut Note| {
+                n.tremolo_marks = marks;
+                n.two_note_tremolo = pair;
+                n.tremolo_start = k == 0;
+                if !pair {
+                    n.ornaments.push(crate::ir::articulation::Ornament {
+                        name: "tremolo".to_string(),
+                        placement: Default::default(),
+                    });
+                }
+            };
+            match e {
+                VoiceElement::Note(n) => {
+                    n.duration.base *= factor;
+                    tremolo(n);
+                }
+                VoiceElement::Chord(c) => {
+                    c.duration.base *= factor;
+                    for n in &mut c.notes {
+                        n.duration.base *= factor;
+                    }
+                    tremolo(&mut c.notes[0]);
+                }
+                VoiceElement::Rest(_) => {}
+            }
+        }
+    } else {
+        if let Some(node) = body_node {
+            state.warn(
+                node,
+                "unsupported-value",
+                "a `\\repeat tremolo` of more than two notes is played out".to_string(),
+            );
+        }
+        let copy = body.clone();
+        for _ in 1..count.clamp(1, 1 << 12) {
+            body.extend(copy.iter().cloned());
+        }
+    }
+    state.pos = start;
+    for e in body {
+        state.pos += e.metric_duration();
+        state.current_voice.push(e);
+    }
+    i
+}
+
+/// The beam count of an element's written value: a tremolo's strokes.
+fn beam_level(e: &VoiceElement) -> u8 {
+    match e {
+        VoiceElement::Note(n) => crate::ir::beams::beam_level_for_duration(&n.duration),
+        VoiceElement::Chord(c) => crate::ir::beams::beam_level_for_duration(&c.duration),
+        VoiceElement::Rest(_) => 0,
+    }
+}
+
+fn zero() -> Frac {
+    Frac::from_integer(0)
 }
 
 /// Consume the body of a \repeat (expression_block, or \relative { } etc.)

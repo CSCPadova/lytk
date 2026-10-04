@@ -455,21 +455,19 @@ impl IrToMxmlAdapter {
                     content: mxml::PageMarginsContents {
                         left_margin: mxml::LeftMargin {
                             attributes: (),
-                            content: mdt::Tenths(pl.left_margin.map(&cm_to_tenths).unwrap_or(0.0)),
+                            content: mdt::Tenths(pl.left_margin.map(cm_to_tenths).unwrap_or(0.0)),
                         },
                         right_margin: mxml::RightMargin {
                             attributes: (),
-                            content: mdt::Tenths(pl.right_margin.map(&cm_to_tenths).unwrap_or(0.0)),
+                            content: mdt::Tenths(pl.right_margin.map(cm_to_tenths).unwrap_or(0.0)),
                         },
                         top_margin: mxml::TopMargin {
                             attributes: (),
-                            content: mdt::Tenths(pl.top_margin.map(&cm_to_tenths).unwrap_or(0.0)),
+                            content: mdt::Tenths(pl.top_margin.map(cm_to_tenths).unwrap_or(0.0)),
                         },
                         bottom_margin: mxml::BottomMargin {
                             attributes: (),
-                            content: mdt::Tenths(
-                                pl.bottom_margin.map(&cm_to_tenths).unwrap_or(0.0),
-                            ),
+                            content: mdt::Tenths(pl.bottom_margin.map(cm_to_tenths).unwrap_or(0.0)),
                         },
                     },
                 }]

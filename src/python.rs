@@ -993,7 +993,12 @@ impl PyScore {
     /// Lift this measure-based :class:`Score` to a Layer-1 :class:`MusicDocument`
     /// (the form the ML representations consume).
     fn to_music_document(&self) -> PyResult<PyMusicDocument> {
-        guard(|| Ok(PyMusicDocument::from(ir::lift::lift_to_music(&self.inner))))
+        guard(|| {
+            Ok(PyMusicDocument {
+                inner: ir::lift::lift_to_music(&self.inner),
+                diagnostics: self.diagnostics.clone(),
+            })
+        })
     }
 
     /// The score's notes as ``(onset, duration, pitch, velocity)`` tuples in time
@@ -1145,7 +1150,12 @@ impl PyMusicDocument {
 
     /// Convert this music document to a measure-based :class:`Score`.
     fn to_score(&self) -> PyResult<PyScore> {
-        guard(|| Ok(PyScore::from(ir::lower::lower_to_score(&self.inner))))
+        guard(|| {
+            Ok(PyScore {
+                inner: ir::lower::lower_to_score(&self.inner),
+                diagnostics: self.diagnostics.clone(),
+            })
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -1595,10 +1605,9 @@ fn from_abc_string(text: &str) -> PyResult<PyScore> {
 #[pyo3(signature = (score, path=None))]
 fn to_abc(score: &PyScore, path: Option<&str>) -> PyResult<String> {
     guard(|| {
-        let doc = ir::lift::lift_to_music(&score.inner);
         let adapter = adapters::ir_to_abc::IrToAbcAdapter::new();
         let output = adapter
-            .convert_music(&doc)
+            .convert(&score.inner)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         if let Some(p) = path {
             std::fs::write(p, &output).map_err(|e| PyIOError::new_err(e.to_string()))?;
@@ -1895,17 +1904,30 @@ use representations::piano_roll::{PianoRoll, PITCH_COUNT};
 
 /// Encode a :class:`MusicDocument` as a note-based array of shape ``(N, 4)``
 /// with integer columns ``(onset, duration, pitch, velocity)`` in time steps
-/// (``resolution`` = steps per quarter note).
+/// (``resolution`` = steps per quarter note). Pitches sound as played (a B♭
+/// clarinet's written D is a C) unless ``pitch="written"``.
 #[pyfunction]
-#[pyo3(signature = (doc, resolution=representations::note_array::DEFAULT_RESOLUTION))]
+#[pyo3(signature = (doc, resolution=representations::note_array::DEFAULT_RESOLUTION, *, pitch="sounding"))]
 fn to_note_array<'py>(
     py: Python<'py>,
     doc: &PyMusicDocument,
     resolution: u16,
+    pitch: &str,
 ) -> PyResult<Bound<'py, PyArray2<i32>>> {
+    let sounding = match pitch {
+        "sounding" => true,
+        "written" => false,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "pitch must be \"sounding\" or \"written\", not {other:?}"
+            )))
+        }
+    };
     guard(|| {
         Ok({
-            let arr = representations::to_note_array(&doc.inner, resolution);
+            let arr = representations::note_array::to_note_array_pitched(
+                &doc.inner, resolution, sounding,
+            );
             let n = arr.notes.len();
             let mut data = Array2::<i32>::zeros((n, 4));
             for (i, row) in arr.notes.iter().enumerate() {

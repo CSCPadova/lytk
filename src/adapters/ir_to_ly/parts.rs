@@ -2,83 +2,107 @@
 
 use num::rational::Ratio;
 
-use crate::ir::duration::Duration;
+use crate::ir::duration::{Duration, Frac};
+use crate::ir::harmony::{ly_chord_modifiers, ChordPitch, Harmony};
 use crate::ir::language::{pitch_name, PitchLanguage, PitchMode};
 use crate::ir::note::VoiceElement;
-use crate::ir::pitch::Pitch;
+use crate::ir::pitch::{Alter, Pitch, PitchStep};
+use crate::ir::timeline::OFFSET_DIVISIONS;
 use crate::ir::Part;
 
 use super::emit::emit_measures;
 use super::helpers::{part_var_name, roman};
-use super::maps::{chord_pitch_to_ly, duration_to_ly, figure_to_ly, harmony_kind_to_ly};
+use super::maps::{duration_to_ly, figure_to_ly, length_to_ly};
 
-/// Emit a `\chordmode` variable if any measure has harmonies.
-pub(super) fn emit_harmony_variable(part: &Part, lines: &mut Vec<String>) {
-    let has_any = part.measures.iter().any(|m| !m.harmonies.is_empty());
-    if !has_any {
+/// Emit a `\chordmode` variable if any measure has harmonies: each chord at
+/// its beat, lasting until the next chord or the end of its bar, written
+/// `root dur :modifiers /bass` (a no-chord is a rest, which ChordNames prints
+/// as N.C.).
+pub(super) fn emit_harmony_variable(part: &Part, lang: PitchLanguage, lines: &mut Vec<String>) {
+    if part.measures.iter().all(|m| m.harmonies.is_empty()) {
         return;
     }
-
     let var = format!("{}Chords", part_var_name(part));
     lines.push(format!("{var} = \\chordmode {{"));
-
-    // Track time signature for measure durations
-    let mut ts_beats: i64 = 4;
-    let mut ts_beat_type: i64 = 4;
-
-    for measure in &part.measures {
-        if let Some(attrs) = &measure.attributes {
-            if let Some(ts) = &attrs.time {
-                // Parse beats (may be compound like "3+2")
-                ts_beats = ts
-                    .beats
-                    .split('+')
-                    .filter_map(|s| s.trim().parse::<i64>().ok())
-                    .sum::<i64>()
-                    .max(1);
-                ts_beat_type = ts.beat_type as i64;
-            }
-        }
-
-        if measure.harmonies.is_empty() {
-            // Spacer for full measure
-            let measure_frac = Ratio::new(ts_beats, ts_beat_type);
-            let dur = Duration::new(measure_frac);
-            lines.push(format!("  s{}", duration_to_ly(&dur)));
-        } else if measure.harmonies.len() == 1 {
-            let h = &measure.harmonies[0];
-            let root = chord_pitch_to_ly(&h.root);
-            let kind = harmony_kind_to_ly(&h.kind);
-            let bass = h
-                .bass
-                .as_ref()
-                .map(|b| format!("/{}", chord_pitch_to_ly(b)))
-                .unwrap_or_default();
-            let measure_frac = Ratio::new(ts_beats, ts_beat_type);
-            let dur = Duration::new(measure_frac);
-            lines.push(format!("  {root}{kind}{bass}{}", duration_to_ly(&dur)));
-        } else {
-            // Multiple harmonies: divide measure evenly
-            let n = measure.harmonies.len() as i64;
-            let each_frac = Ratio::new(ts_beats, ts_beat_type * n);
-            let dur = Duration::new(each_frac);
-            let mut tokens: Vec<String> = Vec::new();
-            for h in &measure.harmonies {
-                let root = chord_pitch_to_ly(&h.root);
-                let kind = harmony_kind_to_ly(&h.kind);
-                let bass = h
-                    .bass
-                    .as_ref()
-                    .map(|b| format!("/{}", chord_pitch_to_ly(b)))
-                    .unwrap_or_default();
-                tokens.push(format!("{root}{kind}{bass}{}", duration_to_ly(&dur)));
-            }
-            lines.push(format!("  {}", tokens.join(" ")));
-        }
+    for (measure, len) in part.measures.iter().zip(bar_lengths(part)) {
+        let per_whole = 4 * OFFSET_DIVISIONS;
+        let chords: Vec<(Frac, &Harmony)> = measure
+            .harmonies
+            .iter()
+            .map(|h| (Frac::new(h.offset.into(), per_whole), h))
+            .collect();
+        lines.push(format!("  {}", chord_line(chords, len, lang).join(" ")));
     }
-
     lines.push("}".to_string());
     lines.push(String::new());
+}
+
+/// Chord-mode music for chords at their positions in music `len` long: a
+/// spacer up to the first, each lasting until the next or the end (one of
+/// two at the same place is dropped).
+pub(super) fn chord_line(
+    mut chords: Vec<(Frac, &Harmony)>,
+    len: Frac,
+    lang: PitchLanguage,
+) -> Vec<String> {
+    chords.sort_by_key(|c| c.0);
+    let at = |c: &(Frac, &Harmony)| c.0.min(len);
+    let mut tokens = Vec::new();
+    let first = chords.first().map_or(len, at);
+    if first > Frac::from_integer(0) {
+        tokens.push(format!("s{}", length_to_ly(&Duration::new(first))));
+    }
+    for (k, c) in chords.iter().enumerate() {
+        let end = chords.get(k + 1).map_or(len, at);
+        if end > at(c) {
+            let dur = length_to_ly(&Duration::new(end - at(c)));
+            tokens.push(harmony_to_ly(c.1, &dur, lang));
+        }
+    }
+    tokens
+}
+
+/// One chord-mode chord: `fis2.:m7/a`, `r4` for no chord.
+fn harmony_to_ly(h: &Harmony, dur: &str, lang: PitchLanguage) -> String {
+    if h.kind == "none" {
+        return format!("r{dur}");
+    }
+    let name = |cp: &ChordPitch| {
+        let step = PitchStep::from_name(&cp.step).unwrap_or(PitchStep::C);
+        let alter = Alter::new((cp.alter * 2.0).round() as i32, 2);
+        pitch_name(step, alter, lang)
+            .or_else(|| pitch_name(step, alter, PitchLanguage::Nederlands))
+            .unwrap_or_default()
+    };
+    let modifiers = ly_chord_modifiers(&h.kind, &h.degrees);
+    let modifiers = if modifiers.is_empty() {
+        modifiers
+    } else {
+        format!(":{modifiers}")
+    };
+    let bass = h
+        .bass
+        .as_ref()
+        .map(|b| format!("/{}", name(b)))
+        .unwrap_or_default();
+    format!("{}{dur}{modifiers}{bass}", name(&h.root))
+}
+
+/// Each bar's length as written: its music, else the meter in force.
+fn bar_lengths(part: &Part) -> Vec<Frac> {
+    let mut meter = Frac::from_integer(1);
+    part.measures
+        .iter()
+        .map(|m| {
+            if let Some(ts) = m.attributes.as_ref().and_then(|a| a.time.as_ref()) {
+                meter = ts.beats_fraction();
+            }
+            match m.content_length() {
+                len if len > Frac::from_integer(0) => len,
+                _ => meter,
+            }
+        })
+        .collect()
 }
 
 /// Emit a `\figuremode` variable if any measure has figured bass.
@@ -233,11 +257,16 @@ pub(super) fn emit_part_variable(
             // trim trailing newline -- push as a separate line
             lines.push(midi_set.trim_end().to_string());
         }
+        // The voice the lyrics follow, on the staff that has it.
+        let lead = super::lyrics::lyric_voice(part)
+            .filter(|(staff, _)| *staff == staff_filter)
+            .map(|(_, voice)| voice);
         emit_measures(
             part,
             lang,
             mode,
             staff_filter,
+            lead,
             partial_dur,
             relative_ref.as_ref(),
             2,

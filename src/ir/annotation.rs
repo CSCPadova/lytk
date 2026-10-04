@@ -40,6 +40,9 @@ pub enum Annotation {
     BeamStart,
     /// End of a beam group
     BeamStop,
+    /// The source decided this note's beaming (`\autoBeamOff`, ABC
+    /// spacing, a MusicXML file that beams): not auto-beamed.
+    NoAutoBeam,
 
     // Note-level markings
     /// Fermata

@@ -28,15 +28,18 @@ use std::process::Command;
 // Committed baselines, summed over every fixture LilyPond compiled: its
 // notes matched by ours on (on, pitch), (on, off, pitch) and with velocity.
 // They may only rise.
-const ORACLE_ON: usize = 11664;
-const ORACLE_ON_OFF: usize = 11645;
+const ORACLE_ON: usize = 11669;
+const ORACLE_ON_OFF: usize = 11650;
 // Velocities differ by design where a score writes its dynamics in a
 // `\new Dynamics` staff (chopin_n, pedal, repeats): LilyPond doesn't perform
 // them (its Dynamics context has only the pedal performer), lytk plays them
 // on the part's notes.
-const ORACLE_FULL: usize = 7642;
+const ORACLE_FULL: usize = 9935;
 /// Fixtures whose lytk LilyPond output compiles (LilyPond 2.22.1, 2026-09-26).
 const ORACLE_COMPILED: usize = 148;
+/// Syllables LilyPond sings where lytk's IR has them, writing lytk's
+/// LilyPond (all verses, onset and text), of the IR's.
+const ORACLE_SUNG: usize = 710;
 
 fn list(dir: &str, ext: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -153,6 +156,8 @@ fn lilypond_plays_our_ly_like_our_midi() {
     }
 
     let (mut on, mut on_off, mut full, mut total) = (0, 0, 0, 0);
+    let (mut sung_right, mut sung_total) = (0, 0);
+    let mut unsung: Vec<(usize, String)> = Vec::new();
     let mut missing = Vec::new();
     let mut worst: Vec<(usize, String)> = Vec::new();
     let mut loudness: Vec<(usize, String)> = Vec::new();
@@ -185,6 +190,29 @@ fn lilypond_plays_our_ly_like_our_midi() {
             .chain([0])
             .max_by_key(|&d| (common_count(&keyed(&t, pt, 0, d), &ours), d == 0))
             .unwrap_or(0);
+        // The lyrics: every Lyrics context is a track of lyric events.
+        let ir = sung(score);
+        let lily: Vec<(_core::ir::duration::Frac, String)> = smf::lyrics(&theirs)
+            .into_iter()
+            .filter(|(_, text, _)| !text.trim().is_empty())
+            .map(|(tick, text, _)| {
+                let tick = (tick * 384 / pt).saturating_sub(shift) as i64;
+                (_core::ir::duration::Frac::new(tick, 4 * 384), elided(&text))
+            })
+            .collect();
+        let right = common_count(&lily, &ir);
+        sung_right += right;
+        sung_total += ir.len();
+        if right < ir.len() {
+            unsung.push((
+                ir.len() - right,
+                format!(
+                    "{name}: {right}/{} syllables, LilyPond sang {}",
+                    ir.len(),
+                    lily.len()
+                ),
+            ));
+        }
         let a = common_count(&keyed(&t, pt, 0, shift), &ours);
         let b = common_count(&keyed(&t, pt, 1, shift), &keyed(&o, po, 1, 0));
         let c = common_count(&keyed(&t, pt, 2, shift), &keyed(&o, po, 2, 0));
@@ -223,6 +251,11 @@ fn lilypond_plays_our_ly_like_our_midi() {
     for (_, w) in loudness.iter().take(15) {
         println!("  {w}");
     }
+    unsung.sort_by_key(|x| std::cmp::Reverse(x.0));
+    println!("lyrics: LilyPond sings {sung_right}/{sung_total} syllables where lytk has them (baseline {ORACLE_SUNG})");
+    for (_, w) in unsung.iter().take(15) {
+        println!("  {w}");
+    }
     let compiled = jobs.len() - missing.len();
     assert!(
         compiled >= ORACLE_COMPILED,
@@ -236,5 +269,218 @@ fn lilypond_plays_our_ly_like_our_midi() {
     assert!(
         full >= ORACLE_FULL,
         "+velocity regressed: {full} < {ORACLE_FULL}"
+    );
+    assert!(
+        sung_right >= ORACLE_SUNG,
+        "lyrics regressed: {sung_right} < {ORACLE_SUNG}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lyric alignment (Epic M, M0)
+// ---------------------------------------------------------------------------
+
+/// Cases where lytk's LilyPond reader puts each syllable on the note LilyPond
+/// sings it on (from LilyPond's MIDI lyric events). May only rise.
+const LYRICS_ALIGNED: usize = 31;
+
+/// LilyPond lyric cases: each a full file. Every rule `\lyricsto` and
+/// `\addlyrics` follow is covered once: melismas from slurs, ties, manual
+/// beams under `\autoBeamOff` and `\melisma`; extenders, hyphens, skips,
+/// elisions; several stanzas and voices; words with punctuation.
+fn lyric_cases() -> Vec<(&'static str, String)> {
+    let one = |music: &str, words: &str| {
+        format!(
+            "\\version \"2.22.0\"\n\\score {{ << \\new Voice = \"v\" {{ {music} }}\n\
+             \\new Lyrics \\lyricsto \"v\" {{ {words} }} >> \\layout {{ }} \\midi {{ }} }}\n"
+        )
+    };
+    let plain = "c'4 d' e' f' | g'1";
+    vec![
+        ("plain", one(plain, "a b c d e")),
+        ("slur", one("c'4 d'( e') f' | g'1", "a b c d")),
+        ("tie", one("c'4 d'~ d' f' | g'1", "a b c d")),
+        ("tie-over-bar", one("c'2 d'~ | d'4 e' f' g'", "a b c d e")),
+        ("extender", one(plain, "a __ b c d e")),
+        ("extender-slur", one("c'4( d') e' f' | g'1", "a __ b c d")),
+        ("hyphen", one(plain, "a -- b c -- d e")),
+        ("skip", one(plain, "a _ b c d")),
+        ("lyric-tie", one(plain, "a~b c d e f")),
+        ("underscore-word", one(plain, "a_b c d e f")),
+        ("punctuation", one(plain, "don't stop, now! go. on")),
+        ("skip-command", one(plain, "\\skip 4 b c d e")),
+        ("repeat-unfold", one(plain, "\\repeat unfold 2 { \\skip 4 } c d e")),
+        ("melisma", one("c'4 d'\\melisma e'\\melismaEnd f' | g'1", "a b c d")),
+        ("beam", one("c'8 d'[ e'] f' g'2 | a'1", "a b c d e")),
+        (
+            "beam-autobeamoff",
+            one("\\autoBeamOff c'8 d'[ e'] f' g'2 | a'1", "a b c d e"),
+        ),
+        (
+            "ignore-melismata",
+            one("c'4 d'( e') f' | g'1", "\\set ignoreMelismata = ##t a b c d e"),
+        ),
+        ("chord", one("<c' e'>4 d' e' f' | g'1", "a b c d e")),
+        ("chord-tie", one("<c' e'>4~ <c' e'> d' e' | f'1", "a b c d")),
+        ("grace", one("c'4 \\grace d'8 e'4 f' g' | a'1", "a b c d e")),
+        ("rests", one("c'4 r d' e' | f'1", "a b c d")),
+        ("stanza", one(plain, "\\set stanza = \"1.\" a b c d e")),
+        (
+            "two-stanzas",
+            "\\version \"2.22.0\"\n\\score { << \\new Voice = \"v\" { c'4 d' e' f' }\n\
+             \\new Lyrics \\lyricsto \"v\" { a b c d }\n\
+             \\new Lyrics \\lyricsto \"v\" { e f g h } >> \\layout { } \\midi { } }\n"
+                .to_string(),
+        ),
+        (
+            "two-voices",
+            "\\version \"2.22.0\"\n\\score { \\new Staff << \\new Voice = \"s\" { \\voiceOne e''4 f'' g'' a'' }\n\
+             \\new Voice = \"a\" { \\voiceTwo c''2 d'' }\n\
+             \\new Lyrics \\lyricsto \"s\" { sa sb sc sd }\n\
+             \\new Lyrics \\lyricsto \"a\" { aa ab } >> \\layout { } \\midi { } }\n"
+                .to_string(),
+        ),
+        (
+            "addlyrics-twice",
+            "\\version \"2.22.0\"\n\\score { { c'4 d' e' f' } \\addlyrics { a b c d }\n\
+             \\addlyrics { e f g h } \\layout { } \\midi { } }\n"
+                .to_string(),
+        ),
+        // A `\\` passage is new voices: the lyrics' voice has no notes there.
+        (
+            "polyphony",
+            one("c'4 d' << { e' f' } \\\\ { c' c' } >> | g'1", "a b c d e"),
+        ),
+        // The idiom that keeps the voice: the first branch continues it.
+        (
+            "polyphony-kept",
+            one(
+                "c'4 d' << { \\voiceOne e' f' } \\new Voice { \\voiceTwo c'2 } >> \\oneVoice | g'1",
+                "a b c d e",
+            ),
+        ),
+        // Music after a Voice stays in it.
+        (
+            "after-voice",
+            "\\version \"2.22.0\"\n\\score { << \\new Staff { \\new Voice = \"v\" { \\time 4/4 } \
+             c'4 d' e' f' }\n\\new Lyrics \\lyricsto \"v\" { a b c d } >> \\layout { } \\midi { } }\n"
+                .to_string(),
+        ),
+        // Two named voices on a staff in a score, each with its lyrics.
+        (
+            "voices-in-score",
+            "\\version \"2.22.0\"\n\\score { << \\new Staff << \
+             \\new Voice = \"s\" { \\voiceOne e''4 f'' g'' a'' }\n\
+             \\new Voice = \"a\" { \\voiceTwo c''2 d'' } >>\n\
+             \\new Lyrics \\lyricsto \"s\" { sa sb sc sd }\n\
+             \\new Lyrics \\lyricsto \"a\" { aa ab } >> \\layout { } \\midi { } }\n"
+                .to_string(),
+        ),
+        // A NullVoice's rhythm under another voice's notes.
+        (
+            "null-voice",
+            "\\version \"2.22.0\"\n\\score { << \\new Staff << \
+             \\new Voice = \"s\" { e''4 f'' g'' a'' }\n\
+             \\new NullVoice = \"a\" { c''2 d'' } >>\n\
+             \\new Lyrics \\lyricsto \"a\" { aa ab } >> \\layout { } \\midi { } }\n"
+                .to_string(),
+        ),
+        (
+            "durations",
+            "\\version \"2.22.0\"\n\\score { << \\new Voice { c'4 d' e' f' }\n\
+             \\new Lyrics \\lyricmode { a4 b2 c4 } >> \\layout { } \\midi { } }\n"
+                .to_string(),
+        ),
+    ]
+}
+
+/// An elision as `~`: LilyPond 2.22's MIDI writes `~`, 2.24's writes `‿`
+/// (as lytk's IR does).
+fn elided(text: &str) -> String {
+    text.replace('\u{203f}', "~")
+}
+
+/// The syllables of a score as (onset in whole notes, text), sorted.
+fn sung(score: &Score) -> Vec<(_core::ir::duration::Frac, String)> {
+    let mut v: Vec<_> = common::notation_signature(score)
+        .lyrics
+        .into_iter()
+        .map(|(_, onset, text, ..)| {
+            let at = _core::ir::duration::Frac::new(onset as i64, 1920);
+            (at, elided(&text))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+#[ignore = "needs the lilypond binary"]
+fn lilypond_sings_lyrics_where_lytk_reads_them() {
+    if Command::new("lilypond").arg("--version").output().is_err() {
+        eprintln!("lilypond not found: skipped");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cases = lyric_cases();
+    for (name, src) in &cases {
+        std::fs::write(dir.path().join(format!("{name}.ly")), src).expect("write");
+    }
+    let _ = Command::new("lilypond")
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .current_dir(dir.path())
+        .arg("-dno-point-and-click")
+        .arg("-dno-print-pages")
+        .arg("--loglevel=ERROR")
+        .args(cases.iter().map(|(n, _)| format!("{n}.ly")))
+        .output()
+        .expect("run lilypond");
+
+    let mut aligned = 0;
+    println!("\n===== LilyPond's lyric alignment vs lytk's =====");
+    for (name, src) in &cases {
+        let Ok(midi) = std::fs::read(dir.path().join(format!("{name}.midi"))) else {
+            println!("{name}: LilyPond wrote no MIDI");
+            continue;
+        };
+        let ppq = smf::ppq(&midi) as i64;
+        let mut theirs: Vec<(_core::ir::duration::Frac, String)> = smf::lyrics(&midi)
+            .into_iter()
+            .filter(|(_, text, _)| !text.trim().is_empty()) // a `_` skip sings ""
+            .map(|(t, text, _)| {
+                (
+                    _core::ir::duration::Frac::new(t as i64, 4 * ppq),
+                    elided(&text),
+                )
+            })
+            .collect();
+        theirs.sort();
+        let ours = safe(|| LyToIrAdapter::new().convert_str(src).ok())
+            .map(|s| sung(&s))
+            .unwrap_or_default();
+        if ours == theirs {
+            aligned += 1;
+        } else {
+            let show = |v: &[(_core::ir::duration::Frac, String)]| {
+                v.iter()
+                    .map(|(t, s)| format!("{t}:{s}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            println!(
+                "{name}:\n    lilypond {}\n    lytk     {}",
+                show(&theirs),
+                show(&ours)
+            );
+        }
+    }
+    println!(
+        "{aligned}/{} cases aligned (baseline {LYRICS_ALIGNED})",
+        cases.len()
+    );
+    assert!(
+        aligned >= LYRICS_ALIGNED,
+        "lyric alignment regressed: {aligned} < {LYRICS_ALIGNED}"
     );
 }

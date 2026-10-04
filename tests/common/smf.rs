@@ -65,6 +65,23 @@ pub fn notes(bytes: &[u8]) -> Vec<SmfNote> {
     out
 }
 
+/// Every lyric meta event of the file as `(tick, text, track)`, sorted.
+pub fn lyrics(bytes: &[u8]) -> Vec<(u32, String, usize)> {
+    let smf = Smf::parse(bytes).expect("valid SMF");
+    let mut out = Vec::new();
+    for (track, events) in smf.tracks.iter().enumerate() {
+        let mut t = 0u32;
+        for ev in events {
+            t += ev.delta.as_int();
+            if let TrackEventKind::Meta(MetaMessage::Lyric(text)) = ev.kind {
+                out.push((t, String::from_utf8_lossy(text).into_owned(), track));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// The file as text, one event per line: `track tick event…`. Note-ons and
 /// note-offs are listed as paired notes (`note on-off pitch vel ch`).
 pub fn dump(bytes: &[u8]) -> String {

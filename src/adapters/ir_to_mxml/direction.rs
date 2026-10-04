@@ -398,7 +398,8 @@ impl IrToMxmlAdapter {
         }
     }
 
-    pub(super) fn build_harmony(&self, harmony: &Harmony) -> mxml::Harmony {
+    /// A `<harmony>`, `offset` divisions after the note it is written before.
+    pub(super) fn build_harmony(&self, harmony: &Harmony, offset: i64) -> mxml::Harmony {
         // Root
         let root_step = mxml::RootStep {
             attributes: mxml::RootStepAttributes::default(),
@@ -474,14 +475,10 @@ impl IrToMxmlAdapter {
             .collect();
 
         // Offset
-        let offset = if harmony.offset != 0 {
-            Some(mxml::Offset {
-                attributes: mxml::OffsetAttributes::default(),
-                content: mdt::Divisions(harmony.offset),
-            })
-        } else {
-            None
-        };
+        let offset = (offset != 0).then(|| mxml::Offset {
+            attributes: mxml::OffsetAttributes::default(),
+            content: mdt::Divisions(offset as i32),
+        });
 
         mxml::Harmony {
             attributes: mxml::HarmonyAttributes::default(),
@@ -586,36 +583,7 @@ fn str_to_step(s: &str) -> mdt::Step {
 }
 
 fn str_to_kind_value(s: &str) -> mdt::KindValue {
-    match s {
-        "major" => mdt::KindValue::Major,
-        "minor" => mdt::KindValue::Minor,
-        "augmented" => mdt::KindValue::Augmented,
-        "diminished" => mdt::KindValue::Diminished,
-        "dominant" => mdt::KindValue::Dominant,
-        "major-seventh" => mdt::KindValue::MajorSeventh,
-        "minor-seventh" => mdt::KindValue::MinorSeventh,
-        "diminished-seventh" => mdt::KindValue::DiminishedSeventh,
-        "augmented-seventh" => mdt::KindValue::AugmentedSeventh,
-        "half-diminished" => mdt::KindValue::HalfDiminished,
-        "major-minor" => mdt::KindValue::MajorMinor,
-        "major-sixth" => mdt::KindValue::MajorSixth,
-        "minor-sixth" => mdt::KindValue::MinorSixth,
-        "dominant-ninth" => mdt::KindValue::DominantNinth,
-        "major-ninth" => mdt::KindValue::MajorNinth,
-        "minor-ninth" => mdt::KindValue::MinorNinth,
-        "dominant-11th" => mdt::KindValue::Dominant11th,
-        "major-11th" => mdt::KindValue::Major11th,
-        "minor-11th" => mdt::KindValue::Minor11th,
-        "dominant-13th" => mdt::KindValue::Dominant13th,
-        "major-13th" => mdt::KindValue::Major13th,
-        "minor-13th" => mdt::KindValue::Minor13th,
-        "suspended-second" => mdt::KindValue::SuspendedSecond,
-        "suspended-fourth" => mdt::KindValue::SuspendedFourth,
-        "power" => mdt::KindValue::Power,
-        "none" => mdt::KindValue::None,
-        "other" => mdt::KindValue::Other,
-        _ => mdt::KindValue::Other,
-    }
+    musicxml_internal::DatatypeDeserializer::deserialize(s).unwrap_or(mdt::KindValue::Other)
 }
 
 fn str_to_dynamics_type(sign: &str) -> mxml::DynamicsType {

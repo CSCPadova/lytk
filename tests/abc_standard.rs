@@ -31,9 +31,9 @@ use std::path::{Path, PathBuf};
 
 // Committed baselines (may only rise, except the misread-note count, which
 // may only fall).
-const WRITER_PITCHES: usize = 149;
-const WRITER_NOTES: usize = 149;
-const WRITER_MAX_MISREAD: usize = 210;
+const WRITER_PITCHES: usize = 154;
+const WRITER_NOTES: usize = 154;
+const WRITER_MAX_MISREAD: usize = 57;
 const READER_NOTES: usize = 4;
 
 fn sig(notes: &[OracleNote]) -> Vec<(u32, u32, i32)> {

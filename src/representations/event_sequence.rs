@@ -247,10 +247,10 @@ mod tests {
         // C4 quarter at resolution 24 (quarter = 24 steps), default options.
         let arr = array_from(note(PitchStep::C, 4, Duration::quarter()), 24);
         let seq = to_event_sequence(&arr, &EventOptions::default());
-        // velocity 64 → bin 16 → 356+16 = 372; note-on 60; time-shift 24 →
-        // 256+23 = 279; note-off 188.
-        assert_eq!(seq.codes, vec![372, 60, 279, 188]);
-        assert_eq!(seq.event_name(372), "velocity:16");
+        // velocity 90 (no dynamic) → bin 22 → 356+22 = 378; note-on 60;
+        // time-shift 24 → 256+23 = 279; note-off 188.
+        assert_eq!(seq.codes, vec![378, 60, 279, 188]);
+        assert_eq!(seq.event_name(378), "velocity:22");
         assert_eq!(seq.event_name(60), "note-on:60");
         assert_eq!(seq.event_name(279), "time-shift:24");
         assert_eq!(seq.event_name(188), "note-off:60");
@@ -280,9 +280,20 @@ mod tests {
         ]);
         let arr = array_from(m, 24);
         let seq = to_event_sequence(&arr, &EventOptions::default());
-        let back = from_event_sequence(&seq);
-        // Default velocity (64) is a bin centre, so the round-trip is exact.
-        assert_eq!(arr, back);
+        assert_same_but_velocity_bins(&arr, &from_event_sequence(&seq));
+    }
+
+    /// Onsets, durations and pitches exact; velocities within one of the
+    /// 32 velocity bins (4 apart).
+    fn assert_same_but_velocity_bins(a: &NoteArray, b: &NoteArray) {
+        let key = |n: &NoteRow| (n.onset, n.duration, n.pitch);
+        assert_eq!(
+            a.notes.iter().map(key).collect::<Vec<_>>(),
+            b.notes.iter().map(key).collect::<Vec<_>>()
+        );
+        for (x, y) in a.notes.iter().zip(&b.notes) {
+            assert!(x.velocity.abs_diff(y.velocity) < 4, "{x:?} vs {y:?}");
+        }
     }
 
     #[test]
@@ -298,12 +309,11 @@ mod tests {
         };
         let arr = array_from(m, 24);
         let seq = to_event_sequence(&arr, &EventOptions::default());
-        assert_eq!(arr, from_event_sequence(&seq));
+        assert_same_but_velocity_bins(&arr, &from_event_sequence(&seq));
     }
 
     #[test]
     fn test_velocity_change_roundtrips_banded() {
-        // Velocities 64 and 96 are bin-exact (multiples of 4 with 32 bins).
         let mut soft = note(PitchStep::C, 4, Duration::quarter());
         if let Music::Note { annotations, .. } = &mut soft {
             annotations.push(crate::ir::annotation::Annotation::Dynamic(
@@ -332,14 +342,8 @@ mod tests {
             .filter(|&c| c >= seq.offset_velocity())
             .collect();
         assert_eq!(vel_events.len(), 2);
-        // mp=64 and f=96 are bin centres → exact round-trip.
-        let back = from_event_sequence(&seq);
-        let bvel: Vec<u8> = {
-            let mut v: Vec<_> = back.notes.iter().map(|n| n.velocity).collect();
-            v.sort_unstable();
-            v
-        };
-        assert_eq!(bvel, vec![64, 96]);
+        // mp (77) and f (95) come back within their bins.
+        assert_same_but_velocity_bins(&arr, &from_event_sequence(&seq));
     }
 
     #[test]

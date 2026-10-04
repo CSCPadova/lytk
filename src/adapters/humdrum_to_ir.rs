@@ -12,10 +12,11 @@
 //! (`*^`, `*v`, `*x`). Non-kern spines (`**dynam`, `**text`, …) are skipped.
 //! Beam marks (`L`/`J`) and unmapped ornament characters are ignored.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::ir::annotation::Annotation;
-use crate::ir::articulation::{Fermata, Placement};
+use crate::ir::articulation::{Articulation, Fermata, LyricSyllable, Placement, SyllabicType};
 use crate::ir::direction::{Barline, BarlineType, RepeatDirection, TempoDirection};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
@@ -37,10 +38,9 @@ impl HumdrumToIrAdapter {
 
 impl ToMusicAdapter for HumdrumToIrAdapter {
     fn convert_file_to_music(&self, path: &Path) -> Result<MusicDocument> {
-        // Older kern corpora (e.g. Palestrina) are Latin-1; music content is
-        // ASCII, so lossy decoding only mangles comment/metadata bytes.
-        let bytes = std::fs::read(path)?;
-        self.convert_str_to_music(&String::from_utf8_lossy(&bytes))
+        // Older kern corpora (e.g. Palestrina) are Latin-1.
+        let text = super::decode_text_bytes(std::fs::read(path)?);
+        self.convert_str_to_music(&text)
     }
 
     fn convert_str_to_music(&self, text: &str) -> Result<MusicDocument> {
@@ -70,6 +70,8 @@ impl ToIrAdapter for HumdrumToIrAdapter {
 struct Spine {
     name: Option<String>,
     events: Vec<Music>,
+    /// Beams open (`L` opens one level, `J` closes one).
+    beams: usize,
 }
 
 fn parse_kern(text: &str) -> Result<MusicDocument> {
@@ -78,11 +80,14 @@ fn parse_kern(text: &str) -> Result<MusicDocument> {
     // `None` for non-kern spines we skip.
     let mut spines: Vec<Option<Spine>> = Vec::new();
     let mut started = false;
-    // Anacrusis detection: duration of the first kern spine's events before
-    // the first barline, and the first declared bar length.
-    let mut lead_dur = Frac::from_integer(0);
+    // Anacrusis detection: the longest kern spine's music before the first
+    // barline (one voice may end early), and the first declared bar length.
+    let mut lead: Vec<Frac> = Vec::new();
     let mut saw_barline = false;
     let mut bar_len: Option<Frac> = None;
+    let mut beamed = false;
+    // `**text`/`**silbe` columns: (kern column on their left, verse).
+    let mut text_spines: Vec<Option<(usize, u8)>> = Vec::new();
 
     for raw in text.lines() {
         let line = raw.trim_end();
@@ -118,11 +123,26 @@ fn parse_kern(text: &str) -> Result<MusicDocument> {
             if !started {
                 // Exclusive interpretation row establishes the spines.
                 if tokens.iter().any(|t| t.starts_with("**")) {
+                    // A text spine sings the kern spine on its left, a verse
+                    // per text spine.
+                    let mut verses: HashMap<usize, u8> = HashMap::new();
+                    for (i, t) in tokens.iter().enumerate() {
+                        let kern = tokens[..i].iter().rposition(|k| *k == "**kern");
+                        text_spines.push(match (*t, kern) {
+                            ("**text" | "**silbe", Some(k)) => {
+                                let v = verses.entry(k).or_insert(0);
+                                *v = v.saturating_add(1);
+                                Some((k, *v))
+                            }
+                            _ => None,
+                        });
+                    }
                     for t in &tokens {
                         spines.push(if *t == "**kern" {
                             Some(Spine {
                                 name: None,
                                 events: Vec::new(),
+                                beams: 0,
                             })
                         } else {
                             None
@@ -171,7 +191,9 @@ fn parse_kern(text: &str) -> Result<MusicDocument> {
         }
 
         // Data row.
-        let first_kern = spines.iter().position(|s| s.is_some());
+        if lead.len() < spines.len() {
+            lead.resize(spines.len(), Frac::from_integer(0));
+        }
         for (i, t) in tokens.iter().enumerate() {
             let Some(Some(spine)) = spines.get_mut(i) else {
                 continue;
@@ -179,11 +201,49 @@ fn parse_kern(text: &str) -> Result<MusicDocument> {
             if *t == "." || t.is_empty() {
                 continue;
             }
-            if let Some(event) = parse_data_token(t) {
-                if !saw_barline && Some(i) == first_kern {
-                    lead_dur += event_whole_notes(&event);
+            if let Some(mut event) = parse_data_token(t) {
+                if !saw_barline {
+                    lead[i] += event_whole_notes(&event);
+                }
+                // Beams: the outermost `L` begins a group, the `J` that
+                // closes the last level ends it (on a chord's first note).
+                let first = t.split_whitespace().next().unwrap_or("");
+                let (opens, closes) = (first.matches('L').count(), first.matches('J').count());
+                beamed |= opens + closes > 0;
+                let before = spine.beams;
+                spine.beams = (before + opens).saturating_sub(closes);
+                if let Some(a) = lead_annotations(&mut event) {
+                    if before == 0 && opens > 0 {
+                        a.push(Annotation::BeamStart);
+                    }
+                    if before > 0 && spine.beams == 0 {
+                        a.push(Annotation::BeamStop);
+                    }
                 }
                 spine.events.push(event);
+            }
+        }
+        // Syllables on the notes their kern spine has on this row.
+        for (i, t) in tokens.iter().enumerate() {
+            let Some(Some((k, verse))) = text_spines.get(i) else {
+                continue;
+            };
+            if *t == "." || t.is_empty() || tokens.get(*k).is_none_or(|n| *n == ".") {
+                continue;
+            }
+            let Some(Some(spine)) = spines.get_mut(*k) else {
+                continue;
+            };
+            if let Some(a) = spine.events.last_mut().and_then(lead_annotations) {
+                a.push(Annotation::Lyric(text_syllable(t, *verse)));
+            }
+        }
+    }
+    // A file that beams decides every note's beaming.
+    if beamed {
+        for e in spines.iter_mut().flatten().flat_map(|s| &mut s.events) {
+            if let Some(a) = lead_annotations(e) {
+                a.push(Annotation::NoAutoBeam);
             }
         }
     }
@@ -203,6 +263,10 @@ fn parse_kern(text: &str) -> Result<MusicDocument> {
                     }
                 });
         }
+        let lead_dur = lead
+            .into_iter()
+            .max()
+            .unwrap_or_else(|| Frac::from_integer(0));
         if let Some(bl) = bar_len {
             if lead_dur > Frac::from_integer(0) && lead_dur < bl {
                 metadata.partial_duration = Some(Duration::new(lead_dur));
@@ -238,7 +302,7 @@ fn event_whole_notes(event: &Music) -> Frac {
     match event {
         Music::Note { duration, .. } => duration.actual_duration(),
         Music::Chord { duration, .. } => duration.actual_duration(),
-        Music::Rest { duration, .. } => duration.actual_duration(),
+        Music::Rest { duration, .. } | Music::Skip { duration } => duration.actual_duration(),
         _ => Frac::from_integer(0),
     }
 }
@@ -247,6 +311,19 @@ fn event_whole_notes(event: &Music) -> Frac {
 fn parse_interpretation(t: &str, spine: &mut Spine) {
     if let Some(name) = t.strip_prefix("*I\"") {
         spine.name = Some(name.trim().to_string());
+    } else if let Some(tr) = t.strip_prefix("*ITrd") {
+        // `*ITrd-1c-2`: the spine sounds 1 step, 2 semitones below.
+        let parsed = tr.split_once('c').and_then(|(d, c)| {
+            let d: i32 = d.parse().ok()?;
+            let c: i32 = c.parse().ok()?;
+            let o = d / 7;
+            Some(crate::ir::measure::Transpose {
+                diatonic: i8::try_from(d - 7 * o).ok()?,
+                chromatic: i8::try_from(c - 12 * o).ok()?,
+                octave_change: i8::try_from(o).ok()?,
+            })
+        });
+        spine.events.extend(parsed.map(Music::Transposition));
     } else if let Some(clef) = t.strip_prefix("*clef") {
         if let Some(c) = parse_clef(clef) {
             spine.events.push(Music::Clef(c));
@@ -366,6 +443,45 @@ struct TokenFlags {
     slur_stop: bool,
     fermata: bool,
     grace: Option<bool>, // Some(slash?)
+    /// `y`: an invisible token (an invisible rest is a spacer).
+    hidden: bool,
+    /// Articulations, by MusicXML name.
+    articulations: Vec<&'static str>,
+}
+
+/// A `**text` token: `Hal-` begins a word, `-le-` goes on with it, `-lu`
+/// ends it.
+fn text_syllable(token: &str, verse: u8) -> LyricSyllable {
+    let (continues, rest) = match token.strip_prefix('-') {
+        Some(r) if !r.is_empty() => (true, r),
+        _ => (false, token),
+    };
+    let (text, goes_on) = match rest.strip_suffix('-') {
+        Some(t) if !t.is_empty() => (t, true),
+        _ => (rest, false),
+    };
+    LyricSyllable {
+        text: text.to_string(),
+        syllabic: match (continues, goes_on) {
+            (false, false) => SyllabicType::Single,
+            (false, true) => SyllabicType::Begin,
+            (true, true) => SyllabicType::Middle,
+            (true, false) => SyllabicType::End,
+        },
+        number: verse,
+        ..LyricSyllable::default()
+    }
+}
+
+/// The annotations a note's beams go on: a note's, a chord's first note's
+/// (a grace's too).
+fn lead_annotations(m: &mut Music) -> Option<&mut Vec<Annotation>> {
+    match m {
+        Music::Note { annotations, .. } => Some(annotations),
+        Music::Chord { pitches, .. } => pitches.first_mut().map(|(_, a)| a),
+        Music::Grace { content, .. } => lead_annotations(content),
+        _ => None,
+    }
 }
 
 fn parse_data_token(token: &str) -> Option<Music> {
@@ -376,11 +492,11 @@ fn parse_data_token(token: &str) -> Option<Music> {
     }
 
     let mut notes: Vec<(Pitch, Duration, TokenFlags)> = Vec::new();
-    let mut rest: Option<Duration> = None;
+    let mut rest: Option<(Duration, bool)> = None;
     for sub in &subtokens {
         let (dur, flags, body) = split_subtoken(sub);
         if body.contains('r') {
-            rest = Some(dur);
+            rest = Some((dur, flags.hidden));
             continue;
         }
         let pitch = parse_kern_pitch(&body)?;
@@ -388,10 +504,12 @@ fn parse_data_token(token: &str) -> Option<Music> {
     }
 
     if notes.is_empty() {
-        let dur = rest?;
-        return Some(Music::Rest {
-            duration: dur,
-            is_measure_rest: false,
+        return Some(match rest? {
+            (duration, true) => Music::Skip { duration },
+            (duration, false) => Music::Rest {
+                duration,
+                is_measure_rest: false,
+            },
         });
     }
 
@@ -411,6 +529,12 @@ fn parse_data_token(token: &str) -> Option<Music> {
         }
         if f.slur_stop {
             a.push(Annotation::SlurStop { number: 1 });
+        }
+        for name in &f.articulations {
+            a.push(Annotation::Articulation(Articulation {
+                name: name.to_string(),
+                placement: Placement::Unspecified,
+            }));
         }
         if f.fermata {
             a.push(Annotation::Fermata(Fermata {
@@ -456,6 +580,8 @@ fn split_subtoken(sub: &str) -> (Duration, TokenFlags, String) {
         slur_stop: false,
         fermata: false,
         grace: None,
+        hidden: false,
+        articulations: Vec::new(),
     };
     let mut digits = String::new();
     let mut dots = 0u8;
@@ -475,6 +601,15 @@ fn split_subtoken(sub: &str) -> (Duration, TokenFlags, String) {
             ';' => flags.fermata = true,
             'q' => flags.grace = Some(true),
             'Q' => flags.grace = Some(false),
+            'y' => flags.hidden = true,
+            '\'' => flags.articulations.push("staccato"),
+            '`' => flags.articulations.push("staccatissimo"),
+            '~' => flags.articulations.push("tenuto"),
+            // `^` an accent, `^^` a heavy one.
+            '^' => match flags.articulations.last_mut() {
+                Some(a) if *a == "accent" => *a = "strong-accent",
+                _ => flags.articulations.push("accent"),
+            },
             '0'..='9' => {
                 if let Some((_, den)) = &mut rational {
                     den.push(c);

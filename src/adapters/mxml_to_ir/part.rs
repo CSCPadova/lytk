@@ -1,12 +1,13 @@
 //! Part-level and measure-level conversion from musicxml crate types to IR.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::ir::direction::{Barline, BarlineType, Direction, RepeatDirection};
-use crate::ir::duration::Duration;
+use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::*;
 use crate::ir::note::*;
 use crate::ir::part::Part;
+use crate::ir::timeline::{Timeline, OFFSET_DIVISIONS};
 use crate::ir::voice::Voice;
 
 use super::direction::{convert_direction, convert_figured_bass_elem, convert_harmony_elem};
@@ -33,7 +34,7 @@ pub(super) fn convert_part(mxml_part: &mxml::Part, info: &PartInfo) -> Result<Pa
         measures: Vec::new(),
     };
 
-    let mut divisions: i64 = 1;
+    let mut divisions: i64 = undeclared_divisions(mxml_part).unwrap_or(1);
 
     for part_elem in &mxml_part.content {
         if let mxml::PartElement::Measure(mxml_measure) = part_elem {
@@ -48,7 +49,48 @@ pub(super) fn convert_part(mxml_part: &mxml::Part, info: &PartInfo) -> Result<Pa
         }
     }
 
+    super::note::number_verses(&mut part);
     Ok(part)
+}
+
+/// The divisions of a part that times notes before declaring any (lytk 0.4.0
+/// wrote such files): taken from its first timed note, its `<duration>` over
+/// its written value. `None` when `<divisions>` comes first, as it must.
+fn undeclared_divisions(mxml_part: &mxml::Part) -> Option<i64> {
+    for part_elem in &mxml_part.content {
+        let mxml::PartElement::Measure(m) = part_elem else {
+            continue;
+        };
+        for elem in &m.content {
+            match elem {
+                mxml::MeasureElement::Attributes(a) if a.content.divisions.is_some() => {
+                    return None
+                }
+                mxml::MeasureElement::Note(n) => {
+                    let d = note_duration_divisions(n);
+                    let written = match convert_note(n, 1) {
+                        Some(NoteOrRest::Note(note)) if !note.is_grace => {
+                            note.duration.actual_duration()
+                        }
+                        Some(NoteOrRest::Rest(r)) if !r.is_measure_rest => {
+                            r.duration.actual_duration()
+                        }
+                        _ => continue,
+                    };
+                    if d <= 0 {
+                        continue;
+                    }
+                    let per_quarter = Frac::from_integer(d) / (written * Frac::from_integer(4));
+                    return per_quarter
+                        .is_integer()
+                        .then(|| per_quarter.to_integer())
+                        .filter(|&v| (1..=u16::MAX as i64).contains(&v));
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 fn convert_measure(
@@ -85,16 +127,46 @@ fn convert_measure(
         voices: Vec::new(),
     };
 
-    let mut voice_elements: HashMap<u8, Vec<VoiceElement>> = HashMap::new();
+    // MusicXML places notes with a cursor that `<backup>` and `<forward>`
+    // move: each element is kept at its onset in the bar (whole notes), and
+    // the voices are laid out by onset at the end, not in file order.
+    let mut placed: HashMap<u8, Vec<(Frac, VoiceElement)>> = HashMap::new();
     let mut pending_arpeggio: HashMap<u8, ArpeggioType> = HashMap::new();
-    let mut forward_position: i64 = 0;
+    let mut cursor = Frac::from_integer(0);
+    // Where the last non-chord note started: a `<chord/>` note sounds there.
+    let mut last_onset = cursor;
+    // The voice of the last note or rest and where it ended.
+    let mut last_voice: Option<(u8, Frac)> = None;
+    let whole = |d: i64, divisions: i64| Frac::new(d, 4 * divisions.max(1));
+    // Harmonies written one after another at the cursor without `<offset>`
+    // change during the note that follows (MusicXML suite 71g): their
+    // indices in `measure.harmonies`, spread over that note when it comes.
+    let mut stacked: Vec<usize> = Vec::new();
 
     for elem in &mxml_measure.content {
         match elem {
             mxml::MeasureElement::Attributes(attrs) => {
-                let (ir_attrs, new_div) = convert_attributes(attrs, divisions);
+                let (mut ir_attrs, new_div) = convert_attributes(attrs, divisions);
                 divisions = new_div;
-                measure.attributes = Some(ir_attrs);
+                // A clef inside the bar keeps its place, as a direction.
+                if cursor > Frac::from_integer(0) {
+                    for (staff, clef) in std::mem::take(&mut ir_attrs.clefs) {
+                        measure.directions.push(Direction {
+                            offset: (cursor * Frac::from_integer(4 * divisions)).to_integer()
+                                as i32,
+                            offset_frac: cursor,
+                            staff,
+                            clef: Some(clef),
+                            ..Default::default()
+                        });
+                    }
+                }
+                // A later `<attributes>` in the bar (a clef change between
+                // notes) adds to the bar's, it doesn't replace its key or time.
+                measure.attributes = Some(match measure.attributes.take() {
+                    Some(earlier) => merge_attributes(earlier, ir_attrs),
+                    None => ir_attrs,
+                });
                 // <measure-style> for multiple-rest and measure-repeat
                 for ms in &attrs.content.measure_style {
                     match &ms.content {
@@ -136,31 +208,56 @@ fn convert_measure(
 
                 let result = convert_note(mxml_note, divisions);
 
-                // Advance forward position for non-chord, non-grace notes
-                let dur_val = note_duration_divisions(mxml_note);
-                if !is_chord && !is_grace && dur_val > 0 {
-                    forward_position += dur_val;
+                // A chord note sounds with the note before it; a grace note
+                // takes no time. A `<duration>` of 0 (malformed) falls back to
+                // the written value.
+                let dur = match note_duration_divisions(mxml_note) {
+                    d if d > 0 => whole(d, divisions),
+                    _ => match &result {
+                        Some(NoteOrRest::Note(n)) if !n.is_grace => n.duration.actual_duration(),
+                        Some(NoteOrRest::Rest(r)) => r.duration.actual_duration(),
+                        _ => Frac::from_integer(0),
+                    },
+                };
+                let onset = if is_chord { last_onset } else { cursor };
+                if !is_chord {
+                    if stacked.len() > 1 && !is_grace {
+                        let n = stacked.len() as i64;
+                        for (k, &i) in stacked.iter().enumerate() {
+                            let at = cursor + dur * Frac::new(k as i64, n);
+                            measure.harmonies[i].offset = ir_offset(at);
+                        }
+                    }
+                    stacked.clear();
+                    last_onset = cursor;
+                    if !is_grace {
+                        cursor += dur;
+                    }
                 }
 
                 match result {
                     Some(NoteOrRest::Note(note)) => {
                         let voice_num = note.voice;
-                        let elements = voice_elements.entry(voice_num).or_default();
+                        let elements = placed.entry(voice_num).or_default();
                         if is_chord {
                             let pending = pending_arpeggio.remove(&voice_num);
                             let arp = arpeggio.or(pending);
-                            merge_chord(elements, *note, arp);
+                            merge_chord(elements, onset, *note, arp);
                         } else {
-                            elements.push(VoiceElement::Note(note));
+                            elements.push((onset, VoiceElement::Note(note)));
                             if let Some(arp) = arpeggio {
                                 pending_arpeggio.insert(voice_num, arp);
                             }
                         }
+                        last_voice = Some((voice_num, cursor));
                     }
                     Some(NoteOrRest::Rest(rest)) => {
                         let voice_num = rest.voice;
-                        let elements = voice_elements.entry(voice_num).or_default();
-                        elements.push(VoiceElement::Rest(rest));
+                        placed
+                            .entry(voice_num)
+                            .or_default()
+                            .push((onset, VoiceElement::Rest(rest)));
+                        last_voice = Some((voice_num, cursor));
                     }
                     None => {}
                 }
@@ -168,58 +265,77 @@ fn convert_measure(
             mxml::MeasureElement::Forward(fwd) => {
                 let dur_val = fwd.content.duration.content.0 as i64;
                 if dur_val > 0 {
-                    forward_position += dur_val;
-                    let duration = Duration::from_divisions(dur_val, divisions, 0);
-                    let voice_num: u8 = fwd
+                    let dur = whole(dur_val, divisions);
+                    // A `<forward>` of a voice is that voice's hidden rest, and
+                    // so is one without a voice that carries on the last
+                    // note's voice. Any other only moves the cursor: the next
+                    // note's voice starts later (`<backup/><forward/>` before a
+                    // second voice that enters mid-bar).
+                    let tagged: Option<u8> = fwd
                         .content
                         .voice
                         .as_ref()
-                        .and_then(|v| v.content.parse().ok())
-                        .unwrap_or(1);
-                    let staff_num: u8 = fwd
-                        .content
-                        .staff
-                        .as_ref()
-                        .map(|s| s.content.0 as u8)
-                        .unwrap_or(1);
-                    let mut rest = Rest::new(duration);
-                    rest.is_spacer = true;
-                    rest.voice = voice_num;
-                    rest.staff = staff_num;
-                    voice_elements
-                        .entry(voice_num)
-                        .or_default()
-                        .push(VoiceElement::Rest(rest));
+                        .and_then(|v| v.content.parse().ok());
+                    let voice = tagged.or(match last_voice {
+                        Some((v, end)) if end == cursor => Some(v),
+                        _ => None,
+                    });
+                    if let Some(voice_num) = voice {
+                        let staff_num: u8 = fwd
+                            .content
+                            .staff
+                            .as_ref()
+                            .map(|s| s.content.0 as u8)
+                            .unwrap_or(1);
+                        let mut rest = Rest::new(Duration::from_divisions(dur_val, divisions, 0));
+                        rest.is_spacer = true;
+                        rest.voice = voice_num;
+                        rest.staff = staff_num;
+                        placed
+                            .entry(voice_num)
+                            .or_default()
+                            .push((cursor, VoiceElement::Rest(rest)));
+                        last_voice = Some((voice_num, cursor + dur));
+                    }
+                    cursor += dur;
                 }
             }
             mxml::MeasureElement::Backup(bak) => {
                 let dur_val = bak.content.duration.content.0 as i64;
                 if dur_val > 0 {
-                    forward_position -= dur_val;
+                    cursor = (cursor - whole(dur_val, divisions)).max(Frac::from_integer(0));
                 }
             }
             mxml::MeasureElement::Direction(dir) => {
                 if let Some(mut ir_dir) = convert_direction(dir) {
-                    ir_dir.offset = forward_position as i32;
-                    // The exporters position directions via offset_frac
-                    // (whole notes); without it a mid-measure direction is
-                    // re-emitted at the start of the measure.
-                    if forward_position > 0 && divisions > 0 {
-                        ir_dir.offset_frac =
-                            crate::ir::duration::Frac::new(forward_position, 4 * divisions);
-                    }
+                    ir_dir.offset =
+                        (cursor * Frac::from_integer(4 * divisions)).to_integer() as i32;
+                    ir_dir.offset_frac = cursor;
                     measure.directions.push(ir_dir);
                 }
             }
             mxml::MeasureElement::Harmony(harm) => {
-                if let Some(harmony) = convert_harmony_elem(harm) {
+                if let Some(mut harmony) = convert_harmony_elem(harm) {
+                    // At the cursor, displaced by its `<offset>` (divisions).
+                    let at = cursor + whole(harmony.offset as i64, divisions);
+                    if harmony.offset != 0 {
+                        stacked.clear();
+                    } else if stacked
+                        .last()
+                        .is_some_and(|&i| measure.harmonies[i].offset != ir_offset(at))
+                    {
+                        stacked = vec![measure.harmonies.len()];
+                    } else {
+                        stacked.push(measure.harmonies.len());
+                    }
+                    harmony.offset = ir_offset(at);
                     measure.harmonies.push(harmony);
                 }
             }
             mxml::MeasureElement::FiguredBass(fb) => {
-                measure
-                    .figured_bass
-                    .push(convert_figured_bass_elem(fb, divisions));
+                let mut figures = convert_figured_bass_elem(fb, divisions);
+                figures.offset = ir_offset(cursor);
+                measure.figured_bass.push(figures);
             }
             mxml::MeasureElement::Barline(bl) => {
                 let barline = convert_barline(bl);
@@ -233,21 +349,66 @@ fn convert_measure(
         }
     }
 
-    // Build voice nodes from collected elements.
-    let mut voice_nums: Vec<u8> = voice_elements.keys().copied().collect();
+    // Lay the voices out by onset. Music that overlaps its own voice (a
+    // `<backup>` within one voice) moves to a free voice number, as the
+    // LilyPond reader's lanes do.
+    let mut tl = Timeline::default();
+    let mut voice_nums: Vec<u8> = placed.keys().copied().collect();
     voice_nums.sort();
     for vn in voice_nums {
-        if let Some(elements) = voice_elements.remove(&vn) {
-            if !elements.is_empty() {
-                measure.voices.push(Voice {
-                    number: vn,
-                    elements,
-                });
-            }
-        }
+        let mut elems = placed.remove(&vn).unwrap_or_default();
+        // Stable: a grace note keeps its place before its main note.
+        elems.sort_by_key(|(on, _)| *on);
+        tl.place_voice(vn, &elems);
     }
+    measure.voices = voices_from_lanes(tl.lanes);
 
     Ok((measure, divisions))
+}
+
+/// A position in the bar in the IR's harmony and figured-bass offset units
+/// ([`OFFSET_DIVISIONS`] per quarter note).
+// ponytail: rounds to 16ths (a chord symbol on a triplet moves a little);
+// the upgrade path is a `Frac` position on `Harmony`/`FiguredBass` (0.6.0).
+fn ir_offset(at: Frac) -> i32 {
+    let at = at.max(Frac::from_integer(0)) * Frac::from_integer(4 * OFFSET_DIVISIONS);
+    at.round().to_integer() as i32
+}
+
+/// A measure's voices from positioned lanes: a gap before or between
+/// elements becomes a spacer rest.
+fn voices_from_lanes(lanes: BTreeMap<u8, Vec<(Frac, VoiceElement)>>) -> Vec<Voice> {
+    lanes
+        .into_iter()
+        .filter(|(_, elems)| !elems.is_empty())
+        .map(|(number, elems)| {
+            let mut elements = Vec::with_capacity(elems.len());
+            let mut end = Frac::from_integer(0);
+            for (on, e) in elems {
+                if on > end {
+                    elements.push(VoiceElement::spacer(on - end, number, e.staff()));
+                }
+                end = end.max(on + e.metric_duration());
+                elements.push(e);
+            }
+            Voice { number, elements }
+        })
+        .collect()
+}
+
+/// `later`'s attributes added to `earlier`'s: what `later` sets wins.
+fn merge_attributes(earlier: MeasureAttributes, later: MeasureAttributes) -> MeasureAttributes {
+    let mut clefs = earlier.clefs;
+    clefs.extend(later.clefs);
+    MeasureAttributes {
+        divisions: later.divisions,
+        key: later.key.or(earlier.key),
+        time: later.time.or(earlier.time),
+        clefs,
+        transpose: later.transpose.or(earlier.transpose),
+        staves: later.staves.or(earlier.staves),
+        staff_lines: later.staff_lines.or(earlier.staff_lines),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -302,8 +463,22 @@ fn detect_arpeggio(note: &mxml::Note) -> Option<ArpeggioType> {
 // Chord merging
 // ---------------------------------------------------------------------------
 
-fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note, arpeggio: Option<ArpeggioType>) {
-    if let Some(last) = elements.last_mut() {
+fn merge_chord(
+    elements: &mut Vec<(Frac, VoiceElement)>,
+    onset: Frac,
+    mut note: Note,
+    arpeggio: Option<ArpeggioType>,
+) {
+    // A chord sings on its first note.
+    let lyrics = std::mem::take(&mut note.lyrics);
+    if let Some(VoiceElement::Note(first)) = elements.last_mut().map(|(_, e)| e) {
+        first.lyrics.extend(lyrics);
+    } else if let Some(VoiceElement::Chord(c)) = elements.last_mut().map(|(_, e)| e) {
+        if let Some(first) = c.notes.first_mut() {
+            first.lyrics.extend(lyrics);
+        }
+    }
+    if let Some((_, last)) = elements.last_mut() {
         match last {
             VoiceElement::Chord(chord) => {
                 chord.notes.push(note);
@@ -328,11 +503,11 @@ fn merge_chord(elements: &mut Vec<VoiceElement>, note: Note, arpeggio: Option<Ar
                 *last = VoiceElement::Chord(chord);
             }
             _ => {
-                elements.push(VoiceElement::Note(Box::new(note)));
+                elements.push((onset, VoiceElement::Note(Box::new(note))));
             }
         }
     } else {
-        elements.push(VoiceElement::Note(Box::new(note)));
+        elements.push((onset, VoiceElement::Note(Box::new(note))));
     }
 }
 

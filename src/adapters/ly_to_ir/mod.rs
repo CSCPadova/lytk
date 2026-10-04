@@ -62,7 +62,6 @@ use super::{AdapterError, Result, ToIrAdapter};
 use crate::ir::duration::{Duration, Frac};
 
 // Re-export items needed by sub-modules via `super::`
-use crate::ir::beams::post_process_beams_and_stems;
 use merge::{apply_tuplet_ratio, beam_level_for_duration};
 use postprocess::{assign_slur_numbers, ensure_staff_clefs, resolve_ties};
 
@@ -527,7 +526,6 @@ fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
                 Some(t) => {
                     let dyn_part = parts.remove(i);
                     let t = if t > i { t - 1 } else { t };
-                    state.part_alias.insert(dyn_part.uid, parts[t].uid);
                     parts[t].tl.events.extend(dyn_part.tl.events);
                 }
                 None => i += 1,
@@ -543,7 +541,7 @@ fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
         ));
         return None;
     }
-    let mut built: Vec<(u32, Part)> = parts
+    let built: Vec<(u32, Part)> = parts
         .into_iter()
         .map(|pb| {
             let mut part = pb.part;
@@ -562,22 +560,6 @@ fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
         })
         .collect();
 
-    // Lyrics, now that every part has its notes in measures.
-    let lyrics_for_voices = std::mem::take(&mut state.pending_lyrics);
-    let mut lyric_jobs: Vec<(u32, Vec<crate::ir::articulation::LyricSyllable>)> =
-        std::mem::take(&mut state.added_lyrics);
-    for (voice, syllables) in lyrics_for_voices {
-        if let Some(&uid) = state.voice_part_map.get(&voice) {
-            lyric_jobs.push((uid, syllables));
-        }
-    }
-    for (uid, syllables) in lyric_jobs {
-        let uid = state.resolve_uid(uid);
-        if let Some((_, part)) = built.iter_mut().find(|(u, _)| *u == uid) {
-            lyrics::attach_lyrics_to_part(part, &syllables);
-        }
-    }
-
     let mut score = Score::new();
     score.metadata = state.metadata.clone();
     score.metadata.pitch_mode = state.mode;
@@ -590,9 +572,11 @@ fn assemble_score(state: &mut state::WalkState) -> Option<Score> {
 
     merge::synchronize_barlines(&mut score);
     merge::propagate_first_tempo(&mut score);
-    post_process_beams_and_stems(&mut score);
     resolve_ties(&mut score);
     assign_slur_numbers(&mut score);
+    // Lyrics, now that every voice has its notes, ties and slurs in measures.
+    let jobs = std::mem::take(&mut state.pending_lyrics);
+    lyrics::attach_lyrics(&mut score, jobs, &state.voice_tags, &state.null_voices);
     ensure_staff_clefs(&mut score);
     // Mark first measure as implicit if partial_duration is set
     if score.metadata.partial_duration.is_some() {

@@ -295,18 +295,16 @@ fn lift_one_measure(
                 events.push(Music::Clef(*clef));
             }
         }
+        if let Some(t) = attrs.transpose {
+            events.push(Music::Transposition(t));
+        }
     }
 
     // A bar that isn't as long as its meter (an ABC bar line is where a bar
     // ends; MusicXML measures can be irregular) says how long it is. Not the
     // opening pickup (that is `partial_duration`), a short last bar (the
     // music just ends there) or a cadenza.
-    let len: Frac = measure
-        .voices
-        .iter()
-        .map(|v| v.elements.iter().map(VoiceElement::metric_duration).sum())
-        .max()
-        .unwrap_or_else(|| Frac::from_integer(0));
+    let len: Frac = measure.content_length();
     if let Some(meter) = prev_time.as_ref().map(TimeSignature::beats_fraction) {
         let pickup = first && measure.implicit;
         let ending = last && len < meter;
@@ -356,12 +354,7 @@ fn lift_one_measure(
         [] if staff.is_some() => {
             // This staff has nothing in the bar: hold its place so it stays in
             // step with the other staves.
-            let fill = measure
-                .voices
-                .iter()
-                .map(|v| v.elements.iter().map(VoiceElement::metric_duration).sum())
-                .max()
-                .unwrap_or_else(|| Frac::from_integer(0));
+            let fill = measure.content_length();
             let mut filler = Vec::new();
             if fill > Frac::from_integer(0) {
                 filler.push(Music::Skip {
@@ -495,7 +488,9 @@ fn lift_repeat_group(
 }
 
 /// A voice's music with `marks` (sorted by offset in the bar) put before the
-/// first element starting at or after each; those past the end go last.
+/// first element starting at or after each; those past the end go last. A
+/// chord symbol that changes during a note goes on that note: the tree can't
+/// place it mid-note, and the next note may be in the next bar.
 fn weave(music: Vec<Music>, marks: Vec<(Frac, Music)>) -> Vec<Music> {
     if marks.is_empty() {
         return music;
@@ -504,10 +499,13 @@ fn weave(music: Vec<Music>, marks: Vec<(Frac, Music)>) -> Vec<Music> {
     let mut marks = marks.into_iter().peekable();
     let mut t = Frac::from_integer(0);
     for m in music {
-        while let Some((_, mark)) = marks.next_if(|(at, _)| *at <= t) {
+        let end = t + m.written_length();
+        while let Some((_, mark)) =
+            marks.next_if(|(at, mark)| *at <= t || (matches!(mark, Music::Harmony(_)) && *at < end))
+        {
             out.push(mark);
         }
-        t += m.written_length();
+        t = end;
         out.push(m);
     }
     out.extend(marks.map(|m| m.1));
@@ -516,6 +514,9 @@ fn weave(music: Vec<Music>, marks: Vec<(Frac, Music)>) -> Vec<Music> {
 
 /// Convert a Direction to a Music node.
 fn lift_direction(dir: &Direction) -> Music {
+    if let Some(clef) = dir.clef {
+        return Music::Clef(clef);
+    }
     if let Some(ref tempo) = dir.tempo {
         return Music::Tempo(tempo.clone());
     }
@@ -565,10 +566,18 @@ fn lift_voice_elements(elements: &[VoiceElement]) -> Vec<Music> {
                 if let Some(arp) = &c.arpeggio {
                     annotations.push(Annotation::Arpeggio(*arp));
                 }
-                result.push(Music::Chord {
+                let chord = Music::Chord {
                     pitches,
                     duration: c.duration.clone(),
                     annotations,
+                };
+                // A grace chord takes no time, as a grace note doesn't.
+                result.push(match c.notes.first() {
+                    Some(n) if n.is_grace => Music::Grace {
+                        content: Box::new(chord),
+                        slash: n.grace_slash,
+                    },
+                    _ => chord,
                 });
             }
         }
@@ -612,6 +621,17 @@ fn note_to_annotations(note: &Note) -> Vec<Annotation> {
             StartStop::Stop => anns.push(Annotation::TieStop),
             StartStop::Continue => {}
         }
+    }
+    // The source's beams, as groups: the levels are the engraver's.
+    for b in note.beams.iter().filter(|b| b.number == 1) {
+        match b.beam_type.as_str() {
+            "begin" => anns.push(Annotation::BeamStart),
+            "end" => anns.push(Annotation::BeamStop),
+            _ => {}
+        }
+    }
+    if note.no_auto_beam {
+        anns.push(Annotation::NoAutoBeam);
     }
     if let Some(ref f) = note.fermata {
         anns.push(Annotation::Fermata(f.clone()));
