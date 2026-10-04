@@ -197,7 +197,7 @@ fn lilypond_plays_our_ly_like_our_midi() {
             .filter(|(_, text, _)| !text.trim().is_empty())
             .map(|(tick, text, _)| {
                 let tick = (tick * 384 / pt).saturating_sub(shift) as i64;
-                (_core::ir::duration::Frac::new(tick, 4 * 384), text)
+                (_core::ir::duration::Frac::new(tick, 4 * 384), elided(&text))
             })
             .collect();
         let right = common_count(&lily, &ir);
@@ -394,15 +394,20 @@ fn lyric_cases() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The syllables of a score as (onset in whole notes, text), sorted. An
-/// elision (`‿` in the IR) is written `~`, as LilyPond's MIDI writes it.
+/// An elision as `~`: LilyPond 2.22's MIDI writes `~`, 2.24's writes `‿`
+/// (as lytk's IR does).
+fn elided(text: &str) -> String {
+    text.replace('\u{203f}', "~")
+}
+
+/// The syllables of a score as (onset in whole notes, text), sorted.
 fn sung(score: &Score) -> Vec<(_core::ir::duration::Frac, String)> {
     let mut v: Vec<_> = common::notation_signature(score)
         .lyrics
         .into_iter()
         .map(|(_, onset, text, ..)| {
             let at = _core::ir::duration::Frac::new(onset as i64, 1920);
-            (at, text.replace('\u{203f}', "~"))
+            (at, elided(&text))
         })
         .collect();
     v.sort();
@@ -443,7 +448,12 @@ fn lilypond_sings_lyrics_where_lytk_reads_them() {
         let mut theirs: Vec<(_core::ir::duration::Frac, String)> = smf::lyrics(&midi)
             .into_iter()
             .filter(|(_, text, _)| !text.trim().is_empty()) // a `_` skip sings ""
-            .map(|(t, text, _)| (_core::ir::duration::Frac::new(t as i64, 4 * ppq), text))
+            .map(|(t, text, _)| {
+                (
+                    _core::ir::duration::Frac::new(t as i64, 4 * ppq),
+                    elided(&text),
+                )
+            })
             .collect();
         theirs.sort();
         let ours = safe(|| LyToIrAdapter::new().convert_str(src).ok())

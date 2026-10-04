@@ -370,7 +370,7 @@ pub(super) fn emit_measures(
                 // measure of a merged multi-voice ending). The backward
                 // repeat on ending 1 is implicit in \alternative.
                 let next_continues_same = open_ending.is_some()
-                    && part.measures.get(mi + 1).and_then(&ending_start_of) == open_ending;
+                    && part.measures.get(mi + 1).and_then(ending_start_of) == open_ending;
                 if matches!(
                     bl.ending_type.as_deref(),
                     Some("stop") | Some("discontinue")
@@ -443,7 +443,6 @@ pub(super) fn emit_measures(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// One voice's music in a bar: `default` is the voice as LilyPond would
 /// stem it, `branch` its place in a `<< \\ >>` block (`None` for the main
 /// voice).

@@ -3,6 +3,28 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-10-04 — 0.5.0: CI
+
+CI failed on the 0.5.0 commit in three jobs; all three are fixed.
+
+- **Clippy 1.99** (released 2026-10-01) flags function items passed by
+  reference (`.map(&cm_to_tenths)`), a duplicated `#[allow]` and a dead
+  `indent -= 1` in `music_emit.rs`. Local Clippy was 1.90: check with
+  `cargo +1.99.0 clippy` (or whatever stable CI has).
+- **LilyPond 2.24** (CI's, from apt) sings a lyric tie `a~b` as `a‿b` in
+  its MIDI, where 2.22 sings `a~b`. The oracle reads both sides through
+  `elided` (`‿` as `~`): 31/31 cases and 710/710 syllables with either.
+- **The fuzz job ran the runner out of memory.** `Beaming::of` (M4) listed
+  every beat of the bar, so a meter of 2³¹ beats (`\time 2147483647/8`, or
+  a `\compoundMeter` as long) made 2³¹ beat ends, and every writer
+  engraves: `downstream_survives_lilypond_shaped_input` passed 8 GB within
+  seconds. Equal beats are now kept as one beat, and `end_after` repeats a
+  pattern over its span (the bar's, or the beat's). Test:
+  `a_meter_of_equal_beats_keeps_one`. Three runs of 1,024 cases: 0.5 GB
+  at most.
+
+Then the release: PR to `master`, tag `v0.5.0`.
+
 ## 2026-10-02 — Epic M: M10 (CLI)
 
 - **Movements.** `convert` ly→ly went through `from_lilypond_music` (first

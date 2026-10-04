@@ -192,7 +192,7 @@ fn reanchor_graces(elements: &mut Vec<VoiceElement>) {
             continue;
         }
         let mut run: Vec<VoiceElement> = Vec::new();
-        while iter.peek().is_some_and(&is_grace) {
+        while iter.peek().is_some_and(is_grace) {
             run.push(iter.next().unwrap());
         }
         if run.is_empty() {
@@ -318,7 +318,7 @@ fn reanchor_grace_nodes(children: &mut Vec<Music>) {
             continue;
         }
         let mut run: Vec<Music> = Vec::new();
-        while iter.peek().is_some_and(&is_grace) {
+        while iter.peek().is_some_and(is_grace) {
             run.push(iter.next().unwrap());
         }
         if run.is_empty() {

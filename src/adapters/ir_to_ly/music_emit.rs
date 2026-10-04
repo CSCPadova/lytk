@@ -94,7 +94,6 @@ pub(super) fn emit_music_document(
         }
         lines.push(format!("{}}}", ctx.pad()));
         emit_music(&music, &mut ctx, &mut lines);
-        ctx.indent -= 1;
         lines.push(">>".to_string());
     }
 

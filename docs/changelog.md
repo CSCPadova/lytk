@@ -7,7 +7,7 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-10-02
+## [0.5.0] - 2026-10-04
 
 Notation you can trust. A review found that what the note boards didn't
 measure was broken somewhere, so 0.5.0 measures it — lyrics, chord

@@ -179,7 +179,8 @@ fn duration(e: &VoiceElement) -> &Duration {
 struct Beaming {
     /// The bar's length.
     length: Frac,
-    /// Ends of the beats (the last is the bar's end).
+    /// Ends of the beats, repeated over their span: the bar's, or a single
+    /// beat's when every beat is as long (a bar of 2³¹ beats is one beat).
     beats: Vec<Frac>,
     /// (note length, ends): an exception applies to beams whose shortest
     /// note is as long as its length or shorter, unless a shorter
@@ -216,8 +217,8 @@ impl Beaming {
             (4, 8, _) => vec![2, 2],
             (5, 8, _) => vec![3, 2],
             (8, 8, _) => vec![3, 3, 2],
-            (n, _, _) if n > 3 && n % 3 == 0 => vec![3; (n / 3) as usize],
-            (n, _, _) => vec![1; n as usize],
+            (n, _, _) if n > 3 && n % 3 == 0 => vec![3],
+            _ => vec![1],
         };
         let exceptions = match (num, den) {
             (2, 2) => vec![exception((1, 32), &[8; 4])],
@@ -250,17 +251,19 @@ impl Beaming {
             .filter(|(len, _)| *len >= shortest)
             .min_by_key(|(len, _)| *len)
             .map_or(&self.beats, |(_, ends)| ends);
-        // Past the bar's length (an overfull bar), the pattern repeats.
-        let bars = if self.length > Frac::from_integer(0) {
-            (from / self.length).to_integer()
+        // The pattern repeats over its span: equal beats, and the bar's
+        // pattern past the bar's length (an overfull bar).
+        let span = ends.last().copied().unwrap_or(self.length);
+        let spans = if span > Frac::from_integer(0) {
+            (from / span).to_integer()
         } else {
             0
         };
-        let offset = self.length * bars;
+        let offset = span * spans;
         ends.iter()
             .map(|e| *e + offset)
             .find(|e| *e > from)
-            .unwrap_or(offset + self.length)
+            .unwrap_or(offset + span)
     }
 }
 
@@ -643,6 +646,23 @@ mod tests {
         assert_eq!(
             brackets(&engraved(time("4", 4), vec![sixteenths])),
             "[--][--]"
+        );
+    }
+
+    #[test]
+    fn a_meter_of_equal_beats_keeps_one() {
+        // Listing every beat of 2³¹ - 1 eighths ran the fuzz job out of memory.
+        let rules = Beaming::of(&time("2147483647", 8));
+        assert_eq!(rules.beats, vec![Frac::new(1, 8)]);
+        let at = Frac::new(1_000_000_001, 16);
+        assert_eq!(
+            rules.end_after(at, Frac::new(1, 8)),
+            Frac::new(500_000_001, 8)
+        );
+        let eighths = (0..4).map(|_| note(C, 5, 8)).collect();
+        assert_eq!(
+            brackets(&engraved(time("2147483647", 8), vec![eighths])),
+            "...."
         );
     }
 

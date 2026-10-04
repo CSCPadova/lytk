@@ -2,16 +2,16 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-10-02, Epic M done: 0.5.0)
+## Latest status (2026-10-04, Epic M done: 0.5.0 released)
 
-**Epic M is done and is version 0.5.0** (not tagged yet: the owner tags and
-publishes). The 2026-10-01 review found that what the note boards didn't
-measure was broken somewhere; M0 measured it, M1–M10 fixed it, and every
-measurement now gates CI: lyrics, chord symbols, dynamics and clefs at their
-places across seven directions; stems and beams against the source
-engravers (98.0 % / 94.1 %); LilyPond lyrics against LilyPond's own MIDI
-(31/31 cases read, 710/710 syllables written); LilyPond playback of every
-fixture (148 compile). Every confirmed bug of the review is a passing test
+**Epic M is done and released as 0.5.0** (tag `v0.5.0`, 2026-10-04). The
+2026-10-01 review found that what the note boards didn't measure was broken
+somewhere; M0 measured it, M1–M10 fixed it, and every measurement now gates
+CI: lyrics, chord symbols, dynamics and clefs at their places across seven
+directions; stems and beams against the source engravers (98.0 % / 94.1 %);
+LilyPond lyrics against LilyPond's own MIDI (31/31 cases read, 710/710
+syllables written); LilyPond playback of every fixture (148 compile). Every
+confirmed bug of the review is a passing test
 (`tests/test_review_regressions.py`). Next: P5+ as 0.6.0 (below).
 
 ---
@@ -793,7 +793,7 @@ use, and raises the notation board. JSON stays backward compatible.
 | M8 | **Writers.** LilyPond church modes, tempo once; ABC voices, hairpins, clefs; Humdrum staves and rests; MIDI channels and metadata; MusicXML placement | M | ✅ 2026-10-02 (also: mid-bar clefs keep their place, `<>` read and written, D.C. once, rehearsal text; kern dynamics/text/harmony/lyrics stay with the Humdrum epic) |
 | M9 | **Transforms.** Retrograde moves key/time/clef changes; transposition prefers fewer accidentals | S | ✅ 2026-10-02 (also: mid-bar clefs mirrored, syllabic swapped in both trees; directions keep their offsets in the bar) |
 | M10 | **CLI.** Every movement for ly→ly and transforms; warnings; `-I`; safe folder output | S | ✅ 2026-10-02 (also: `diff` compares timing; `positions` skips grace chords; abs2rel/rel2abs every movement) |
-| M11 | **Release 0.5.0.** Docs state measured support | S | ✅ 2026-10-02 (`docs/import-export.md` opens with the measured boards; version 0.5.0; tagging left to the owner) |
+| M11 | **Release 0.5.0.** Docs state measured support | S | ✅ 2026-10-02 (`docs/import-export.md` opens with the measured boards; version 0.5.0; released 2026-10-04 after three CI fixes, devlog 2026-10-04) |
 
 ### After 0.4.0
 
