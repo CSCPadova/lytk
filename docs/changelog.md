@@ -7,6 +7,31 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- `\relative` reads its own music only, as LilyPond does. The music after
+  a `\relative` block (the rest of the block around it, the next voice or
+  staff, and the variables defined after a relative one) was read relative
+  too, so an absolute variable defined after a relative one climbed two
+  octaves a note until the reading stopped (`a pitch lies in octave 129`).
+  An outer `\relative` goes on past a nested one from its own previous
+  pitch, and `\relative` before `<< … >>`, `\new Staff …` or a variable at
+  the top level is read relative (it was read absolute).
+- `\relative` without a start pitch reads its first note absolute, as
+  LilyPond's `\relative f`: it was read from middle C, an octave too high
+  for a first note written above F.
+- Octave checks, in relative mode: `d='` puts the note in the octave it
+  states and the music goes on from there, and `\octaveCheck c''` is no
+  note but the pitch the music goes on from. lytk ignored the first and
+  read the second's pitch as a note.
+- `flatten` looks for an included file's name as written, in every
+  directory, before anything else, as LilyPond does. It tried, directory
+  by directory, the name with its extension replaced by `.ly` or `.ily`,
+  so `\include "notes.ily"` could inline a `notes.ly` next to the
+  including file, and a `second.ly` that includes `second.ily` from an
+  include path included itself (`circular include`). A name written
+  without an extension still finds the `.ly`, then the `.ily`.
+
 ## [0.6.1] - 2026-10-24
 
 ### Fixed

@@ -3,6 +3,64 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-10-24 — `\relative`, octave checks and includes as LilyPond reads them
+
+lilycorpus's first new source, Mutopia (2,354 records of native LilyPond at
+Mutopia's commit `2144afd`), turned up four reading bugs. Each case was
+checked against LilyPond 2.22's `\displayLilyMusic`, and the tests use the
+values it prints.
+
+- **`\relative` leaked.** Every caller of `consume_relative` set
+  `in_relative` before calling it, and nothing reset it: after a
+  `\relative` block, the rest of the block around it, the next voice and
+  the variables defined later were read relative. An assignment set its
+  `\relative` state before `capture_variable` took its snapshot, so the
+  snapshot put that state back afterwards. On Mutopia an absolute variable
+  after a relative one climbed two octaves a note, and 8 records stopped at
+  octave 128 (`too-large`). Now `consume_relative` reads the start pitch
+  (`relative_start`, shared with assignments), saves the relative state,
+  reads whatever music follows with `walk_body`, or `walk_one` for a single
+  note or chord, and puts the state back. `\relative c' << … >>`,
+  `\relative c' \new Staff …` and `\relative c' \var` depended on the leak
+  and are read the same way now (the first was read absolute at the top
+  level); `\relative c' e'` lost its note, taken for a second start pitch.
+  An assignment reads its value from its own `\relative` or absolute
+  (`enter_assignment`). A nested `\relative` leaves the outer one's pitch
+  alone: LilyPond's relative callback for music already made relative
+  returns the pitch it is given, and `\relative c' { c4 \relative c''' { g4 }
+  d4 }` is `c' g'' d'`.
+- **`\relative` without a start pitch** started from middle C. LilyPond's
+  default is `f`, which makes the first note absolute: `\relative { c''4 }`
+  is C5, it was read as C6.
+- **Octave checks** were not read. `d='` (`consume_octave_check`, after any
+  `!` or `?`) puts a relative note in the octave it states, in a chord too;
+  `\octaveCheck c''` is no note but the pitch the music goes on from. Both
+  do nothing in absolute mode, as in LilyPond. 730 of Mutopia's 2,354
+  records have one.
+- **`flatten`'s include resolution** tried, directory by directory, the
+  name as written, then with its extension replaced by `.ly`, then `.ily`.
+  LilyPond reads the name as written, next to the including file, then along
+  its search path, and never changes it. Now the name as written is looked
+  for in every directory first; a name without an extension still finds the
+  `.ly`, then the `.ily` (`\include "part"`). No Mutopia piece is affected.
+
+Measured through lilycorpus (`validate.parse_check` and `to_note_array`),
+0.6.1 against these fixes:
+
+| | Mutopia, 2,354 records | lilycorpus-core, 4,349 records |
+|---|---|---|
+| read without error | 2,322 → 2,329 | 4,250 → 4,250 |
+| read before, not now | 0 | 0 |
+| pitches changed | 119 records | 1,046 records (778 one octave down: `\relative` without a pitch) |
+| a pitch above C8 / at MIDI 127 | 63 → 25 / 40 → 13 | 18 → 5 / 7 → 1 |
+| note counts changed | 12: one note fewer per `\octaveCheck` | 4: `\octaveCheck` (2), `\relative c' c1` (2) |
+
+Next: the 25 Mutopia records still failing (lilycorpus's wishlist item 13:
+`#'symbol` inside Scheme, lyric words beginning with ``` `` ``` or made of `!`,
+`->` before a chord's closing `>`, `#$var`), and the 25 still reading a pitch
+above C8, where `\change Staff` (13 of 32 before these fixes) and
+`\transpose` inside `\relative` (Mozart's K. 594 Fantasia) stand out.
+
 ## 2026-10-24 — 0.6.1: `flatten` prints nothing
 
 `flatten`'s normalization warned on stderr (`eprintln!` in
