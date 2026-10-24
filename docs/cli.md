@@ -249,8 +249,7 @@ errors; the cycle is shown (`a.ly -> b.ly -> a.ly`). An include of one of
 LilyPond's own files (`english.ly`, `gregorian.ly`) stays as it is when no
 such file is found: LilyPond finds it in its installation.
 
-Repeated `\version` lines are merged, keeping the last one and warning on
-stderr. `\language` lines and `\header` blocks all stay: each `\language`
+Repeated `\version` lines are merged, keeping the last one. `\language` lines and `\header` blocks all stay: each `\language`
 applies from where it stands, and LilyPond merges headers. Each inlined file
 is wrapped in `% === BEGIN INCLUDE: … ===` / `% === END INCLUDE: … ===`
 comments; `--no-markers` leaves them out.

@@ -3,6 +3,17 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-10-24 — 0.6.1: `flatten` prints nothing
+
+`flatten`'s normalization warned on stderr (`eprintln!` in
+`dedup_keep_last`) whenever it merged repeated `\version` lines, which a
+flattened file with one `\version` per included file always has: lilycorpus's
+harvest printed one line per inlined regression test. A library should not
+write to stderr, and it was the only place lytk's did (the other `println!`
+is a Cargo build directive). The merge itself is unchanged (the last
+`\version` stays); `test_flatten_prints_nothing` captures stderr. Released as
+0.6.1.
+
 ## 2026-10-04 — Epic N (0.6.0): typed IR
 
 Every step was checked by

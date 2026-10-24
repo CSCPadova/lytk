@@ -7,6 +7,15 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-24
+
+### Fixed
+
+- `flatten`, `flatten_string` and `lytk flatten` no longer print a warning
+  on stderr when they merge repeated `\version` lines (one per included
+  file is common): they keep the last one, as before, silently. It was the
+  only place lytk's library wrote to stderr.
+
 ## [0.6.0] - 2026-10-24
 
 The typed IR. Every enum-like name in the IR is an enum; directions,
@@ -902,7 +911,8 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/CSCPadova/lytk/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/CSCPadova/lytk/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CSCPadova/lytk/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/CSCPadova/lytk/compare/v0.3.0...v0.4.0
