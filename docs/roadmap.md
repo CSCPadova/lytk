@@ -12,7 +12,8 @@ its voice; the JSON leaves defaults out (810 → 174 bytes a note) and
 carries `"schema": 1`. Every writer's output on the 198 fixtures is byte
 for byte what it was, except where a fix changed it (MusicXML octave
 signs, noteheads, pedals, wedges, beat units, stacked chord symbols).
-Next: the Python API as 0.7.0 (below).
+0.6.1 (the same day) stops `flatten` warning on stderr. Next: the Python
+API as 0.7.0 (below).
 
 ## Previous status (2026-10-04, Epic M done: 0.5.0 released)
 
