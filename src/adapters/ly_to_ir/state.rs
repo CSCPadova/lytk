@@ -820,29 +820,31 @@ impl<'src> WalkState<'src> {
         true
     }
 
-    /// Resolve a pitch from a symbol node, handling relative mode.
+    /// Resolve a pitch from a symbol node, handling relative mode and the
+    /// octave marks of an octave check (`d='`), if any.
     pub(super) fn resolve_pitch(
         &mut self,
         step: PitchStep,
         alter: Ratio<i32>,
         octave_marks: i32,
+        check: Option<i32>,
     ) -> Pitch {
         let pitch = if self.in_relative {
-            if let Some(ref prev) = self.prev_pitch {
-                // In relative mode: find closest pitch within a fourth, then apply marks
-                let inferred_octave = find_relative_octave(prev, step);
-                let octave = self.bounded_octave(inferred_octave.saturating_add(octave_marks));
-                let p = Pitch::with_alter(step, alter, octave);
-                self.prev_pitch = Some(p);
-                p
+            let octave = if let Some(marks) = check {
+                // An octave check puts the note in the octave it states, and
+                // the music goes on from there (LilyPond warns when it differs).
+                marks.saturating_add(3)
+            } else if let Some(ref prev) = self.prev_pitch {
+                // The closest pitch within a fourth, then the marks
+                find_relative_octave(prev, step).saturating_add(octave_marks)
             } else {
                 // First note after \relative: use the reference pitch's octave
                 let base_oct = self.relative_ref.as_ref().map(|r| r.octave).unwrap_or(4);
-                let octave = self.bounded_octave(base_oct.saturating_add(octave_marks));
-                let p = Pitch::with_alter(step, alter, octave);
-                self.prev_pitch = Some(p);
-                p
-            }
+                base_oct.saturating_add(octave_marks)
+            };
+            let p = Pitch::with_alter(step, alter, self.bounded_octave(octave));
+            self.prev_pitch = Some(p);
+            p
         } else {
             // Absolute mode: octave marks relative to LilyPond c (octave 3 in
             // our numbering), and `\fixed`'s octaves.

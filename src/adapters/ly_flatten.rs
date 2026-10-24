@@ -312,9 +312,11 @@ fn expand(
     Ok(out)
 }
 
-/// Resolve an include path relative to `base_dir`, then to the include
-/// paths, with extension fallback (`.ly` then `.ily`). An absolute path is
-/// taken as it is.
+/// Resolve an include path as LilyPond does: the name as written, relative
+/// to `base_dir`, then to each include path; an absolute path as it is.
+/// LilyPond never changes the name. lytk also finds a name written without
+/// an extension with `.ly`, then `.ily`, once no directory has the name as
+/// written.
 fn resolve_include(
     raw: &str,
     base_dir: Option<&Path>,
@@ -329,23 +331,21 @@ fn resolve_include(
             .collect()
     };
 
-    for dir in search_dirs {
-        let base = dir.join(raw);
-        // 1. Exact path as given
-        if base.is_file() {
-            return Ok(base);
-        }
-        // 2. With .ly extension
-        let with_ly = base.with_extension("ly");
-        if with_ly.is_file() {
-            return Ok(with_ly);
-        }
-        // 3. With .ily extension (only if raw doesn't already end in .ily)
-        if !raw.ends_with(".ily") {
-            let with_ily = base.with_extension("ily");
-            if with_ily.is_file() {
-                return Ok(with_ily);
-            }
+    if let Some(found) = search_dirs
+        .iter()
+        .map(|dir| dir.join(raw))
+        .find(|p| p.is_file())
+    {
+        return Ok(found);
+    }
+    if Path::new(raw).extension().is_none() {
+        let (ly, ily) = (format!("{raw}.ly"), format!("{raw}.ily"));
+        if let Some(found) = search_dirs
+            .iter()
+            .flat_map(|dir| [dir.join(&ly), dir.join(&ily)])
+            .find(|p| p.is_file())
+        {
+            return Ok(found);
         }
     }
 
@@ -517,6 +517,45 @@ mod tests {
         };
         let result = flatten(&dir.path().join("main.ly"), opts).unwrap();
         assert!(result.contains("e'"));
+    }
+
+    /// LilyPond reads an include's name as written, in each directory in
+    /// turn: a file of another extension next to the includer is not it.
+    #[test]
+    fn test_include_name_is_read_as_written_in_every_directory() {
+        let dir = TempDir::new().unwrap();
+        let lib_dir = TempDir::new().unwrap();
+        write(dir.path(), "notes.ly", "{ c' }\n");
+        write(lib_dir.path(), "notes.ily", "{ d' }\n");
+        write(dir.path(), "main.ly", r#"\include "notes.ily""#);
+        let opts = FlattenOpts {
+            include_paths: vec![lib_dir.path().to_path_buf()],
+            add_markers: false,
+            ..Default::default()
+        };
+        let result = flatten(&dir.path().join("main.ly"), opts).unwrap();
+        assert!(result.contains("d'") && !result.contains("c'"), "{result}");
+    }
+
+    /// `second.ly` including `second.ily` from an include path (a Mutopia
+    /// piece's movement) includes that file, not itself.
+    #[test]
+    fn test_include_of_a_name_like_the_includer_is_not_circular() {
+        let dir = TempDir::new().unwrap();
+        let lib_dir = TempDir::new().unwrap();
+        write(lib_dir.path(), "second.ily", "second = { g2 }\n");
+        write(
+            dir.path(),
+            "second.ly",
+            "\\include \"second.ily\"\n{ \\second }\n",
+        );
+        let opts = FlattenOpts {
+            include_paths: vec![lib_dir.path().to_path_buf()],
+            add_markers: false,
+            ..Default::default()
+        };
+        let result = flatten(&dir.path().join("second.ly"), opts).unwrap();
+        assert!(result.contains("second = { g2 }"), "{result}");
     }
 
     #[test]

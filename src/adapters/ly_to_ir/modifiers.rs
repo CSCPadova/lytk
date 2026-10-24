@@ -4,83 +4,63 @@ use crate::ir::direction::{Barline, BarlineType, RepeatDirection};
 use crate::ir::duration::Frac;
 use crate::ir::language::{parse_pitch_name, PitchMode};
 use crate::ir::note::{Note, VoiceElement};
-use crate::ir::pitch::Pitch;
+use crate::ir::pitch::{Pitch, PitchStep};
 
 use super::consume::consume_octave_marks;
-use super::music::walk_music_block;
+use super::music::{walk_music_block, walk_one};
 use super::state::WalkState;
+use super::walk::walk_body;
 use crate::ir::direction::EndingType;
 use crate::ir::timeline::Event;
 
-/// Consume optional reference pitch after `\relative`, then the music block.
-/// Returns the next index.
+/// Consume `\relative`'s optional start pitch and the music after it, read
+/// relative to that pitch; without one the first note is absolute, as with
+/// LilyPond's `\relative f`. The music is whatever follows (`{ … }`,
+/// `<< … >>`, `\new Staff …`, a variable, one note or chord): `walk_body`
+/// or `walk_one` reads it. Afterwards the relative state is what it was
+/// before: the music around a `\relative` is not relative because of it, and
+/// an outer `\relative` goes on from its own previous pitch (LilyPond passes
+/// the pitch through music it has already made relative). Returns the next
+/// index.
 pub(super) fn consume_relative(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
-    // After \relative we may see:
-    //   - a pitch symbol (reference pitch), octave marks, then expression_block
-    //   - directly an expression_block
-    let mut octave_marks = 0i32;
+    let start = relative_start(state, children, &mut i);
+    state.mode = PitchMode::Relative;
+    let saved = (state.in_relative, state.relative_ref, state.prev_pitch);
+    state.in_relative = true;
+    state.relative_ref = Some(start);
+    state.prev_pitch = Some(start);
+    state.relative_depth += 1;
+    let mut next = walk_body(state, children, i);
+    if next == i {
+        // `\relative c' e'`: one note or chord is music too
+        next = walk_one(state, children, i);
+    }
+    state.relative_depth -= 1;
+    (state.in_relative, state.relative_ref, state.prev_pitch) = saved;
+    next
+}
 
-    while i < children.len() {
-        let node = children[i];
-        match node.kind() {
-            "symbol" => {
-                let sym = state.text(node).to_string();
-                if let Some((step, alter)) = parse_pitch_name(&sym, state.language) {
-                    // This is the reference pitch
-                    let mut rp = Pitch::with_alter(step, alter, 3); // base octave
-                    i += 1;
-                    // Consume octave marks
-                    while i < children.len() {
-                        let n = children[i];
-                        if n.kind() == "punctuation" {
-                            let t = state.text(n);
-                            if t == "'" {
-                                octave_marks += 1;
-                                i += 1;
-                            } else if t == "," {
-                                octave_marks -= 1;
-                                i += 1;
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    rp.octave = 3 + octave_marks;
-                    state.relative_ref = Some(rp);
-                    state.prev_pitch = Some(rp);
-                    continue;
-                } else {
-                    break;
-                }
-            }
-            "punctuation" => {
-                let t = state.text(node);
-                if t == "'" || t == "," {
-                    // Stray octave marks (shouldn't happen without a pitch before)
-                    i += 1;
-                    continue;
-                }
-                break;
-            }
-            "expression_block" => {
-                // Found the music block
-                if state.relative_ref.is_none() {
-                    // No reference pitch given; default to middle C
-                    state.relative_ref = Some(Pitch::new(crate::ir::pitch::PitchStep::C, 4));
-                    state.prev_pitch = state.relative_ref;
-                }
-                state.relative_depth += 1;
-                walk_music_block(state, node);
-                state.relative_depth -= 1;
-                i += 1;
-                return i;
-            }
-            _ => break,
+/// The start pitch of a `\relative` at `children[*i]`, moving `*i` past it
+/// and its octave marks; without one, LilyPond's `f`, which makes the first
+/// note absolute.
+pub(super) fn relative_start(state: &WalkState, children: &[Node], i: &mut usize) -> Pitch {
+    let mut start = Pitch::new(PitchStep::F, 3);
+    if let Some(node) = children.get(*i).filter(|n| n.kind() == "symbol") {
+        let sym = state.text(*node).to_string();
+        if let Some((step, alter)) = parse_pitch_name(&sym, state.language) {
+            *i += 1;
+            let marks = consume_octave_marks(state, children, i);
+            start = Pitch::with_alter(step, alter, 3 + marks);
         }
     }
-    i
+    // Octave marks without a pitch before them mean nothing.
+    while children
+        .get(*i)
+        .is_some_and(|n| n.kind() == "punctuation" && matches!(state.text(*n), "'" | ","))
+    {
+        *i += 1;
+    }
+    start
 }
 
 /// Consume `\repeat volta N { music } [\alternative { {..} {..} }]`.
@@ -266,29 +246,7 @@ fn consume_repeat_body(state: &mut WalkState, children: &[Node], mut i: usize) -
                 i += 1;
                 if text == "\\relative" {
                     // \repeat volta 2 \relative c' { ... }
-                    // consume the reference pitch and block
-                    if i < children.len() && children[i].kind() == "symbol" {
-                        let ref_sym = state.text(children[i]).to_string();
-                        i += 1;
-                        if let Some((step, alter)) = parse_pitch_name(&ref_sym, state.language) {
-                            let oct_marks = consume_octave_marks(state, children, &mut i);
-                            let ref_pitch = Pitch::with_alter(step, alter, 3 + oct_marks);
-                            let old_relative = state.in_relative;
-                            let old_prev = state.prev_pitch;
-                            let old_ref = state.relative_ref;
-                            state.in_relative = true;
-                            state.prev_pitch = Some(ref_pitch);
-                            state.relative_ref = Some(ref_pitch);
-                            if i < children.len() && children[i].kind() == "expression_block" {
-                                walk_music_block(state, children[i]);
-                                i += 1;
-                            }
-                            state.in_relative = old_relative;
-                            state.prev_pitch = old_prev;
-                            state.relative_ref = old_ref;
-                        }
-                    }
-                    return i;
+                    return consume_relative(state, children, i);
                 }
                 // Unknown escaped word inside repeat header — skip
                 return i;
@@ -454,8 +412,6 @@ pub(super) fn consume_transpose(state: &mut WalkState, children: &[Node], mut i:
                 i += 1;
                 // Could be \relative, a variable ref, or another command
                 if text == "\\relative" {
-                    state.in_relative = true;
-                    state.mode = PitchMode::Relative;
                     i = consume_relative(state, children, i);
                 } else if text == "\\transpose" {
                     i = consume_transpose(state, children, i);

@@ -4008,3 +4008,103 @@ mod m4 {
         assert_eq!(beams, [0, 0, 1, 1]);
     }
 }
+
+#[cfg(test)]
+/// `\relative` as LilyPond scopes it: its own music only, from its start
+/// pitch (without one, the first note is absolute), and an outer
+/// `\relative` goes on past a nested one from its own pitch. lytk left
+/// relative mode on after the block: on Mutopia, absolute variables defined
+/// after a relative one climbed two octaves a note, past octave 127.
+mod relative_scope {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+    use crate::ir::note::VoiceElement;
+
+    /// The MIDI numbers of every note (chords' too), part by part, bar by
+    /// bar, voice by voice.
+    fn midis(src: &str) -> Vec<i32> {
+        let score = LyToIrAdapter::new().convert_str(src).expect("reads");
+        score
+            .parts()
+            .iter()
+            .flat_map(|p| &p.measures)
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .flat_map(VoiceElement::notes)
+            .map(|n| n.pitch.midi_number())
+            .collect()
+    }
+
+    #[test]
+    fn relative_ends_with_its_music() {
+        // e' after the block is absolute: E4, not an E two octaves above c''
+        assert_eq!(midis(r"{ \relative c'' { c4 } e'4 }"), [72, 64]);
+        assert_eq!(midis(r"\new Staff { \relative c'' { c4 } e'4 }"), [72, 64]);
+        assert_eq!(midis(r"<< \relative c'' { c4 } { e'4 } >>"), [72, 64]);
+        assert_eq!(
+            midis("a = \\relative c'' { c4 }\nb = { e'4 }\n{ \\a \\b }"),
+            [72, 64]
+        );
+        // Mutopia's shape: an absolute variable after a relative one
+        assert_eq!(
+            midis("a = \\relative c'' { c4 }\nb = { d''4 d''4 d''4 }\n{ \\b }"),
+            [74, 74, 74]
+        );
+    }
+
+    #[test]
+    fn relative_without_a_start_pitch_reads_its_first_note_absolute() {
+        // LilyPond's `\relative` without a pitch is `\relative f`
+        assert_eq!(midis(r"\relative { c''4 g' }"), [72, 79]);
+        assert_eq!(midis(r"\relative { b4 c }"), [59, 60]);
+        assert_eq!(
+            midis("a = \\relative c'' { c4 }\nb = \\relative { e'4 }\n{ \\a \\b }"),
+            [72, 64]
+        );
+    }
+
+    #[test]
+    fn nested_relative_passes_the_outer_pitch_through() {
+        // d4 follows c4, not the inner g (LilyPond's relative callback of
+        // already-relative music returns the pitch it was given)
+        assert_eq!(
+            midis(r"\relative c' { c4 \relative c''' { g4 } d4 }"),
+            [60, 79, 62]
+        );
+    }
+
+    #[test]
+    fn relative_reads_simultaneous_music_contexts_and_variables() {
+        // whatever music follows \relative is relative: absolute, these are 48, 52
+        assert_eq!(midis(r"\relative c' << { c4 } { e4 } >>"), [60, 64]);
+        assert_eq!(midis(r"\relative c' \new Staff { c4 e }"), [60, 64]);
+        assert_eq!(midis("m = { c4 e }\n\\relative c' \\m"), [60, 64]);
+        // one note or chord is music too; the d after it is absolute
+        assert_eq!(midis(r"{ \relative c' e' d }"), [76, 50]);
+        assert_eq!(midis(r"{ \relative c' <c e g> d }"), [60, 64, 67, 50]);
+    }
+
+    /// `d='` checks the octave: in relative mode the note goes where the
+    /// check says (LilyPond warns when it differs) and the music goes on from
+    /// there; in absolute mode it changes nothing. The values are what
+    /// LilyPond 2.22's `\displayLilyMusic` prints.
+    #[test]
+    fn an_octave_check_puts_a_relative_note_where_it_says() {
+        assert_eq!(midis(r"\relative c'' { c4 g'' d=' e }"), [72, 91, 62, 64]);
+        assert_eq!(midis(r"\relative c' { c'!='4 d }"), [60, 62]);
+        // in a chord the note moves, and the next note follows the chord's first
+        assert_eq!(midis(r"\relative c' { <c e g=''> c }"), [60, 64, 79, 60]);
+        assert_eq!(midis(r"{ d'=''4 e }"), [62, 52]);
+    }
+
+    /// `\octaveCheck c''` is no note: in relative mode the music goes on
+    /// from its pitch, in absolute mode nothing.
+    #[test]
+    fn octave_check_command_resets_the_relative_pitch() {
+        assert_eq!(
+            midis(r"\relative c' { c4 \octaveCheck c'' d e }"),
+            [60, 74, 76]
+        );
+        assert_eq!(midis(r"{ c'4 \octaveCheck c'' d'4 }"), [60, 62]);
+    }
+}
