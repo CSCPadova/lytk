@@ -7,7 +7,7 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-10-04
+## [0.6.0] - 2026-10-24
 
 The typed IR. Every enum-like name in the IR is an enum; directions,
 chord symbols and figured bass sit at one exact position; a note's

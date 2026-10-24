@@ -2,9 +2,9 @@
 
 Items are grouped by status. Completed items are kept for reference.
 
-## Latest status (2026-10-04, Epic N done: 0.6.0)
+## Latest status (2026-10-24, Epic N done: 0.6.0 released)
 
-**Epic N is done and is version 0.6.0** (not tagged yet). Every
+**Epic N is done and released as 0.6.0** (tag `v0.6.0`, 2026-10-24). Every
 enum-like name in the IR is an enum (23, by their MusicXML names, so the
 JSON kept its values); directions, chord symbols and figures sit at one
 `Frac` position; a note's dynamics, hairpins and text are directions with
@@ -827,7 +827,7 @@ and the JSON's size per note may only fall (`tests/ir_json.rs`).
 | N4 | **One position.** Directions, harmonies and figured bass at a `Frac` from the bar start; the integer `Direction.offset`, `Harmony.offset` and `FiguredBass.offset` and `OFFSET_DIVISIONS` go | M | ✅ 2026-10-04 (`Direction.offset_frac` renamed `offset`; outputs unchanged but for stacked chord symbols, now exact; the MusicXML writer's divisions hold every position) |
 | N5 | **One home for dynamics, hairpins and text.** `Measure.directions` (with a voice); notes and rests no longer carry them; the Music tree keeps its annotations | L | ✅ 2026-10-04 (`ir::marks::{hoist, sink}`: readers hang marks on elements and hoist them out at the end; the LilyPond, MusicXML and MIDI writers, lift and retrograde sink the voiced ones back. Every output unchanged; the element fields are crate-private scratch) |
 | N6 | **Compact, versioned JSON.** Defaults skipped (a note is 622 bytes today); a schema version written and checked; fractions read reduced; `check_ir_values` follows the new keys | M | ✅ 2026-10-04 (`ir::json::{to_value, from_value, SCHEMA}`; 810 → 174 bytes a note; a plain note is 60; the checked keys kept their names) |
-| N7 | **Release 0.6.0.** Stubs, `docs/python-api.md`, migration notes in the changelog | S | ✅ 2026-10-04 (version 0.6.0, changelog `[0.6.0]`; the stubs document the JSON; tagging and publishing left) |
+| N7 | **Release 0.6.0.** Stubs, `docs/python-api.md`, migration notes in the changelog | S | ✅ 2026-10-04 (version 0.6.0, changelog `[0.6.0]`; the stubs document the JSON; released 2026-10-24) |
 
 ### After 0.4.0
 

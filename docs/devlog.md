@@ -52,7 +52,8 @@ before and after it, and by `tests/ir_json.rs`.
 
 - **N7.** Version 0.6.0 (`Cargo.toml`, `Cargo.lock`), changelog
   `[0.6.0]`; the stubs document the JSON and its schema, and
-  `docs/python-api.md` is regenerated. Tagging and publishing are left.
+  `docs/python-api.md` is regenerated. Released 2026-10-24 (tag
+  `v0.6.0`).
 
 Not done: the MusicXML reader still drops `unstress`, `soft-accent`,
 `scoop`, `plop`, `doit` and `falloff`. Next: the Python API (0.7.0).
