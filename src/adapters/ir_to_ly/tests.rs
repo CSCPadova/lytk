@@ -1841,12 +1841,18 @@ fn test_pedal_emission() {
 
 #[test]
 fn test_ottava_emission() {
+    // An 8va starting on c''' with a dynamic and ending before d''': each
+    // `\ottava` goes before its note, never glued to a post-event (Guile
+    // read `\ottava #1\pp` as the number `1\pp`, PDMX).
+    use crate::ir::articulation::DynamicMark;
     use crate::ir::direction::{Direction, OctaveShift};
 
-    let n1 = make_note(PitchStep::C, 5, Duration::quarter());
     let voice = Voice {
         number: 1,
-        elements: vec![VoiceElement::Note(Box::new(n1))],
+        elements: vec![
+            VoiceElement::Note(Box::new(make_note(PitchStep::C, 6, Duration::quarter()))),
+            VoiceElement::Note(Box::new(make_note(PitchStep::D, 6, Duration::quarter()))),
+        ],
     };
     let mut measure = Measure::new(1);
     measure.attributes = Some(MeasureAttributes {
@@ -1864,6 +1870,18 @@ fn test_ottava_emission() {
             shift_type: OctaveShiftType::Up,
             size: 8,
         }),
+        dynamic: Some(DynamicMark {
+            sign: DynamicType::Pp,
+            placement: Placement::Below,
+        }),
+        ..Default::default()
+    });
+    measure.directions.push(Direction {
+        offset: Frac::new(1, 4),
+        octave_shift: Some(OctaveShift {
+            shift_type: OctaveShiftType::Stop,
+            size: 8,
+        }),
         ..Default::default()
     });
 
@@ -1876,7 +1894,14 @@ fn test_ottava_emission() {
     let adapter = IrToLyAdapter::new();
     let ly = adapter.convert(&score).unwrap();
 
-    assert!(ly.contains("\\ottava #1"), "should emit \\ottava #1: {ly}");
+    assert!(
+        ly.contains("\\ottava #1 c'''4\\pp \\ottava #0 d'''4"),
+        "{ly}"
+    );
+    assert!(
+        crate::adapters::ly_to_ir::check(&ly, false).is_empty(),
+        "{ly}"
+    );
 }
 
 #[test]
@@ -2057,6 +2082,24 @@ fn direction_text_quotes_are_escaped() {
         .map(|v| v.elements.len())
         .sum();
     assert_eq!(notes, 2, "quoted words must not truncate the score:\n{ly}");
+}
+
+#[test]
+fn lyrics_starting_with_a_dot_or_holding_a_backquote_are_quoted() {
+    // LilyPond 2.26 rejects a word starting with `.`; lytk's parser one with
+    // a backquote (PDMX's `` ` ter`` and ``vend` ``).
+    use super::lyrics::escape_lyric_text;
+    for (text, written) in [
+        (".", "\".\""),
+        ("...", "\"...\""),
+        (".a", "\".a\""),
+        ("`", "\"`\""),
+        ("vend`", "\"vend`\""),
+        ("a.", "a."),
+        ("Sün", "Sün"),
+    ] {
+        assert_eq!(escape_lyric_text(text), written);
+    }
 }
 
 #[test]
