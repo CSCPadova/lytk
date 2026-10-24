@@ -3,7 +3,7 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
-## 2026-10-24 — `\relative`, octave checks and includes as LilyPond reads them
+## 2026-10-24 — 0.6.2: `\relative`, octave checks and includes as LilyPond reads them
 
 lilycorpus's first new source, Mutopia (2,354 records of native LilyPond at
 Mutopia's commit `2144afd`), turned up four reading bugs. Each case was
@@ -60,6 +60,7 @@ Next: the 25 Mutopia records still failing (lilycorpus's wishlist item 13:
 `->` before a chord's closing `>`, `#$var`), and the 25 still reading a pitch
 above C8, where `\change Staff` (13 of 32 before these fixes) and
 `\transpose` inside `\relative` (Mozart's K. 594 Fantasia) stand out.
+Released as 0.6.2.
 
 ## 2026-10-24 — 0.6.1: `flatten` prints nothing
 

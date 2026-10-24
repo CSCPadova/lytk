@@ -7,6 +7,11 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-24
+
+LilyPond read as LilyPond reads it, where lilycorpus's Mutopia harvest found
+lytk did not: `\relative`, octave checks and `flatten`'s includes.
+
 ### Fixed
 
 - `\relative` reads its own music only, as LilyPond does. The music after
