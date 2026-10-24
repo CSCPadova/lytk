@@ -5,10 +5,10 @@ use num::CheckedAdd;
 use tree_sitter::Node;
 
 use crate::diagnostics::{Columns, Diagnostic, Severity};
-use crate::ir::articulation::BeamEvent;
+use crate::ir::articulation::{BeamEvent, BeamValue};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::{PitchLanguage, PitchMode};
-use crate::ir::note::{ArpeggioType, VoiceElement};
+use crate::ir::note::{ArpeggioType, StemDirection, VoiceElement};
 use crate::ir::pitch::{Pitch, PitchStep};
 use crate::ir::score::{PageLayout, Score, ScoreMetadata};
 use crate::ir::Part;
@@ -178,7 +178,7 @@ pub(super) struct WalkState<'src> {
     /// Arpeggio direction set by `\arpeggioArrowUp/Down`, `\arpeggioBracket`.
     pub(super) pending_arpeggio_type: Option<ArpeggioType>,
     /// Glissando line style set by `\once \override Glissando.style = #'...`.
-    pub(super) pending_glissando_style: Option<String>,
+    pub(super) pending_glissando_style: Option<crate::ir::note::LineType>,
     /// Whether pending glissando style is "trill" (→ slide instead of glissando).
     pub(super) pending_slide: bool,
     /// Page layout accumulated from `\paper { ... }`.
@@ -187,10 +187,10 @@ pub(super) struct WalkState<'src> {
     pub(super) completed_scores: Vec<Score>,
 
     // Beam/stem state
-    /// Current stem direction override: "up", "down", or "" (auto).
-    pub(super) stem_direction: String,
+    /// Current stem direction override, `None` for the engraver's.
+    pub(super) stem_direction: Option<StemDirection>,
     /// `\once \stemUp`: the stem direction to go back to after one note.
-    pub(super) once_stem: Option<String>,
+    pub(super) once_stem: Option<Option<StemDirection>>,
     /// `\slurUp`/`\slurDown`: where slurs go when they don't say.
     pub(super) slur_placement: crate::ir::articulation::Placement,
     /// Rehearsal marks so far, for `\mark \default`.
@@ -282,7 +282,7 @@ impl<'src> WalkState<'src> {
             pending_slide: false,
             page_layout: None,
             completed_scores: Vec::new(),
-            stem_direction: String::new(),
+            stem_direction: None,
             once_stem: None,
             slur_placement: Default::default(),
             mark_count: 0,
@@ -527,7 +527,7 @@ impl<'src> WalkState<'src> {
                     let level = beam_level_for_duration(&n.duration);
                     if level > 0 {
                         n.beams.push(BeamEvent {
-                            beam_type: "continue".to_string(),
+                            beam_type: BeamValue::Continue,
                             number: 1,
                         });
                     }
@@ -536,7 +536,7 @@ impl<'src> WalkState<'src> {
                     let level = beam_level_for_duration(&c.duration);
                     if level > 0 && c.notes[0].beams.is_empty() {
                         c.notes[0].beams.push(BeamEvent {
-                            beam_type: "continue".to_string(),
+                            beam_type: BeamValue::Continue,
                             number: 1,
                         });
                     }
@@ -546,21 +546,9 @@ impl<'src> WalkState<'src> {
         }
 
         // Apply current stem direction override to notes
-        if !self.stem_direction.is_empty() {
-            match &mut elem {
-                VoiceElement::Note(n) => {
-                    if n.stem_direction.is_empty() {
-                        n.stem_direction = self.stem_direction.clone();
-                    }
-                }
-                VoiceElement::Chord(c) => {
-                    for n in &mut c.notes {
-                        if n.stem_direction.is_empty() {
-                            n.stem_direction = self.stem_direction.clone();
-                        }
-                    }
-                }
-                _ => {}
+        if self.stem_direction.is_some() {
+            for n in elem.notes_mut() {
+                n.stem_direction = n.stem_direction.or(self.stem_direction);
             }
         }
 

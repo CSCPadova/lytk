@@ -225,6 +225,7 @@ pub fn from_event_sequence(seq: &EventSequence) -> NoteArray {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::articulation::DynamicType;
     use crate::ir::duration::Duration;
     use crate::ir::music::{Music, MusicDocument};
     use crate::ir::pitch::{Pitch, PitchStep};
@@ -318,7 +319,7 @@ mod tests {
         if let Music::Note { annotations, .. } = &mut soft {
             annotations.push(crate::ir::annotation::Annotation::Dynamic(
                 crate::ir::articulation::DynamicMark {
-                    sign: "mp".to_string(),
+                    sign: DynamicType::Mp,
                     placement: Default::default(),
                 },
             ));
@@ -327,7 +328,7 @@ mod tests {
         if let Music::Note { annotations, .. } = &mut loud {
             annotations.push(crate::ir::annotation::Annotation::Dynamic(
                 crate::ir::articulation::DynamicMark {
-                    sign: "f".to_string(),
+                    sign: DynamicType::F,
                     placement: Default::default(),
                 },
             ));

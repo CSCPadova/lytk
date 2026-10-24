@@ -8,6 +8,7 @@
 //! - Grace-note and cue-note flags from lytk-py's `Note.__slots__`.
 //! - Forward/Backup time-shift model from MusicXML via lytk-py.
 
+use super::serde_defaults::{is_default, is_one, is_yes, one, yes};
 use serde::{Deserialize, Serialize};
 
 use super::articulation::{
@@ -26,6 +27,62 @@ pub enum ArpeggioType {
     NonArpeggio,
 }
 
+named_enum! {
+    /// Which way a note's stem points (MusicXML's `<stem>`).
+    pub enum StemDirection {
+        Up => "up",
+        Down => "down",
+        Double => "double",
+        /// No stem drawn.
+        NoStem => "none",
+    }
+}
+
+named_enum! {
+    /// A notehead's shape (MusicXML's `<notehead>`).
+    pub enum Notehead {
+        Slash => "slash",
+        Triangle => "triangle",
+        Diamond => "diamond",
+        Square => "square",
+        Cross => "cross",
+        X => "x",
+        CircleX => "circle-x",
+        InvertedTriangle => "inverted triangle",
+        ArrowDown => "arrow down",
+        ArrowUp => "arrow up",
+        Circled => "circled",
+        Slashed => "slashed",
+        BackSlashed => "back slashed",
+        Normal => "normal",
+        Cluster => "cluster",
+        CircleDot => "circle dot",
+        LeftTriangle => "left triangle",
+        Rectangle => "rectangle",
+        /// No notehead drawn.
+        NoHead => "none",
+        Do => "do",
+        Re => "re",
+        Mi => "mi",
+        Fa => "fa",
+        FaUp => "fa up",
+        So => "so",
+        La => "la",
+        Ti => "ti",
+        Other => "other",
+    }
+}
+
+named_enum! {
+    /// How a glissando or slide is drawn (MusicXML's `line-type`).
+    pub enum LineType {
+        Solid => "solid",
+        Dashed => "dashed",
+        Dotted => "dotted",
+        Wavy => "wavy",
+    }
+}
+
 /// Most tremolo slashes a note carries (LilyPond's `:1024` on a whole note).
 pub const MAX_TREMOLO_MARKS: u8 = 10;
 
@@ -36,54 +93,85 @@ pub const MAX_TREMOLO_MARKS: u8 = 10;
 pub struct Note {
     pub pitch: Pitch,
     pub duration: Duration,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub voice: u8,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub staff: u8,
     // -- articulations & notation --
+    #[serde(default, skip_serializing_if = "is_default")]
     pub ties: Vec<TieEvent>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub slurs: Vec<SlurEvent>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub articulations: Vec<Articulation>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub ornaments: Vec<Ornament>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub technicals: Vec<Technical>,
-    pub dynamics: Vec<DynamicMark>,
-    pub wedges: Vec<Wedge>,
-    pub text_directions: Vec<TextDirection>,
+    // Reader scratch, empty in a returned score: a note's dynamics, hairpins
+    // and text are the bar's directions, with its voice (`ir::marks`).
+    #[serde(skip)]
+    pub(crate) dynamics: Vec<DynamicMark>,
+    #[serde(skip)]
+    pub(crate) wedges: Vec<Wedge>,
+    #[serde(skip)]
+    pub(crate) text_directions: Vec<TextDirection>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub beams: Vec<BeamEvent>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub tuplet: Option<TupletDisplay>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub fermata: Option<Fermata>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub lyrics: Vec<LyricSyllable>,
     // -- flags --
+    #[serde(default, skip_serializing_if = "is_default")]
     pub is_grace: bool,
     /// Whether the grace note has a slash (acciaccatura). Only meaningful when `is_grace` is true.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub grace_slash: bool,
     /// Whether this grace note steals time from the previous note (`\afterGrace`).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub after_grace: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub is_cue: bool,
     /// Glissando start/stop.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub glissando: Option<StartStop>,
     /// Slide (portamento) start/stop.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub slide: Option<StartStop>,
-    /// Glissando line type: "solid", "dashed", "dotted", "wavy".
-    pub glissando_line_type: Option<String>,
-    pub stem_direction: String,
-    pub notehead: String,
+    /// How the glissando is drawn, when the source says.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub glissando_line_type: Option<LineType>,
+    /// The stem the source gives, `None` for the engraver's.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub stem_direction: Option<StemDirection>,
+    /// The notehead the source gives, `None` for a plain one.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub notehead: Option<Notehead>,
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub print_object: bool,
     /// Number of tremolo slashes (1–4) for single-note tremolo; writers cap
     /// it at [`MAX_TREMOLO_MARKS`].
+    #[serde(default, skip_serializing_if = "is_default")]
     pub tremolo_marks: u8,
     /// Whether this note is part of a two-note tremolo (paired with next/prev note).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub two_note_tremolo: bool,
     /// For two-note tremolo: true = first note (start), false = second note (stop).
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub tremolo_start: bool,
     /// If true, auto-beaming should skip this note (\autoBeamOff).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub no_auto_beam: bool,
     /// If true, this note is inside a \melisma ... \melismaEnd block and does not consume a lyric syllable.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub in_melisma: bool,
     /// MIDI velocity (1–127) the note was played with, when known (from a MIDI
     /// file or a MusicXML `<note dynamics>`). MIDI export uses it instead of
     /// the dynamic in force.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub velocity: Option<u8>,
     /// While a LilyPond file is read: the Voice context the note was
     /// written in, which `\lyricsto` follows. 0 in every score returned.
@@ -118,8 +206,8 @@ impl Note {
             glissando: None,
             slide: None,
             glissando_line_type: None,
-            stem_direction: String::new(),
-            notehead: String::new(),
+            stem_direction: None,
+            notehead: None,
             print_object: true,
             tremolo_marks: 0,
             two_note_tremolo: false,
@@ -149,23 +237,32 @@ impl std::fmt::Display for Note {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rest {
     pub duration: Duration,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub voice: u8,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub staff: u8,
     /// Optional display pitch step (for positioned rests in MusicXML).
-    pub display_step: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub display_step: Option<super::pitch::PitchStep>,
     /// Optional display octave (for positioned rests).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub display_octave: Option<i32>,
     /// Whether this is a whole-measure rest.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub is_measure_rest: bool,
     /// Whether this is an invisible spacer (LilyPond `s`).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub is_spacer: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub fermata: Option<Fermata>,
     /// Tuplet display bracket / numbering (start or stop).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub tuplet: Option<TupletDisplay>,
-    /// Dynamics attached after this rest (e.g. `s4\f`).
-    pub dynamics: Vec<DynamicMark>,
-    /// Wedge (hairpin) events attached after this rest (e.g. `s4\<`).
-    pub wedges: Vec<Wedge>,
+    // Reader scratch, empty in a returned score (`ir::marks`).
+    #[serde(skip)]
+    pub(crate) dynamics: Vec<DynamicMark>,
+    #[serde(skip)]
+    pub(crate) wedges: Vec<Wedge>,
 }
 
 impl Rest {
@@ -211,10 +308,13 @@ impl std::fmt::Display for Rest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Chord {
     pub duration: Duration,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub voice: u8,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub staff: u8,
     pub notes: Vec<Note>,
     /// Arpeggio indication.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub arpeggio: Option<ArpeggioType>,
 }
 

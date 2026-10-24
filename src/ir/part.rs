@@ -7,6 +7,7 @@
 //! - Field set from lytk-py's `Part(IRNode)` (`lytk-py/ir/part.py`).
 //! - MIDI metadata fields from lytk-py.
 
+use super::serde_defaults::{is_default, is_one, one};
 use serde::{Deserialize, Serialize};
 
 use super::measure::Measure;
@@ -17,18 +18,24 @@ use super::measure::Measure;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Part {
     /// Full instrument name.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub name: String,
     /// Abbreviated instrument name.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub abbreviation: String,
     /// Unique part identifier (from MusicXML `<part>` id attribute).
     pub part_id: String,
     /// MIDI instrument name.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub midi_instrument: String,
     /// MIDI channel, 1–16 as in MusicXML (`0` = not set; 10 is percussion).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub midi_channel: u8,
     /// MIDI program number.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub midi_program: u8,
     /// Number of staves for this part (e.g. 2 for piano).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub staves: u8,
     /// Ordered sequence of measures.
     pub measures: Vec<Measure>,

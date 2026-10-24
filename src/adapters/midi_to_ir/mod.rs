@@ -35,7 +35,7 @@ use midly::{Format, MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
 use super::dynamics_velocity::{lilypond_dynamic, velocity_to_dynamic};
 use super::{AdapterError, Result, ToIrAdapter};
-use crate::ir::articulation::Placement;
+use crate::ir::articulation::{DynamicType, Placement};
 use crate::ir::direction::{Direction, PedalEvent, TempoDirection, TextDirection};
 use crate::ir::duration::Frac;
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
@@ -43,8 +43,10 @@ use crate::ir::music::MusicDocument;
 use crate::ir::part::Part;
 use crate::ir::pitch::{respell, Alter, Pitch, PitchStep};
 use crate::ir::score::{Score, ScoreChild, ScoreMetadata};
-use crate::ir::timeline::{split_tied, Event, Grid, Timeline, OFFSET_DIVISIONS};
+use crate::ir::timeline::{split_tied, Event, Grid, Timeline};
 
+use crate::ir::direction::PedalType;
+use crate::ir::duration::NoteType;
 use quantize::{Bars, Quantizer};
 use voices::{separate, Writer};
 
@@ -936,7 +938,7 @@ fn read(
     let meters: Vec<(u8, u8)> = (0..signs.len())
         .map(|k| {
             let ts = &signs[if pickup.is_some() && k == 0 { 1 } else { k }].1;
-            (ts.beats.parse().unwrap_or(4), ts.beat_type)
+            (u8::try_from(ts.numerator()).unwrap_or(4), ts.beat_type)
         })
         .collect();
     for (k, (p, ts, l)) in signs.iter().enumerate() {
@@ -1175,14 +1177,14 @@ fn read(
         // (from the loudest note of an event, less a staccato's 4) unless
         // another voice of the staff shows the same mark there.
         for voices in staff_voices.iter_mut() {
-            let mut level: Vec<Option<&'static str>> = vec![None; voices.len()];
+            let mut level: Vec<Option<DynamicType>> = vec![None; voices.len()];
             let mut events: Vec<(usize, &mut voices::Event)> = voices
                 .iter_mut()
                 .enumerate()
                 .flat_map(|(vi, v)| v.iter_mut().map(move |e| (vi, e)))
                 .collect();
             events.sort_by_key(|(vi, e)| (e.on, *vi));
-            let mut shown: (Frac, Vec<&'static str>) = (Frac::from_integer(-1), Vec::new());
+            let mut shown: (Frac, Vec<DynamicType>) = (Frac::from_integer(-1), Vec::new());
             for (vi, e) in events {
                 let v = e.notes.iter().map(|n| n.1).max().unwrap_or(0);
                 // (Only notation plays a staccato 4 louder.)
@@ -1196,15 +1198,15 @@ fn read(
                 } else {
                     velocity_to_dynamic(v)
                 };
-                if level[vi] == Some(band) {
+                if level[vi].as_ref() == Some(&band) {
                     continue;
                 }
-                level[vi] = Some(band);
+                level[vi] = Some(band.clone());
                 if shown.0 != e.on {
                     shown = (e.on, Vec::new());
                 }
                 if !shown.1.contains(&band) {
-                    shown.1.push(band);
+                    shown.1.push(band.clone());
                     e.dynamic = Some(band);
                 }
             }
@@ -1236,15 +1238,15 @@ fn read(
             for (p, moves) in at_pos {
                 let after = *moves.last().expect("one move at least");
                 let kind = match (down, after) {
-                    (false, true) => "start",
-                    (true, false) => "stop",
-                    (true, true) if moves.contains(&false) => "change",
+                    (false, true) => PedalType::Start,
+                    (true, false) => PedalType::Stop,
+                    (true, true) if moves.contains(&false) => PedalType::Change,
                     _ => continue,
                 };
                 down = after;
                 let dir = Direction {
                     pedal: Some(PedalEvent {
-                        pedal_type: kind.to_string(),
+                        pedal_type: kind,
                         line: false,
                     }),
                     ..Direction::default()
@@ -1281,7 +1283,7 @@ fn read(
                 let dir = Direction {
                     tempo: Some(TempoDirection {
                         text: None,
-                        beat_unit: Some("quarter".to_string()),
+                        beat_unit: Some(NoteType::Quarter),
                         per_minute: Some(bpm(uspq)),
                         dots: 0,
                         placement: Placement::Above,
@@ -1308,7 +1310,7 @@ fn read(
             }
         }
         part.staves = u8::try_from(group.len()).unwrap_or(1);
-        part.measures = split_tied(tl, &grid, OFFSET_DIVISIONS, OFFSET_DIVISIONS);
+        part.measures = split_tied(tl, &grid);
         if part.staves > 1 {
             if let Some(m) = part.measures.first_mut() {
                 m.attributes.get_or_insert_with(Default::default).staves = Some(part.staves);
@@ -1316,6 +1318,7 @@ fn read(
         }
         score.children.push(ScoreChild::Part(part));
     }
+    crate::ir::marks::hoist(&mut score);
     Ok(score)
 }
 
@@ -1424,6 +1427,8 @@ mod tests {
 
     /// Each note's (key, dynamic marks) in the first part, in order.
     fn dynamics(s: &Score) -> Vec<(i32, Vec<String>)> {
+        // Each note's dynamics back on it.
+        let s = crate::ir::marks::sunk(s);
         s.parts()[0]
             .measures
             .iter()
@@ -1432,7 +1437,7 @@ mod tests {
             .filter_map(|e| match e {
                 VoiceElement::Note(n) => Some((
                     n.pitch.midi_number(),
-                    n.dynamics.iter().map(|d| d.sign.clone()).collect(),
+                    n.dynamics.iter().map(|d| d.sign.to_string()).collect(),
                 )),
                 _ => None,
             })
@@ -1867,7 +1872,9 @@ mod tests {
                 .filter_map(|e| match e {
                     VoiceElement::Note(n) => Some((
                         n.duration.actual_duration(),
-                        n.articulations.iter().any(|a| a.name == "staccato"),
+                        n.articulations
+                            .iter()
+                            .any(|a| a.name.as_str() == "staccato"),
                     )),
                     _ => None,
                 })
@@ -1918,6 +1925,8 @@ mod tests {
     }
 
     fn staccatos(s: &Score) -> Vec<(i32, bool, usize)> {
+        // Each note's dynamics back on it.
+        let s = crate::ir::marks::sunk(s);
         s.parts()[0]
             .measures
             .iter()
@@ -1931,7 +1940,9 @@ mod tests {
             .map(|n| {
                 (
                     n.pitch.midi_number(),
-                    n.articulations.iter().any(|a| a.name == "staccato"),
+                    n.articulations
+                        .iter()
+                        .any(|a| a.name.as_str() == "staccato"),
                     n.dynamics.len(),
                 )
             })

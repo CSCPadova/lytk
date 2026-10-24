@@ -5,6 +5,7 @@
 use super::super::direction::{Barline, BarlineType, Direction, RepeatDirection};
 use super::super::music::{ContextType, Music, RepeatType};
 use super::state::{LowerState, StaffBuilder, TimedEvent};
+use crate::ir::direction::{BarlineLocation, EndingType};
 
 /// Recursively walk a Music node, accumulating timed events.
 pub(super) fn walk_music(music: &Music, state: &mut LowerState) {
@@ -210,11 +211,9 @@ fn walk_context(
         | ContextType::StaffGroup
         | ContextType::ChoirStaff => {
             let group_idx = state.groups.len();
-            state.groups.push((
-                context_type.clone(),
-                name.map(|s| s.to_string()),
-                Vec::new(),
-            ));
+            state
+                .groups
+                .push((*context_type, name.map(|s| s.to_string()), Vec::new()));
             let staff_count_before = state.staves.len();
             walk_music(content, state);
             let staff_count_after = state.staves.len();
@@ -246,7 +245,7 @@ fn walk_context(
 fn backward_repeat() -> Barline {
     Barline {
         style: BarlineType::RepeatBackward,
-        location: "right".to_string(),
+        location: BarlineLocation::Right,
         repeat_direction: Some(RepeatDirection::Backward),
         ..Barline::default()
     }
@@ -267,7 +266,7 @@ fn walk_repeat(
         RepeatType::Volta => {
             state.push_event(TimedEvent::Barline(Barline {
                 style: BarlineType::RepeatForward,
-                location: "left".to_string(),
+                location: BarlineLocation::Left,
                 repeat_direction: Some(RepeatDirection::Forward),
                 repeat_times: u8::try_from(count).ok().filter(|&c| c != 2),
                 ..Barline::default()
@@ -284,9 +283,9 @@ fn walk_repeat(
             for (k, alt) in alternatives.iter().enumerate() {
                 let number = u8::try_from(k + 1).unwrap_or(u8::MAX);
                 state.push_event(TimedEvent::Barline(Barline {
-                    location: "left".to_string(),
+                    location: BarlineLocation::Left,
                     ending_number: Some(number),
-                    ending_type: Some("start".to_string()),
+                    ending_type: Some(EndingType::Start),
                     ..Barline::default()
                 }));
                 walk_music(alt, state);
@@ -296,7 +295,7 @@ fn walk_repeat(
                     Barline::default()
                 };
                 close.ending_number = Some(number);
-                close.ending_type = Some("stop".to_string());
+                close.ending_type = Some(EndingType::Stop);
                 state.push_event(TimedEvent::Barline(close));
             }
         }

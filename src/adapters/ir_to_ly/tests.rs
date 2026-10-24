@@ -1,8 +1,9 @@
 use super::*;
 use crate::ir::articulation::{
-    Articulation, LyricSyllable, Placement, SlurEvent, StartStop, SyllabicType, TieEvent,
+    Articulation, ArticulationType, DynamicType, LyricSyllable, OrnamentType, Placement,
+    ShowNumber, SlurEvent, StartStop, SyllabicType, TieEvent, WedgeType,
 };
-use crate::ir::duration::Duration;
+use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{Clef, KeyMode, KeySignature, Measure, MeasureAttributes, TimeSignature};
 use crate::ir::note::{Note, Rest, VoiceElement};
 use crate::ir::pitch::{Pitch, PitchStep};
@@ -11,6 +12,8 @@ use crate::ir::voice::Voice;
 use num::rational::Ratio;
 use std::collections::HashMap;
 
+use crate::ir::direction::{OctaveShiftType, PedalType};
+use crate::ir::harmony::{ChordKind, DegreeType, FigureAccidental};
 use emit::{attachments_to_ly, chord_to_ly, rest_to_ly};
 use maps::{clef_to_ly, duration_to_ly, figure_to_ly, key_to_ly, pitch_to_ly};
 
@@ -321,7 +324,7 @@ fn test_emit_attachments() {
         placement: Placement::Unspecified,
     });
     note.articulations.push(Articulation {
-        name: "staccato".to_string(),
+        name: ArticulationType::Staccato,
         placement: Placement::Unspecified,
     });
 
@@ -573,13 +576,13 @@ fn test_emit_tuplet() {
                 n.tuplet = Some(TupletDisplay {
                     tuplet_type: StartStop::Start,
                     bracket: true,
-                    show_number: "actual".to_string(),
+                    show_number: Some(ShowNumber::Actual),
                 });
             } else if i == 2 {
                 n.tuplet = Some(TupletDisplay {
                     tuplet_type: StartStop::Stop,
                     bracket: true,
-                    show_number: String::new(),
+                    show_number: None,
                 });
             }
             VoiceElement::Note(Box::new(n))
@@ -735,7 +738,7 @@ fn test_emit_glissando() {
 fn test_emit_glissando_dashed_style() {
     let mut n = make_note(PitchStep::C, 4, Duration::quarter());
     n.glissando = Some(StartStop::Start);
-    n.glissando_line_type = Some("dashed".to_string());
+    n.glissando_line_type = Some(crate::ir::note::LineType::Dashed);
     let n2 = make_note(PitchStep::E, 4, Duration::quarter());
     let voice = Voice {
         number: 1,
@@ -1012,13 +1015,13 @@ fn test_emit_harmony_chordnames() {
     });
     measure.harmonies.push(Harmony {
         root: ChordPitch {
-            step: "C".to_string(),
+            step: crate::ir::pitch::PitchStep::C,
             alter: 0.0,
         },
-        kind: "major".to_string(),
+        kind: ChordKind::Major,
         bass: None,
         degrees: vec![],
-        offset: 0,
+        offset: Frac::from_integer(0),
         function: None,
     });
     measure.voices.push(Voice {
@@ -1058,16 +1061,16 @@ fn test_emit_harmony_minor_with_bass() {
     });
     measure.harmonies.push(Harmony {
         root: ChordPitch {
-            step: "D".to_string(),
+            step: crate::ir::pitch::PitchStep::D,
             alter: 0.0,
         },
-        kind: "minor".to_string(),
+        kind: ChordKind::Minor,
         bass: Some(ChordPitch {
-            step: "F".to_string(),
+            step: crate::ir::pitch::PitchStep::F,
             alter: 0.0,
         }),
         degrees: vec![],
-        offset: 0,
+        offset: Frac::from_integer(0),
         function: None,
     });
     measure.voices.push(Voice {
@@ -1110,7 +1113,7 @@ fn test_emit_figured_bass() {
         ],
         duration: Duration::whole(),
         parentheses: false,
-        offset: 0,
+        offset: Frac::from_integer(0),
     });
     measure.voices.push(Voice {
         number: 1,
@@ -1142,12 +1145,9 @@ fn test_emit_figured_bass() {
 #[test]
 fn test_emit_harmony_at_its_beat() {
     use crate::ir::harmony::{ChordDegree, ChordPitch, Harmony};
-    let chord = |step: &str, kind: &str, degrees, offset| Harmony {
-        root: ChordPitch {
-            step: step.to_string(),
-            alter: 0.0,
-        },
-        kind: kind.to_string(),
+    let chord = |step: PitchStep, kind: ChordKind, degrees, offset| Harmony {
+        root: ChordPitch { step, alter: 0.0 },
+        kind,
         bass: None,
         degrees,
         offset,
@@ -1162,16 +1162,24 @@ fn test_emit_harmony_at_its_beat() {
         }),
         ..Default::default()
     });
-    // G7(b9) on beat 2, no chord on beat 3 (offsets in 16ths).
+    // G7(b9) on beat 2, no chord on beat 3.
     let flat_nine = ChordDegree {
         value: 9,
         alter: -1.0,
-        degree_type: "add".to_string(),
+        degree_type: DegreeType::Add,
     };
-    measure
-        .harmonies
-        .push(chord("G", "dominant", vec![flat_nine], 4));
-    measure.harmonies.push(chord("C", "none", vec![], 8));
+    measure.harmonies.push(chord(
+        PitchStep::G,
+        ChordKind::Dominant,
+        vec![flat_nine],
+        Frac::new(1, 4),
+    ));
+    measure.harmonies.push(chord(
+        PitchStep::C,
+        ChordKind::NoChord,
+        vec![],
+        Frac::new(1, 2),
+    ));
     measure.voices.push(Voice {
         number: 1,
         elements: vec![VoiceElement::Note(Box::new(make_note(
@@ -1203,7 +1211,7 @@ fn test_helper_figure_to_ly() {
         figure_to_ly(&Figure {
             number: Some(6),
             prefix: None,
-            suffix: Some("sharp".to_string())
+            suffix: Some(FigureAccidental::Sharp)
         }),
         "6+"
     );
@@ -1228,7 +1236,7 @@ fn test_tuplet_starting_on_rest() {
     rest.tuplet = Some(TupletDisplay {
         tuplet_type: StartStop::Start,
         bracket: true,
-        show_number: "actual".to_string(),
+        show_number: Some(ShowNumber::Actual),
     });
 
     let mut elements: Vec<VoiceElement> = vec![VoiceElement::Rest(rest)];
@@ -1250,7 +1258,7 @@ fn test_tuplet_starting_on_rest() {
             n.tuplet = Some(TupletDisplay {
                 tuplet_type: StartStop::Stop,
                 bracket: true,
-                show_number: String::new(),
+                show_number: None,
             });
         }
         elements.push(VoiceElement::Note(Box::new(n)));
@@ -1309,27 +1317,27 @@ fn test_wedge_position_aware_attachment() {
 
     // Dynamic \p at offset 0 (before note 1)
     measure.directions.push(Direction {
-        offset: 0,
+        offset: Frac::from_integer(0),
         dynamic: Some(DynamicMark {
-            sign: "p".to_string(),
+            sign: DynamicType::P,
             placement: Placement::Below,
         }),
         ..Direction::default()
     });
     // Crescendo start at offset 4 (before note 2)
     measure.directions.push(Direction {
-        offset: 4,
+        offset: Frac::new(1, 4),
         wedge: Some(Wedge {
-            wedge_type: "crescendo".to_string(),
+            wedge_type: WedgeType::Crescendo,
             placement: Placement::Below,
         }),
         ..Direction::default()
     });
     // Wedge stop at offset 12 (before note 4)
     measure.directions.push(Direction {
-        offset: 12,
+        offset: Frac::new(3, 4),
         wedge: Some(Wedge {
-            wedge_type: "stop".to_string(),
+            wedge_type: WedgeType::Stop,
             placement: Placement::Below,
         }),
         ..Direction::default()
@@ -1801,15 +1809,15 @@ fn test_pedal_emission() {
     measure.voices.push(voice);
     measure.directions.push(Direction {
         pedal: Some(PedalEvent {
-            pedal_type: "start".to_string(),
+            pedal_type: PedalType::Start,
             line: false,
         }),
         ..Default::default()
     });
     measure.directions.push(Direction {
-        offset: 1,
+        offset: Frac::new(1, 4),
         pedal: Some(PedalEvent {
-            pedal_type: "stop".to_string(),
+            pedal_type: PedalType::Stop,
             line: false,
         }),
         ..Default::default()
@@ -1853,7 +1861,7 @@ fn test_ottava_emission() {
     measure.voices.push(voice);
     measure.directions.push(Direction {
         octave_shift: Some(OctaveShift {
-            shift_type: "up".to_string(),
+            shift_type: OctaveShiftType::Up,
             size: 8,
         }),
         ..Default::default()
@@ -1876,7 +1884,7 @@ fn test_tremolo_emission() {
     let mut n1 = make_note(PitchStep::C, 4, Duration::quarter());
     n1.tremolo_marks = 3;
     n1.ornaments.push(crate::ir::articulation::Ornament {
-        name: "tremolo".to_string(),
+        name: OrnamentType::Tremolo,
         placement: Default::default(),
     });
 

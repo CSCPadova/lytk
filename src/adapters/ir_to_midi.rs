@@ -33,9 +33,12 @@ use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, T
 
 use super::dynamics_velocity::{lilypond_equalizer, lilypond_volume, LILYPOND_DEFAULT_VOLUME};
 use super::{AdapterError, FromIrAdapter, Result};
-use crate::ir::articulation::{Articulation, LyricSyllable, StartStop, SyllabicType};
+use crate::ir::articulation::{Articulation, LyricSyllable, StartStop, SyllabicType, WedgeType};
+use crate::ir::direction::EndingType;
+use crate::ir::direction::PedalType;
 use crate::ir::direction::{BarlineType, RepeatDirection};
 use crate::ir::duration::Frac;
+use crate::ir::duration::NoteType;
 use crate::ir::measure::{ClefSign, KeyMode, KeySignature, Measure, TimeSignature};
 use crate::ir::note::{Note, VoiceElement};
 use crate::ir::part::Part;
@@ -99,6 +102,9 @@ impl IrToMidiAdapter {
 
     /// Render a score to raw MIDI bytes.
     pub fn convert_bytes(&self, score: &Score) -> Result<Vec<u8>> {
+        // A note's dynamics play in its voice only.
+        let sunk = crate::ir::marks::sunk(score);
+        let score: &Score = &sunk;
         let parts = score.parts();
         let bars = Bars::new(&parts, self.unfold_repeats);
         let tempo = TempoMap::new(&parts, &bars);
@@ -360,9 +366,11 @@ fn read_marks(m: &Measure, i: usize, marks: &mut [Marks]) {
         if b.repeat_times.is_some() {
             marks[i].times = marks[i].times.or(b.repeat_times);
         }
-        match b.ending_type.as_deref() {
-            Some("start") if b.ending_number.is_some() => marks[i].ending = b.ending_number,
-            Some("stop" | "discontinue") => marks[i].ending_end = true,
+        match b.ending_type {
+            Some(EndingType::Start) if b.ending_number.is_some() => {
+                marks[i].ending = b.ending_number
+            }
+            Some(EndingType::Stop | EndingType::Discontinue) => marks[i].ending_end = true,
             _ => {}
         }
     }
@@ -481,9 +489,9 @@ impl TempoMap {
                     if bpm <= 0.0 {
                         continue;
                     }
-                    let quarters = beat_unit_to_quarters(t.beat_unit.as_deref(), t.dots);
+                    let quarters = beat_unit_to_quarters(t.beat_unit, t.dots);
                     let uspq = (60_000_000.0 / (bpm * quarters)).round() as u32;
-                    changes.push((bars.start[k] + d.offset_frac, uspq.clamp(1, 0xFF_FFFF)));
+                    changes.push((bars.start[k] + d.offset, uspq.clamp(1, 0xFF_FFFF)));
                 }
             }
         }
@@ -509,17 +517,9 @@ impl TempoMap {
 }
 
 /// A beat unit name + dots in quarter notes ("half" → 2, dotted quarter → 1.5).
-fn beat_unit_to_quarters(beat_unit: Option<&str>, dots: u8) -> f64 {
-    let base = match beat_unit.unwrap_or("quarter") {
-        "breve" => 8.0,
-        "whole" => 4.0,
-        "half" => 2.0,
-        "eighth" => 0.5,
-        "16th" => 0.25,
-        "32nd" => 0.125,
-        "64th" => 0.0625,
-        _ => 1.0,
-    };
+fn beat_unit_to_quarters(beat_unit: Option<NoteType>, dots: u8) -> f64 {
+    let q = beat_unit.unwrap_or(NoteType::Quarter).length() * Frac::from_integer(4);
+    let base = *q.numer() as f64 / *q.denom() as f64;
     (0..dots)
         .fold((base, base / 2.0), |(t, add), _| (t + add, add / 2.0))
         .0
@@ -565,11 +565,7 @@ fn conductor(bars: &Bars, tempo: &TempoMap, clock: &Clock) -> Vec<Timed> {
 
 /// (numerator, log2 denominator) of a time signature, if MIDI can hold it.
 fn written_meter(ts: &TimeSignature) -> Option<(u8, u8)> {
-    let num: u32 = ts
-        .beats
-        .split('+')
-        .filter_map(|b| b.trim().parse::<u32>().ok())
-        .sum();
+    let num = ts.numerator();
     (ts.beat_type.is_power_of_two() && (1..=255).contains(&num))
         .then(|| (num as u8, ts.beat_type.trailing_zeros() as u8))
 }
@@ -773,12 +769,12 @@ impl Player<'_> {
                 transpose = t.chromatic as i32 + 12 * t.octave_change as i32;
             }
             for d in m.directions.iter().filter(|d| self.on_staff(d.staff)) {
-                let at = bar + d.offset_frac;
+                let at = bar + d.offset;
                 if let Some(dm) = &d.dynamic {
                     dyns.push((at, None, Dyn::Level(lilypond_volume(&dm.sign))));
                 }
                 if let Some(w) = &d.wedge {
-                    dyns.push((at, None, wedge(&w.wedge_type)));
+                    dyns.extend(wedge(&w.wedge_type).map(|d| (at, None, d)));
                 }
                 if let Some(p) = &d.pedal {
                     let tick = clock.tick(at);
@@ -787,10 +783,10 @@ impl Player<'_> {
                         rank: 2,
                         ev: Ev::Cc(channel, 64, v),
                     };
-                    match p.pedal_type.as_str() {
-                        "start" => out.push(cc(127)),
-                        "stop" => out.push(cc(0)),
-                        "change" => {
+                    match p.pedal_type {
+                        PedalType::Start => out.push(cc(127)),
+                        PedalType::Stop => out.push(cc(0)),
+                        PedalType::Change => {
                             out.push(cc(0));
                             out.push(cc(127));
                         }
@@ -831,7 +827,7 @@ impl Player<'_> {
                                 ));
                             }
                             for w in &r.wedges {
-                                dyns.push((pos, Some(lane_no), wedge(&w.wedge_type)));
+                                dyns.extend(wedge(&w.wedge_type).map(|d| (pos, Some(lane_no), d)));
                             }
                         }
                         VoiceElement::Note(n) => {
@@ -941,7 +937,7 @@ impl Player<'_> {
             dyns.push((pos, Some(lane), Dyn::Level(lilypond_volume(&dm.sign))));
         }
         for w in &n.wedges {
-            dyns.push((pos, Some(lane), wedge(&w.wedge_type)));
+            dyns.extend(wedge(&w.wedge_type).map(|d| (pos, Some(lane), d)));
         }
         // LilyPond's `midi-length` procedures, applied in order, and
         // `midi-extra-velocity` summed (ly/script-init.ly).
@@ -949,23 +945,24 @@ impl Player<'_> {
         let mut extra = 0;
         let mut shorten = None;
         for a in articulations {
-            match a.name.as_str() {
-                "staccato" => {
+            use crate::ir::articulation::ArticulationType as A;
+            match a.name {
+                A::Staccato => {
                     let cap = self.tempo.wholes(pos, 0.5);
                     sounding = (sounding / Frac::from_integer(2)).min(cap);
                     shorten = Some((Frac::new(1, 2), Some(pos + cap)));
                     extra += 4;
                 }
-                "staccatissimo" => {
+                A::Staccatissimo => {
                     sounding = self.tempo.wholes(pos, 0.125);
                     extra += 6;
                 }
-                "detached-legato" | "portato" => {
+                A::DetachedLegato => {
                     sounding *= Frac::new(3, 4);
                     shorten = Some((Frac::new(3, 4), None));
                 }
-                "accent" => extra += 20,
-                "strong-accent" | "marcato" => extra += 40,
+                A::Accent => extra += 20,
+                A::StrongAccent => extra += 40,
                 _ => {}
             }
         }
@@ -1008,11 +1005,14 @@ fn key_of(n: &Note, transpose: i32) -> u8 {
     (n.pitch.midi_number() + transpose).clamp(0, 127) as u8
 }
 
-fn wedge(kind: &str) -> Dyn {
+/// A hairpin's start or end (a continuation over a line break changes
+/// nothing).
+fn wedge(kind: &WedgeType) -> Option<Dyn> {
     match kind {
-        "crescendo" => Dyn::Hairpin(1),
-        "diminuendo" | "decrescendo" => Dyn::Hairpin(-1),
-        _ => Dyn::HairpinStop,
+        WedgeType::Crescendo => Some(Dyn::Hairpin(1)),
+        WedgeType::Diminuendo => Some(Dyn::Hairpin(-1)),
+        WedgeType::Stop => Some(Dyn::HairpinStop),
+        WedgeType::Continue => None,
     }
 }
 
@@ -1526,7 +1526,7 @@ mod tests {
         m1.directions.push(crate::ir::direction::Direction {
             tempo: Some(crate::ir::direction::TempoDirection {
                 text: None,
-                beat_unit: Some("quarter".to_string()),
+                beat_unit: Some(NoteType::Quarter),
                 per_minute: Some(90.0),
                 dots: 0,
                 placement: crate::ir::articulation::Placement::Above,

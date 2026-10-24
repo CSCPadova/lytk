@@ -33,10 +33,11 @@ use super::harmony::{FiguredBass, Harmony};
 use super::measure::{Clef, KeySignature, TimeSignature};
 use super::pitch::Pitch;
 use super::score::ScoreMetadata;
+use super::serde_defaults::is_default;
 use serde::{Deserialize, Serialize};
 
 /// The type of a LilyPond context.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ContextType {
     Score,
     StaffGroup,
@@ -131,6 +132,7 @@ pub enum Music {
     /// A named context: `\new Staff = "rh" { ... }`
     Context {
         context_type: ContextType,
+        #[serde(default, skip_serializing_if = "is_default")]
         name: Option<String>,
         content: Box<Music>,
     },
@@ -140,6 +142,7 @@ pub enum Music {
     Note {
         pitch: Pitch,
         duration: Duration,
+        #[serde(default, skip_serializing_if = "is_default")]
         annotations: Vec<Annotation>,
     },
 
@@ -149,6 +152,7 @@ pub enum Music {
         pitches: Vec<(Pitch, Vec<Annotation>)>,
         duration: Duration,
         /// Chord-level annotations (arpeggio, staccato, etc.)
+        #[serde(default, skip_serializing_if = "is_default")]
         annotations: Vec<Annotation>,
     },
 
@@ -156,6 +160,7 @@ pub enum Music {
     /// A visible rest.
     Rest {
         duration: Duration,
+        #[serde(default, skip_serializing_if = "is_default")]
         is_measure_rest: bool,
     },
 
@@ -197,6 +202,7 @@ pub enum Music {
     Grace {
         content: Box<Music>,
         /// True for acciaccatura (slashed), false for appoggiatura.
+        #[serde(default, skip_serializing_if = "is_default")]
         slash: bool,
     },
 
@@ -212,6 +218,7 @@ pub enum Music {
         repeat_type: RepeatType,
         count: u16,
         body: Box<Music>,
+        #[serde(default, skip_serializing_if = "is_default")]
         alternatives: Vec<Music>,
     },
 
@@ -384,6 +391,7 @@ impl Music {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MusicDocument {
     /// Score metadata (title, composer, etc.)
+    #[serde(default, skip_serializing_if = "is_default")]
     pub metadata: ScoreMetadata,
     /// The root music expression.
     pub music: Music,

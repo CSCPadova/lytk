@@ -3,9 +3,75 @@
 //! These represent chord symbols (`Cmaj7`, `Dm/F`) and figured bass notation
 //! at the measure level, parallel to notes.
 
+use super::serde_defaults::{is_default, reduced};
 use serde::{Deserialize, Serialize};
 
-use super::duration::Duration;
+use super::duration::{Duration, Frac};
+use super::pitch::PitchStep;
+
+named_enum! {
+    /// A chord symbol's quality (MusicXML's `<kind>`).
+    pub enum ChordKind {
+        Major => "major",
+        Minor => "minor",
+        Augmented => "augmented",
+        Diminished => "diminished",
+        Dominant => "dominant",
+        MajorSeventh => "major-seventh",
+        MinorSeventh => "minor-seventh",
+        DiminishedSeventh => "diminished-seventh",
+        AugmentedSeventh => "augmented-seventh",
+        HalfDiminished => "half-diminished",
+        MajorMinor => "major-minor",
+        MajorSixth => "major-sixth",
+        MinorSixth => "minor-sixth",
+        DominantNinth => "dominant-ninth",
+        MajorNinth => "major-ninth",
+        MinorNinth => "minor-ninth",
+        Dominant11th => "dominant-11th",
+        Major11th => "major-11th",
+        Minor11th => "minor-11th",
+        Dominant13th => "dominant-13th",
+        Major13th => "major-13th",
+        Minor13th => "minor-13th",
+        SuspendedSecond => "suspended-second",
+        SuspendedFourth => "suspended-fourth",
+        Neapolitan => "Neapolitan",
+        Italian => "Italian",
+        French => "French",
+        German => "German",
+        Pedal => "pedal",
+        Power => "power",
+        Tristan => "Tristan",
+        Other => "other",
+        /// No chord (N.C.).
+        NoChord => "none",
+    }
+}
+
+named_enum! {
+    /// What a chord degree does to its chord (MusicXML's `<degree-type>`).
+    pub enum DegreeType {
+        Add => "add",
+        Alter => "alter",
+        Subtract => "subtract",
+    }
+}
+
+open_named_enum! {
+    /// A figure's accidental or stroke (MusicXML's `<prefix>`, `<suffix>`).
+    pub enum FigureAccidental {
+        Sharp => "sharp",
+        Flat => "flat",
+        Natural => "natural",
+        DoubleSharp => "double-sharp",
+        SharpSharp => "sharp-sharp",
+        FlatFlat => "flat-flat",
+        Slash => "slash",
+        BackSlash => "back-slash",
+        Vertical => "vertical",
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Chord qualities as steps
@@ -19,42 +85,57 @@ use super::duration::Duration;
 pub type ChordSteps = std::collections::BTreeMap<u8, i8>;
 
 /// MusicXML chord kinds as steps, simplest first (a tie picks the first).
-const KIND_STEPS: &[(&str, &[(u8, i8)])] = &[
-    ("major", &[(3, 0), (5, 0)]),
-    ("minor", &[(3, -1), (5, 0)]),
-    ("augmented", &[(3, 0), (5, 1)]),
-    ("diminished", &[(3, -1), (5, -1)]),
-    ("suspended-fourth", &[(4, 0), (5, 0)]),
-    ("suspended-second", &[(2, 0), (5, 0)]),
-    ("power", &[(5, 0)]),
-    ("dominant", &[(3, 0), (5, 0), (7, 0)]),
-    ("major-seventh", &[(3, 0), (5, 0), (7, 1)]),
-    ("minor-seventh", &[(3, -1), (5, 0), (7, 0)]),
-    ("diminished-seventh", &[(3, -1), (5, -1), (7, -1)]),
-    ("half-diminished", &[(3, -1), (5, -1), (7, 0)]),
-    ("augmented-seventh", &[(3, 0), (5, 1), (7, 0)]),
-    ("major-minor", &[(3, -1), (5, 0), (7, 1)]),
-    ("major-sixth", &[(3, 0), (5, 0), (6, 0)]),
-    ("minor-sixth", &[(3, -1), (5, 0), (6, 0)]),
-    ("dominant-ninth", &[(3, 0), (5, 0), (7, 0), (9, 0)]),
-    ("major-ninth", &[(3, 0), (5, 0), (7, 1), (9, 0)]),
-    ("minor-ninth", &[(3, -1), (5, 0), (7, 0), (9, 0)]),
-    ("dominant-11th", &[(3, 0), (5, 0), (7, 0), (9, 0), (11, 0)]),
-    ("major-11th", &[(3, 0), (5, 0), (7, 1), (9, 0), (11, 0)]),
-    ("minor-11th", &[(3, -1), (5, 0), (7, 0), (9, 0), (11, 0)]),
+const KIND_STEPS: &[(ChordKind, &[(u8, i8)])] = &[
+    (ChordKind::Major, &[(3, 0), (5, 0)]),
+    (ChordKind::Minor, &[(3, -1), (5, 0)]),
+    (ChordKind::Augmented, &[(3, 0), (5, 1)]),
+    (ChordKind::Diminished, &[(3, -1), (5, -1)]),
+    (ChordKind::SuspendedFourth, &[(4, 0), (5, 0)]),
+    (ChordKind::SuspendedSecond, &[(2, 0), (5, 0)]),
+    (ChordKind::Power, &[(5, 0)]),
+    (ChordKind::Dominant, &[(3, 0), (5, 0), (7, 0)]),
+    (ChordKind::MajorSeventh, &[(3, 0), (5, 0), (7, 1)]),
+    (ChordKind::MinorSeventh, &[(3, -1), (5, 0), (7, 0)]),
+    (ChordKind::DiminishedSeventh, &[(3, -1), (5, -1), (7, -1)]),
+    (ChordKind::HalfDiminished, &[(3, -1), (5, -1), (7, 0)]),
+    (ChordKind::AugmentedSeventh, &[(3, 0), (5, 1), (7, 0)]),
+    (ChordKind::MajorMinor, &[(3, -1), (5, 0), (7, 1)]),
+    (ChordKind::MajorSixth, &[(3, 0), (5, 0), (6, 0)]),
+    (ChordKind::MinorSixth, &[(3, -1), (5, 0), (6, 0)]),
+    (ChordKind::DominantNinth, &[(3, 0), (5, 0), (7, 0), (9, 0)]),
+    (ChordKind::MajorNinth, &[(3, 0), (5, 0), (7, 1), (9, 0)]),
+    (ChordKind::MinorNinth, &[(3, -1), (5, 0), (7, 0), (9, 0)]),
+    (
+        ChordKind::Dominant11th,
+        &[(3, 0), (5, 0), (7, 0), (9, 0), (11, 0)],
+    ),
+    (
+        ChordKind::Major11th,
+        &[(3, 0), (5, 0), (7, 1), (9, 0), (11, 0)],
+    ),
+    (
+        ChordKind::Minor11th,
+        &[(3, -1), (5, 0), (7, 0), (9, 0), (11, 0)],
+    ),
     // A 13th chord leaves out the 11th (it clashes with the 3rd), as
     // LilyPond and players do; a minor one keeps it.
-    ("dominant-13th", &[(3, 0), (5, 0), (7, 0), (9, 0), (13, 0)]),
-    ("major-13th", &[(3, 0), (5, 0), (7, 1), (9, 0), (13, 0)]),
     (
-        "minor-13th",
+        ChordKind::Dominant13th,
+        &[(3, 0), (5, 0), (7, 0), (9, 0), (13, 0)],
+    ),
+    (
+        ChordKind::Major13th,
+        &[(3, 0), (5, 0), (7, 1), (9, 0), (13, 0)],
+    ),
+    (
+        ChordKind::Minor13th,
         &[(3, -1), (5, 0), (7, 0), (9, 0), (11, 0), (13, 0)],
     ),
 ];
 
 /// The steps of a MusicXML chord kind, `None` for a kind without them
 /// (`none`, `other`, `pedal`, the augmented sixths …).
-pub fn kind_steps(kind: &str) -> Option<ChordSteps> {
+pub fn kind_steps(kind: ChordKind) -> Option<ChordSteps> {
     KIND_STEPS
         .iter()
         .find(|(k, _)| *k == kind)
@@ -62,19 +143,19 @@ pub fn kind_steps(kind: &str) -> Option<ChordSteps> {
 }
 
 /// The steps of a kind with its degree changes applied.
-pub fn chord_steps(kind: &str, degrees: &[ChordDegree]) -> Option<ChordSteps> {
+pub fn chord_steps(kind: ChordKind, degrees: &[ChordDegree]) -> Option<ChordSteps> {
     let mut steps = kind_steps(kind)?;
     for d in degrees {
         let alter = d.alter.round() as i8;
-        match d.degree_type.as_str() {
-            "subtract" => {
+        match d.degree_type {
+            DegreeType::Subtract => {
                 steps.remove(&d.value);
             }
-            "alter" => {
+            DegreeType::Alter => {
                 let base = steps.get(&d.value).copied().unwrap_or(0);
                 steps.insert(d.value, base + alter);
             }
-            _ => {
+            DegreeType::Add => {
                 steps.insert(d.value, alter);
             }
         }
@@ -84,19 +165,19 @@ pub fn chord_steps(kind: &str, degrees: &[ChordDegree]) -> Option<ChordSteps> {
 
 /// The MusicXML kind nearest to some steps, and the degrees that make the
 /// difference (added, altered or removed), lowest step first.
-pub fn kind_and_degrees(steps: &ChordSteps) -> (&'static str, Vec<ChordDegree>) {
+pub fn kind_and_degrees(steps: &ChordSteps) -> (ChordKind, Vec<ChordDegree>) {
     let diff = |template: &ChordSteps| -> Vec<ChordDegree> {
         let mut out = Vec::new();
         for (&step, &alter) in steps {
             match template.get(&step) {
-                None => out.push(degree(step, alter, "add")),
-                Some(&t) if t != alter => out.push(degree(step, alter - t, "alter")),
+                None => out.push(degree(step, alter, DegreeType::Add)),
+                Some(&t) if t != alter => out.push(degree(step, alter - t, DegreeType::Alter)),
                 Some(_) => {}
             }
         }
         for &step in template.keys() {
             if !steps.contains_key(&step) {
-                out.push(degree(step, 0, "subtract"));
+                out.push(degree(step, 0, DegreeType::Subtract));
             }
         }
         out.sort_by_key(|d| d.value);
@@ -119,18 +200,21 @@ pub fn kind_and_degrees(steps: &ChordSteps) -> (&'static str, Vec<ChordDegree>) 
         // A step removed reads worse than one added (`add9`, not a ninth
         // chord without its seventh).
         .min_by_key(|(_, d, misses)| {
-            let removed = d.iter().filter(|d| d.degree_type == "subtract").count();
+            let removed = d
+                .iter()
+                .filter(|d| d.degree_type == DegreeType::Subtract)
+                .count();
             (d.len(), removed, *misses)
         })
         .map(|(kind, d, _)| (kind, d))
-        .unwrap_or(("major", Vec::new()))
+        .unwrap_or((ChordKind::Major, Vec::new()))
 }
 
-fn degree(value: u8, alter: i8, degree_type: &str) -> ChordDegree {
+fn degree(value: u8, alter: i8, degree_type: DegreeType) -> ChordDegree {
     ChordDegree {
         value,
         alter: f64::from(alter),
-        degree_type: degree_type.to_string(),
+        degree_type,
     }
 }
 
@@ -368,7 +452,7 @@ pub fn lead_sheet_chord_steps(suffix: &str) -> Option<ChordSteps> {
 
 /// A lead-sheet suffix for a kind and its degrees: `m7`, `7b9`, `add9`,
 /// `maj7#11`, `sus4` …
-pub fn lead_sheet_suffix(kind: &str, degrees: &[ChordDegree]) -> String {
+pub fn lead_sheet_suffix(kind: ChordKind, degrees: &[ChordDegree]) -> String {
     let mut out = suffix_of_kind(kind).to_string();
     for d in degrees {
         let sign = match d.alter.round() as i32 {
@@ -376,9 +460,9 @@ pub fn lead_sheet_suffix(kind: &str, degrees: &[ChordDegree]) -> String {
             a if a > 0 => "#",
             _ => "",
         };
-        match d.degree_type.as_str() {
-            "subtract" => out.push_str(&format!("no{}", d.value)),
-            "add" if sign.is_empty() => out.push_str(&format!("add{}", d.value)),
+        match d.degree_type {
+            DegreeType::Subtract => out.push_str(&format!("no{}", d.value)),
+            DegreeType::Add if sign.is_empty() => out.push_str(&format!("add{}", d.value)),
             _ => out.push_str(&format!("{sign}{}", d.value)),
         }
     }
@@ -387,33 +471,34 @@ pub fn lead_sheet_suffix(kind: &str, degrees: &[ChordDegree]) -> String {
 
 /// LilyPond chord modifiers for a kind and its degrees, without the `:`
 /// (`m7.5-`, `7.9-`, `3.5.9`, `sus4.7`); empty for a plain major triad.
-pub fn ly_chord_modifiers(kind: &str, degrees: &[ChordDegree]) -> String {
+pub fn ly_chord_modifiers(kind: ChordKind, degrees: &[ChordDegree]) -> String {
+    use ChordKind as K;
     let base = match kind {
-        "major" => "",
-        "minor" => "m",
-        "augmented" => "aug",
-        "diminished" => "dim",
-        "suspended-fourth" => "sus4",
-        "suspended-second" => "sus2",
-        "power" => "5",
-        "dominant" => "7",
-        "major-seventh" => "maj7",
-        "minor-seventh" => "m7",
-        "diminished-seventh" => "dim7",
-        "half-diminished" => "m7.5-",
-        "augmented-seventh" => "aug7",
-        "major-minor" => "m7+",
-        "major-sixth" => "6",
-        "minor-sixth" => "m6",
-        "dominant-ninth" => "9",
-        "major-ninth" => "maj9",
-        "minor-ninth" => "m9",
-        "dominant-11th" => "11",
-        "major-11th" => "maj11",
-        "minor-11th" => "m11",
-        "dominant-13th" => "13",
-        "major-13th" => "maj13",
-        "minor-13th" => "m13",
+        K::Major => "",
+        K::Minor => "m",
+        K::Augmented => "aug",
+        K::Diminished => "dim",
+        K::SuspendedFourth => "sus4",
+        K::SuspendedSecond => "sus2",
+        K::Power => "5",
+        K::Dominant => "7",
+        K::MajorSeventh => "maj7",
+        K::MinorSeventh => "m7",
+        K::DiminishedSeventh => "dim7",
+        K::HalfDiminished => "m7.5-",
+        K::AugmentedSeventh => "aug7",
+        K::MajorMinor => "m7+",
+        K::MajorSixth => "6",
+        K::MinorSixth => "m6",
+        K::DominantNinth => "9",
+        K::MajorNinth => "maj9",
+        K::MinorNinth => "m9",
+        K::Dominant11th => "11",
+        K::Major11th => "maj11",
+        K::Minor11th => "m11",
+        K::Dominant13th => "13",
+        K::Major13th => "maj13",
+        K::Minor13th => "m13",
         _ => "",
     };
     let mut adds = Vec::new();
@@ -424,9 +509,9 @@ pub fn ly_chord_modifiers(kind: &str, degrees: &[ChordDegree]) -> String {
             a if a > 0 => "+",
             _ => "",
         };
-        match d.degree_type.as_str() {
-            "subtract" => removals.push(d.value.to_string()),
-            _ => adds.push(format!("{}{sign}", d.value)),
+        match d.degree_type {
+            DegreeType::Subtract => removals.push(d.value.to_string()),
+            DegreeType::Add | DegreeType::Alter => adds.push(format!("{}{sign}", d.value)),
         }
     }
     // Added steps need the chord's extent before them: a triad's is 3.5.
@@ -451,37 +536,37 @@ pub fn ly_chord_modifiers(kind: &str, degrees: &[ChordDegree]) -> String {
 
 /// The kind and degrees of a lead-sheet suffix (`None` when it is none):
 /// [`lead_sheet_chord_steps`] read as the nearest MusicXML kind.
-pub fn parse_chord_suffix(suffix: &str) -> Option<(&'static str, Vec<ChordDegree>)> {
+pub fn parse_chord_suffix(suffix: &str) -> Option<(ChordKind, Vec<ChordDegree>)> {
     lead_sheet_chord_steps(suffix).map(|s| kind_and_degrees(&s))
 }
 
 /// The lead-sheet suffix of a MusicXML chord kind (`minor-seventh` → `m7`).
-pub fn suffix_of_kind(kind: &str) -> &'static str {
+pub fn suffix_of_kind(kind: ChordKind) -> &'static str {
     match kind {
-        "minor" => "m",
-        "dominant" => "7",
-        "major-seventh" => "maj7",
-        "minor-seventh" => "m7",
-        "diminished" => "dim",
-        "diminished-seventh" => "dim7",
-        "augmented" => "aug",
-        "augmented-seventh" => "aug7",
-        "half-diminished" => "m7b5",
-        "major-minor" => "m(maj7)",
-        "major-sixth" => "6",
-        "minor-sixth" => "m6",
-        "dominant-ninth" => "9",
-        "major-ninth" => "maj9",
-        "minor-ninth" => "m9",
-        "dominant-11th" => "11",
-        "major-11th" => "maj11",
-        "minor-11th" => "m11",
-        "dominant-13th" => "13",
-        "major-13th" => "maj13",
-        "minor-13th" => "m13",
-        "suspended-second" => "sus2",
-        "suspended-fourth" => "sus4",
-        "power" => "5",
+        ChordKind::Minor => "m",
+        ChordKind::Dominant => "7",
+        ChordKind::MajorSeventh => "maj7",
+        ChordKind::MinorSeventh => "m7",
+        ChordKind::Diminished => "dim",
+        ChordKind::DiminishedSeventh => "dim7",
+        ChordKind::Augmented => "aug",
+        ChordKind::AugmentedSeventh => "aug7",
+        ChordKind::HalfDiminished => "m7b5",
+        ChordKind::MajorMinor => "m(maj7)",
+        ChordKind::MajorSixth => "6",
+        ChordKind::MinorSixth => "m6",
+        ChordKind::DominantNinth => "9",
+        ChordKind::MajorNinth => "maj9",
+        ChordKind::MinorNinth => "m9",
+        ChordKind::Dominant11th => "11",
+        ChordKind::Major11th => "maj11",
+        ChordKind::Minor11th => "m11",
+        ChordKind::Dominant13th => "13",
+        ChordKind::Major13th => "maj13",
+        ChordKind::Minor13th => "m13",
+        ChordKind::SuspendedSecond => "sus2",
+        ChordKind::SuspendedFourth => "sus4",
+        ChordKind::Power => "5",
         _ => "",
     }
 }
@@ -489,9 +574,9 @@ pub fn suffix_of_kind(kind: &str) -> &'static str {
 /// A pitch used in chord symbol descriptions (root or bass).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChordPitch {
-    /// Note step: C, D, E, F, G, A, B.
-    pub step: String,
+    pub step: PitchStep,
     /// Chromatic alteration in semitones (-2.0 to 2.0).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub alter: f64,
 }
 
@@ -501,9 +586,9 @@ pub struct ChordDegree {
     /// Scale degree number (1–13).
     pub value: u8,
     /// Alteration in semitones (-2.0 to 2.0).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub alter: f64,
-    /// Type: "add", "subtract", or "alter".
-    pub degree_type: String,
+    pub degree_type: DegreeType,
 }
 
 /// A harmony / chord symbol.
@@ -513,19 +598,25 @@ pub struct ChordDegree {
 pub struct Harmony {
     /// Root pitch of the chord.
     pub root: ChordPitch,
-    /// Chord quality: "major", "minor", "dominant", "diminished",
-    /// "augmented", "half-diminished", "major-seventh", etc.
-    pub kind: String,
+    /// Chord quality.
+    pub kind: ChordKind,
     /// Optional bass note for inversions (e.g. C/E).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub bass: Option<ChordPitch>,
     /// Degree modifications.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub degrees: Vec<ChordDegree>,
-    /// Position in the measure (offset from measure start in divisions).
-    pub offset: i32,
+    /// Where in the bar, in whole notes from its start.
+    #[serde(
+        default,
+        skip_serializing_if = "is_default",
+        deserialize_with = "reduced"
+    )]
+    pub offset: Frac,
     /// Optional functional-harmony Roman numeral (MusicXML `<function>`, e.g.
     /// `"V"`, `"ii"`). Supplements the chord symbol; `None` for a plain chord
     /// symbol. Omitted from serialization when absent for JSON back-compat.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub function: Option<String>,
 }
 
@@ -533,11 +624,14 @@ pub struct Harmony {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Figure {
     /// The interval number (e.g. 6, 4, 3). None for an empty figure slot.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub number: Option<u8>,
-    /// Prefix accidental: "sharp", "flat", "natural", "double-sharp", etc.
-    pub prefix: Option<String>,
+    /// Prefix accidental.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub prefix: Option<FigureAccidental>,
     /// Suffix accidental.
-    pub suffix: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub suffix: Option<FigureAccidental>,
 }
 
 /// A figured bass indication.
@@ -550,9 +644,15 @@ pub struct FiguredBass {
     /// Duration of the figured bass indication.
     pub duration: Duration,
     /// Whether figures are enclosed in parentheses.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub parentheses: bool,
-    /// Position in the measure (offset from measure start in divisions).
-    pub offset: i32,
+    /// Where in the bar, in whole notes from its start.
+    #[serde(
+        default,
+        skip_serializing_if = "is_default",
+        deserialize_with = "reduced"
+    )]
+    pub offset: Frac,
 }
 
 #[cfg(test)]
@@ -574,20 +674,20 @@ mod suffix_tests {
         (
             k.to_string(),
             d.into_iter()
-                .map(|d| (d.value, d.alter as i8, d.degree_type))
+                .map(|d| (d.value, d.alter as i8, d.degree_type.to_string()))
                 .collect(),
         )
     }
 
     #[test]
     fn every_kind_reads_back_from_its_own_spellings() {
-        for (kind, _) in KIND_STEPS {
+        for &(kind, _) in KIND_STEPS {
             let ly = ly_chord_modifiers(kind, &[]);
-            assert_eq!(read(ly_chord_steps(&ly)).0, *kind, "LilyPond {ly}");
+            assert_eq!(read(ly_chord_steps(&ly)).0, kind.as_str(), "LilyPond {ly}");
             let lead = suffix_of_kind(kind);
             assert_eq!(
                 read(lead_sheet_chord_steps(lead)).0,
-                *kind,
+                kind.as_str(),
                 "lead sheet {lead}"
             );
         }
@@ -672,11 +772,23 @@ mod suffix_tests {
     #[test]
     fn degrees_spell_back_in_both_syntaxes() {
         for (kind, degrees) in [
-            ("dominant", vec![degree(9, -1, "add"), degree(11, 1, "add")]),
-            ("major", vec![degree(9, 0, "add")]),
-            ("minor", vec![degree(9, 0, "add")]),
-            ("dominant-ninth", vec![degree(5, 1, "alter")]),
-            ("dominant", vec![degree(5, 0, "subtract")]),
+            (
+                ChordKind::Dominant,
+                vec![
+                    degree(9, -1, DegreeType::Add),
+                    degree(11, 1, DegreeType::Add),
+                ],
+            ),
+            (ChordKind::Major, vec![degree(9, 0, DegreeType::Add)]),
+            (ChordKind::Minor, vec![degree(9, 0, DegreeType::Add)]),
+            (
+                ChordKind::DominantNinth,
+                vec![degree(5, 1, DegreeType::Alter)],
+            ),
+            (
+                ChordKind::Dominant,
+                vec![degree(5, 0, DegreeType::Subtract)],
+            ),
         ] {
             let want = (kind, degrees.clone());
             let ly = ly_chord_modifiers(kind, &degrees);

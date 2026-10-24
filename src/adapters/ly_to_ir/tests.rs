@@ -234,7 +234,9 @@ mod tests {
     #[test]
     fn test_parse_dynamics_and_ties() {
         let adapter = LyToIrAdapter::new();
-        let score = adapter.convert_str(r#"{ c'4\f~ c' d'\< e'\! }"#).unwrap();
+        let mut score = adapter.convert_str(r#"{ c'4\f~ c' d'\< e'\! }"#).unwrap();
+        // Each note's marks back on it.
+        crate::ir::marks::sink(&mut score);
 
         let parts = score.parts();
         let notes: Vec<&Note> = parts[0]
@@ -251,12 +253,12 @@ mod tests {
         assert_eq!(notes.len(), 4);
         // c' has \f dynamic
         assert!(!notes[0].dynamics.is_empty());
-        assert_eq!(notes[0].dynamics[0].sign, "f");
+        assert_eq!(notes[0].dynamics[0].sign.as_str(), "f");
         // c' has tie
         assert!(!notes[0].ties.is_empty());
         // e' has \! (wedge stop)
         assert!(!notes[3].wedges.is_empty());
-        assert_eq!(notes[3].wedges[0].wedge_type, "stop");
+        assert_eq!(notes[3].wedges[0].wedge_type.as_str(), "stop");
     }
 
     #[test]
@@ -1255,7 +1257,10 @@ figs = \figuremode { <6 4>1 | <_+>1 }
             assert_eq!(m2_figs.len(), 1);
             assert_eq!(m2_figs[0].figures.len(), 1);
             assert_eq!(m2_figs[0].figures[0].number, None);
-            assert_eq!(m2_figs[0].figures[0].suffix.as_deref(), Some("sharp"));
+            assert_eq!(
+                m2_figs[0].figures[0].suffix.as_ref().map(|v| v.as_str()),
+                Some("sharp")
+            );
         }
     }
 
@@ -1273,9 +1278,15 @@ figs = \figuremode { <6+ 4->1 }
         assert_eq!(m1_figs.len(), 1);
         assert_eq!(m1_figs[0].figures.len(), 2);
         assert_eq!(m1_figs[0].figures[0].number, Some(6));
-        assert_eq!(m1_figs[0].figures[0].suffix.as_deref(), Some("sharp"));
+        assert_eq!(
+            m1_figs[0].figures[0].suffix.as_ref().map(|v| v.as_str()),
+            Some("sharp")
+        );
         assert_eq!(m1_figs[0].figures[1].number, Some(4));
-        assert_eq!(m1_figs[0].figures[1].suffix.as_deref(), Some("flat"));
+        assert_eq!(
+            m1_figs[0].figures[1].suffix.as_ref().map(|v| v.as_str()),
+            Some("flat")
+        );
     }
 
     #[test]
@@ -1292,7 +1303,7 @@ figs = \figuremode { <6! 4>1 }
         assert_eq!(m1_figs.len(), 1);
         assert_eq!(m1_figs[0].figures[0].number, Some(6));
         assert_eq!(
-            m1_figs[0].figures[0].suffix.as_deref(),
+            m1_figs[0].figures[0].suffix.as_ref().map(|v| v.as_str()),
             Some("natural"),
             "natural accidental should be parsed"
         );
@@ -1311,10 +1322,14 @@ figs = \figuremode { <6++ 4-->1 }
         let score = adapter.convert_str(source).unwrap();
         let m1_figs = &score.parts()[0].measures[0].figured_bass;
         assert_eq!(
-            m1_figs[0].figures[0].suffix.as_deref(),
+            m1_figs[0].figures[0].suffix.as_ref().map(|v| v.as_str()),
             Some("double-sharp")
         );
-        assert_eq!(m1_figs[0].figures[1].suffix.as_deref(), Some("double-flat"));
+        // MusicXML's name for it (`double-flat` is none).
+        assert_eq!(
+            m1_figs[0].figures[1].suffix.as_ref().map(|v| v.as_str()),
+            Some("flat-flat")
+        );
     }
 
     #[test]
@@ -1624,7 +1639,7 @@ melB = { g'4 a' b' c'' }
             notes[0]
                 .beams
                 .iter()
-                .any(|b| b.beam_type == "begin" && b.number == 1),
+                .any(|b| b.beam_type.as_str() == "begin" && b.number == 1),
             "first note should have beam begin: {:?}",
             notes[0].beams
         );
@@ -1633,7 +1648,7 @@ melB = { g'4 a' b' c'' }
             notes[1]
                 .beams
                 .iter()
-                .any(|b| b.beam_type == "continue" && b.number == 1),
+                .any(|b| b.beam_type.as_str() == "continue" && b.number == 1),
             "second note should have beam continue: {:?}",
             notes[1].beams
         );
@@ -1641,7 +1656,7 @@ melB = { g'4 a' b' c'' }
             notes[2]
                 .beams
                 .iter()
-                .any(|b| b.beam_type == "continue" && b.number == 1),
+                .any(|b| b.beam_type.as_str() == "continue" && b.number == 1),
             "third note should have beam continue: {:?}",
             notes[2].beams
         );
@@ -1650,7 +1665,7 @@ melB = { g'4 a' b' c'' }
             notes[3]
                 .beams
                 .iter()
-                .any(|b| b.beam_type == "end" && b.number == 1),
+                .any(|b| b.beam_type.as_str() == "end" && b.number == 1),
             "last note should have beam end: {:?}",
             notes[3].beams
         );
@@ -1680,35 +1695,35 @@ melB = { g'4 a' b' c'' }
         assert!(notes[0]
             .beams
             .iter()
-            .any(|b| b.beam_type == "begin" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "begin" && b.number == 1));
         assert!(notes[1]
             .beams
             .iter()
-            .any(|b| b.beam_type == "continue" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "continue" && b.number == 1));
         assert!(notes[2]
             .beams
             .iter()
-            .any(|b| b.beam_type == "continue" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "continue" && b.number == 1));
         assert!(notes[3]
             .beams
             .iter()
-            .any(|b| b.beam_type == "end" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "end" && b.number == 1));
         assert!(notes[4]
             .beams
             .iter()
-            .any(|b| b.beam_type == "begin" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "begin" && b.number == 1));
         assert!(notes[5]
             .beams
             .iter()
-            .any(|b| b.beam_type == "continue" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "continue" && b.number == 1));
         assert!(notes[6]
             .beams
             .iter()
-            .any(|b| b.beam_type == "continue" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "continue" && b.number == 1));
         assert!(notes[7]
             .beams
             .iter()
-            .any(|b| b.beam_type == "end" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "end" && b.number == 1));
     }
 
     #[test]
@@ -1732,12 +1747,24 @@ melB = { g'4 a' b' c'' }
             })
             .collect();
         assert_eq!(notes.len(), 6, "should have 6 eighth notes");
-        assert!(notes[0].beams.iter().any(|b| b.beam_type == "begin"));
-        assert!(notes[1].beams.iter().any(|b| b.beam_type == "continue"));
-        assert!(notes[2].beams.iter().any(|b| b.beam_type == "end"));
-        assert!(notes[3].beams.iter().any(|b| b.beam_type == "begin"));
-        assert!(notes[4].beams.iter().any(|b| b.beam_type == "continue"));
-        assert!(notes[5].beams.iter().any(|b| b.beam_type == "end"));
+        assert!(notes[0]
+            .beams
+            .iter()
+            .any(|b| b.beam_type.as_str() == "begin"));
+        assert!(notes[1]
+            .beams
+            .iter()
+            .any(|b| b.beam_type.as_str() == "continue"));
+        assert!(notes[2].beams.iter().any(|b| b.beam_type.as_str() == "end"));
+        assert!(notes[3]
+            .beams
+            .iter()
+            .any(|b| b.beam_type.as_str() == "begin"));
+        assert!(notes[4]
+            .beams
+            .iter()
+            .any(|b| b.beam_type.as_str() == "continue"));
+        assert!(notes[5].beams.iter().any(|b| b.beam_type.as_str() == "end"));
     }
 
     #[test]
@@ -1762,11 +1789,15 @@ melB = { g'4 a' b' c'' }
             })
             .collect();
         assert_eq!(notes.len(), 8);
-        assert_eq!(notes[0].stem_direction, "up");
-        assert_eq!(notes[1].stem_direction, "up");
-        assert_eq!(notes[2].stem_direction, "down");
-        assert_eq!(notes[3].stem_direction, "down");
-        assert_eq!(notes[4].stem_direction, "up", "G4 auto-stem should be up");
+        assert_eq!(notes[0].stem_direction.map(|s| s.as_str()), Some("up"));
+        assert_eq!(notes[1].stem_direction.map(|s| s.as_str()), Some("up"));
+        assert_eq!(notes[2].stem_direction.map(|s| s.as_str()), Some("down"));
+        assert_eq!(notes[3].stem_direction.map(|s| s.as_str()), Some("down"));
+        assert_eq!(
+            notes[4].stem_direction.map(|s| s.as_str()),
+            Some("up"),
+            "G4 auto-stem should be up"
+        );
     }
 
     #[test]
@@ -1789,9 +1820,21 @@ melB = { g'4 a' b' c'' }
                 }
             })
             .collect();
-        assert_eq!(notes[0].stem_direction, "up", "C4 below middle -> up");
-        assert_eq!(notes[1].stem_direction, "down", "B4 on middle line -> down");
-        assert_eq!(notes[2].stem_direction, "down", "C5 above middle -> down");
+        assert_eq!(
+            notes[0].stem_direction.map(|s| s.as_str()),
+            Some("up"),
+            "C4 below middle -> up"
+        );
+        assert_eq!(
+            notes[1].stem_direction.map(|s| s.as_str()),
+            Some("down"),
+            "B4 on middle line -> down"
+        );
+        assert_eq!(
+            notes[2].stem_direction.map(|s| s.as_str()),
+            Some("down"),
+            "C5 above middle -> down"
+        );
     }
 
     #[test]
@@ -1832,27 +1875,27 @@ melB = { g'4 a' b' c'' }
         assert!(notes[0]
             .beams
             .iter()
-            .any(|b| b.beam_type == "begin" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "begin" && b.number == 1));
         assert!(notes[3]
             .beams
             .iter()
-            .any(|b| b.beam_type == "end" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "end" && b.number == 1));
         assert!(notes[4]
             .beams
             .iter()
-            .any(|b| b.beam_type == "begin" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "begin" && b.number == 1));
         assert!(notes[7]
             .beams
             .iter()
-            .any(|b| b.beam_type == "end" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "end" && b.number == 1));
         assert!(notes[8]
             .beams
             .iter()
-            .any(|b| b.beam_type == "begin" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "begin" && b.number == 1));
         assert!(notes[11]
             .beams
             .iter()
-            .any(|b| b.beam_type == "end" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "end" && b.number == 1));
     }
 
     #[test]
@@ -1879,15 +1922,15 @@ melB = { g'4 a' b' c'' }
         assert!(notes[1]
             .beams
             .iter()
-            .any(|b| b.beam_type == "begin" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "begin" && b.number == 1));
         assert!(notes[2]
             .beams
             .iter()
-            .any(|b| b.beam_type == "continue" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "continue" && b.number == 1));
         assert!(notes[3]
             .beams
             .iter()
-            .any(|b| b.beam_type == "end" && b.number == 1));
+            .any(|b| b.beam_type.as_str() == "end" && b.number == 1));
         assert!(notes[0].beams.is_empty());
         assert!(notes[4].beams.is_empty());
     }
@@ -1913,10 +1956,19 @@ melB = { g'4 a' b' c'' }
             })
             .collect();
         assert_eq!(notes.len(), 4);
-        assert_eq!(notes[0].stem_direction, "up", "B3 below alto middle -> up");
-        assert_eq!(notes[1].stem_direction, "down", "C4 on alto middle -> down");
         assert_eq!(
-            notes[2].stem_direction, "down",
+            notes[0].stem_direction.map(|s| s.as_str()),
+            Some("up"),
+            "B3 below alto middle -> up"
+        );
+        assert_eq!(
+            notes[1].stem_direction.map(|s| s.as_str()),
+            Some("down"),
+            "C4 on alto middle -> down"
+        );
+        assert_eq!(
+            notes[2].stem_direction.map(|s| s.as_str()),
+            Some("down"),
             "D4 above alto middle -> down"
         );
     }
@@ -2221,8 +2273,8 @@ melB = { g'4 a' b' c'' }
             .filter_map(|d| d.pedal.as_ref())
             .collect();
         assert_eq!(dirs.len(), 2, "should have 2 pedal events");
-        assert_eq!(dirs[0].pedal_type, "start");
-        assert_eq!(dirs[1].pedal_type, "stop");
+        assert_eq!(dirs[0].pedal_type.as_str(), "start");
+        assert_eq!(dirs[1].pedal_type.as_str(), "stop");
     }
 
     #[test]
@@ -2238,9 +2290,9 @@ melB = { g'4 a' b' c'' }
             .filter_map(|d| d.octave_shift.as_ref())
             .collect();
         assert_eq!(shifts.len(), 2, "should have 2 octave shifts");
-        assert_eq!(shifts[0].shift_type, "up");
+        assert_eq!(shifts[0].shift_type.as_str(), "up");
         assert_eq!(shifts[0].size, 8);
-        assert_eq!(shifts[1].shift_type, "stop");
+        assert_eq!(shifts[1].shift_type.as_str(), "stop");
         assert_eq!(shifts[1].size, 0);
     }
 
@@ -2413,7 +2465,10 @@ melB = { g'4 a' b' c'' }
             notes[0].tremolo_marks, 3,
             "c'4:32 should have 3 tremolo marks"
         );
-        assert!(notes[0].ornaments.iter().any(|o| o.name == "tremolo"));
+        assert!(notes[0]
+            .ornaments
+            .iter()
+            .any(|o| o.name.as_str() == "tremolo"));
         assert_eq!(
             notes[1].tremolo_marks, 1,
             "d'8:16 should have 1 tremolo mark"
@@ -2812,7 +2867,7 @@ scoreAll = {
 
         fn note_arts(e: &VoiceElement) -> Vec<String> {
             if let VoiceElement::Note(n) = e {
-                n.articulations.iter().map(|a| a.name.clone()).collect()
+                n.articulations.iter().map(|a| a.name.to_string()).collect()
             } else {
                 vec![]
             }
@@ -3766,7 +3821,9 @@ mod m5 {
 
     #[test]
     fn text_scripts_are_text_directions() {
-        let s = read(r#"{ c''4^"dolce" d''_"rit." e''-"x" f'' }"#);
+        let mut s = read(r#"{ c''4^"dolce" d''_"rit." e''-"x" f'' }"#);
+        // Each note's marks back on it.
+        crate::ir::marks::sink(&mut s);
         let texts: Vec<(String, Placement)> = s.parts()[0].measures[0].voices[0]
             .elements
             .iter()
@@ -3814,7 +3871,9 @@ mod m5 {
             .elements
             .iter()
             .filter_map(|e| match e {
-                VoiceElement::Note(n) => Some(n.stem_direction.clone()),
+                VoiceElement::Note(n) => {
+                    Some(n.stem_direction.map_or(String::new(), |s| s.to_string()))
+                }
                 _ => None,
             })
             .collect();
@@ -3858,26 +3917,23 @@ mod m7 {
                 m.harmonies
                     .iter()
                     .map(|h| {
-                        let bass = h.bass.as_ref().map(|b| (b.step.clone(), b.alter));
-                        (
-                            h.offset,
-                            h.root.step.clone(),
-                            h.kind.clone(),
-                            h.degrees.len(),
-                            bass,
-                        )
+                        let bass = h.bass.as_ref().map(|b| (b.step, b.alter));
+                        (h.offset, h.root.step, h.kind, h.degrees.len(), bass)
                     })
                     .collect::<Vec<_>>()
             })
             .collect();
-        let g7 = (4, "G".to_string(), "dominant".to_string(), 1, None);
-        let nc = (8, "C".to_string(), "none".to_string(), 0, None);
+        let at = |q| crate::ir::duration::Frac::new(q, 4);
+        use crate::ir::harmony::ChordKind;
+        use crate::ir::pitch::PitchStep;
+        let g7 = (at(1), PitchStep::G, ChordKind::Dominant, 1, None);
+        let nc = (at(2), PitchStep::C, ChordKind::NoChord, 0, None);
         let cm = (
+            at(0),
+            PitchStep::C,
+            ChordKind::Minor,
             0,
-            "C".into(),
-            "minor".into(),
-            0,
-            Some(("E".to_string(), -1.0)),
+            Some((PitchStep::E, -1.0)),
         );
         assert_eq!(chords, vec![vec![g7, nc], vec![cm]]);
     }
@@ -3943,10 +3999,10 @@ mod m4 {
             .iter()
             .map(|e| {
                 let n = &e.notes()[0];
-                (n.stem_direction.clone(), n.beams.len())
+                (n.stem_direction.map_or("", |s| s.as_str()), n.beams.len())
             })
             .collect();
-        let stems: Vec<&str> = notes.iter().map(|n| n.0.as_str()).collect();
+        let stems: Vec<&str> = notes.iter().map(|n| n.0).collect();
         let beams: Vec<usize> = notes.iter().map(|n| n.1).collect();
         assert_eq!(stems, ["", "", "up", "up"]);
         assert_eq!(beams, [0, 0, 1, 1]);

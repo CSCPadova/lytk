@@ -17,8 +17,10 @@ use super::super::music::ContextType;
 use super::super::note::{Chord, Note, Rest, VoiceElement};
 use super::super::part::Part;
 use super::super::score::*;
-use super::super::timeline::{split_tied, Event, Grid, Timeline, OFFSET_DIVISIONS};
+use super::super::timeline::{split_tied, Event, Grid, Timeline};
 use super::state::{LowerState, TimedEvent};
+use crate::ir::direction::{BarlineLocation, EndingType};
+use crate::ir::score::GroupSymbol;
 
 /// Build the final Score from collected staff events.
 pub(super) fn build_score(state: &mut LowerState) -> Score {
@@ -76,7 +78,7 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
             staves += n;
         }
         slots[idx[0]] = Some((merged, staves.max(1)));
-        piano_at.insert(idx[0], ctx.clone());
+        piano_at.insert(idx[0], *ctx);
     }
 
     let grid = Grid::build_tied(slots.iter().flatten().map(|(tl, _)| tl));
@@ -92,7 +94,7 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
                 state.staves[i].name.clone()
             };
             part.staves = staves;
-            part.measures = split_tied(tl, &grid, OFFSET_DIVISIONS, OFFSET_DIVISIONS);
+            part.measures = split_tied(tl, &grid);
             if staves > 1 {
                 if let Some(m) = part.measures.first_mut() {
                     m.attributes.get_or_insert_with(Default::default).staves = Some(staves);
@@ -101,10 +103,10 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
             Some(match piano_at.get(&i) {
                 Some(ctx) => {
                     let mut pg = PartGroup::new(match ctx {
-                        ContextType::GrandStaff => "GrandStaff",
-                        _ => "PianoStaff",
+                        ContextType::GrandStaff => ContextType::GrandStaff,
+                        _ => ContextType::PianoStaff,
                     });
-                    pg.bracket = "brace".to_string();
+                    pg.bracket = GroupSymbol::Brace;
                     pg.children.push(ScoreChild::Part(part));
                     ScoreChild::PartGroup(pg)
                 }
@@ -133,7 +135,7 @@ pub(super) fn build_score(state: &mut LowerState) -> Score {
     let mut i = 0;
     while i < parts.len() {
         if let Some(&&(first, last, ctx)) = outermost.iter().find(|g| g.0 == i) {
-            let mut pg = PartGroup::new(ctx.ly_name());
+            let mut pg = PartGroup::new(*ctx);
             pg.children = parts[first..=last]
                 .iter_mut()
                 .filter_map(Option::take)
@@ -184,7 +186,7 @@ fn staff_timeline(events: &[(Frac, TimedEvent)]) -> Timeline {
             // inside the bar: place it where it happens.
             TimedEvent::Direction(d) => {
                 let mut d = d.clone();
-                let at = t + std::mem::take(&mut d.offset_frac);
+                let at = t + std::mem::take(&mut d.offset);
                 // The staff is this timeline's (a lifted direction still names
                 // the staff of the part it came from).
                 d.staff = 0;
@@ -196,7 +198,7 @@ fn staff_timeline(events: &[(Frac, TimedEvent)]) -> Timeline {
                     // opens the first bar (`[|` at the head of a tune).
                     let ev = match ev {
                         Event::RightBarline(mut b) if t == Frac::from_integer(0) => {
-                            b.location = "left".to_string();
+                            b.location = BarlineLocation::Left;
                             Event::LeftBarline(b)
                         }
                         other => other,
@@ -224,13 +226,16 @@ fn barline_events(b: &Barline) -> Vec<Event> {
         || b.repeat_direction == Some(RepeatDirection::Forward);
     let backward = matches!(b.style, RepeatBackward | RepeatBoth)
         || b.repeat_direction == Some(RepeatDirection::Backward);
-    let stops = matches!(b.ending_type.as_deref(), Some("stop" | "discontinue"));
+    let stops = matches!(
+        b.ending_type,
+        Some(EndingType::Stop | EndingType::Discontinue)
+    );
     let left = |mut b: Barline| {
-        b.location = "left".to_string();
+        b.location = BarlineLocation::Left;
         Event::LeftBarline(b)
     };
     let right = |mut b: Barline| {
-        b.location = "right".to_string();
+        b.location = BarlineLocation::Right;
         Event::RightBarline(b)
     };
     if forward && (backward || stops) {
@@ -246,7 +251,8 @@ fn barline_events(b: &Barline) -> Vec<Event> {
         };
         return vec![right(close), left(open)];
     }
-    let opens = b.location == "left" || b.ending_type.as_deref() == Some("start") || forward;
+    let opens =
+        b.location == BarlineLocation::Left || b.ending_type == Some(EndingType::Start) || forward;
     vec![if opens {
         left(b.clone())
     } else {
@@ -375,11 +381,11 @@ fn apply_single_annotation(note: &mut Note, ann: &Annotation) {
             tie_type: StartStop::Stop,
         }),
         Annotation::BeamStart => note.beams.push(BeamEvent {
-            beam_type: "begin".to_string(),
+            beam_type: BeamValue::Begin,
             number: 1,
         }),
         Annotation::BeamStop => note.beams.push(BeamEvent {
-            beam_type: "end".to_string(),
+            beam_type: BeamValue::End,
             number: 1,
         }),
         Annotation::NoAutoBeam => note.no_auto_beam = true,
@@ -392,7 +398,7 @@ fn apply_single_annotation(note: &mut Note, ann: &Annotation) {
         }
         Annotation::Text(td) => note.text_directions.push(td.clone()),
         Annotation::Fingering(f) => note.technicals.push(Technical {
-            name: "fingering".to_string(),
+            name: TechnicalType::Fingering,
             value: f.clone(),
         }),
         Annotation::Lyric(l) => note.lyrics.push(l.clone()),

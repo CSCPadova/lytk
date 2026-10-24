@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use super::serde_defaults::{is_default, is_one, is_yes, one, yes};
 use num::rational::Ratio;
 use serde::{Deserialize, Serialize};
 
@@ -22,8 +23,10 @@ use super::voice::Voice;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct KeySignature {
     /// Number of fifths on the circle of fifths (-7 to 7).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub fifths: i8,
     /// Key mode identifier.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub mode: KeyMode,
 }
 
@@ -113,6 +116,18 @@ impl KeyMode {
     }
 }
 
+named_enum! {
+    /// How a time signature is drawn (MusicXML's `symbol`).
+    pub enum TimeSymbol {
+        Common => "common",
+        Cut => "cut",
+        SingleNumber => "single-number",
+        Normal => "normal",
+        Note => "note",
+        DottedNote => "dotted-note",
+    }
+}
+
 /// Time signature.
 ///
 /// From lytk-py's `TimeSignature` frozen dataclass.
@@ -124,8 +139,9 @@ pub struct TimeSignature {
     pub beats: String,
     /// Denominator.
     pub beat_type: u8,
-    /// Display symbol: "common", "cut", "single-number", or None for numeric.
-    pub symbol: Option<String>,
+    /// How it is drawn, when not as numbers.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub symbol: Option<TimeSymbol>,
 }
 
 impl Default for TimeSignature {
@@ -139,19 +155,44 @@ impl Default for TimeSignature {
 }
 
 impl TimeSignature {
+    /// The terms of a numerator written as text, `"3+2"`: its `+`-separated
+    /// whole numbers from 1 (anything else is skipped). The one parser of
+    /// `beats`.
+    pub fn parse_terms(beats: &str) -> impl Iterator<Item = i64> + '_ {
+        beats
+            .split('+')
+            .filter_map(|t| t.trim().parse::<i64>().ok())
+            .filter(|&t| t > 0)
+    }
+
+    /// The numerator's terms: `[3, 2]` for 3+2/8, `[6]` for 6/8.
+    pub fn terms(&self) -> Vec<i64> {
+        Self::parse_terms(&self.beats).collect()
+    }
+
+    /// The numerator, the terms' sum (saturating; 0 without terms).
+    pub fn numerator(&self) -> i64 {
+        Self::parse_terms(&self.beats).fold(0, i64::saturating_add)
+    }
+
+    /// The denominator: no reader makes a 0, and one from a hand-edited IR
+    /// counts as 1 rather than dividing by 0.
+    pub fn denominator(&self) -> i64 {
+        i64::from(self.beat_type.max(1))
+    }
+
     /// Total beats as a rational, handling compound signatures like "3+2".
     ///
     /// From lytk-py's `TimeSignature.beats_fraction` property.
-    ///
-    /// Total for any value: no reader makes a 0 denominator, and one from a
-    /// hand-edited IR counts as 1 rather than dividing by 0; beats saturate.
     pub fn beats_fraction(&self) -> Ratio<i64> {
-        let numerator: i64 = self
-            .beats
-            .split('+')
-            .filter_map(|b| b.trim().parse::<i64>().ok())
-            .fold(0, i64::saturating_add);
-        Ratio::new(numerator, i64::from(self.beat_type.max(1)))
+        Ratio::new(self.numerator(), self.denominator())
+    }
+
+    /// A compound meter (6/8, 9/8, 12/16): its beat is three of the
+    /// denominator's notes.
+    pub fn is_compound(&self) -> bool {
+        let n = self.numerator();
+        n > 3 && n % 3 == 0
     }
 }
 
@@ -165,6 +206,7 @@ pub struct Clef {
     /// Staff line number (1 = bottom).
     pub line: u8,
     /// Octave transposition (-2 to 2).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub octave_change: i8,
 }
 
@@ -207,8 +249,11 @@ impl ClefSign {
 /// From lytk-py's `Transpose` frozen dataclass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct Transpose {
+    #[serde(default, skip_serializing_if = "is_default")]
     pub diatonic: i8,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub chromatic: i8,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub octave_change: i8,
 }
 
@@ -262,18 +307,25 @@ impl Transpose {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeasureAttributes {
     /// Divisions per quarter note (for MusicXML duration math).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub divisions: u16,
     /// Key signature, if changed at this measure.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub key: Option<KeySignature>,
     /// Time signature, if changed at this measure.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub time: Option<TimeSignature>,
     /// Clefs per staff number, if changed.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub clefs: HashMap<u8, Clef>,
     /// Transposition info, if present.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub transpose: Option<Transpose>,
     /// Number of staves, if changed.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub staves: Option<u8>,
     /// Number of staff lines (default 5). E.g. 1-line percussion, 6-line TAB.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub staff_lines: Option<u8>,
 }
 
@@ -307,38 +359,49 @@ pub struct Measure {
     /// emits this verbatim when present, so non-numeric labels round-trip
     /// instead of collapsing to `0`. Omitted from serialization when `None`
     /// so existing numeric-measure JSON is byte-for-byte unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub number_label: Option<String>,
     /// Whether this is an implicit measure (e.g. anacrusis / pickup).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub implicit: bool,
     /// Senza misura (free time, e.g. inside `\cadenzaOn … \cadenzaOff`). Such a
     /// measure has no fixed length and must not be re-barred to a time signature.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub senza_misura: bool,
     /// Optional width hint.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub width: Option<f32>,
     /// Attributes that take effect at this measure.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub attributes: Option<MeasureAttributes>,
     /// Left barline.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub left_barline: Option<Barline>,
     /// Right barline.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub right_barline: Option<Barline>,
     /// Directions attached to this measure.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub directions: Vec<Direction>,
     /// Chord symbols (harmony) in this measure.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub harmonies: Vec<Harmony>,
     /// Figured bass indications in this measure.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub figured_bass: Vec<FiguredBass>,
     /// Whether this measure should be printed (MusicXML `print-object`).
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub print_object: bool,
     /// Multi-measure rest count (e.g. 4 = rest spanning 4 measures).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub multi_measure_rest: Option<u16>,
     /// Measure-repeat: this measure repeats the previous N measures (the "%"
     /// sign; MusicXML `<measure-style><measure-repeat>`). `None` for a normal
     /// measure. Omitted from serialization when absent for JSON back-compat.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub measure_repeat: Option<u8>,
     /// Voices within this measure.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub voices: Vec<Voice>,
 }
 
@@ -413,6 +476,20 @@ mod tests {
             symbol: None,
         };
         assert_eq!(ts.beats_fraction(), Ratio::new(5, 8));
+    }
+
+    #[test]
+    fn a_meter_reads_its_numerator_one_way() {
+        let ts = |beats: &str, beat_type| TimeSignature {
+            beats: beats.to_string(),
+            beat_type,
+            symbol: None,
+        };
+        assert_eq!(ts("3+2", 8).terms(), vec![3, 2]);
+        assert_eq!(ts("3 + x + 0 + 2", 8).numerator(), 5);
+        assert!(ts("6", 8).is_compound() && ts("3+3", 8).is_compound());
+        assert!(!ts("3", 8).is_compound() && !ts("4", 4).is_compound());
+        assert_eq!(ts("4", 0).beats_fraction(), Ratio::new(4, 1));
     }
 
     #[test]

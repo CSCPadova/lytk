@@ -409,7 +409,7 @@ pub fn from_note_array(arr: &NoteArray) -> MusicDocument {
             let mut annotations = Vec::new();
             if n.velocity != DEFAULT_VELOCITY {
                 annotations.push(Annotation::Dynamic(DynamicMark {
-                    sign: lilypond_dynamic(n.velocity).to_string(),
+                    sign: lilypond_dynamic(n.velocity),
                     placement: Default::default(),
                 }));
                 annotations.push(Annotation::Velocity(n.velocity));
@@ -429,6 +429,7 @@ pub fn from_note_array(arr: &NoteArray) -> MusicDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::articulation::DynamicType;
     use crate::ir::music::{ContextType, RepeatType};
 
     fn note(step: PitchStep, octave: i32, dur: Duration) -> Music {
@@ -570,14 +571,14 @@ mod tests {
         let mut soft = note(PitchStep::C, 4, Duration::quarter());
         if let Music::Note { annotations, .. } = &mut soft {
             annotations.push(Annotation::Dynamic(DynamicMark {
-                sign: "ppp".to_string(),
+                sign: DynamicType::Ppp,
                 placement: Default::default(),
             }));
         }
         let mut loud = note(PitchStep::D, 4, Duration::quarter());
         if let Music::Note { annotations, .. } = &mut loud {
             annotations.push(Annotation::Dynamic(DynamicMark {
-                sign: "fff".to_string(),
+                sign: DynamicType::Fff,
                 placement: Default::default(),
             }));
         }

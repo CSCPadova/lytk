@@ -68,10 +68,7 @@ const FALLBACK_DIVISIONS: u16 = 10080;
 /// the score (including tuplets and short durations), or
 /// [`FALLBACK_DIVISIONS`] when that number does not fit MusicXML's `u16`.
 pub(super) fn compute_score_divisions(score: &Score, base: u16) -> u16 {
-    // A multiple of the IR's chord-symbol/figure offset unit, so those
-    // offsets convert exactly.
-    let unit = crate::ir::timeline::OFFSET_DIVISIONS as u64;
-    let mut result = lcm_u64(u64::from(base.max(1)), unit);
+    let mut result = Some(u64::from(base.max(1)));
     for part in score.parts() {
         for measure in &part.measures {
             for voice in &measure.voices {
@@ -87,8 +84,12 @@ pub(super) fn compute_score_divisions(score: &Score, base: u16) -> u16 {
                     result = result.and_then(|r| lcm_u64(r, quarters.denom().unsigned_abs()));
                 }
             }
-            for d in &measure.directions {
-                let quarters = d.offset_frac * Frac::from_integer(4);
+            // Marks, chord symbols and figures at their exact places.
+            let places = (measure.directions.iter().map(|d| d.offset))
+                .chain(measure.harmonies.iter().map(|h| h.offset))
+                .chain(measure.figured_bass.iter().map(|f| f.offset));
+            for at in places {
+                let quarters = at * Frac::from_integer(4);
                 result = result.and_then(|r| lcm_u64(r, quarters.denom().unsigned_abs()));
             }
         }

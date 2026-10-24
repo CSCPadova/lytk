@@ -179,7 +179,7 @@ impl PyNote {
         self.inner
             .articulations
             .iter()
-            .map(|a| a.name.clone())
+            .map(|a| a.name.to_string())
             .collect()
     }
 
@@ -451,7 +451,13 @@ impl PyMeasure {
             .attributes
             .as_ref()
             .and_then(|a| a.time.as_ref())
-            .map(|t| (t.beats.clone(), t.beat_type, t.symbol.clone()))
+            .map(|t| {
+                (
+                    t.beats.clone(),
+                    t.beat_type,
+                    t.symbol.map(|s| s.to_string()),
+                )
+            })
     }
 
     /// Key signature taking effect here, as ``(fifths, mode)``, or *None*.

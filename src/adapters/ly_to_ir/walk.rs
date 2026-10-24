@@ -738,7 +738,7 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
     let saved_prev_pitch = state.prev_pitch;
     let saved_relative_ref = state.relative_ref;
     let saved_in_relative = state.in_relative;
-    let saved_stem_direction = state.stem_direction.clone();
+    let saved_stem_direction = state.stem_direction;
     let saved_voice_number = state.current_voice_number;
     let saved_last_duration = state.last_duration.clone();
     let saved_tuplet_stack = state.tuplet_stack.clone();
@@ -769,7 +769,7 @@ fn walk_parallel_music_voices(state: &mut WalkState, children: &[Node]) {
         }
         state.relative_ref = saved_relative_ref;
         state.in_relative = saved_in_relative;
-        state.stem_direction = saved_stem_direction.clone();
+        state.stem_direction = saved_stem_direction;
         state.current_voice_number = u8::try_from(voice_idx + 1).unwrap_or(u8::MAX);
         state.last_duration = saved_last_duration.clone();
         state.tuplet_stack = saved_tuplet_stack.clone();

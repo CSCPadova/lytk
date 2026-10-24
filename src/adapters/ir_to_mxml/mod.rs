@@ -60,6 +60,8 @@ impl IrToMxmlAdapter {
         // engraver is engraved here.
         let mut score = score.clone();
         crate::ir::beams::engrave(&mut score);
+        // A note's marks are written just before it, in its voice.
+        crate::ir::marks::sink(&mut score);
         adapter.build_score_partwise(&score)
     }
 }

@@ -511,11 +511,8 @@ fn repeat_structures_play_in_order() {
         .convert_str("X:1\nM:2/4\nL:1/4\nK:C\n|:C D|1 E F:|2 G A\n")
         .unwrap();
     let last = score.parts()[0].measures.last().unwrap();
-    let stop = last
-        .right_barline
-        .as_ref()
-        .and_then(|b| b.ending_type.clone());
-    assert_eq!(stop.as_deref(), Some("stop"));
+    let stop = last.right_barline.as_ref().and_then(|b| b.ending_type);
+    assert_eq!(stop.map(|t| t.as_str()), Some("stop"));
 }
 
 /// A repeat read from MusicXML — a backward repeat on a final-style bar line,

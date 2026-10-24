@@ -10,6 +10,7 @@
 //! - `Fraction`-based alter for microtone support from lytk-py (`lytk-py/ir/pitch.py`).
 //! - MIDI conversion from both lilypond-rs and PDMX.
 
+use super::serde_defaults::{is_default, reduced};
 use num::rational::Ratio;
 use serde::{Deserialize, Serialize};
 
@@ -132,10 +133,16 @@ pub type Alter = Ratio<i32>;
 pub struct Pitch {
     pub step: PitchStep,
     /// Chromatic alteration in semitones (e.g. 1 = sharp, −1 = flat).
+    #[serde(
+        default,
+        skip_serializing_if = "is_default",
+        deserialize_with = "reduced"
+    )]
     pub alter: Alter,
     /// Octave number. Middle C octave = 4 (scientific pitch notation).
     pub octave: i32,
     /// Display hint — does not change the sounding pitch.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub accidental: AccidentalDisplay,
 }
 

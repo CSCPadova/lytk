@@ -8,18 +8,20 @@
 //!   `ly → MIDI` sounds like LilyPond's own MIDI, by the note arrays so they
 //!   match that export, and to read files written by LilyPond or lytk.
 
+use crate::ir::articulation::DynamicType;
+
 /// Quantize a MIDI velocity (0–127) to the nearest standard dynamic sign.
-pub(crate) fn velocity_to_dynamic(vel: u8) -> &'static str {
+pub(crate) fn velocity_to_dynamic(vel: u8) -> DynamicType {
     match vel {
-        0..=12 => "pppp",
-        13..=24 => "ppp",
-        25..=40 => "pp",
-        41..=55 => "p",
-        56..=70 => "mp",
-        71..=85 => "mf",
-        86..=100 => "f",
-        101..=115 => "ff",
-        _ => "fff",
+        0..=12 => DynamicType::Pppp,
+        13..=24 => DynamicType::Ppp,
+        25..=40 => DynamicType::Pp,
+        41..=55 => DynamicType::P,
+        56..=70 => DynamicType::Mp,
+        71..=85 => DynamicType::Mf,
+        86..=100 => DynamicType::F,
+        101..=115 => DynamicType::Ff,
+        _ => DynamicType::Fff,
     }
 }
 
@@ -28,36 +30,36 @@ pub(crate) fn velocity_to_dynamic(vel: u8) -> &'static str {
 pub(crate) const LILYPOND_DEFAULT_VOLUME: f64 = 90.0 / 127.0;
 
 /// LilyPond's `absolute-volume-alist` (`ly/midi-init.ly`), volume 0–1.
-const LILYPOND_VOLUMES: [(&str, f64); 13] = [
-    ("sf", 1.00),
-    ("fffff", 0.95),
-    ("ffff", 0.92),
-    ("fff", 0.85),
-    ("ff", 0.80),
-    ("f", 0.75),
-    ("mf", 0.68),
-    ("mp", 0.61),
-    ("p", 0.55),
-    ("pp", 0.49),
-    ("ppp", 0.42),
-    ("pppp", 0.34),
-    ("ppppp", 0.25),
+const LILYPOND_VOLUMES: [(DynamicType, f64); 13] = [
+    (DynamicType::Sf, 1.00),
+    (DynamicType::Fffff, 0.95),
+    (DynamicType::Ffff, 0.92),
+    (DynamicType::Fff, 0.85),
+    (DynamicType::Ff, 0.80),
+    (DynamicType::F, 0.75),
+    (DynamicType::Mf, 0.68),
+    (DynamicType::Mp, 0.61),
+    (DynamicType::P, 0.55),
+    (DynamicType::Pp, 0.49),
+    (DynamicType::Ppp, 0.42),
+    (DynamicType::Pppp, 0.34),
+    (DynamicType::Ppppp, 0.25),
 ];
 
 /// The volume (0–1) LilyPond plays a dynamic at. A sign its table lacks
 /// (`sfz`, `fp`, …) gets the default volume, as in LilyPond's
 /// `look_up_absolute_volume`.
-pub(crate) fn lilypond_volume(sign: &str) -> f64 {
+pub(crate) fn lilypond_volume(sign: &DynamicType) -> f64 {
     LILYPOND_VOLUMES
         .iter()
-        .find(|(s, _)| *s == sign)
+        .find(|(s, _)| s == sign)
         .map_or(LILYPOND_DEFAULT_VOLUME, |(_, v)| *v)
 }
 
 /// The velocity lytk's MIDI export plays a dynamic at before any instrument's
 /// equalizer (LilyPond's volume × 127, truncated as the export does): the
 /// note arrays' velocities, so they match what `to_midi` plays.
-pub(crate) fn lilypond_velocity(sign: &str) -> u8 {
+pub(crate) fn lilypond_velocity(sign: &DynamicType) -> u8 {
     (lilypond_volume(sign) * 127.0) as u8
 }
 
@@ -66,11 +68,11 @@ pub(crate) const LILYPOND_DEFAULT_VELOCITY: u8 = 90;
 
 /// The dynamic whose LilyPond velocity (volume × 127) is nearest to `vel`, for
 /// reading MIDI written by LilyPond or lytk. `sf` is an accent, not a level.
-pub(crate) fn lilypond_dynamic(vel: u8) -> &'static str {
+pub(crate) fn lilypond_dynamic(vel: u8) -> DynamicType {
     LILYPOND_VOLUMES[1..]
         .iter()
         .min_by_key(|(_, v)| ((v * 127.0) as i32 - vel as i32).abs())
-        .map_or("mf", |(s, _)| *s)
+        .map_or(DynamicType::Mf, |(s, _)| s.clone())
 }
 
 /// LilyPond's `instrument-equalizer-alist` (`ly/midi-init.ly`): the (min, max)
@@ -97,7 +99,7 @@ mod lilypond_tests {
     #[test]
     fn lilypond_table_matches_its_midi_output() {
         // Velocities LilyPond itself writes: volume × 127, truncated.
-        let vel = |s: &str| (lilypond_volume(s) * 127.0) as u8;
+        let vel = |s: &str| (lilypond_volume(&s.into()) * 127.0) as u8;
         for (sign, v) in [
             ("pp", 62),
             ("p", 69),
@@ -113,8 +115,8 @@ mod lilypond_tests {
         assert_eq!((LILYPOND_DEFAULT_VOLUME * 127.0) as u8, 90);
         assert_eq!(lilypond_equalizer("violin"), Some((0.2, 1.0)));
         assert_eq!(lilypond_equalizer("acoustic grand"), None);
-        assert_eq!(lilypond_dynamic(69), "p");
-        assert_eq!(lilypond_dynamic(53), "ppp");
-        assert_eq!(lilypond_dynamic(90), "mf");
+        assert_eq!(lilypond_dynamic(69), DynamicType::P);
+        assert_eq!(lilypond_dynamic(53), DynamicType::Ppp);
+        assert_eq!(lilypond_dynamic(90), DynamicType::Mf);
     }
 }

@@ -1,8 +1,14 @@
 use crate::adapters::ir_to_mxml::IrToMxmlAdapter;
 use crate::adapters::FromIrAdapter;
-use crate::ir::articulation::{Articulation, Fermata, Placement, SlurEvent, StartStop, TieEvent};
+use crate::ir::articulation::{
+    Articulation, ArticulationType, DynamicType, Fermata, FermataShape, OrnamentType, Placement,
+    ShowNumber, SlurEvent, StartStop, TechnicalType, TieEvent, WedgeType,
+};
 use crate::ir::direction::{Direction, TempoDirection};
-use crate::ir::duration::Duration;
+use crate::ir::direction::{FontStyle, FontWeight, PedalType};
+use crate::ir::duration::NoteType;
+use crate::ir::duration::{Duration, Frac};
+use crate::ir::harmony::ChordKind;
 use crate::ir::measure::{Clef, KeyMode, KeySignature, MeasureAttributes, TimeSignature};
 use crate::ir::note::{Chord, Note, Rest, VoiceElement};
 use crate::ir::pitch::{Pitch, PitchStep};
@@ -316,7 +322,7 @@ fn note_with_tie() {
 fn note_with_articulations() {
     let mut note = Note::new(Pitch::new(PitchStep::E, 5), Duration::eighth());
     note.articulations.push(Articulation {
-        name: "staccato".to_string(),
+        name: ArticulationType::Staccato,
         placement: Placement::Above,
     });
     note.slurs.push(SlurEvent {
@@ -365,7 +371,7 @@ fn direction_with_dynamics() {
 
     let dir = Direction {
         dynamic: Some(DynamicMark {
-            sign: "ff".to_string(),
+            sign: DynamicType::Ff,
             placement: Placement::Below,
         }),
         ..Default::default()
@@ -408,7 +414,7 @@ fn direction_emits_default_y_by_placement() {
     // honor it render the dynamic under the staff.
     let dir = Direction {
         dynamic: Some(DynamicMark {
-            sign: "f".to_string(),
+            sign: DynamicType::F,
             placement: Placement::Below,
         }),
         placement: Placement::Below,
@@ -444,6 +450,53 @@ fn direction_emits_default_y_by_placement() {
 }
 
 #[test]
+fn directions_are_written_as_musicxml_names_them() {
+    use crate::ir::direction::{OctaveShift, OctaveShiftType, PedalEvent};
+
+    // An 8va (sounding up) is MusicXML's "down"; a pedal's discontinue and
+    // a 32nd-note metronome were written as a start and a quarter.
+    let dirs = vec![
+        Direction {
+            octave_shift: Some(OctaveShift {
+                shift_type: OctaveShiftType::Up,
+                size: 8,
+            }),
+            ..Default::default()
+        },
+        Direction {
+            pedal: Some(PedalEvent {
+                pedal_type: PedalType::Discontinue,
+                line: true,
+            }),
+            ..Default::default()
+        },
+        Direction {
+            tempo: Some(TempoDirection {
+                text: None,
+                beat_unit: Some(NoteType::ThirtySecond),
+                per_minute: Some(60.0),
+                dots: 0,
+                placement: Placement::Above,
+            }),
+            ..Default::default()
+        },
+    ];
+    let mut measure = crate::ir::measure::Measure::new(1);
+    measure.directions = dirs;
+    let mut part = Part::new("P1");
+    part.measures.push(measure);
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+    let xml = IrToMxmlAdapter::new().convert(&score).unwrap();
+    assert!(
+        xml.contains("<octave-shift type=\"down\" size=\"8\""),
+        "{xml}"
+    );
+    assert!(xml.contains("<pedal type=\"discontinue\""), "{xml}");
+    assert!(xml.contains("<beat-unit>32nd</beat-unit>"), "{xml}");
+}
+
+#[test]
 fn direction_emits_staff_and_placement() {
     use crate::ir::direction::PedalEvent;
 
@@ -451,7 +504,7 @@ fn direction_emits_staff_and_placement() {
     // placement="below" and <staff>2</staff>.
     let dir = Direction {
         pedal: Some(PedalEvent {
-            pedal_type: "start".to_string(),
+            pedal_type: PedalType::Start,
             line: false,
         }),
         placement: Placement::Below,
@@ -496,7 +549,7 @@ fn direction_with_tempo() {
     let dir = Direction {
         tempo: Some(TempoDirection {
             text: None,
-            beat_unit: Some("quarter".to_string()),
+            beat_unit: Some(NoteType::Quarter),
             per_minute: Some(120.0),
             dots: 0,
             placement: Placement::Above,
@@ -537,7 +590,7 @@ fn direction_with_tempo() {
 fn fermata_on_note() {
     let mut note = Note::new(Pitch::new(PitchStep::G, 4), Duration::whole());
     note.fermata = Some(Fermata {
-        shape: "normal".to_string(),
+        shape: FermataShape::Normal,
         inverted: false,
     });
     let voice = Voice {
@@ -690,7 +743,7 @@ fn test_emit_glissando_start() {
 
     let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
     note.glissando = Some(StartStop::Start);
-    note.glissando_line_type = Some("wavy".to_string());
+    note.glissando_line_type = Some(crate::ir::note::LineType::Wavy);
 
     let xml = emit_single_note(note);
     assert!(xml.contains("<glissando"), "{xml}");
@@ -747,14 +800,14 @@ fn test_emit_harmony_basic() {
 
     let harmony = Harmony {
         root: ChordPitch {
-            step: "C".to_string(),
+            step: crate::ir::pitch::PitchStep::C,
             alter: 0.0,
         },
-        kind: "major".to_string(),
+        kind: ChordKind::Major,
         bass: None,
         degrees: vec![],
         function: None,
-        offset: 0,
+        offset: Frac::from_integer(0),
     };
 
     let xml = emit_measure_with_harmony(harmony);
@@ -769,17 +822,17 @@ fn test_emit_harmony_with_bass() {
 
     let harmony = Harmony {
         root: ChordPitch {
-            step: "G".to_string(),
+            step: crate::ir::pitch::PitchStep::G,
             alter: 0.0,
         },
-        kind: "major".to_string(),
+        kind: ChordKind::Major,
         bass: Some(ChordPitch {
-            step: "B".to_string(),
+            step: crate::ir::pitch::PitchStep::B,
             alter: 0.0,
         }),
         degrees: vec![],
         function: None,
-        offset: 0,
+        offset: Frac::from_integer(0),
     };
 
     let xml = emit_measure_with_harmony(harmony);
@@ -792,14 +845,14 @@ fn test_emit_harmony_with_offset() {
 
     let harmony = Harmony {
         root: ChordPitch {
-            step: "F".to_string(),
+            step: crate::ir::pitch::PitchStep::F,
             alter: 0.0,
         },
-        kind: "minor".to_string(),
+        kind: ChordKind::Minor,
         bass: None,
         degrees: vec![],
         function: None,
-        offset: 4,
+        offset: Frac::new(1, 4),
     };
 
     let xml = emit_measure_with_harmony(harmony);
@@ -812,14 +865,14 @@ fn test_emit_harmony_with_function() {
 
     let harmony = Harmony {
         root: ChordPitch {
-            step: "G".to_string(),
+            step: crate::ir::pitch::PitchStep::G,
             alter: 0.0,
         },
-        kind: "major".to_string(),
+        kind: ChordKind::Major,
         bass: None,
         degrees: vec![],
         function: Some("V".to_string()),
-        offset: 0,
+        offset: Frac::from_integer(0),
     };
 
     let xml = emit_measure_with_harmony(harmony);
@@ -850,7 +903,7 @@ fn test_emit_figured_bass() {
         ],
         duration: Duration::quarter(),
         parentheses: false,
-        offset: 0,
+        offset: Frac::from_integer(0),
     };
 
     let xml = emit_measure_with_figured_bass(fb);
@@ -952,7 +1005,7 @@ fn note_level_dynamics_emitted_as_direction() {
 
     let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
     note.dynamics.push(DynamicMark {
-        sign: "ff".to_string(),
+        sign: DynamicType::Ff,
         placement: Placement::Below,
     });
     let xml = emit_single_note(note);
@@ -970,7 +1023,7 @@ fn note_level_wedge_emitted_as_direction() {
 
     let mut note = Note::new(Pitch::new(PitchStep::D, 4), Duration::quarter());
     note.wedges.push(Wedge {
-        wedge_type: "crescendo".to_string(),
+        wedge_type: WedgeType::Crescendo,
         placement: Placement::Below,
     });
     let xml = emit_single_note(note);
@@ -979,6 +1032,20 @@ fn note_level_wedge_emitted_as_direction() {
         xml.contains("<wedge type=\"crescendo\""),
         "note-level wedge should emit <direction> with <wedge>: {xml}"
     );
+}
+
+#[test]
+fn a_wedge_continuing_over_a_break_is_written_as_one() {
+    // It was written as a new crescendo.
+    use crate::ir::articulation::Wedge;
+
+    let mut note = Note::new(Pitch::new(PitchStep::D, 4), Duration::quarter());
+    note.wedges.push(Wedge {
+        wedge_type: WedgeType::Continue,
+        placement: Placement::Below,
+    });
+    let xml = emit_single_note(note);
+    assert!(xml.contains("<wedge type=\"continue\""), "{xml}");
 }
 
 #[test]
@@ -1087,7 +1154,7 @@ fn tremolo_single_note_emission() {
     let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
     note.tremolo_marks = 3;
     note.ornaments.push(crate::ir::articulation::Ornament {
-        name: "tremolo".to_string(),
+        name: OrnamentType::Tremolo,
         placement: Placement::Unspecified,
     });
     let voice = Voice {
@@ -1110,7 +1177,7 @@ fn tremolo_two_note_emission() {
     n1.two_note_tremolo = true;
     n1.tremolo_start = true;
     n1.ornaments.push(crate::ir::articulation::Ornament {
-        name: "tremolo".to_string(),
+        name: OrnamentType::Tremolo,
         placement: Placement::Unspecified,
     });
     let mut n2 = Note::new(Pitch::new(PitchStep::E, 4), Duration::quarter());
@@ -1118,7 +1185,7 @@ fn tremolo_two_note_emission() {
     n2.two_note_tremolo = true;
     n2.tremolo_start = false;
     n2.ornaments.push(crate::ir::articulation::Ornament {
-        name: "tremolo".to_string(),
+        name: OrnamentType::Tremolo,
         placement: Placement::Unspecified,
     });
     let voice = Voice {
@@ -1227,7 +1294,7 @@ fn sound_tempo_with_metronome() {
     measure.directions.push(Direction {
         tempo: Some(crate::ir::direction::TempoDirection {
             text: None,
-            beat_unit: Some("quarter".to_string()),
+            beat_unit: Some(NoteType::Quarter),
             per_minute: Some(120.0),
             dots: 0,
             placement: Placement::Above,
@@ -1246,11 +1313,11 @@ fn sound_tempo_with_metronome() {
 fn wavy_line_emission() {
     let mut note = Note::new(Pitch::new(PitchStep::D, 5), Duration::half());
     note.ornaments.push(crate::ir::articulation::Ornament {
-        name: "trill-mark".to_string(),
+        name: OrnamentType::TrillMark,
         placement: Placement::Above,
     });
     note.ornaments.push(crate::ir::articulation::Ornament {
-        name: "wavy-line-start".to_string(),
+        name: OrnamentType::WavyLineStart,
         placement: Placement::Above,
     });
     let voice = Voice {
@@ -1313,7 +1380,7 @@ fn print_object_no() {
 #[test]
 fn notehead_emission() {
     let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
-    note.notehead = "x".to_string();
+    note.notehead = Some(crate::ir::note::Notehead::X);
     let voice = Voice {
         number: 1,
         elements: vec![VoiceElement::Note(Box::new(note))],
@@ -1341,8 +1408,8 @@ fn text_direction_font_attrs() {
         text: Some(crate::ir::direction::TextDirection {
             text: "pizz.".to_string(),
             placement: Placement::Above,
-            font_style: Some("italic".to_string()),
-            font_weight: Some("bold".to_string()),
+            font_style: Some(FontStyle::Italic),
+            font_weight: Some(FontWeight::Bold),
         }),
         ..Direction::default()
     };
@@ -1361,7 +1428,7 @@ fn text_direction_font_attrs() {
 fn pedal_line_attribute() {
     let dir = Direction {
         pedal: Some(crate::ir::direction::PedalEvent {
-            pedal_type: "start".to_string(),
+            pedal_type: PedalType::Start,
             line: true,
         }),
         ..Direction::default()
@@ -1472,7 +1539,7 @@ fn extra_creators() {
 
 #[test]
 fn part_group_number_preserved() {
-    let mut group = crate::ir::score::PartGroup::new("StaffGroup");
+    let mut group = crate::ir::score::PartGroup::new(crate::ir::music::ContextType::StaffGroup);
     group.number = 3;
     group.children.push(ScoreChild::Part(Part::new("P1")));
     let mut score = Score::new();
@@ -1490,7 +1557,7 @@ fn tempo_text_as_words() {
     let dir = Direction {
         tempo: Some(TempoDirection {
             text: Some("Allegro".to_string()),
-            beat_unit: Some("quarter".to_string()),
+            beat_unit: Some(NoteType::Quarter),
             per_minute: Some(120.0),
             dots: 0,
             placement: Placement::Above,
@@ -1517,7 +1584,7 @@ fn sound_element_merged() {
     let dir = Direction {
         tempo: Some(TempoDirection {
             text: None,
-            beat_unit: Some("quarter".to_string()),
+            beat_unit: Some(NoteType::Quarter),
             per_minute: Some(120.0),
             dots: 0,
             placement: Placement::Above,
@@ -1665,7 +1732,7 @@ fn test_emit_tuplet_display() {
         note.tuplet = Some(TupletDisplay {
             tuplet_type: StartStop::Start,
             bracket: true,
-            show_number: "actual".to_string(),
+            show_number: Some(ShowNumber::Actual),
         });
         part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(note))];
     }
@@ -1788,11 +1855,11 @@ fn test_emit_ornaments() {
     if let ScoreChild::Part(ref mut part) = score.children[0] {
         let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
         note.ornaments.push(Ornament {
-            name: "trill-mark".to_string(),
+            name: OrnamentType::TrillMark,
             placement: Placement::Above,
         });
         note.ornaments.push(Ornament {
-            name: "mordent".to_string(),
+            name: OrnamentType::Mordent,
             placement: Placement::Unspecified,
         });
         part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(note))];
@@ -1809,11 +1876,11 @@ fn test_emit_technicals() {
     if let ScoreChild::Part(ref mut part) = score.children[0] {
         let mut note = Note::new(Pitch::new(PitchStep::C, 4), Duration::quarter());
         note.technicals.push(Technical {
-            name: "up-bow".to_string(),
+            name: TechnicalType::UpBow,
             value: String::new(),
         });
         note.technicals.push(Technical {
-            name: "fingering".to_string(),
+            name: TechnicalType::Fingering,
             value: "3".to_string(),
         });
         part.measures[0].voices[0].elements = vec![VoiceElement::Note(Box::new(note))];

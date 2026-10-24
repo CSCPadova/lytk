@@ -21,19 +21,23 @@ use std::path::Path;
 
 use crate::ir::annotation::Annotation;
 use crate::ir::articulation::{
-    Articulation, DynamicMark, Fermata, Ornament, Placement, Technical, Wedge,
+    Articulation, ArticulationType, DynamicMark, Fermata, FermataShape, Ornament, OrnamentType,
+    Placement, Technical, TechnicalType, Wedge, WedgeType,
 };
 use crate::ir::direction::{
     Barline, BarlineType, Direction, RepeatDirection, TempoDirection, TextDirection,
 };
 use crate::ir::duration::{Duration, Frac};
-use crate::ir::harmony::{parse_chord_suffix, ChordPitch, Harmony};
+use crate::ir::harmony::{parse_chord_suffix, ChordKind, ChordPitch, Harmony};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
 use crate::ir::music::{ContextType, Music, MusicDocument};
 use crate::ir::pitch::{Alter, Pitch, PitchStep};
 use crate::ir::score::ScoreMetadata;
 
 use super::{AdapterError, Result, ToIrAdapter, ToMusicAdapter};
+use crate::ir::direction::{BarlineLocation, EndingType};
+use crate::ir::duration::NoteType;
+use crate::ir::measure::TimeSymbol;
 
 /// Adapter that reads ABC notation.
 #[derive(Default)]
@@ -782,19 +786,10 @@ fn parse_tempo(value: &str, unit: Frac) -> Option<TempoDirection> {
     } else {
         (beat * Frac::new(2, 3), 1)
     };
-    let name = match (*base.numer(), *base.denom()) {
-        (1, 1) => Some("whole"),
-        (1, 2) => Some("half"),
-        (1, 4) => Some("quarter"),
-        (1, 8) => Some("eighth"),
-        (1, 16) => Some("16th"),
-        (1, 32) => Some("32nd"),
-        (2, 1) => Some("breve"),
-        _ => None,
-    };
+    let name = NoteType::from_length(base);
     Some(TempoDirection {
         text,
-        beat_unit: bpm.and(name).map(str::to_string),
+        beat_unit: bpm.and(name),
         per_minute: bpm,
         dots: if bpm.is_some() { dots } else { 0 },
         placement: Placement::Above,
@@ -986,18 +981,13 @@ fn parse_meter(value: &str) -> Option<TimeSignature> {
 /// A meter's bar length, and whether it is compound (6/8, 9/8, 12/8: a
 /// bare `(5` then means 5 in the time of 3).
 fn meter_length(ts: &TimeSignature) -> (Frac, bool) {
-    let len = ts.beats_fraction();
-    let n = len * Frac::from_integer(ts.beat_type as i64); // the numerator
-    (
-        len,
-        n.is_integer() && n.to_integer() % 3 == 0 && n.to_integer() > 3,
-    )
+    (ts.beats_fraction(), ts.is_compound())
 }
 
-fn meter_symbol(value: &str) -> Option<String> {
+fn meter_symbol(value: &str) -> Option<TimeSymbol> {
     match value.trim() {
-        "C" => Some("common".to_string()),
-        "C|" => Some("cut".to_string()),
+        "C" => Some(TimeSymbol::Common),
+        "C|" => Some(TimeSymbol::Cut),
         _ => None,
     }
 }
@@ -1539,61 +1529,61 @@ fn parse_music(line: &str, state: &mut TuneState, voice: &mut VoiceStream, grace
 /// What a decoration puts on the next note (ABC 2.1 §4.14); `None` for the
 /// ones the IR has no place for (bowings, segno, coda, …).
 fn decoration(name: &str) -> Option<Annotation> {
-    let art = |n: &str| {
+    let art = |name| {
         Some(Annotation::Articulation(Articulation {
-            name: n.to_string(),
+            name,
             placement: Placement::default(),
         }))
     };
-    let orn = |n: &str| {
+    let orn = |name| {
         Some(Annotation::Ornament(Ornament {
-            name: n.to_string(),
+            name,
             placement: Placement::default(),
         }))
     };
-    let wedge = |w: &str| {
+    let wedge = |wedge_type| {
         Some(Annotation::Wedge(Wedge {
-            wedge_type: w.to_string(),
+            wedge_type,
             placement: Placement::default(),
         }))
     };
-    let technical = |n: &str, value: &str| {
+    let technical = |name, value: &str| {
         Some(Annotation::Technical(Technical {
-            name: n.to_string(),
+            name,
             value: value.to_string(),
         }))
     };
     let fermata = |inverted| {
         Some(Annotation::Fermata(Fermata {
-            shape: "normal".to_string(),
+            shape: FermataShape::Normal,
             inverted,
         }))
     };
     match name {
         "pppp" | "ppp" | "pp" | "p" | "mp" | "mf" | "f" | "ff" | "fff" | "ffff" | "sfz" | "sf"
         | "sffz" | "fp" | "fz" | "rfz" => Some(Annotation::Dynamic(DynamicMark {
-            sign: name.to_string(),
+            sign: name.into(),
             placement: Placement::default(),
         })),
-        "<(" | "crescendo(" => wedge("crescendo"),
-        ">(" | "diminuendo(" | "decrescendo(" => wedge("diminuendo"),
-        "<)" | ">)" | "crescendo)" | "diminuendo)" | "decrescendo)" => wedge("stop"),
-        "." | "staccato" => art("staccato"),
-        ">" | "accent" | "emphasis" | "L" => art("accent"),
-        "^" | "marcato" => art("strong-accent"),
-        "tenuto" => art("tenuto"),
-        "wedge" | "staccatissimo" => art("staccatissimo"),
-        "breath" => art("breath-mark"),
-        "trill" | "T" => orn("trill-mark"),
-        "lowermordent" | "mordent" | "M" => orn("mordent"),
-        "uppermordent" | "pralltriller" | "P" => orn("inverted-mordent"),
-        "turn" | "roll" | "~" => orn("turn"),
-        "invertedturn" => orn("inverted-turn"),
+        "<(" | "crescendo(" => wedge(WedgeType::Crescendo),
+        ">(" | "diminuendo(" | "decrescendo(" => wedge(WedgeType::Diminuendo),
+        "<)" | ">)" | "crescendo)" | "diminuendo)" | "decrescendo)" => wedge(WedgeType::Stop),
+        "." | "staccato" => art(ArticulationType::Staccato),
+        ">" | "accent" | "emphasis" | "L" => art(ArticulationType::Accent),
+        "^" | "marcato" => art(ArticulationType::StrongAccent),
+        "tenuto" => art(ArticulationType::Tenuto),
+        "wedge" | "staccatissimo" => art(ArticulationType::Staccatissimo),
+        "breath" => art(ArticulationType::BreathMark),
+        "trill" | "T" => orn(OrnamentType::TrillMark),
+        "lowermordent" | "mordent" | "M" => orn(OrnamentType::Mordent),
+        "uppermordent" | "pralltriller" | "P" => orn(OrnamentType::InvertedMordent),
+        "turn" | "roll" | "~" => orn(OrnamentType::Turn),
+        "invertedturn" => orn(OrnamentType::InvertedTurn),
         "fermata" | "H" => fermata(false),
         "invertedfermata" => fermata(true),
-        "upbow" | "u" => technical("up-bow", ""),
-        "downbow" | "v" => technical("down-bow", ""),
-        "0" | "1" | "2" | "3" | "4" | "5" => technical("fingering", name),
+        "upbow" | "u" => technical(TechnicalType::UpBow, ""),
+        "downbow" | "v" => technical(TechnicalType::DownBow, ""),
+        "0" | "1" | "2" | "3" | "4" | "5" => technical(TechnicalType::Fingering, name),
         _ => None,
     }
 }
@@ -1624,7 +1614,10 @@ fn quoted(text: &str) -> Option<Music> {
         return annotation(words);
     }
     let pitch = |s: &str| -> Option<(ChordPitch, usize)> {
-        let step = s.chars().next().filter(|c| ('A'..='G').contains(c))?;
+        let step = s
+            .get(..1)
+            .filter(|c| ("A"..="G").contains(c))
+            .and_then(PitchStep::from_name)?;
         // Up to two of one accidental (`Fbb`, `C##`).
         let sign = |c: char| match c {
             '#' | '♯' => 1.0,
@@ -1639,24 +1632,18 @@ fn quoted(text: &str) -> Option<Music> {
             .collect();
         let alter = first * signs.len() as f64;
         let n = 1 + signs.iter().map(|c| c.len_utf8()).sum::<usize>();
-        Some((
-            ChordPitch {
-                step: step.to_string(),
-                alter,
-            },
-            n,
-        ))
+        Some((ChordPitch { step, alter }, n))
     };
     if matches!(text.trim(), "N.C." | "NC" | "N.C") {
         return Some(Music::Harmony(Harmony {
             root: ChordPitch {
-                step: "C".to_string(),
+                step: PitchStep::C,
                 alter: 0.0,
             },
-            kind: "none".to_string(),
+            kind: ChordKind::NoChord,
             bass: None,
             degrees: Vec::new(),
-            offset: 0,
+            offset: Frac::from_integer(0),
             function: None,
         }));
     }
@@ -1673,10 +1660,10 @@ fn quoted(text: &str) -> Option<Music> {
     match parse_chord_suffix(quality.trim()) {
         Some((kind, degrees)) => Some(Music::Harmony(Harmony {
             root,
-            kind: kind.to_string(),
+            kind,
             bass,
             degrees,
-            offset: 0,
+            offset: Frac::from_integer(0),
             function: None,
         })),
         // `"Fine"`, `"D.C. al Fine"`: words, not a chord.
@@ -1735,9 +1722,9 @@ fn open_ending(voice: &mut VoiceStream, chars: &[char], i: &mut usize) {
         .unwrap_or(1);
     close_ending(voice, None);
     voice.events.push(Music::Barline(Barline {
-        location: "left".to_string(),
+        location: BarlineLocation::Left,
         ending_number: Some(number),
-        ending_type: Some("start".to_string()),
+        ending_type: Some(EndingType::Start),
         ..Barline::default()
     }));
     voice.open_ending = Some(number);
@@ -1758,7 +1745,7 @@ fn close_ending(voice: &mut VoiceStream, bar: Option<&mut Barline>) {
     };
     if let Some(b) = target {
         b.ending_number = Some(number);
-        b.ending_type = Some("stop".to_string());
+        b.ending_type = Some(EndingType::Stop);
     }
 }
 

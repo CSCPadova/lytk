@@ -3,42 +3,85 @@
 
 use num::rational::Ratio;
 
+use crate::ir::articulation::{
+    ArticulationType, DynamicType, OrnamentType, Technical, TechnicalType, WedgeType,
+};
+use crate::ir::direction::PedalType;
 use crate::ir::duration::Duration;
-use crate::ir::harmony::Figure;
+use crate::ir::duration::NoteType;
+use crate::ir::harmony::{Figure, FigureAccidental};
 use crate::ir::language::{pitch_name, PitchLanguage, PitchMode};
 use crate::ir::measure::{Clef, ClefSign, KeyMode, KeySignature, TimeSignature};
 use crate::ir::note::Note;
 use crate::ir::pitch::Pitch;
 
-/// Articulation name -> LilyPond suffix.
-pub(super) fn articulation_to_ly(name: &str) -> &str {
+/// Articulation -> LilyPond suffix.
+pub(super) fn articulation_to_ly(name: &ArticulationType) -> &'static str {
+    use ArticulationType as A;
     match name {
-        "accent" => "->",
-        "strong-accent" => "-^",
-        "staccato" => "-.",
-        "staccatissimo" => "-!",
-        "tenuto" => "--",
-        "detached-legato" => "-_",
-        "stress" => "->",
-        "unstress" => "-!",
-        "spiccato" => "-.",
-        "breath-mark" => "\\breathe",
+        A::Accent | A::Stress => "->",
+        A::StrongAccent => "-^",
+        A::Staccato | A::Spiccato => "-.",
+        A::Staccatissimo | A::Unstress => "-!",
+        A::Tenuto => "--",
+        A::DetachedLegato => "-_",
+        A::BreathMark => "\\breathe",
         _ => "",
     }
 }
 
-/// Ornament name -> LilyPond suffix.
-pub(super) fn ornament_to_ly(name: &str) -> &str {
+/// Ornament -> LilyPond suffix.
+pub(super) fn ornament_to_ly(name: &OrnamentType) -> &'static str {
+    use OrnamentType as O;
     match name {
-        "trill-mark" => "\\trill",
-        "mordent" => "\\mordent",
-        "inverted-mordent" => "\\prall",
-        "turn" => "\\turn",
-        "inverted-turn" => "\\reverseturn",
-        "shake" => "\\shake",
-        "tremolo" => ":",
+        O::TrillMark => "\\trill",
+        O::Mordent => "\\mordent",
+        O::InvertedMordent => "\\prall",
+        O::Turn => "\\turn",
+        O::InvertedTurn => "\\reverseturn",
+        O::Shake => "\\shake",
+        O::Tremolo => ":",
         _ => "",
     }
+}
+
+/// Hairpin -> LilyPond command (none for a continuation over a line
+/// break: LilyPond's hairpins just go on).
+pub(super) fn wedge_to_ly(kind: WedgeType) -> &'static str {
+    match kind {
+        WedgeType::Crescendo => "\\<",
+        WedgeType::Diminuendo => "\\>",
+        WedgeType::Stop => "\\!",
+        WedgeType::Continue => "",
+    }
+}
+
+/// Pedal mark -> LilyPond command (none for the marks LilyPond's sustain
+/// pedal doesn't have).
+pub(super) fn pedal_to_ly(kind: PedalType) -> &'static str {
+    match kind {
+        PedalType::Start => "\\sustainOn",
+        PedalType::Stop => "\\sustainOff",
+        PedalType::Change => "\\sustainOff\\sustainOn",
+        _ => "",
+    }
+}
+
+/// Technical indication -> LilyPond post-event (none for the ones
+/// LilyPond has no command for).
+pub(super) fn technical_to_ly(tech: &Technical) -> Option<String> {
+    use TechnicalType as T;
+    Some(match tech.name {
+        T::Fingering => format!("-{}", tech.value),
+        T::UpBow => "\\upbow".into(),
+        T::DownBow => "\\downbow".into(),
+        T::OpenString => "\\open".into(),
+        T::SnapPizzicato => "\\snappizzicato".into(),
+        T::Harmonic => "\\flageolet".into(),
+        T::Stopped => "-+".into(),
+        T::String => format!("\\{}", tech.value),
+        _ => return None,
+    })
 }
 
 /// Clef (sign, line, octave_change) -> LilyPond clef name.
@@ -225,16 +268,15 @@ pub(super) fn relative_octave(prev: &Pitch, curr: &Pitch) -> i32 {
 }
 
 /// Beat-unit name -> LilyPond duration number.
-pub(super) fn beat_unit_to_ly(unit: &str) -> &str {
+pub(super) fn beat_unit_to_ly(unit: NoteType) -> &'static str {
     match unit {
-        "whole" => "1",
-        "half" => "2",
-        "quarter" => "4",
-        "eighth" => "8",
-        "16th" => "16",
-        "32nd" => "32",
-        "64th" => "64",
-        "128th" => "128",
+        NoteType::Whole => "1",
+        NoteType::Half => "2",
+        NoteType::Eighth => "8",
+        NoteType::Sixteenth => "16",
+        NoteType::ThirtySecond => "32",
+        NoteType::SixtyFourth => "64",
+        NoteType::OneHundredTwentyEighth => "128",
         _ => "4",
     }
 }
@@ -245,15 +287,13 @@ pub(super) fn figure_to_ly(fig: &Figure) -> String {
         Some(n) => n.to_string(),
         None => "_".to_string(),
     };
-    let alter = match (&fig.prefix, &fig.suffix) {
-        (_, Some(s)) | (Some(s), _) => match s.as_str() {
-            "sharp" | "cross" => "+",
-            "double-sharp" | "sharp-sharp" => "++",
-            "flat" => "-",
-            "double-flat" | "flat-flat" => "--",
-            "natural" => "!",
-            _ => "",
-        },
+    // The suffix's accidental, else the prefix's.
+    let alter = match fig.suffix.as_ref().or(fig.prefix.as_ref()) {
+        Some(FigureAccidental::Sharp) => "+",
+        Some(FigureAccidental::DoubleSharp | FigureAccidental::SharpSharp) => "++",
+        Some(FigureAccidental::Flat) => "-",
+        Some(FigureAccidental::FlatFlat) => "--",
+        Some(FigureAccidental::Natural) => "!",
         _ => "",
     };
     format!("{num}{alter}")
@@ -268,11 +308,11 @@ pub(super) fn tempo_to_ly(tempo: &crate::ir::direction::TempoDirection) -> Strin
     let per_minute = tempo.per_minute.map(|b| b.round().max(1.0) as u32);
     match (&escaped, &tempo.beat_unit, per_minute) {
         (Some(text), Some(unit), Some(bpm)) => {
-            let ly_dur = beat_unit_to_ly(unit);
+            let ly_dur = beat_unit_to_ly(*unit);
             format!("\\tempo \"{text}\" {ly_dur}{dots} = {bpm}")
         }
         (None, Some(unit), Some(bpm)) => {
-            let ly_dur = beat_unit_to_ly(unit);
+            let ly_dur = beat_unit_to_ly(*unit);
             format!("\\tempo {ly_dur}{dots} = {bpm}")
         }
         (Some(text), _, _) => {
@@ -287,17 +327,36 @@ pub(super) fn tempo_to_ly(tempo: &crate::ir::direction::TempoDirection) -> Strin
 
 /// A dynamic as LilyPond writes it: `\\pp` for the ones it defines,
 /// `-#(make-dynamic-script "pppppp")` (a post-event) for any other.
-pub(super) fn dynamic_to_ly(sign: &str) -> String {
-    // `ly/dynamic-scripts-init.ly`.
-    const DEFINED: [&str; 22] = [
-        "ppppp", "pppp", "ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "ffff", "fffff", "fp",
-        "sf", "sfp", "sff", "sfz", "fz", "sp", "spp", "rfz", "n",
-    ];
-    if DEFINED.contains(&sign) {
-        format!("\\{sign}")
-    } else {
-        let sign = sign.replace(['"', '\\'], "");
-        format!("-#(make-dynamic-script \"{sign}\")")
+pub(super) fn dynamic_to_ly(sign: &DynamicType) -> String {
+    use DynamicType as D;
+    match sign {
+        // `ly/dynamic-scripts-init.ly`.
+        D::Ppppp
+        | D::Pppp
+        | D::Ppp
+        | D::Pp
+        | D::P
+        | D::Mp
+        | D::Mf
+        | D::F
+        | D::Ff
+        | D::Fff
+        | D::Ffff
+        | D::Fffff
+        | D::Fp
+        | D::Sf
+        | D::Sfp
+        | D::Sff
+        | D::Sfz
+        | D::Fz
+        | D::Sp
+        | D::Spp
+        | D::Rfz
+        | D::N => format!("\\{sign}"),
+        _ => {
+            let sign = sign.as_str().replace(['"', '\\'], "");
+            format!("-#(make-dynamic-script \"{sign}\")")
+        }
     }
 }
 

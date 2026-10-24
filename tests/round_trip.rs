@@ -1617,7 +1617,7 @@ fn lift_then_lower_keeps_directions_staves_and_part_list() {
     let xml = std::fs::read_to_string("tests/fixtures/xml/01a-Pitches-Pitches.xml").unwrap();
     let mut score = MxmlToIrAdapter::new().convert_str(&xml).unwrap();
     let f = _core::ir::direction::Direction {
-        offset_frac: _core::ir::duration::Frac::new(1, 2),
+        offset: _core::ir::duration::Frac::new(1, 2),
         text: Some(_core::ir::direction::TextDirection {
             text: "dolce".to_string(),
             placement: Default::default(),
@@ -1632,7 +1632,7 @@ fn lift_then_lower_keeps_directions_staves_and_part_list() {
         .directions
         .iter()
         .filter(|d| d.text.is_some())
-        .map(|d| d.offset_frac)
+        .map(|d| d.offset)
         .collect();
     assert_eq!(offsets, vec![_core::ir::duration::Frac::new(1, 2)]);
 
@@ -1792,10 +1792,10 @@ fn nested_part_groups_are_numbered_apart() {
     let part = base.parts()[0].clone();
     let mut piano = part.clone();
     piano.part_id = "P2".to_string();
-    let mut inner = PartGroup::new("PianoStaff");
+    let mut inner = PartGroup::new(_core::ir::music::ContextType::PianoStaff);
     inner.number = 1;
     inner.children.push(ScoreChild::Part(piano));
-    let mut outer = PartGroup::new("StaffGroup");
+    let mut outer = PartGroup::new(_core::ir::music::ContextType::StaffGroup);
     outer.number = 1;
     outer.children.push(ScoreChild::Part(part));
     outer.children.push(ScoreChild::PartGroup(inner));

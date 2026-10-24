@@ -7,7 +7,7 @@
 //! Retrograde is self-inverse: `R(R(x)) == x`.
 
 use crate::ir::annotation::Annotation;
-use crate::ir::articulation::{StartStop, SyllabicType};
+use crate::ir::articulation::{BeamValue, StartStop, SyllabicType};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::music::{Music, MusicDocument};
 use crate::ir::note::VoiceElement;
@@ -35,6 +35,8 @@ impl Default for Retrograde {
 impl Transform for Retrograde {
     fn apply(&self, score: &Score) -> Score {
         let mut result = score.clone();
+        // A note's marks travel with it.
+        crate::ir::marks::sink(&mut result);
 
         for part in result.parts_mut() {
             // The key, meter, transposition and clefs in force in each bar
@@ -75,7 +77,7 @@ impl Transform for Retrograde {
             }
             reattribute(&mut part.measures, forces);
         }
-
+        crate::ir::marks::hoist(&mut result);
         result
     }
 }
@@ -107,7 +109,7 @@ fn in_force(measures: &[crate::ir::measure::Measure]) -> Vec<Force> {
             let mut changes: Vec<_> = m
                 .directions
                 .iter()
-                .filter_map(|d| Some((d.offset_frac, d.staff.max(1), d.clef?)))
+                .filter_map(|d| Some((d.offset, d.staff.max(1), d.clef?)))
                 .collect();
             changes.sort_by_key(|c| c.0);
             now.clefs_at_end
@@ -132,7 +134,7 @@ fn reattribute(measures: &mut [crate::ir::measure::Measure], forces: Vec<Force>)
         let mut changes: Vec<(Frac, u8, crate::ir::measure::Clef)> = m
             .directions
             .iter()
-            .filter_map(|d| Some((d.offset_frac, d.staff.max(1), d.clef?)))
+            .filter_map(|d| Some((d.offset, d.staff.max(1), d.clef?)))
             .collect();
         changes.sort_by_key(|c| c.0);
         let mut current = f.clefs_at_start.clone();
@@ -146,7 +148,7 @@ fn reattribute(measures: &mut [crate::ir::measure::Measure], forces: Vec<Force>)
         m.directions.retain(|d| d.clef.is_none());
         for (at, staff, clef) in mirrored {
             m.directions.push(crate::ir::direction::Direction {
-                offset_frac: at,
+                offset: at,
                 staff,
                 clef: Some(clef),
                 ..Default::default()
@@ -241,14 +243,13 @@ fn swap_pairings(elem: &mut VoiceElement) {
             };
         }
         for b in &mut n.beams {
-            let turned = match b.beam_type.as_str() {
-                "begin" => "end",
-                "end" => "begin",
-                "forward hook" => "backward hook",
-                "backward hook" => "forward hook",
-                _ => continue,
+            b.beam_type = match b.beam_type {
+                BeamValue::Begin => BeamValue::End,
+                BeamValue::End => BeamValue::Begin,
+                BeamValue::ForwardHook => BeamValue::BackwardHook,
+                BeamValue::BackwardHook => BeamValue::ForwardHook,
+                other => other,
             };
-            b.beam_type = turned.to_string();
         }
     }
 }
@@ -458,7 +459,7 @@ mod tests {
         let change: Vec<_> = m[0]
             .directions
             .iter()
-            .filter_map(|d| Some((d.offset_frac, d.clef?.sign)))
+            .filter_map(|d| Some((d.offset, d.clef?.sign)))
             .collect();
         assert_eq!(change, [(Frac::new(1, 2), ClefSign::G)]);
         // Bar 2 holds the G-major bar, in the treble clef already in force.
@@ -713,13 +714,13 @@ mod structure_tests {
         n1.tuplet = Some(TupletDisplay {
             tuplet_type: StartStop::Start,
             bracket: true,
-            show_number: "actual".to_string(),
+            show_number: Some(crate::ir::articulation::ShowNumber::Actual),
         });
         let mut n3 = note(PitchStep::E);
         n3.tuplet = Some(TupletDisplay {
             tuplet_type: StartStop::Stop,
             bracket: true,
-            show_number: "actual".to_string(),
+            show_number: Some(crate::ir::articulation::ShowNumber::Actual),
         });
         let result = retrograde(&score_of(vec![measure_of(
             1,

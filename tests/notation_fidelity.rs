@@ -325,8 +325,8 @@ fn engraved_stems_and_beams_agree_with_the_sources() {
                         let n = &e.notes()[0];
                         let beam = n.beams.iter().find(|b| b.number == 1);
                         (
-                            n.stem_direction.clone(),
-                            beam.map_or(String::new(), |b| b.beam_type.clone()),
+                            n.stem_direction.map_or(String::new(), |s| s.to_string()),
+                            beam.map_or(String::new(), |b| b.beam_type.to_string()),
                         )
                     })
                     .collect()
@@ -352,7 +352,7 @@ fn engraved_stems_and_beams_agree_with_the_sources() {
             .flat_map(|v| &mut v.elements)
         {
             for n in e.notes_mut() {
-                n.stem_direction.clear();
+                n.stem_direction = None;
                 n.beams.clear();
                 n.no_auto_beam = false;
             }

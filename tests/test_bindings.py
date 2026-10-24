@@ -675,6 +675,17 @@ def _set_first(node, key, value):
     return False
 
 
+def _first(node, key):
+    """The first value of `key` in a nested JSON value, else None."""
+    if isinstance(node, dict):
+        if key in node:
+            return node[key]
+        node = list(node.values())
+    if isinstance(node, list):
+        return next((v for v in (_first(c, key) for c in node) if v is not None), None)
+    return None
+
+
 class TestHandSuppliedIr:
     """from_dict / from_json refuse the values the IR would divide by."""
 
@@ -702,6 +713,19 @@ class TestHandSuppliedIr:
         d["music"] = {"Tuplet": {"normal": 2, "actual": 0, "content": d["music"]}}
         with pytest.raises(ValueError, match="invalid IR"):
             lytk.MusicDocument.from_json(json.dumps(d))
+
+    def test_json_carries_its_schema(self):
+        d = lytk.from_lilypond_string(self.LY).to_dict()
+        assert d["schema"] == 1
+        del d["schema"]
+        with pytest.raises(ValueError, match="0.5 or earlier"):
+            lytk.Score.from_dict(d)
+
+    def test_fractions_are_read_in_lowest_terms(self):
+        d = lytk.from_lilypond_string(self.LY).to_dict()
+        assert _first(d, "base") == [1, 8]
+        assert _set_first(d, "base", [2, 16])
+        assert _first(lytk.Score.from_dict(d).to_dict(), "base") == [1, 8]
 
     def test_valid_ir_round_trips(self):
         score = lytk.from_lilypond_string(self.LY)

@@ -86,6 +86,9 @@ impl Default for IrToLyAdapter {
 
 impl FromIrAdapter for IrToLyAdapter {
     fn convert(&self, score: &Score) -> Result<String> {
+        // A note's marks are written on it (`c4\\f`).
+        let sunk = crate::ir::marks::sunk(score);
+        let score: &Score = &sunk;
         // Resolve language: prefer score metadata, fall back to adapter config
         let lang = score.metadata.pitch_language.unwrap_or(self.language);
         let mode = score.metadata.pitch_mode;
@@ -247,11 +250,7 @@ fn emit_part_group_ref(
     emitted: &mut std::collections::HashSet<String>,
 ) {
     let pad = " ".repeat(indent);
-    let context = if group.group_type.is_empty() {
-        "StaffGroup"
-    } else {
-        &group.group_type
-    };
+    let context = group.group_type.ly_name();
     lines.push(format!("{pad}\\new {context} <<"));
 
     for child in &group.children {

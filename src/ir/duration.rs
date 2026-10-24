@@ -10,6 +10,7 @@
 //!   (`lytk-py/ir/duration.py`).
 //! - Tuplet scaling as `normal/actual` ratio from lytk-py.
 
+use super::serde_defaults::{is_default, is_one, one, reduced};
 use num::rational::Ratio;
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,70 @@ pub fn dot_multiplier(dots: u8) -> Frac {
     Frac::from_integer(2) - Frac::new(1, 1_i64 << d)
 }
 
+named_enum! {
+    /// A note value by its MusicXML name (`note-type-value`).
+    pub enum NoteType {
+        Maxima => "maxima",
+        Long => "long",
+        Breve => "breve",
+        Whole => "whole",
+        Half => "half",
+        Quarter => "quarter",
+        Eighth => "eighth",
+        Sixteenth => "16th",
+        ThirtySecond => "32nd",
+        SixtyFourth => "64th",
+        OneHundredTwentyEighth => "128th",
+        TwoHundredFiftySixth => "256th",
+        FiveHundredTwelfth => "512th",
+        OneThousandTwentyFourth => "1024th",
+    }
+}
+
+impl NoteType {
+    const ALL: [Self; 14] = [
+        Self::Maxima,
+        Self::Long,
+        Self::Breve,
+        Self::Whole,
+        Self::Half,
+        Self::Quarter,
+        Self::Eighth,
+        Self::Sixteenth,
+        Self::ThirtySecond,
+        Self::SixtyFourth,
+        Self::OneHundredTwentyEighth,
+        Self::TwoHundredFiftySixth,
+        Self::FiveHundredTwelfth,
+        Self::OneThousandTwentyFourth,
+    ];
+
+    /// Its length in whole notes: 8 for a maxima, 1/4 for a quarter.
+    pub fn length(self) -> Frac {
+        match self {
+            Self::Maxima => Frac::from_integer(8),
+            Self::Long => Frac::from_integer(4),
+            Self::Breve => Frac::from_integer(2),
+            Self::Whole => Frac::from_integer(1),
+            Self::Half => Frac::new(1, 2),
+            Self::Quarter => Frac::new(1, 4),
+            Self::Eighth => Frac::new(1, 8),
+            Self::Sixteenth => Frac::new(1, 16),
+            Self::ThirtySecond => Frac::new(1, 32),
+            Self::SixtyFourth => Frac::new(1, 64),
+            Self::OneHundredTwentyEighth => Frac::new(1, 128),
+            Self::TwoHundredFiftySixth => Frac::new(1, 256),
+            Self::FiveHundredTwelfth => Frac::new(1, 512),
+            Self::OneThousandTwentyFourth => Frac::new(1, 1024),
+        }
+    }
+
+    /// The note value `len` whole notes long, if there is one.
+    pub fn from_length(len: Frac) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.length() == len)
+    }
+}
+
 /// A duration value object.
 ///
 /// `base` is measured as a fraction of a whole note (quarter = 1/4).
@@ -41,15 +106,19 @@ pub fn dot_multiplier(dots: u8) -> Frac {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Duration {
     /// Base duration as a fraction of a whole note.
+    #[serde(deserialize_with = "reduced")]
     pub base: Frac,
     /// Number of augmentation dots.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub dots: u8,
     /// Tuplet *normal* notes — the time the group takes, MusicXML's
     /// `<normal-notes>` (2 for a triplet, "3 in the time of 2").
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub tuplet_normal: u8,
     /// Tuplet *actual* notes — how many are played, MusicXML's
     /// `<actual-notes>` (3 for a triplet). The sounding length is scaled by
     /// `tuplet_normal / tuplet_actual`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub tuplet_actual: u8,
 }
 
@@ -117,25 +186,12 @@ impl Duration {
     /// Reverse of [`from_musicxml_type`](Self::from_musicxml_type).
     /// Returns `None` for non-standard base values.
     pub fn musicxml_type(&self) -> Option<&'static str> {
-        let n = *self.base.numer();
-        let d = *self.base.denom();
-        match (n, d) {
-            (8, 1) => Some("maxima"),
-            (4, 1) => Some("long"),
-            (2, 1) => Some("breve"),
-            (1, 1) => Some("whole"),
-            (1, 2) => Some("half"),
-            (1, 4) => Some("quarter"),
-            (1, 8) => Some("eighth"),
-            (1, 16) => Some("16th"),
-            (1, 32) => Some("32nd"),
-            (1, 64) => Some("64th"),
-            (1, 128) => Some("128th"),
-            (1, 256) => Some("256th"),
-            (1, 512) => Some("512th"),
-            (1, 1024) => Some("1024th"),
-            _ => None,
-        }
+        self.note_type().map(|t| t.as_str())
+    }
+
+    /// The note value of this duration's base, if it is one.
+    pub fn note_type(&self) -> Option<NoteType> {
+        NoteType::from_length(self.base)
     }
 
     // -- Factory methods --
@@ -145,29 +201,8 @@ impl Duration {
     /// Names follow the MusicXML `note-type-value` enumeration.
     /// Mapping from lytk-py's `DURATION_TYPE_MAP`.
     pub fn from_musicxml_type(type_name: &str, dots: u8) -> Option<Self> {
-        let base = match type_name {
-            "maxima" => Frac::from_integer(8),
-            "long" => Frac::from_integer(4),
-            "breve" => Frac::from_integer(2),
-            "whole" => Frac::from_integer(1),
-            "half" => Frac::new(1, 2),
-            "quarter" => Frac::new(1, 4),
-            "eighth" => Frac::new(1, 8),
-            "16th" => Frac::new(1, 16),
-            "32nd" => Frac::new(1, 32),
-            "64th" => Frac::new(1, 64),
-            "128th" => Frac::new(1, 128),
-            "256th" => Frac::new(1, 256),
-            "512th" => Frac::new(1, 512),
-            "1024th" => Frac::new(1, 1024),
-            _ => return None,
-        };
-        Some(Self {
-            base,
-            dots,
-            tuplet_normal: 1,
-            tuplet_actual: 1,
-        })
+        let base = NoteType::from_name(type_name)?.length();
+        Some(Self::dotted(base, dots))
     }
 
     /// Create from a LilyPond duration number (1, 2, 4, 8, …).

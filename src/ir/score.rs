@@ -6,10 +6,12 @@
 
 use std::collections::HashMap;
 
+use super::serde_defaults::{is_default, is_one, one};
 use serde::{Deserialize, Serialize};
 
 use super::duration::Duration;
 use super::language::{PitchLanguage, PitchMode};
+use super::music::ContextType;
 use super::part::Part;
 
 /// Score identification and metadata.
@@ -17,24 +19,34 @@ use super::part::Part;
 /// From lytk-py's `ScoreMetadata` dataclass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ScoreMetadata {
+    #[serde(default, skip_serializing_if = "is_default")]
     pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub composer: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub arranger: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub lyricist: Option<String>,
     /// Rights / copyright entries: (type, text).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub rights: Vec<(String, String)>,
     /// Additional metadata fields.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub extra: HashMap<String, String>,
     /// LilyPond note-name language. `None` means unset (defaults to Nederlands).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub pitch_language: Option<PitchLanguage>,
     /// Pitch-entry mode for LilyPond emission.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub pitch_mode: PitchMode,
     /// Anacrusis / pickup duration (emitted as `\partial <dur>`).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub partial_duration: Option<Duration>,
     /// The LilyPond version the source's `\version` states (`2.24.0`), when
     /// the score was read from LilyPond that states a valid one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub lilypond_version: Option<String>,
 }
 
@@ -44,22 +56,31 @@ pub struct ScoreMetadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PageLayout {
     /// Page height in cm.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub page_height: Option<f64>,
     /// Page width in cm.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub page_width: Option<f64>,
     /// Left margin in cm.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub left_margin: Option<f64>,
     /// Right margin in cm.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub right_margin: Option<f64>,
     /// Top margin in cm.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub top_margin: Option<f64>,
     /// Bottom margin in cm.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub bottom_margin: Option<f64>,
     /// Distance between systems in cm.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub system_distance: Option<f64>,
     /// Distance from top margin to first system in cm.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub top_system_distance: Option<f64>,
     /// Staff size in points.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub staff_size: Option<f64>,
 }
 
@@ -78,8 +99,10 @@ pub enum ScoreChild {
 /// From lytk-py's `Score(IRNode)`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Score {
+    #[serde(default, skip_serializing_if = "is_default")]
     pub metadata: ScoreMetadata,
     /// Page layout dimensions and staff sizing.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub page_layout: Option<PageLayout>,
     /// Direct children: parts and/or part groups.
     pub children: Vec<ScoreChild>,
@@ -132,29 +155,45 @@ impl std::fmt::Display for Score {
     }
 }
 
+named_enum! {
+    /// How a part group is bracketed (MusicXML's `<group-symbol>`).
+    #[derive(Default)]
+    pub enum GroupSymbol {
+        #[default]
+        Bracket => "bracket",
+        Brace => "brace",
+        Line => "line",
+        Square => "square",
+        NoSymbol => "none",
+    }
+}
+
 /// A group of parts (StaffGroup, ChoirStaff, PianoStaff, etc.).
 ///
 /// From lytk-py's `PartGroup(IRNode)`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PartGroup {
     /// Display name for the group.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub name: String,
-    /// LilyPond context type: StaffGroup, ChoirStaff, PianoStaff, etc.
-    pub group_type: String,
-    /// Bracket style: bracket, brace, line, square, none.
-    pub bracket: String,
+    /// The LilyPond context: StaffGroup, ChoirStaff, PianoStaff, GrandStaff.
+    pub group_type: ContextType,
+    /// How the group is bracketed.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub bracket: GroupSymbol,
     /// Group number (from MusicXML).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub number: u8,
     /// Children: parts or nested part groups.
     pub children: Vec<ScoreChild>,
 }
 
 impl PartGroup {
-    pub fn new(group_type: &str) -> Self {
+    pub fn new(group_type: ContextType) -> Self {
         Self {
             name: String::new(),
-            group_type: group_type.to_string(),
-            bracket: "bracket".to_string(),
+            group_type,
+            bracket: GroupSymbol::Bracket,
             number: 1,
             children: Vec::new(),
         }
@@ -184,7 +223,7 @@ impl std::fmt::Display for PartGroup {
         write!(
             f,
             "<PartGroup {:?} children={}>",
-            self.group_type,
+            self.group_type.ly_name(),
             self.children.len()
         )
     }
@@ -213,7 +252,7 @@ mod tests {
     #[test]
     fn score_nested_part_group() {
         let mut s = Score::new();
-        let mut pg = PartGroup::new("PianoStaff");
+        let mut pg = PartGroup::new(ContextType::PianoStaff);
         pg.children.push(ScoreChild::Part(Part::new("P1")));
         pg.children.push(ScoreChild::Part(Part::new("P2")));
         s.children.push(ScoreChild::PartGroup(pg));

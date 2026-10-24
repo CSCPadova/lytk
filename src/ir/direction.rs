@@ -9,6 +9,7 @@
 
 use super::articulation::Placement;
 use super::duration::Frac;
+use super::serde_defaults::{is_default, reduced};
 use serde::{Deserialize, Serialize};
 
 /// Layout break type (page / system / section).
@@ -23,6 +24,7 @@ pub enum LayoutBreakType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InstrumentRef {
     pub instrument_id: String,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub instrument_name: Option<String>,
 }
 
@@ -45,6 +47,68 @@ pub enum BarlineType {
     None,
 }
 
+named_enum! {
+    /// Which side of the bar a barline stands on (MusicXML's `location`).
+    #[derive(Default)]
+    pub enum BarlineLocation {
+        #[default]
+        Right => "right",
+        Left => "left",
+        Middle => "middle",
+    }
+}
+
+named_enum! {
+    /// A volta bracket's start, its end, or an end without a hook
+    /// (MusicXML's `<ending type>`).
+    pub enum EndingType {
+        Start => "start",
+        Stop => "stop",
+        Discontinue => "discontinue",
+    }
+}
+
+named_enum! {
+    /// A text's style (MusicXML's `font-style`).
+    pub enum FontStyle {
+        Normal => "normal",
+        Italic => "italic",
+    }
+}
+
+named_enum! {
+    /// A text's weight (MusicXML's `font-weight`).
+    pub enum FontWeight {
+        Normal => "normal",
+        Bold => "bold",
+    }
+}
+
+named_enum! {
+    /// An octave sign's start, by where the music sounds from where it is
+    /// written (`Up` for an 8va, LilyPond's `\ottava #1`; MusicXML calls
+    /// it "down": the notes are printed down), its end or continuation.
+    pub enum OctaveShiftType {
+        Up => "up",
+        Down => "down",
+        Stop => "stop",
+        Continue => "continue",
+    }
+}
+
+named_enum! {
+    /// A pedal mark (MusicXML's `<pedal type>`).
+    pub enum PedalType {
+        Start => "start",
+        Stop => "stop",
+        Change => "change",
+        Sostenuto => "sostenuto",
+        Continue => "continue",
+        Discontinue => "discontinue",
+        Resume => "resume",
+    }
+}
+
 /// Repeat direction (forward/backward).
 ///
 /// From lytk-py's `RepeatDirection`.
@@ -59,15 +123,20 @@ pub enum RepeatDirection {
 /// From lytk-py's `Barline` dataclass.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Barline {
+    #[serde(default, skip_serializing_if = "is_default")]
     pub style: BarlineType,
-    pub location: String,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub location: BarlineLocation,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub repeat_direction: Option<RepeatDirection>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub ending_number: Option<u8>,
-    pub ending_type: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub ending_type: Option<EndingType>,
     /// Number of times a repeat plays (MusicXML `<repeat times="N">`,
     /// LilyPond `\repeat volta N`). Carried on the forward barline; `None`
     /// defaults to 2 at emit time.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub repeat_times: Option<u8>,
 }
 
@@ -75,7 +144,7 @@ impl Default for Barline {
     fn default() -> Self {
         Self {
             style: BarlineType::Regular,
-            location: "right".to_string(),
+            location: BarlineLocation::Right,
             repeat_direction: None,
             ending_number: None,
             ending_type: None,
@@ -89,10 +158,15 @@ impl Default for Barline {
 /// From lytk-py's `TempoDirection`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TempoDirection {
+    #[serde(default, skip_serializing_if = "is_default")]
     pub text: Option<String>,
-    pub beat_unit: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub beat_unit: Option<super::duration::NoteType>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub per_minute: Option<f64>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub dots: u8,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub placement: Placement,
 }
 
@@ -102,9 +176,12 @@ pub struct TempoDirection {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TextDirection {
     pub text: String,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub placement: Placement,
-    pub font_style: Option<String>,
-    pub font_weight: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub font_style: Option<FontStyle>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub font_weight: Option<FontWeight>,
 }
 
 /// A rehearsal mark.
@@ -137,7 +214,7 @@ impl RehearsalMark {
 /// From lytk-py's `OctaveShift`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OctaveShift {
-    pub shift_type: String,
+    pub shift_type: OctaveShiftType,
     /// MusicXML's size: the interval the shift spans, 8, 15 or 22 (0 for a
     /// stop).
     pub size: i8,
@@ -149,12 +226,12 @@ impl OctaveShift {
     pub fn from_octaves(n: i64) -> Self {
         let octaves = n.clamp(-3, 3) as i8;
         let shift_type = match octaves.signum() {
-            1 => "up",
-            -1 => "down",
-            _ => "stop",
+            1 => OctaveShiftType::Up,
+            -1 => OctaveShiftType::Down,
+            _ => OctaveShiftType::Stop,
         };
         Self {
-            shift_type: shift_type.to_string(),
+            shift_type,
             size: if octaves == 0 {
                 0
             } else {
@@ -167,10 +244,10 @@ impl OctaveShift {
     /// negative down, 0 for a stop.
     pub fn octaves(&self) -> i8 {
         let n = (self.size.clamp(8, 22) - 1) / 7;
-        match self.shift_type.as_str() {
-            "up" => n,
-            "down" => -n,
-            _ => 0,
+        match self.shift_type {
+            OctaveShiftType::Up => n,
+            OctaveShiftType::Down => -n,
+            OctaveShiftType::Stop | OctaveShiftType::Continue => 0,
         }
     }
 }
@@ -180,7 +257,8 @@ impl OctaveShift {
 /// From lytk-py's `PedalEvent`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PedalEvent {
-    pub pedal_type: String,
+    pub pedal_type: PedalType,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub line: bool,
 }
 
@@ -194,46 +272,69 @@ pub struct PedalEvent {
 /// as tree children, following lytk-py's field-based approach.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Direction {
-    pub offset: i32,
-    /// Position within the measure as a fraction of a whole note (e.g. 1/2 = after 2 quarter beats).
-    pub offset_frac: Frac,
+    /// Where in the bar, in whole notes from its start (1/2: two quarter
+    /// beats in).
+    #[serde(
+        default,
+        skip_serializing_if = "is_default",
+        deserialize_with = "reduced"
+    )]
+    pub offset: Frac,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub placement: Placement,
     /// MusicXML `<staff>` this direction attaches to in a multi-staff part.
     /// `0` = unset (no `<staff>` emitted); `1..=N` = a specific staff.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub staff: u8,
+    /// The voice a note's dynamic, hairpin or text belongs to (a LilyPond
+    /// `c4\\f`), at the note's onset; `None` for the staff's.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub voice: Option<u8>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub tempo: Option<TempoDirection>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub text: Option<TextDirection>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub rehearsal: Option<RehearsalMark>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub octave_shift: Option<OctaveShift>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub pedal: Option<PedalEvent>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub dynamic: Option<super::articulation::DynamicMark>,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub wedge: Option<super::articulation::Wedge>,
     /// Coda sign.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub coda: bool,
     /// Segno sign.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub segno: bool,
     /// Da Capo text (e.g. "D.C.", "D.C. al Fine").
+    #[serde(default, skip_serializing_if = "is_default")]
     pub da_capo: Option<String>,
     /// Dal Segno text (e.g. "D.S.", "D.S. al Coda").
+    #[serde(default, skip_serializing_if = "is_default")]
     pub dal_segno: Option<String>,
     /// Layout break at this position.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub layout_break: Option<LayoutBreakType>,
     /// Mid-part instrument change.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub instrument_change: Option<InstrumentRef>,
     /// A clef change inside the bar, on `staff` (a bar's opening clef is in
     /// its attributes).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub clef: Option<super::measure::Clef>,
 }
 
 impl Default for Direction {
     fn default() -> Self {
         Self {
-            offset: 0,
-            offset_frac: Frac::from_integer(0),
+            offset: Frac::from_integer(0),
             placement: Placement::Unspecified,
             staff: 0,
+            voice: None,
             tempo: None,
             text: None,
             rehearsal: None,

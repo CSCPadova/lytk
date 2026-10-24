@@ -5,6 +5,7 @@ use crate::ir::duration::Duration;
 use crate::ir::note::*;
 use crate::ir::pitch::{AccidentalDisplay, Alter, Pitch, PitchStep};
 
+use crate::ir::duration::NoteType;
 use musicxml::datatypes as mdt;
 use musicxml::elements as mxml;
 
@@ -40,24 +41,22 @@ pub(super) fn convert_note(mxml_note: &mxml::Note, divisions: i64) -> Option<Not
         .dot
         .len()
         .min(crate::ir::duration::MAX_DOTS as usize) as u8;
-    let type_name = mxml_note
+    let note_type = mxml_note
         .content
         .r#type
         .as_ref()
-        .map(|t| note_type_value_to_str(&t.content));
+        .map(|t| note_type_value(&t.content));
 
     let duration = if is_grace {
-        let tn = type_name.unwrap_or("eighth");
-        Duration::from_musicxml_type(tn, dots).unwrap_or_default()
+        Duration::dotted(note_type.unwrap_or(NoteType::Eighth).length(), dots)
     } else {
         let dur_val: i64 = match &mxml_note.content.info {
             mxml::NoteType::Normal(info) => info.duration.content.0 as i64,
             mxml::NoteType::Cue(info) => info.duration.content.0 as i64,
             mxml::NoteType::Grace(_) => 0,
         };
-        if let Some(tn) = type_name {
-            Duration::from_musicxml_type(tn, dots)
-                .unwrap_or_else(|| Duration::from_divisions(dur_val, divisions, dots))
+        if let Some(t) = note_type {
+            Duration::dotted(t.length(), dots)
         } else {
             Duration::from_divisions(dur_val, divisions, dots)
         }
@@ -154,12 +153,12 @@ pub(super) fn convert_note(mxml_note: &mxml::Note, divisions: i64) -> Option<Not
 
     // Stem direction
     if let Some(ref stem) = mxml_note.content.stem {
-        note.stem_direction = stem_value_to_str(&stem.content);
+        note.stem_direction = Some(stem_direction(&stem.content));
     }
 
     // Notehead
     if let Some(ref nh) = mxml_note.content.notehead {
-        note.notehead = notehead_value_to_str(&nh.content);
+        note.notehead = Some(notehead(&nh.content));
     }
 
     // print-object attribute
@@ -192,14 +191,10 @@ pub(super) fn convert_note(mxml_note: &mxml::Note, divisions: i64) -> Option<Not
             .as_ref()
             .map(|n| n.0)
             .unwrap_or(1);
-        let beam_type = beam_value_to_str(&beam_elem.content);
-        if !matches!(
-            beam_type.as_str(),
-            "begin" | "continue" | "end" | "forward hook" | "backward hook"
-        ) {
-            continue;
-        }
-        note.beams.push(BeamEvent { beam_type, number });
+        note.beams.push(BeamEvent {
+            beam_type: beam_value(&beam_elem.content),
+            number,
+        });
     }
 
     Some(NoteOrRest::Note(Box::new(note)))
@@ -258,13 +253,13 @@ fn note_is_rest(note: &mxml::Note) -> bool {
     matches!(note_audible(note), mxml::AudibleType::Rest(_))
 }
 
-fn extract_rest_info(note: &mxml::Note) -> (Option<String>, Option<i32>, bool) {
+fn extract_rest_info(note: &mxml::Note) -> (Option<PitchStep>, Option<i32>, bool) {
     if let mxml::AudibleType::Rest(rest) = note_audible(note) {
         let display_step = rest
             .content
             .display_step
             .as_ref()
-            .map(|s| step_to_str(&s.content));
+            .map(|s| convert_step(&s.content));
         let display_octave = rest
             .content
             .display_octave
@@ -323,10 +318,7 @@ fn parse_notations(notations: &mxml::Notations, note: &mut Note) {
                 for art in &arts.content {
                     let (name, placement) = convert_articulation(art);
                     if let Some(name) = name {
-                        note.articulations.push(Articulation {
-                            name: name.to_string(),
-                            placement,
-                        });
+                        note.articulations.push(Articulation { name, placement });
                     }
                 }
             }
@@ -338,10 +330,7 @@ fn parse_notations(notations: &mxml::Notations, note: &mut Note) {
             mxml::NotationContentTypes::Technical(techs) => {
                 for tech in &techs.content {
                     if let Some((name, value)) = convert_technical(tech) {
-                        note.technicals.push(Technical {
-                            name: name.to_string(),
-                            value: value.to_string(),
-                        });
+                        note.technicals.push(Technical { name, value });
                     }
                 }
             }
@@ -354,10 +343,7 @@ fn parse_notations(notations: &mxml::Notations, note: &mut Note) {
                     .unwrap_or(Placement::Unspecified);
                 for dyn_content in &dyn_elem.content {
                     if let Some(sign) = convert_dynamic_type(dyn_content) {
-                        note.dynamics.push(DynamicMark {
-                            sign: sign.to_string(),
-                            placement,
-                        });
+                        note.dynamics.push(DynamicMark { sign, placement });
                     }
                 }
             }
@@ -372,8 +358,7 @@ fn parse_notations(notations: &mxml::Notations, note: &mut Note) {
                     mdt::StartStop::Start => Some(StartStop::Start),
                     mdt::StartStop::Stop => Some(StartStop::Stop),
                 };
-                note.glissando_line_type =
-                    gliss.attributes.line_type.as_ref().map(line_type_to_str);
+                note.glissando_line_type = gliss.attributes.line_type.as_ref().map(line_type);
             }
             mxml::NotationContentTypes::Slide(slide) => {
                 note.slide = match slide.attributes.r#type {
@@ -396,11 +381,9 @@ fn parse_fermata_from_notations(notations: &mxml::Notations) -> Option<Fermata> 
 }
 
 fn convert_fermata(fermata: &mxml::Fermata) -> Fermata {
-    let shape = fermata_shape_to_str(&fermata.content);
-    let inverted = fermata.attributes.r#type == Some(mdt::UprightInverted::Inverted);
     Fermata {
-        shape: shape.to_string(),
-        inverted,
+        shape: fermata_shape(&fermata.content),
+        inverted: fermata.attributes.r#type == Some(mdt::UprightInverted::Inverted),
     }
 }
 
@@ -410,20 +393,12 @@ fn convert_tuplet_display(tuplet: &mxml::Tuplet) -> TupletDisplay {
         mdt::StartStop::Stop => StartStop::Stop,
     };
     let bracket = tuplet.attributes.bracket == Some(mdt::YesNo::Yes);
-    let show_number = tuplet
-        .attributes
-        .show_number
-        .as_ref()
-        .map(|sn| {
-            use mdt::ShowTuplet;
-            match sn {
-                ShowTuplet::Actual => "actual",
-                ShowTuplet::Both => "both",
-                ShowTuplet::None => "none",
-            }
-        })
-        .unwrap_or("actual")
-        .to_string();
+    // MusicXML's default: the actual number.
+    let show_number = Some(match tuplet.attributes.show_number.as_ref() {
+        Some(mdt::ShowTuplet::Both) => ShowNumber::Both,
+        Some(mdt::ShowTuplet::None) => ShowNumber::NoNumber,
+        _ => ShowNumber::Actual,
+    });
     TupletDisplay {
         tuplet_type,
         bracket,
@@ -570,48 +545,48 @@ fn placement_or_unspecified(p: &Option<mdt::AboveBelow>) -> Placement {
         .unwrap_or(Placement::Unspecified)
 }
 
-fn convert_articulation(art: &mxml::ArticulationsType) -> (Option<&str>, Placement) {
+fn convert_articulation(art: &mxml::ArticulationsType) -> (Option<ArticulationType>, Placement) {
     use mxml::ArticulationsType::*;
     // Every arm reports its name plus the (uniformly typed) placement attribute.
     match art {
         Accent(a) => (
-            Some("accent"),
+            Some(ArticulationType::Accent),
             placement_or_unspecified(&a.attributes.placement),
         ),
         StrongAccent(a) => (
-            Some("strong-accent"),
+            Some(ArticulationType::StrongAccent),
             placement_or_unspecified(&a.attributes.placement),
         ),
         Staccato(a) => (
-            Some("staccato"),
+            Some(ArticulationType::Staccato),
             placement_or_unspecified(&a.attributes.placement),
         ),
         Tenuto(a) => (
-            Some("tenuto"),
+            Some(ArticulationType::Tenuto),
             placement_or_unspecified(&a.attributes.placement),
         ),
         DetachedLegato(a) => (
-            Some("detached-legato"),
+            Some(ArticulationType::DetachedLegato),
             placement_or_unspecified(&a.attributes.placement),
         ),
         Staccatissimo(a) => (
-            Some("staccatissimo"),
+            Some(ArticulationType::Staccatissimo),
             placement_or_unspecified(&a.attributes.placement),
         ),
         Spiccato(a) => (
-            Some("spiccato"),
+            Some(ArticulationType::Spiccato),
             placement_or_unspecified(&a.attributes.placement),
         ),
         BreathMark(a) => (
-            Some("breath-mark"),
+            Some(ArticulationType::BreathMark),
             placement_or_unspecified(&a.attributes.placement),
         ),
         Caesura(a) => (
-            Some("caesura"),
+            Some(ArticulationType::Caesura),
             placement_or_unspecified(&a.attributes.placement),
         ),
         Stress(a) => (
-            Some("stress"),
+            Some(ArticulationType::Stress),
             placement_or_unspecified(&a.attributes.placement),
         ),
         _ => (None, Placement::Unspecified),
@@ -638,7 +613,7 @@ fn convert_ornament(orn: &mxml::OrnamentType, note: &mut Note) {
                 .map(convert_above_below)
                 .unwrap_or(Placement::Unspecified);
             note.ornaments.push(Ornament {
-                name: "tremolo".to_string(),
+                name: OrnamentType::Tremolo,
                 placement,
             });
         }
@@ -649,15 +624,12 @@ fn convert_ornament(orn: &mxml::OrnamentType, note: &mut Note) {
                 .as_ref()
                 .map(convert_above_below)
                 .unwrap_or(Placement::Unspecified);
-            let wl_type = match wl.attributes.r#type {
-                mdt::StartStopContinue::Start => "start",
-                mdt::StartStopContinue::Stop => "stop",
-                mdt::StartStopContinue::Continue => "continue",
+            let name = match wl.attributes.r#type {
+                mdt::StartStopContinue::Start => OrnamentType::WavyLineStart,
+                mdt::StartStopContinue::Stop => OrnamentType::WavyLineStop,
+                mdt::StartStopContinue::Continue => OrnamentType::WavyLineContinue,
             };
-            note.ornaments.push(Ornament {
-                name: format!("wavy-line-{}", wl_type),
-                placement,
-            });
+            note.ornaments.push(Ornament { name, placement });
         }
         TrillMark(t) => {
             let placement = t
@@ -667,7 +639,7 @@ fn convert_ornament(orn: &mxml::OrnamentType, note: &mut Note) {
                 .map(convert_above_below)
                 .unwrap_or(Placement::Unspecified);
             note.ornaments.push(Ornament {
-                name: "trill-mark".to_string(),
+                name: OrnamentType::TrillMark,
                 placement,
             });
         }
@@ -679,7 +651,7 @@ fn convert_ornament(orn: &mxml::OrnamentType, note: &mut Note) {
                 .map(convert_above_below)
                 .unwrap_or(Placement::Unspecified);
             note.ornaments.push(Ornament {
-                name: "mordent".to_string(),
+                name: OrnamentType::Mordent,
                 placement,
             });
         }
@@ -691,7 +663,7 @@ fn convert_ornament(orn: &mxml::OrnamentType, note: &mut Note) {
                 .map(convert_above_below)
                 .unwrap_or(Placement::Unspecified);
             note.ornaments.push(Ornament {
-                name: "inverted-mordent".to_string(),
+                name: OrnamentType::InvertedMordent,
                 placement,
             });
         }
@@ -703,7 +675,7 @@ fn convert_ornament(orn: &mxml::OrnamentType, note: &mut Note) {
                 .map(convert_above_below)
                 .unwrap_or(Placement::Unspecified);
             note.ornaments.push(Ornament {
-                name: "turn".to_string(),
+                name: OrnamentType::Turn,
                 placement,
             });
         }
@@ -715,7 +687,7 @@ fn convert_ornament(orn: &mxml::OrnamentType, note: &mut Note) {
                 .map(convert_above_below)
                 .unwrap_or(Placement::Unspecified);
             note.ornaments.push(Ornament {
-                name: "inverted-turn".to_string(),
+                name: OrnamentType::InvertedTurn,
                 placement,
             });
         }
@@ -723,36 +695,36 @@ fn convert_ornament(orn: &mxml::OrnamentType, note: &mut Note) {
     }
 }
 
-fn convert_technical(tech: &mxml::TechnicalContents) -> Option<(&str, String)> {
+fn convert_technical(tech: &mxml::TechnicalContents) -> Option<(TechnicalType, String)> {
     use mxml::TechnicalContents::*;
     match tech {
-        UpBow(_) => Some(("up-bow", String::new())),
-        DownBow(_) => Some(("down-bow", String::new())),
-        Harmonic(_) => Some(("harmonic", String::new())),
-        OpenString(_) => Some(("open-string", String::new())),
-        Stopped(_) => Some(("stopped", String::new())),
-        SnapPizzicato(_) => Some(("snap-pizzicato", String::new())),
-        Fingering(f) => Some(("fingering", f.content.clone())),
-        Fret(f) => Some(("fret", f.content.0.to_string())),
-        StringNumber(s) => Some(("string", s.content.0.to_string())),
+        UpBow(_) => Some((TechnicalType::UpBow, String::new())),
+        DownBow(_) => Some((TechnicalType::DownBow, String::new())),
+        Harmonic(_) => Some((TechnicalType::Harmonic, String::new())),
+        OpenString(_) => Some((TechnicalType::OpenString, String::new())),
+        Stopped(_) => Some((TechnicalType::Stopped, String::new())),
+        SnapPizzicato(_) => Some((TechnicalType::SnapPizzicato, String::new())),
+        Fingering(f) => Some((TechnicalType::Fingering, f.content.clone())),
+        Fret(f) => Some((TechnicalType::Fret, f.content.0.to_string())),
+        StringNumber(s) => Some((TechnicalType::String, s.content.0.to_string())),
         _ => None,
     }
 }
 
-fn convert_dynamic_type(dyn_content: &mxml::DynamicsType) -> Option<&str> {
+fn convert_dynamic_type(dyn_content: &mxml::DynamicsType) -> Option<DynamicType> {
     use mxml::DynamicsType::*;
     match dyn_content {
-        Ppp(_) => Some("ppp"),
-        Pp(_) => Some("pp"),
-        P(_) => Some("p"),
-        Mp(_) => Some("mp"),
-        Mf(_) => Some("mf"),
-        F(_) => Some("f"),
-        Ff(_) => Some("ff"),
-        Fff(_) => Some("fff"),
-        Sf(_) => Some("sf"),
-        Sfz(_) => Some("sfz"),
-        Fp(_) => Some("fp"),
+        Ppp(_) => Some(DynamicType::Ppp),
+        Pp(_) => Some(DynamicType::Pp),
+        P(_) => Some(DynamicType::P),
+        Mp(_) => Some(DynamicType::Mp),
+        Mf(_) => Some(DynamicType::Mf),
+        F(_) => Some(DynamicType::F),
+        Ff(_) => Some(DynamicType::Ff),
+        Fff(_) => Some(DynamicType::Fff),
+        Sf(_) => Some(DynamicType::Sf),
+        Sfz(_) => Some(DynamicType::Sfz),
+        Fp(_) => Some(DynamicType::Fp),
         _ => None,
     }
 }
@@ -761,7 +733,7 @@ fn convert_dynamic_type(dyn_content: &mxml::DynamicsType) -> Option<&str> {
 // Type conversion helpers
 // ---------------------------------------------------------------------------
 
-fn convert_step(step: &mdt::Step) -> PitchStep {
+pub(super) fn convert_step(step: &mdt::Step) -> PitchStep {
     match step {
         mdt::Step::C => PitchStep::C,
         mdt::Step::D => PitchStep::D,
@@ -773,116 +745,99 @@ fn convert_step(step: &mdt::Step) -> PitchStep {
     }
 }
 
-fn step_to_str(step: &mdt::Step) -> String {
-    match step {
-        mdt::Step::C => "C",
-        mdt::Step::D => "D",
-        mdt::Step::E => "E",
-        mdt::Step::F => "F",
-        mdt::Step::G => "G",
-        mdt::Step::A => "A",
-        mdt::Step::B => "B",
-    }
-    .to_string()
-}
-
-pub(super) fn note_type_value_to_str(ntv: &mdt::NoteTypeValue) -> &'static str {
+pub(super) fn note_type_value(ntv: &mdt::NoteTypeValue) -> NoteType {
     match ntv {
-        mdt::NoteTypeValue::Maxima => "maxima",
-        mdt::NoteTypeValue::Long => "long",
-        mdt::NoteTypeValue::Breve => "breve",
-        mdt::NoteTypeValue::Whole => "whole",
-        mdt::NoteTypeValue::Half => "half",
-        mdt::NoteTypeValue::Quarter => "quarter",
-        mdt::NoteTypeValue::Eighth => "eighth",
-        mdt::NoteTypeValue::Sixteenth => "16th",
-        mdt::NoteTypeValue::ThirtySecond => "32nd",
-        mdt::NoteTypeValue::SixtyFourth => "64th",
-        mdt::NoteTypeValue::OneHundredTwentyEighth => "128th",
-        mdt::NoteTypeValue::TwoHundredFiftySixth => "256th",
-        mdt::NoteTypeValue::FiveHundredTwelfth => "512th",
-        mdt::NoteTypeValue::OneThousandTwentyFourth => "1024th",
+        mdt::NoteTypeValue::Maxima => NoteType::Maxima,
+        mdt::NoteTypeValue::Long => NoteType::Long,
+        mdt::NoteTypeValue::Breve => NoteType::Breve,
+        mdt::NoteTypeValue::Whole => NoteType::Whole,
+        mdt::NoteTypeValue::Half => NoteType::Half,
+        mdt::NoteTypeValue::Quarter => NoteType::Quarter,
+        mdt::NoteTypeValue::Eighth => NoteType::Eighth,
+        mdt::NoteTypeValue::Sixteenth => NoteType::Sixteenth,
+        mdt::NoteTypeValue::ThirtySecond => NoteType::ThirtySecond,
+        mdt::NoteTypeValue::SixtyFourth => NoteType::SixtyFourth,
+        mdt::NoteTypeValue::OneHundredTwentyEighth => NoteType::OneHundredTwentyEighth,
+        mdt::NoteTypeValue::TwoHundredFiftySixth => NoteType::TwoHundredFiftySixth,
+        mdt::NoteTypeValue::FiveHundredTwelfth => NoteType::FiveHundredTwelfth,
+        mdt::NoteTypeValue::OneThousandTwentyFourth => NoteType::OneThousandTwentyFourth,
     }
 }
 
-fn stem_value_to_str(sv: &mdt::StemValue) -> String {
+fn stem_direction(sv: &mdt::StemValue) -> StemDirection {
     match sv {
-        mdt::StemValue::Up => "up",
-        mdt::StemValue::Down => "down",
-        mdt::StemValue::Double => "double",
-        mdt::StemValue::None => "none",
+        mdt::StemValue::Up => StemDirection::Up,
+        mdt::StemValue::Down => StemDirection::Down,
+        mdt::StemValue::Double => StemDirection::Double,
+        mdt::StemValue::None => StemDirection::NoStem,
     }
-    .to_string()
 }
 
-fn notehead_value_to_str(nh: &mdt::NoteheadValue) -> String {
+fn notehead(nh: &mdt::NoteheadValue) -> Notehead {
     use mdt::NoteheadValue::*;
     match nh {
-        Slash => "slash",
-        Triangle => "triangle",
-        Diamond => "diamond",
-        Square => "square",
-        Cross => "cross",
-        X => "x",
-        CircleX => "circle-x",
-        InvertedTriangle => "inverted triangle",
-        ArrowDown => "arrow down",
-        ArrowUp => "arrow up",
-        Circled => "circled",
-        Slashed => "slashed",
-        BackSlashed => "back slashed",
-        Normal => "normal",
-        Cluster => "cluster",
-        CircleDot => "circle dot",
-        LeftTriangle => "left triangle",
-        Rectangle => "rectangle",
-        None => "none",
-        Do => "do",
-        Re => "re",
-        Mi => "mi",
-        Fa => "fa",
-        FaUp => "fa up",
-        So => "so",
-        La => "la",
-        Ti => "ti",
-        Other => "other",
+        Slash => crate::ir::note::Notehead::Slash,
+        Triangle => crate::ir::note::Notehead::Triangle,
+        Diamond => crate::ir::note::Notehead::Diamond,
+        Square => crate::ir::note::Notehead::Square,
+        Cross => crate::ir::note::Notehead::Cross,
+        X => crate::ir::note::Notehead::X,
+        CircleX => crate::ir::note::Notehead::CircleX,
+        InvertedTriangle => crate::ir::note::Notehead::InvertedTriangle,
+        ArrowDown => crate::ir::note::Notehead::ArrowDown,
+        ArrowUp => crate::ir::note::Notehead::ArrowUp,
+        Circled => crate::ir::note::Notehead::Circled,
+        Slashed => crate::ir::note::Notehead::Slashed,
+        BackSlashed => crate::ir::note::Notehead::BackSlashed,
+        Normal => crate::ir::note::Notehead::Normal,
+        Cluster => crate::ir::note::Notehead::Cluster,
+        CircleDot => crate::ir::note::Notehead::CircleDot,
+        LeftTriangle => crate::ir::note::Notehead::LeftTriangle,
+        Rectangle => crate::ir::note::Notehead::Rectangle,
+        None => crate::ir::note::Notehead::NoHead,
+        Do => crate::ir::note::Notehead::Do,
+        Re => crate::ir::note::Notehead::Re,
+        Mi => crate::ir::note::Notehead::Mi,
+        Fa => crate::ir::note::Notehead::Fa,
+        FaUp => crate::ir::note::Notehead::FaUp,
+        So => crate::ir::note::Notehead::So,
+        La => crate::ir::note::Notehead::La,
+        Ti => crate::ir::note::Notehead::Ti,
+        Other => crate::ir::note::Notehead::Other,
     }
-    .to_string()
 }
 
-fn beam_value_to_str(bv: &mdt::BeamValue) -> String {
+fn beam_value(bv: &mdt::BeamValue) -> BeamValue {
     match bv {
-        mdt::BeamValue::Begin => "begin",
-        mdt::BeamValue::Continue => "continue",
-        mdt::BeamValue::End => "end",
-        mdt::BeamValue::ForwardHook => "forward hook",
-        mdt::BeamValue::BackwardHook => "backward hook",
+        mdt::BeamValue::Begin => BeamValue::Begin,
+        mdt::BeamValue::Continue => BeamValue::Continue,
+        mdt::BeamValue::End => BeamValue::End,
+        mdt::BeamValue::ForwardHook => BeamValue::ForwardHook,
+        mdt::BeamValue::BackwardHook => BeamValue::BackwardHook,
     }
-    .to_string()
 }
 
-fn fermata_shape_to_str(shape: &mdt::FermataShape) -> &str {
+fn fermata_shape(shape: &mdt::FermataShape) -> FermataShape {
     match shape {
-        mdt::FermataShape::Normal => "normal",
-        mdt::FermataShape::Angled => "angled",
-        mdt::FermataShape::Square => "square",
-        mdt::FermataShape::DoubleAngled => "double-angled",
-        mdt::FermataShape::DoubleSquare => "double-square",
-        mdt::FermataShape::DoubleDot => "double-dot",
-        mdt::FermataShape::HalfCurve => "half-curve",
-        mdt::FermataShape::Curlew => "curlew",
-        mdt::FermataShape::Empty => "normal",
+        mdt::FermataShape::Normal => FermataShape::Normal,
+        mdt::FermataShape::Angled => FermataShape::Angled,
+        mdt::FermataShape::Square => FermataShape::Square,
+        mdt::FermataShape::DoubleAngled => FermataShape::DoubleAngled,
+        mdt::FermataShape::DoubleSquare => FermataShape::DoubleSquare,
+        mdt::FermataShape::DoubleDot => FermataShape::DoubleDot,
+        mdt::FermataShape::HalfCurve => FermataShape::HalfCurve,
+        mdt::FermataShape::Curlew => FermataShape::Curlew,
+        mdt::FermataShape::Empty => FermataShape::Normal,
     }
 }
 
-fn line_type_to_str(lt: &mdt::LineType) -> String {
+fn line_type(lt: &mdt::LineType) -> LineType {
     match lt {
-        mdt::LineType::Solid => "solid",
-        mdt::LineType::Dashed => "dashed",
-        mdt::LineType::Dotted => "dotted",
-        mdt::LineType::Wavy => "wavy",
+        mdt::LineType::Solid => LineType::Solid,
+        mdt::LineType::Dashed => LineType::Dashed,
+        mdt::LineType::Dotted => LineType::Dotted,
+        mdt::LineType::Wavy => LineType::Wavy,
     }
-    .to_string()
 }
 
 pub(super) fn convert_above_below(ab: &mdt::AboveBelow) -> Placement {

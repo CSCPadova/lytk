@@ -167,7 +167,7 @@ impl IrToMxmlAdapter {
                 continue;
             }
             let staff = if dir.staff > 0 { dir.staff } else { 1 };
-            let off = (dir.offset_frac * divs_per_whole).to_integer();
+            let off = (dir.offset * divs_per_whole).to_integer();
             dirs_by_staff.entry(staff).or_default().push((off, dir));
         }
         for v in dirs_by_staff.values_mut() {
@@ -177,10 +177,8 @@ impl IrToMxmlAdapter {
         let mut dir_idx: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
 
         // Chord symbols and figures by position in this writer's divisions
-        // (the IR keeps their offsets in OFFSET_DIVISIONS per quarter note;
-        // the score's divisions are a multiple of it).
-        let at_divs =
-            |off: i32| off as i64 * self.divisions as i64 / crate::ir::timeline::OFFSET_DIVISIONS;
+        // (the score's divisions hold every position exactly).
+        let at_divs = |off: Frac| (off * divs_per_whole).to_integer();
         let mut harmonies: Vec<(i64, &Harmony)> = measure
             .harmonies
             .iter()

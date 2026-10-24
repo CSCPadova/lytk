@@ -39,11 +39,13 @@ fn texts(score: &Score) -> Vec<String> {
             for d in &m.directions {
                 out.extend(d.tempo.as_ref().and_then(|t| t.text.clone()));
                 out.extend(d.da_capo.clone());
+                // A note's text: a direction with its voice.
+                let note_text = d.text.as_ref().filter(|_| d.voice.is_some());
+                out.extend(note_text.map(|t| t.text.clone()));
             }
             for v in &m.voices {
                 for e in &v.elements {
                     if let VoiceElement::Note(n) = e {
-                        out.extend(n.text_directions.iter().map(|t| t.text.clone()));
                         out.extend(n.lyrics.iter().map(|l| l.text.clone()));
                     }
                 }

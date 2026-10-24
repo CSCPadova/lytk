@@ -179,7 +179,18 @@ fn ir_from_json<T: serde::de::DeserializeOwned>(json: &str) -> PyResult<T> {
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|e| parse_error(e.to_string()))?;
     check_ir_values(&value).map_err(parse_error)?;
-    serde_json::from_value(value).map_err(|e| parse_error(e.to_string()))
+    ir::json::from_value(value).map_err(parse_error)
+}
+
+/// The IR as JSON text, marked with its schema; pretty-printed or compact.
+fn ir_to_json<T: serde::Serialize>(ir: &T, pretty: bool) -> PyResult<String> {
+    let value = ir::json::to_value(ir).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let text = if pretty {
+        serde_json::to_string_pretty(&value)
+    } else {
+        serde_json::to_string(&value)
+    };
+    text.map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 fn check_ir_values(value: &serde_json::Value) -> Result<(), String> {
@@ -228,9 +239,8 @@ fn check_ir_values(value: &serde_json::Value) -> Result<(), String> {
                     }
                     "beats"
                         if v.as_str().is_some_and(|b| {
-                            b.split('+').count() > 64
-                                || b.split('+')
-                                    .any(|n| n.trim().parse::<u32>().is_ok_and(|n| n > 10_000))
+                            ir::measure::TimeSignature::parse_terms(b).count() > 64
+                                || ir::measure::TimeSignature::parse_terms(b).any(|n| n > 10_000)
                         }) =>
                     {
                         return bad(format!("time signature beats {v} out of range"));
@@ -957,10 +967,7 @@ impl PyScore {
 
     /// Serialize the full score IR to a JSON string.
     fn to_json(&self) -> PyResult<String> {
-        guard(|| {
-            serde_json::to_string_pretty(&self.inner)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
-        })
+        guard(|| ir_to_json(&self.inner, true))
     }
 
     /// Deserialize a score from a JSON string.
@@ -972,8 +979,7 @@ impl PyScore {
     /// Serialize the score IR to a Python dict.
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         guard(|| {
-            let json_str = serde_json::to_string(&self.inner)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let json_str = ir_to_json(&self.inner, false)?;
             let json_mod = PyModule::import_bound(py, "json")?;
             json_mod.call_method1("loads", (json_str,))
         })
@@ -1136,10 +1142,7 @@ impl PyMusicDocument {
 
     /// Serialize the music document to a JSON string.
     fn to_json(&self) -> PyResult<String> {
-        guard(|| {
-            serde_json::to_string_pretty(&self.inner)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
-        })
+        guard(|| ir_to_json(&self.inner, true))
     }
 
     /// Deserialize a music document from a JSON string.

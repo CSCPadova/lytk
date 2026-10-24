@@ -6,9 +6,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::ir::articulation::BeamEvent;
+use crate::ir::articulation::{BeamEvent, BeamValue};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::measure::{Clef, ClefSign, TimeSignature};
+use crate::ir::note::StemDirection::{self, Down, Up};
 use crate::ir::note::{Note, VoiceElement};
 use crate::ir::score::Score;
 use crate::ir::Part;
@@ -53,19 +54,19 @@ pub(crate) fn default_stems(part: &Part) -> Part {
         .flat_map(|v| &mut v.elements)
     {
         for n in e.notes_mut() {
-            n.stem_direction.clear();
+            n.stem_direction = None;
         }
     }
     engrave_part(&mut part);
     part
 }
 
-/// An element's stem as the source gave it ("" when it didn't).
-pub(crate) fn stem_of(e: &VoiceElement) -> &str {
+/// An element's stem as the source gave it.
+pub(crate) fn stem_of(e: &VoiceElement) -> Option<StemDirection> {
     match e {
-        VoiceElement::Note(n) => &n.stem_direction,
-        VoiceElement::Chord(c) => c.notes.first().map_or("", |n| &n.stem_direction),
-        VoiceElement::Rest(_) => "",
+        VoiceElement::Note(n) => n.stem_direction,
+        VoiceElement::Chord(c) => c.notes.first().and_then(|n| n.stem_direction),
+        VoiceElement::Rest(_) => None,
     }
 }
 
@@ -98,18 +99,19 @@ fn engrave_part(part: &mut Part) {
                     .push((v.number, vi));
             }
         }
-        let mut forced: HashMap<usize, &'static str> = HashMap::new();
+        let mut forced: HashMap<usize, StemDirection> = HashMap::new();
         for voices in on_staff.values_mut().filter(|v| v.len() > 1) {
             voices.sort_unstable();
             for (k, &(_, vi)) in voices.iter().enumerate() {
-                forced.insert(vi, if k % 2 == 0 { "up" } else { "down" });
+                let stem = if k % 2 == 0 { Up } else { Down };
+                forced.insert(vi, stem);
             }
         }
         // Clef changes inside the bar, by staff, in order.
         let mut changes: Vec<(u8, Frac, Clef)> = measure
             .directions
             .iter()
-            .filter_map(|d| Some((d.staff.max(1), d.offset_frac, d.clef?)))
+            .filter_map(|d| Some((d.staff.max(1), d.offset, d.clef?)))
             .collect();
         changes.sort_by_key(|c| c.1);
         for (vi, voice) in measure.voices.iter_mut().enumerate() {
@@ -190,14 +192,9 @@ struct Beaming {
 
 impl Beaming {
     fn of(ts: &TimeSignature) -> Self {
-        let den = i64::from(ts.beat_type.max(1));
-        let terms: Vec<i64> = ts
-            .beats
-            .split('+')
-            .filter_map(|t| t.trim().parse().ok())
-            .filter(|&t: &i64| t > 0)
-            .collect();
-        let num: i64 = terms.iter().sum::<i64>().max(1);
+        let den = ts.denominator();
+        let terms = ts.terms();
+        let num = ts.numerator().max(1);
         let unit = Frac::new(1, den);
         let cumulative = |unit: Frac, counts: &[i64]| -> Vec<Frac> {
             counts
@@ -217,7 +214,7 @@ impl Beaming {
             (4, 8, _) => vec![2, 2],
             (5, 8, _) => vec![3, 2],
             (8, 8, _) => vec![3, 3, 2],
-            (n, _, _) if n > 3 && n % 3 == 0 => vec![3],
+            _ if ts.is_compound() => vec![3],
             _ => vec![1],
         };
         let exceptions = match (num, den) {
@@ -355,10 +352,10 @@ fn source_groups(elements: &[VoiceElement]) -> Vec<Vec<usize>> {
         let grace = lead(e).is_some_and(|n| n.is_grace);
         let level1 = lead(e)
             .and_then(|n| n.beams.iter().find(|b| b.number == 1))
-            .map(|b| b.beam_type.as_str());
+            .map(|b| b.beam_type);
         match (level1, &mut open) {
-            (Some("begin"), _) => open = Some((grace, vec![i])),
-            (Some("end"), Some((g, _))) if *g == grace => {
+            (Some(BeamValue::Begin), _) => open = Some((grace, vec![i])),
+            (Some(BeamValue::End), Some((g, _))) if *g == grace => {
                 let (_, mut group) = open.take().unwrap_or_default();
                 group.push(i);
                 groups.push(group);
@@ -380,10 +377,7 @@ fn set_beams(elements: &mut [VoiceElement], group: &[usize], positions: &[Frac])
         .collect();
     let last = group.len() - 1;
     let mut beams: Vec<Vec<BeamEvent>> = vec![Vec::new(); group.len()];
-    let event = |t: &str, number| BeamEvent {
-        beam_type: t.to_string(),
-        number,
-    };
+    let event = |beam_type, number| BeamEvent { beam_type, number };
     for level in 1..=levels.iter().copied().max().unwrap_or(1) {
         let mut j = 0;
         while j <= last {
@@ -403,17 +397,17 @@ fn set_beams(elements: &mut [VoiceElement], group: &[usize], positions: &[Frac])
                 let on_beat = (positions[group[j]] / own).is_integer();
                 let forward = j == 0 || (j < last && on_beat);
                 let hook = if forward {
-                    "forward hook"
+                    BeamValue::ForwardHook
                 } else {
-                    "backward hook"
+                    BeamValue::BackwardHook
                 };
                 beams[j].push(event(hook, level));
             } else {
-                beams[from].push(event("begin", level));
+                beams[from].push(event(BeamValue::Begin, level));
                 for b in &mut beams[from + 1..j] {
-                    b.push(event("continue", level));
+                    b.push(event(BeamValue::Continue, level));
                 }
-                beams[j].push(event("end", level));
+                beams[j].push(event(BeamValue::End, level));
             }
             j += 1;
         }
@@ -450,13 +444,13 @@ fn positions_on_staff(e: &VoiceElement, middle: i32) -> Vec<i32> {
 
 /// The direction LilyPond gives stems over these note heads: away from the
 /// head farthest from the middle line, down when they are as far.
-fn default_direction(heads: &[i32]) -> Option<&'static str> {
+fn default_direction(heads: &[i32]) -> Option<StemDirection> {
     let top = *heads.iter().max()?;
     let bottom = *heads.iter().min()?;
     Some(if top.max(0) >= -bottom.min(0) {
-        "down"
+        Down
     } else {
-        "up"
+        Up
     })
 }
 
@@ -471,15 +465,14 @@ fn stem_voice(
     elements: &mut [VoiceElement],
     groups: &[Vec<usize>],
     middles: &[i32],
-    forced: Option<&'static str>,
+    forced: Option<StemDirection>,
 ) {
-    let mut decided: HashMap<usize, &'static str> = HashMap::new();
+    let mut decided: HashMap<usize, StemDirection> = HashMap::new();
     for g in groups {
-        let given = g
-            .iter()
-            .map(|&i| stem_of(&elements[i]))
-            .find(|s| !s.is_empty())
-            .map(|s| if s == "up" { "up" } else { "down" });
+        let given =
+            g.iter()
+                .find_map(|&i| stem_of(&elements[i]))
+                .map(|s| if s == Up { Up } else { Down });
         let heads: Vec<i32> = g
             .iter()
             .flat_map(|&i| positions_on_staff(&elements[i], middles[i]))
@@ -489,7 +482,7 @@ fn stem_voice(
             .all(|&i| lead(&elements[i]).is_some_and(|n| n.is_grace));
         let dir = given
             .or(forced)
-            .or(grace.then_some("up"))
+            .or(grace.then_some(Up))
             .or_else(|| group_direction(elements, g, middles, &heads));
         if let Some(d) = dir {
             for &i in g {
@@ -498,23 +491,17 @@ fn stem_voice(
         }
     }
     for (i, e) in elements.iter_mut().enumerate() {
-        if !has_stem(e) || e.notes().iter().all(|n| !n.stem_direction.is_empty()) {
+        if !has_stem(e) || e.notes().iter().all(|n| n.stem_direction.is_some()) {
             continue;
         }
         let grace = lead(e).is_some_and(|n| n.is_grace);
-        let dir = decided
-            .get(&i)
-            .copied()
-            .or(forced)
-            .or(grace.then_some("up"));
+        let dir = decided.get(&i).copied().or(forced).or(grace.then_some(Up));
         let Some(dir) = dir.or_else(|| default_direction(&positions_on_staff(e, middles[i])))
         else {
             continue;
         };
         for n in e.notes_mut() {
-            if n.stem_direction.is_empty() {
-                n.stem_direction = dir.to_string();
-            }
+            n.stem_direction = n.stem_direction.or(Some(dir));
         }
     }
 }
@@ -527,19 +514,17 @@ fn group_direction(
     group: &[usize],
     middles: &[i32],
     heads: &[i32],
-) -> Option<&'static str> {
+) -> Option<StemDirection> {
     let top = (*heads.iter().max()?).max(0);
     let bottom = -(*heads.iter().min()?).min(0);
     if top != bottom {
-        return Some(if top > bottom { "down" } else { "up" });
+        return Some(if top > bottom { Down } else { Up });
     }
     let ups = group
         .iter()
-        .filter(|&&i| {
-            default_direction(&positions_on_staff(&elements[i], middles[i])) == Some("up")
-        })
+        .filter(|&&i| default_direction(&positions_on_staff(&elements[i], middles[i])) == Some(Up))
         .count();
-    Some(if ups * 2 > group.len() { "up" } else { "down" })
+    Some(if ups * 2 > group.len() { Up } else { Down })
 }
 
 #[cfg(test)]
@@ -609,7 +594,7 @@ mod tests {
         m.voices[v]
             .elements
             .iter()
-            .map(|e| stem_of(e).to_string())
+            .map(|e| stem_of(e).map_or("", |s| s.as_str()).to_string())
             .collect()
     }
 
@@ -759,18 +744,20 @@ mod tests {
             .map(|e| {
                 lead(e)
                     .and_then(|n| n.beams.iter().find(|b| b.number == 2))
-                    .map_or(String::new(), |b| b.beam_type.clone())
+                    .map_or(String::new(), |b| b.beam_type.to_string())
             })
             .collect();
         assert_eq!(level2, ["", "backward hook", "forward hook", ""]);
         // Manual first-level beams get their second level.
         let mut sixteenths: Vec<_> = (0..4).map(|_| note(C, 5, 16)).collect();
-        for (e, t) in sixteenths
-            .iter_mut()
-            .zip(["begin", "continue", "continue", "end"])
-        {
+        for (e, t) in sixteenths.iter_mut().zip([
+            BeamValue::Begin,
+            BeamValue::Continue,
+            BeamValue::Continue,
+            BeamValue::End,
+        ]) {
             e.notes_mut()[0].beams = vec![BeamEvent {
-                beam_type: t.to_string(),
+                beam_type: t,
                 number: 1,
             }];
         }
@@ -847,7 +834,7 @@ mod tests {
         let mut part = Part::new("P1");
         part.staves = 2;
         part.measures.push(m);
-        let mut group = PartGroup::new("StaffGroup");
+        let mut group = PartGroup::new(crate::ir::music::ContextType::StaffGroup);
         group.children.push(ScoreChild::Part(part));
         let mut score = Score::new();
         score.children.push(ScoreChild::PartGroup(group));
@@ -856,7 +843,11 @@ mod tests {
         let stems: Vec<String> = score.parts()[0].measures[0]
             .voices
             .iter()
-            .map(|v| stem_of(&v.elements[0]).to_string())
+            .map(|v| {
+                stem_of(&v.elements[0])
+                    .map_or("", |s| s.as_str())
+                    .to_string()
+            })
             .collect();
         assert_eq!(stems, ["up", "down"]);
     }

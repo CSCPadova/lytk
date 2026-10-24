@@ -1,6 +1,7 @@
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod tests {
+    use crate::ir::articulation::{ArticulationType, DynamicType};
     use crate::ir::duration::{Duration, Frac};
     use crate::ir::lower::{lower_music_to_score, lower_to_score};
     use crate::ir::measure::*;
@@ -186,7 +187,7 @@ mod tests {
         assert_eq!(score.children.len(), 1);
         match &score.children[0] {
             ScoreChild::PartGroup(pg) => {
-                assert_eq!(pg.group_type, "PianoStaff");
+                assert_eq!(pg.group_type.ly_name(), "PianoStaff");
                 assert_eq!(pg.children.len(), 1);
                 match &pg.children[0] {
                     ScoreChild::Part(p) => {
@@ -230,11 +231,11 @@ mod tests {
             duration: Duration::quarter(),
             annotations: vec![
                 Annotation::Articulation(Articulation {
-                    name: "staccato".to_string(),
+                    name: ArticulationType::Staccato,
                     placement: Placement::Above,
                 }),
                 Annotation::Dynamic(DynamicMark {
-                    sign: "f".to_string(),
+                    sign: DynamicType::F,
                     placement: Placement::Below,
                 }),
                 Annotation::TieStart,
@@ -242,16 +243,18 @@ mod tests {
         }])
         .in_context(ContextType::Staff, None);
 
-        let score = lower_music_to_score(&music);
+        let mut score = lower_music_to_score(&music);
+        // The note's marks back on it.
+        crate::ir::marks::sink(&mut score);
         let parts = score.parts();
         let note = match &parts[0].measures[0].voices[0].elements[0] {
             VoiceElement::Note(n) => n,
             _ => panic!("Expected note"),
         };
         assert_eq!(note.articulations.len(), 1);
-        assert_eq!(note.articulations[0].name, "staccato");
+        assert_eq!(note.articulations[0].name.as_str(), "staccato");
         assert_eq!(note.dynamics.len(), 1);
-        assert_eq!(note.dynamics[0].sign, "f");
+        assert_eq!(note.dynamics[0].sign.as_str(), "f");
         assert_eq!(note.ties.len(), 1);
     }
 

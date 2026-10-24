@@ -23,26 +23,41 @@ fn again(score: &Score) -> Score {
     read(&abc)
 }
 
-/// The notes of the first part, in order (chords by their first note).
-fn notes(score: &Score) -> Vec<Note> {
-    score.parts()[0]
-        .measures
-        .iter()
-        .flat_map(|m| &m.voices)
-        .flat_map(|v| &v.elements)
-        .filter_map(|e| match e {
-            VoiceElement::Note(n) if !n.is_grace => Some((**n).clone()),
-            VoiceElement::Chord(c) => c.notes.first().cloned(),
-            _ => None,
-        })
-        .collect()
+/// The notes of the first part, in order (chords by their first note),
+/// each with the dynamics and hairpins of its voice at its onset.
+fn notes(score: &Score) -> Vec<(Note, Vec<String>)> {
+    let mut out = Vec::new();
+    for m in &score.parts()[0].measures {
+        for v in &m.voices {
+            let mut at = _core::ir::duration::Frac::from_integer(0);
+            for e in &v.elements {
+                let note = match e {
+                    VoiceElement::Note(n) if !n.is_grace => Some((**n).clone()),
+                    VoiceElement::Chord(c) => c.notes.first().cloned(),
+                    _ => None,
+                };
+                if let Some(n) = note {
+                    let here = m
+                        .directions
+                        .iter()
+                        .filter(|d| d.voice == Some(v.number) && d.offset == at);
+                    let dynamics = here.clone().filter_map(|d| d.dynamic.as_ref());
+                    let wedges = here.filter_map(|d| d.wedge.as_ref());
+                    let mut marks: Vec<String> = dynamics.map(|d| d.sign.to_string()).collect();
+                    marks.extend(wedges.map(|w| w.wedge_type.to_string()));
+                    out.push((n, marks));
+                }
+                at += e.metric_duration();
+            }
+        }
+    }
+    out
 }
 
-fn marks(n: &Note) -> Vec<String> {
-    let mut out: Vec<String> = n.articulations.iter().map(|a| a.name.clone()).collect();
-    out.extend(n.ornaments.iter().map(|o| o.name.clone()));
-    out.extend(n.dynamics.iter().map(|d| d.sign.clone()));
-    out.extend(n.wedges.iter().map(|w| w.wedge_type.clone()));
+fn marks((n, dynamics): &(Note, Vec<String>)) -> Vec<String> {
+    let mut out: Vec<String> = n.articulations.iter().map(|a| a.name.to_string()).collect();
+    out.extend(n.ornaments.iter().map(|o| o.name.to_string()));
+    out.extend(dynamics.iter().cloned());
     if n.fermata.is_some() {
         out.push("fermata".to_string());
     }
@@ -73,14 +88,14 @@ fn chord_symbols_and_annotations() {
     let abc = "X:1\nL:1/4\nK:C\n\"Am7\"A B \"G/B\"c \"^dolce\"d|\n";
     for score in [read(abc), again(&read(abc))] {
         let m = &score.parts()[0].measures[0];
-        let h: Vec<(String, String, Option<String>, i32)> = m
+        let h: Vec<(String, String, Option<String>, _)> = m
             .harmonies
             .iter()
             .map(|h| {
                 (
-                    h.root.step.clone(),
-                    h.kind.clone(),
-                    h.bass.as_ref().map(|b| b.step.clone()),
+                    h.root.step.name().to_string(),
+                    h.kind.to_string(),
+                    h.bass.as_ref().map(|b| b.step.name().to_string()),
                     h.offset,
                 )
             })
@@ -103,7 +118,7 @@ fn slurs_tempo_and_lyrics() {
     // `_` holds "la" over F.
     let abc = "X:1\nL:1/4\nQ:1/4=132\nK:C\n(C D E) F|G2 A2|\nw: la-la la_ glo-ry\n";
     for score in [read(abc), again(&read(abc))] {
-        let n = notes(&score);
+        let n: Vec<Note> = notes(&score).into_iter().map(|(n, _)| n).collect();
         let slur = |k: usize, t: StartStop| n[k].slurs.iter().any(|s| s.slur_type == t);
         assert!(slur(0, StartStop::Start) && slur(2, StartStop::Stop));
         let tempo = score.parts()[0].measures[0]

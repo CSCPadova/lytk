@@ -262,7 +262,7 @@ fn emit_kern(score: &Score) -> String {
                     .into_iter()
                     .flat_map(|m| &m.directions)
                     .filter(|d| d.staff.max(1) == s.staff())
-                    .filter_map(|d| Some((d.offset_frac, format!("*clef{}", clef_str(&d.clef?)))))
+                    .filter_map(|d| Some((d.offset, format!("*clef{}", clef_str(&d.clef?)))))
                     .collect()
             })
             .collect();
@@ -463,12 +463,13 @@ fn note_token(note: &Note) -> String {
     }
     // Articulations and a fermata.
     for a in &note.articulations {
-        tok.push_str(match a.name.as_str() {
-            "staccato" => "'",
-            "staccatissimo" => "`",
-            "accent" => "^",
-            "strong-accent" => "^^",
-            "tenuto" => "~",
+        use crate::ir::articulation::ArticulationType as A;
+        tok.push_str(match a.name {
+            A::Staccato => "'",
+            A::Staccatissimo => "`",
+            A::Accent => "^",
+            A::StrongAccent => "^^",
+            A::Tenuto => "~",
             _ => "",
         });
     }
@@ -478,12 +479,13 @@ fn note_token(note: &Note) -> String {
     // Beams, a sign per level: `L` begins, `J` ends, `K`/`k` hooks forward
     // and back.
     for b in &note.beams {
-        match b.beam_type.as_str() {
-            "begin" => tok.push('L'),
-            "end" => tok.push('J'),
-            "forward hook" => tok.push('K'),
-            "backward hook" => tok.push('k'),
-            _ => {}
+        use crate::ir::articulation::BeamValue as B;
+        match b.beam_type {
+            B::Begin => tok.push('L'),
+            B::End => tok.push('J'),
+            B::ForwardHook => tok.push('K'),
+            B::BackwardHook => tok.push('k'),
+            B::Continue => {}
         }
     }
     if tie_start && tie_stop {
@@ -607,7 +609,7 @@ mod tests {
                 assert!(n.no_auto_beam);
                 n.beams
                     .first()
-                    .map_or(String::new(), |b| b.beam_type.clone())
+                    .map_or(String::new(), |b| b.beam_type.to_string())
             })
             .collect();
         assert_eq!(firsts, ["begin", "end", "begin", "", "end"]);

@@ -249,19 +249,13 @@ fn xml_to_ly_emits_two_note_tremolo() {
 // MIDI velocity <-> dynamics (B5)
 // ---------------------------------------------------------------------------
 
+/// The dynamics of notes: directions with a voice.
 fn note_dynamics(score: &_core::ir::score::Score) -> Vec<String> {
-    use _core::ir::note::VoiceElement;
     let mut out = Vec::new();
     for part in score.parts() {
         for m in &part.measures {
-            for v in &m.voices {
-                for e in &v.elements {
-                    if let VoiceElement::Note(n) = e {
-                        for d in &n.dynamics {
-                            out.push(d.sign.clone());
-                        }
-                    }
-                }
+            for d in m.directions.iter().filter(|d| d.voice.is_some()) {
+                out.extend(d.dynamic.as_ref().map(|dy| dy.sign.to_string()));
             }
         }
     }
@@ -433,7 +427,7 @@ fn first_part_harmonies(score: &_core::ir::score::Score) -> Vec<(String, String)
     for part in score.parts() {
         for m in &part.measures {
             for h in &m.harmonies {
-                out.push((h.root.step.clone(), h.kind.clone()));
+                out.push((h.root.step.name().to_string(), h.kind.to_string()));
             }
         }
     }
@@ -1007,29 +1001,37 @@ fn pedal_events_attach_at_note_onset() {
     let starts: Vec<_> = m1
         .directions
         .iter()
-        .filter(|d| d.pedal.as_ref().is_some_and(|p| p.pedal_type == "start"))
+        .filter(|d| {
+            d.pedal
+                .as_ref()
+                .is_some_and(|p| p.pedal_type == _core::ir::direction::PedalType::Start)
+        })
         .collect();
     assert!(!starts.is_empty(), "no pedal start in bar 1");
     assert!(
         starts
             .iter()
-            .all(|d| d.offset_frac == num::rational::Ratio::new(0, 1)),
+            .all(|d| d.offset == num::rational::Ratio::new(0, 1)),
         "pedal-down must be at the downbeat (offset 0), got {:?}",
-        starts.iter().map(|d| d.offset_frac).collect::<Vec<_>>()
+        starts.iter().map(|d| d.offset).collect::<Vec<_>>()
     );
     // The release sits at the onset of the `s4` (offset 1/2), strictly inside
     // the 3/4 bar — not at the 3/4 end boundary.
     let stops: Vec<_> = m1
         .directions
         .iter()
-        .filter(|d| d.pedal.as_ref().is_some_and(|p| p.pedal_type == "stop"))
+        .filter(|d| {
+            d.pedal
+                .as_ref()
+                .is_some_and(|p| p.pedal_type == _core::ir::direction::PedalType::Stop)
+        })
         .collect();
     assert!(
         stops
             .iter()
-            .all(|d| d.offset_frac < num::rational::Ratio::new(3, 4)),
+            .all(|d| d.offset < num::rational::Ratio::new(3, 4)),
         "pedal release must stay inside bar 1, got {:?}",
-        stops.iter().map(|d| d.offset_frac).collect::<Vec<_>>()
+        stops.iter().map(|d| d.offset).collect::<Vec<_>>()
     );
 }
 
