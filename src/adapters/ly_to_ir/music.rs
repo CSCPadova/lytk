@@ -8,7 +8,6 @@ use crate::ir::direction::{
 };
 use crate::ir::duration::Frac;
 use crate::ir::language::parse_pitch_name;
-use crate::ir::language::PitchMode;
 use crate::ir::measure::{Clef, KeyMode, KeySignature, TimeSignature, Transpose};
 use crate::ir::note::{ArpeggioType, Chord, Note, Rest, StemDirection, VoiceElement};
 use crate::ir::pitch::Pitch;
@@ -19,10 +18,10 @@ use super::apply::{
 };
 use super::consume::{
     build_chord, consume_accidental_marks, consume_attachments, consume_duration,
-    consume_duration_scale, consume_mark, consume_octave_marks, consume_override, consume_tempo,
-    consume_tremolo, extract_scheme_string, extract_string_value, grace_one, is_dynamic_name,
-    mark_text, parse_fraction, parse_grace_block, parse_ly_make_moment, parse_paper_block,
-    previous, punct_text, skip_markup,
+    consume_duration_scale, consume_mark, consume_octave_check, consume_octave_marks,
+    consume_override, consume_tempo, consume_tremolo, extract_scheme_string, extract_string_value,
+    grace_one, is_dynamic_name, mark_text, parse_fraction, parse_grace_block, parse_ly_make_moment,
+    parse_paper_block, previous, punct_text, skip_markup,
 };
 use super::merge::apply_tuplet_display;
 use super::modifiers::{consume_relative, consume_repeat, consume_transpose};
@@ -520,6 +519,7 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 let octave_marks = consume_octave_marks(state, children, &mut i);
                 // Consume accidental forcing marks (! = forced, ? = cautionary)
                 let acc_display = consume_accidental_marks(state, children, &mut i);
+                let check = consume_octave_check(state, children, &mut i);
                 let mut dur = consume_duration(state, children, &mut i);
                 // Apply *N/M duration scaling (e.g. a32*8/7). LilyPond
                 // remembers the factor as part of the duration, so it must
@@ -531,7 +531,7 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
                 let tremolo = consume_tremolo(state, children, &mut i, &dur);
                 let attachments = consume_attachments(state, children, &mut i);
 
-                let mut pitch = state.resolve_pitch(step, alter, octave_marks);
+                let mut pitch = state.resolve_pitch(step, alter, octave_marks, check);
                 pitch.accidental = acc_display;
                 let mut note = Note::new(pitch, dur);
                 if tremolo > 0 {
@@ -847,9 +847,23 @@ fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text:
             }
         }
         "\\relative" => {
-            state.in_relative = true;
-            state.mode = PitchMode::Relative;
             i = consume_relative(state, children, i);
+        }
+        "\\octaveCheck" => {
+            // `\octaveCheck c''` is no note: in relative mode the music goes
+            // on from its pitch (LilyPond warns when the note before differs),
+            // in absolute mode it changes nothing.
+            let pitch = children
+                .get(i)
+                .filter(|n| n.kind() == "symbol")
+                .and_then(|n| parse_pitch_name(state.text(*n), state.language));
+            if let Some((step, alter)) = pitch {
+                i += 1;
+                let marks = consume_octave_marks(state, children, &mut i);
+                if state.in_relative {
+                    state.prev_pitch = Some(Pitch::with_alter(step, alter, 3 + marks));
+                }
+            }
         }
         "\\transpose" => {
             i = consume_transpose(state, children, i);

@@ -36,6 +36,21 @@ pub(super) fn consume_octave_marks(state: &WalkState, children: &[Node], i: &mut
     marks
 }
 
+/// Consume an octave check after a pitch (`d='`, after any `!` or `?`):
+/// the octave marks after the `=`, or None when there is none.
+pub(super) fn consume_octave_check(
+    state: &WalkState,
+    children: &[Node],
+    i: &mut usize,
+) -> Option<i32> {
+    let node = children.get(*i)?;
+    if node.kind() != "punctuation" || punct_text(state, *node) != "=" {
+        return None;
+    }
+    *i += 1;
+    Some(consume_octave_marks(state, children, i))
+}
+
 /// Consume accidental forcing marks (`!` = forced, `?` = cautionary) after a pitch.
 /// These are LilyPond punctuation tokens that appear between octave marks and duration.
 /// Returns the resulting `AccidentalDisplay`.
@@ -983,7 +998,8 @@ pub(super) fn build_chord(state: &mut WalkState, chord_node: Node, dur: Duration
                 i += 1;
                 let octave_marks = consume_octave_marks(state, &children, &mut i);
                 let acc_display = consume_accidental_marks(state, &children, &mut i);
-                let mut pitch = state.resolve_pitch(step, alter, octave_marks);
+                let check = consume_octave_check(state, &children, &mut i);
+                let mut pitch = state.resolve_pitch(step, alter, octave_marks, check);
                 pitch.accidental = acc_display;
                 first_pitch.get_or_insert(pitch);
                 Some(pitch)
@@ -1051,9 +1067,10 @@ pub(super) fn grace_one(
             *i += 1;
             let octave_marks = consume_octave_marks(state, children, i);
             let acc_display = consume_accidental_marks(state, children, i);
+            let check = consume_octave_check(state, children, i);
             let dur = consume_duration(state, children, i);
             let attachments = consume_attachments(state, children, i);
-            let mut pitch = state.resolve_pitch(step, alter, octave_marks);
+            let mut pitch = state.resolve_pitch(step, alter, octave_marks, check);
             pitch.accidental = acc_display;
             let mut note = Note::new(pitch, dur);
             super::apply::apply_note_attachments(state, &mut note, &attachments);

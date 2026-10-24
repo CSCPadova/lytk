@@ -14,7 +14,7 @@ use super::lyrics::{
     add_lyrics, extract_lyricsto_voice, lyricsto_name, parse_lyric_block, LyricJob, LyricTarget,
 };
 use super::merge::{assign_piano_direction_staff, part_is_dynamics_only};
-use super::modifiers::{consume_relative, consume_transpose};
+use super::modifiers::{consume_relative, consume_transpose, relative_start};
 use super::music::walk_music_block;
 use super::state::{PartBuild, VarDef, WalkState};
 use super::text::header_block_fields;
@@ -100,8 +100,6 @@ fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
                     "\\relative" => {
                         // Top-level \relative c' { ... }
                         begin_movement(state, node);
-                        state.in_relative = true;
-                        state.mode = PitchMode::Relative;
                         i += 1;
                         i = consume_relative(state, &children, i);
                         continue;
@@ -210,6 +208,7 @@ fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
                             let mut is_chordmode = false;
                             let mut is_markup = false;
                             let mut is_relative = false;
+                            let mut relative = None;
                             while j < children.len() {
                                 let candidate = children[j];
                                 if candidate.kind() == "escaped_word" {
@@ -255,54 +254,12 @@ fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
                                         continue;
                                     }
                                     if ew == "\\relative" {
-                                        state.in_relative = true;
+                                        // Its start pitch: the value is read
+                                        // from it below (enter_assignment).
                                         state.mode = PitchMode::Relative;
                                         is_relative = true;
                                         j += 1;
-                                        // Consume optional reference pitch and octave marks
-                                        let mut octave_marks = 0i32;
-                                        while j < children.len() {
-                                            let n = children[j];
-                                            if n.kind() == "symbol" {
-                                                let sym = state.text(n).to_string();
-                                                if let Some((step, alter)) =
-                                                    parse_pitch_name(&sym, state.language)
-                                                {
-                                                    let mut rp = Pitch::with_alter(step, alter, 3);
-                                                    j += 1;
-                                                    while j < children.len() {
-                                                        let m = children[j];
-                                                        if m.kind() == "punctuation" {
-                                                            let t = state.text(m);
-                                                            if t == "'" {
-                                                                octave_marks += 1;
-                                                                j += 1;
-                                                            } else if t == "," {
-                                                                octave_marks -= 1;
-                                                                j += 1;
-                                                            } else {
-                                                                break;
-                                                            }
-                                                        } else {
-                                                            break;
-                                                        }
-                                                    }
-                                                    rp.octave = 3 + octave_marks;
-                                                    state.relative_ref = Some(rp);
-                                                    state.prev_pitch = Some(rp);
-                                                }
-                                                break;
-                                            } else if n.kind() == "punctuation" {
-                                                let t = state.text(n);
-                                                if t == "'" || t == "," {
-                                                    j += 1;
-                                                    continue;
-                                                }
-                                                break;
-                                            } else {
-                                                break;
-                                            }
-                                        }
+                                        relative = Some(relative_start(state, &children, &mut j));
                                         continue;
                                     }
                                     if ew == "\\figuremode" || ew == "\\figures" {
@@ -370,6 +327,7 @@ fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
                                             has_named_context,
                                             range,
                                             |state| {
+                                                enter_assignment(state, relative);
                                                 state.relative_depth += depth;
                                                 state.quiet += quiet;
                                                 walk_music_block(state, block);
@@ -385,6 +343,7 @@ fn walk_top<'a>(state: &mut WalkState<'a>, parent: Node<'a>) {
                                     // Variable is `name = \new Staff { ... }`
                                     let node = *next;
                                     let (def, end) = capture_variable(state, true, None, |state| {
+                                        enter_assignment(state, relative);
                                         let (context, ctx_name) =
                                             extract_named_context(state, node);
                                         walk_context_body(
@@ -607,8 +566,6 @@ pub(super) fn walk_score_block(state: &mut WalkState, block: Node) {
                 let text = state.text(node).to_string();
                 match text.as_str() {
                     "\\relative" => {
-                        state.in_relative = true;
-                        state.mode = PitchMode::Relative;
                         i += 1;
                         // May be followed by a reference pitch, then expression_block
                         i = consume_relative(state, &children, i);
@@ -823,8 +780,6 @@ fn walk_voice_branch(state: &mut WalkState, children: &[Node], branch_indices: &
             "escaped_word" => {
                 let text = state.text(child).to_string();
                 if text == "\\relative" {
-                    state.in_relative = true;
-                    state.mode = PitchMode::Relative;
                     // consume_relative expects a slice; build one from remaining branch nodes
                     let remaining: Vec<Node> = branch_indices[bi + 1..]
                         .iter()
@@ -923,8 +878,6 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                 if text == "\\relative" || text == "\\transpose" {
                     begin_branch(state);
                     if text == "\\relative" {
-                        state.in_relative = true;
-                        state.mode = PitchMode::Relative;
                         i = consume_relative(state, children, i + 1);
                     } else {
                         i = consume_transpose(state, children, i + 1);
@@ -1294,8 +1247,6 @@ pub(super) fn walk_context_body(
                 let text = state.text(node).to_string();
                 match text.as_str() {
                     "\\relative" => {
-                        state.in_relative = true;
-                        state.mode = PitchMode::Relative;
                         i += 1;
                         i = consume_relative(state, children, i);
                         continue;
@@ -1499,7 +1450,7 @@ fn skip_with_block(state: &WalkState, children: &[Node], mut i: usize) -> usize 
 
 /// Walk a context's body — `{ … }`, `<< … >>`, `\relative`/`\transpose …`, or
 /// a variable — into the current part. Returns the index after it.
-fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
+pub(super) fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
     let Some(&node) = children.get(i) else {
         return i;
     };
@@ -1520,11 +1471,7 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
         "escaped_word" => {
             let text = state.text(node).to_string();
             match text.as_str() {
-                "\\relative" => {
-                    state.in_relative = true;
-                    state.mode = PitchMode::Relative;
-                    consume_relative(state, children, i + 1)
-                }
+                "\\relative" => consume_relative(state, children, i + 1),
                 "\\transpose" => consume_transpose(state, children, i + 1),
                 // The block after a mode reads the mode itself.
                 "\\drummode" | "\\chordmode" | "\\figuremode" | "\\lyricmode" | "\\notemode"
@@ -1546,6 +1493,15 @@ fn walk_body(state: &mut WalkState, children: &[Node], i: usize) -> usize {
         }
         _ => i,
     }
+}
+
+/// Read an assignment's value on its own: from its `\relative` start pitch
+/// when it has one, else absolute, whatever the definitions and movements
+/// before it left behind (`capture_variable` puts the state back after it).
+fn enter_assignment(state: &mut WalkState, relative: Option<Pitch>) {
+    state.in_relative = relative.is_some();
+    state.relative_ref = relative;
+    state.prev_pitch = relative;
 }
 
 /// Walk a variable's body in isolation, from position 0, and capture what it
