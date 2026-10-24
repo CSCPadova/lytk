@@ -17,7 +17,7 @@
 //!
 //! | Command      | Behaviour                                      |
 //! |--------------|------------------------------------------------|
-//! | `\version`   | Last occurrence kept; earlier ones removed; warning emitted if multiple |
+//! | `\version`   | Last occurrence kept; earlier ones removed |
 //!
 //! `\language` lines all stay (each applies from where it stands), and so do
 //! several `\header` blocks (LilyPond merges them).
@@ -105,7 +105,7 @@ pub enum FlattenError {
 /// Flatten a LilyPond file at `path`, expanding all `\include` directives
 /// recursively and returning the combined text.
 ///
-/// Warnings about duplicate `\version` directives are written to `stderr`.
+/// Repeated `\version` lines are merged, keeping the last one, silently.
 pub fn flatten(path: &Path, opts: FlattenOpts) -> Result<String, FlattenError> {
     let src = read_file(path)?;
     let base_dir = path.parent().unwrap_or(Path::new("."));
@@ -370,12 +370,11 @@ fn canonicalize(path: &Path) -> Result<PathBuf, FlattenError> {
 // Post-processing normalization pass
 // ---------------------------------------------------------------------------
 
-/// Mark every line matching `is_match` for removal except the last, warning
-/// (using the directive `name`) when more than one occurrence is found.
+/// Mark every line matching `is_match` for removal except the last. Nothing
+/// is printed: a library does not write to stderr.
 fn dedup_keep_last(
     lines: &[&str],
     is_match: impl Fn(&str) -> bool,
-    name: &str,
     remove: &mut std::collections::HashSet<usize>,
 ) {
     let idxs: Vec<usize> = lines
@@ -384,14 +383,8 @@ fn dedup_keep_last(
         .filter(|(_, l)| is_match(l))
         .map(|(i, _)| i)
         .collect();
-    if idxs.len() > 1 {
-        eprintln!(
-            "warning: multiple {name} directives found — keeping last, removing {} earlier occurrence(s)",
-            idxs.len() - 1
-        );
-        for &i in &idxs[..idxs.len() - 1] {
-            remove.insert(i);
-        }
+    if let Some((_, earlier)) = idxs.split_last() {
+        remove.extend(earlier);
     }
 }
 
@@ -401,7 +394,7 @@ fn dedup_keep_last(
 fn normalize(text: String) -> Result<String, FlattenError> {
     let lines: Vec<&str> = text.lines().collect();
     let mut remove: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    dedup_keep_last(&lines, is_version_line, "\\version", &mut remove);
+    dedup_keep_last(&lines, is_version_line, &mut remove);
 
     // Reconstruct the text, skipping removed lines.
     let mut out = String::with_capacity(text.len());

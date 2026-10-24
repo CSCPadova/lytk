@@ -596,6 +596,15 @@ class TestIncludes:
         with pytest.raises(lytk.ParseError):
             lytk.flatten_string('\\include "gone.ily"')
 
+    def test_flatten_prints_nothing(self, tmp_path, capfd):
+        # Repeated \version lines (one per included file) are merged, silently:
+        # lytk 0.6.0 and earlier warned on stderr from the library.
+        (tmp_path / "part.ily").write_text('\\version "2.24.0"\nd\'4\n')
+        text = '\\version "2.24.0"\n\\include "part.ily"\n{ c\'4 }\n'
+        flat = lytk.flatten_string(text, base_dir=str(tmp_path), add_markers=False)
+        assert flat.count("\\version") == 1
+        assert capfd.readouterr() == ("", "")
+
     def test_readers_follow_includes_when_given_paths(self, tmp_path):
         (tmp_path / "notes.ily").write_text("{ d'4 \\nosuch e'4 }\n")
         main = tmp_path / "main.ly"
