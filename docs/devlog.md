@@ -3,6 +3,57 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-10-25 — 0.6.3: what converting PDMX found
+
+lilycorpus's second new source, PDMX (222,856 MuseScore scores whose two
+licence statements agree), is MusicXML that lytk converts to LilyPond
+(`from_musicxml_bytes`, `to_lilypond`) before convert-ly and LilyPond 2.26
+compile it. A 2,000-score sample, then the whole set, turned up four bugs,
+three of them in the LilyPond writer.
+
+- **A text starting with a no-break space.** The `musicxml` crate (1.1.2,
+  its latest release) collects an element's text skipping only a leading
+  ASCII space, then cuts it to `text.trim().len()`. `trim` strips a
+  leading no-break space too, so the cut falls short: `"\u{A0}po"` became
+  `"\u{A0}"`, and a cut inside a multibyte character panicked (13 scores,
+  `the reader panicked`, all lyrics after a no-break space). 52 of PDMX's
+  222,821 scores have such a text. `decode_xml_text`, which already
+  prepares the text for the crate, drops non-ASCII whitespace at a text's
+  edges, character references included, as the crate means to trim it.
+- **`\ottava` among the post-events.** `emit_measures` put an octave shift
+  in the note's post-events (`marks.after`), joined without spaces, so
+  `\ottava #1\pp` gave Guile the token `1\pp` (`Expecting integer, found
+  #<unspecified>`); where it compiled, the shift began and ended a note
+  late. It is a command before its note now, like a clef change
+  (`marks.before`). The Music writer does the same with an `OctaveShift`
+  annotation, which no reader makes yet.
+- **Fingerings.** `technical_to_ly` wrote `-` and the text, so only a
+  number survived: `+3` read as `-+` (stopped) and a 3, `-7` as a tenuto,
+  `R` as a rest, `d` as a note, `1/2` as a fraction, `#1` as Scheme, `3 5`
+  as a fingering and a duration, an empty one as a lone `-`.
+  `fingering_to_ly` keeps `-3` for a number and writes any other text
+  `-\finger "…"`; a string number that is no number is not written.
+- **Lyric syllables** are quoted where they would be misread: a leading
+  `.` (a syntax error in LilyPond 2.26), a backquote (no token of the
+  tree-sitter grammar), a parenthesis (right after the verse's
+  `\set ignoreMelismata = ##t`, `syntax.rs`'s check for a Scheme
+  expression that lost its `(` took `(Tag)` for one).
+
+Measured through lilycorpus with LilyPond 2.26.0: with 0.6.2, the sample
+lost 10 scores to the `\ottava` and lyric bugs, and none with the fixes.
+On all of PDMX, the fingering and parenthesis fixes recover 125 of the 158
+scores LilyPond or the gate rejected besides compile timeouts, and the
+no-break space fix reads the 13 unreadable ones. The other 33 crash
+LilyPond itself: 28 segfaults, 4 aborts (`Moment is not increasing`) and
+an internal Guile error (`ly:item-get-column`). lytk's output there is
+unusual (two `\mark`s at one moment, a time signature in mid-bar), so
+writing it more ordinarily might spare some of them.
+
+The lyric cases come from the grammar having no lyric mode. Native lyrics
+that trip the gate stay rejected: lilycorpus does not want a fork of the
+grammar for them, and the writer's quoting covers converted scores.
+Released as 0.6.3.
+
 ## 2026-10-24 — 0.6.2: `\relative`, octave checks and includes as LilyPond reads them
 
 lilycorpus's first new source, Mutopia (2,354 records of native LilyPond at

@@ -12,9 +12,12 @@ its voice; the JSON leaves defaults out (810 → 174 bytes a note) and
 carries `"schema": 1`. Every writer's output on the 198 fixtures is byte
 for byte what it was, except where a fix changed it (MusicXML octave
 signs, noteheads, pedals, wedges, beat units, stacked chord symbols).
-0.6.1 (the same day) stops `flatten` warning on stderr, and 0.6.2 reads
+0.6.1 (the same day) stops `flatten` warning on stderr, 0.6.2 reads
 `\relative`, octave checks and `flatten`'s includes as LilyPond does (found
-on lilycorpus's Mutopia harvest; see the development log).
+on lilycorpus's Mutopia harvest), and 0.6.3 (2026-10-25) fixes what
+converting PDMX's MusicXML found: a no-break space the `musicxml` crate cut
+on, `\ottava` among post-events, fingerings and lyrics LilyPond misread
+(see the development log).
 Next: the Python API as 0.7.0 (below).
 
 ## Previous status (2026-10-04, Epic M done: 0.5.0 released)

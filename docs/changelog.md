@@ -7,6 +7,8 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-25
+
 What converting PDMX's MusicXML through LilyPond 2.26 found (lilycorpus).
 
 ### Fixed
@@ -976,7 +978,9 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/CSCPadova/lytk/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/CSCPadova/lytk/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/CSCPadova/lytk/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/CSCPadova/lytk/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CSCPadova/lytk/compare/v0.4.0...v0.5.0
