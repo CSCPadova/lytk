@@ -205,6 +205,7 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
             annotations,
         } => {
             beam_mode(annotations, ctx, lines);
+            ottavas(annotations, ctx, lines);
             let p = pitch_to_ly(pitch, ctx.lang, ctx.prev_pitch.as_ref(), ctx.mode);
             let d = duration_to_ly(duration);
             let a = annotations_to_ly(annotations);
@@ -219,6 +220,7 @@ fn emit_music(music: &Music, ctx: &mut EmitCtx, lines: &mut Vec<String>) {
             if let Some((_, lead)) = pitches.first() {
                 beam_mode(lead, ctx, lines);
             }
+            ottavas(annotations, ctx, lines);
             // Ties on every note are the chord's (`<g b>~`); on some, inside
             // it (`<g~ b>`).
             let tied = |a: &[Annotation]| a.contains(&Annotation::TieStart);
@@ -435,6 +437,18 @@ fn beam_mode(annotations: &[Annotation], ctx: &mut EmitCtx, lines: &mut Vec<Stri
         let cmd = if off { "\\autoBeamOff" } else { "\\autoBeamOn" };
         lines.push(format!("{}{cmd}", ctx.pad()));
         ctx.auto_beam_off = off;
+    }
+}
+
+/// `\ottava #n` before a note that starts or ends an octave shift: it is
+/// music, not a post-event (glued to the next one, Guile read `#1\pp`).
+fn ottavas(annotations: &[Annotation], ctx: &EmitCtx, lines: &mut Vec<String>) {
+    for ann in annotations {
+        if let Annotation::OctaveShift(os) = ann {
+            if os.shift_type != OctaveShiftType::Continue {
+                lines.push(format!("{}\\ottava #{}", ctx.pad(), os.octaves()));
+            }
+        }
     }
 }
 
@@ -798,10 +812,10 @@ fn annotations_to_ly(annotations: &[Annotation]) -> String {
                     parts.push(format!("^\"{}\"", text.text));
                 }
             }
-            Annotation::Fingering(f) => parts.push(format!("-{f}")),
-            Annotation::Lyric(_) => {}    // lyrics handled separately
-            Annotation::Velocity(_) => {} // performance data, no notation
-            Annotation::OctaveShift(os) => parts.push(format!("\\ottava #{}", os.octaves())),
+            Annotation::Fingering(f) => parts.extend(super::maps::fingering_to_ly(f)),
+            Annotation::Lyric(_) => {}       // lyrics handled separately
+            Annotation::Velocity(_) => {}    // performance data, no notation
+            Annotation::OctaveShift(_) => {} // \ottava, before the note
         }
     }
 

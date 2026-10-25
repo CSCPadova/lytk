@@ -270,6 +270,15 @@ fn decode_xml_chars(s: &str, keep: &[char], out: &mut String) {
     }
 }
 
+/// Whitespace the `musicxml` crate trims off a text (`str::trim`) but does
+/// not skip as it reads it: a text starting with one made it cut the text
+/// where the trimmed one would end, `"\u{A0}po"` to `"\u{A0}"`, or panic
+/// mid-character (lyrics after a no-break space, in PDMX). It is layout
+/// here, as the crate means it to be.
+fn is_wide_space(c: char) -> bool {
+    c.is_whitespace() && !c.is_ascii()
+}
+
 /// MusicXML ready for the `musicxml` crate, which reads text and attribute
 /// values raw: their entities decoded (`&amp;` was kept as `&amp;` in a
 /// title, `&#233;` as `&#233;`), CDATA sections made text, and line breaks
@@ -277,7 +286,10 @@ fn decode_xml_chars(s: &str, keep: &[char], out: &mut String) {
 /// [`restore_xml_text`] turns the stand-ins back. `None` when nothing
 /// changes.
 pub(crate) fn decode_xml_text(xml: &str) -> Option<String> {
-    if !xml.contains(['&', '\n', '\t']) && !xml.contains("<![CDATA[") {
+    if !xml.contains(['&', '\n', '\t'])
+        && !xml.contains("<![CDATA[")
+        && !xml.contains(is_wide_space)
+    {
         return None;
     }
     let mut out = String::with_capacity(xml.len());
@@ -289,13 +301,17 @@ pub(crate) fn decode_xml_text(xml: &str) -> Option<String> {
         let text = &rest[..text_end];
         let core = text.trim();
         if core.is_empty() {
-            out.push_str(text);
+            out.extend(text.chars().filter(|&c| !is_wide_space(c)));
         } else {
             let lead = &text[..text.len() - text.trim_start().len()];
             let trail = &text[text.trim_end().len()..];
-            out.push_str(lead);
+            out.extend(lead.chars().filter(|&c| !is_wide_space(c)));
+            let start = out.len();
             decode_xml_chars(&core.replace('\r', ""), &['>', '"', '&', '\''], &mut out);
-            out.push_str(trail);
+            // and one an entity at its edge decoded to (`&#160;`)
+            let decoded = out.split_off(start);
+            out.push_str(decoded.trim_matches(is_wide_space));
+            out.extend(trail.chars().filter(|&c| !is_wide_space(c)));
         }
         rest = &rest[text_end..];
         if rest.is_empty() {
@@ -504,6 +520,28 @@ mod text_tests {
             "x < y\n\""
         );
         assert_eq!(decode_xml_text("<a>plain</a>"), None);
+    }
+
+    #[test]
+    fn text_starting_with_a_wide_space_reads_whole() {
+        // The crate cut "\u{A0}po" to "\u{A0}" and panicked inside "日本".
+        for (text, want) in [
+            ("\u{A0}po", "po"),
+            ("\u{A0}\u{A0}日本\u{A0}", "日本"),
+            ("&#160;日本", "日本"),
+            ("\u{2028}Ch", "Ch"),
+            ("a\u{A0}b", "a\u{A0}b"),
+        ] {
+            let xml = format!(
+                "<score-partwise><work><work-title>{text}</work-title></work>\
+                 <part-list><score-part id=\"P1\"><part-name>x</part-name></score-part>\
+                 </part-list><part id=\"P1\"><measure number=\"1\"/></part></score-partwise>"
+            );
+            let score = crate::adapters::mxml_to_ir::MxmlToIrAdapter::new()
+                .convert_bytes(xml.as_bytes())
+                .expect("reads");
+            assert_eq!(score.metadata.title.as_deref(), Some(want), "{text:?}");
+        }
     }
 
     #[test]

@@ -7,6 +7,41 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+What converting PDMX's MusicXML through LilyPond 2.26 found (lilycorpus).
+
+### Fixed
+
+- MusicXML text starting with a no-break space (or another non-ASCII
+  space: U+2028, U+3000) reads whole. The `musicxml` crate cut such a text
+  to the length it would have once trimmed, so `"\u{A0}po"` read as
+  `"\u{A0}"`, and panicked when the cut fell inside a character
+  (`the reader panicked`): 52 of PDMX's 222,821 scores, 13 of which lytk
+  could not read at all. Such space at the edges of a text is dropped, as
+  the crate means to trim it.
+- `\ottava` is written before the note an octave shift starts or ends at.
+  It was written among the note's post-events, joined to the next one
+  without a space, so `\ottava #1\pp` made Guile read `1\pp` as the
+  number and LilyPond stopped; where it compiled, the shift began and
+  ended one note late.
+- A fingering that is no number is written `-\finger "…"`. Written as `-`
+  and its text, LilyPond read `+3` as the stopped articulation `-+` and a
+  3, `R` as a rest, `1/2` as a fraction, `#1` as Scheme, `3 5` as a
+  fingering and a duration; an empty fingering left a lone `-` and is no
+  longer written, nor is a string number that is no number (`\III`).
+- Lyrics LilyPond or lytk would misread are written quoted: a syllable
+  starting with `.` (`.`, `...`), a syntax error in LilyPond 2.26, and one
+  holding a backquote or a parenthesis, which lytk's parser rejects
+  (`` ` ``, ``vend` ``, and `(Tag)` or `We(She)` right after the verse's
+  `\set ignoreMelismata = ##t`).
+
+Measured on PDMX's 222,856 scores whose licence statements agree: with
+0.6.2, a 2,000-score sample lost 10 to the `\ottava` and lyric bugs, and none
+with these fixes. On all of them, the fingering and parenthesis fixes
+recover 125 of the 158 scores LilyPond or lytk's parser rejected (compile
+timeouts aside), and the no-break space fix the 13 lytk could not read.
+The other 33 crash LilyPond 2.26 (a segfault, `Moment is not increasing`,
+an internal Guile error).
+
 ## [0.6.2] - 2026-10-24
 
 LilyPond read as LilyPond reads it, where lilycorpus's Mutopia harvest found

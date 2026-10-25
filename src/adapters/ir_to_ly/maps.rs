@@ -67,19 +67,39 @@ pub(super) fn pedal_to_ly(kind: PedalType) -> &'static str {
     }
 }
 
+/// A fingering: `-3` for a number, `-\finger "…"` for any other text,
+/// which LilyPond read as something else after the `-`: an articulation
+/// (`+3`, `-7`), a rest (`R`), a note (`d`), a fraction (`1/2`), Scheme
+/// (`#1`), or a word ending at a space (`3 5`). None when empty: a lone `-`
+/// was a syntax error.
+pub(super) fn fingering_to_ly(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else if text.bytes().all(|b| b.is_ascii_digit()) {
+        Some(format!("-{text}"))
+    } else {
+        let text = super::helpers::escape_ly_string(text);
+        Some(format!("-\\finger \"{text}\""))
+    }
+}
+
 /// Technical indication -> LilyPond post-event (none for the ones
 /// LilyPond has no command for).
 pub(super) fn technical_to_ly(tech: &Technical) -> Option<String> {
     use TechnicalType as T;
     Some(match tech.name {
-        T::Fingering => format!("-{}", tech.value),
+        T::Fingering => return fingering_to_ly(&tech.value),
         T::UpBow => "\\upbow".into(),
         T::DownBow => "\\downbow".into(),
         T::OpenString => "\\open".into(),
         T::SnapPizzicato => "\\snappizzicato".into(),
         T::Harmonic => "\\flageolet".into(),
         T::Stopped => "-+".into(),
-        T::String => format!("\\{}", tech.value),
+        // `\3`; a string named otherwise is no LilyPond command
+        T::String if !tech.value.is_empty() && tech.value.bytes().all(|b| b.is_ascii_digit()) => {
+            format!("\\{}", tech.value)
+        }
         _ => return None,
     })
 }
