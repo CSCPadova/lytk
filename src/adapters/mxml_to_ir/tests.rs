@@ -1765,6 +1765,47 @@ fn test_parse_compound_time_signature() {
 }
 
 #[test]
+fn musescore_dual_time_signatures_read_as_their_meter() {
+    // Berg's String Quartet Op. 3 (OpenScore): `(6)` over `(8)` is 6/8,
+    // `(3)9` over `(8)8` is 9/8 with 3/8 shown in parentheses. Read as
+    // written, `(8)` was no number, the meter 6/4, and `\time (6)/4` an
+    // error in LilyPond.
+    for (beats, beat_type, want) in [("(6)", "(8)", ("6", 8)), ("(3)9", "(8)8", ("9", 8))] {
+        let xml = format!(
+            r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+<measure number="1">
+  <attributes>
+    <divisions>2</divisions>
+    <time><beats>{beats}</beats><beat-type>{beat_type}</beat-type></time>
+  </attributes>
+  <note>
+    <pitch><step>C</step><octave>4</octave></pitch>
+    <duration>1</duration><voice>1</voice><type>eighth</type>
+  </note>
+</measure>
+  </part>
+</score-partwise>"#
+        );
+        let score = MxmlToIrAdapter::new().convert_str(&xml).unwrap();
+        let time = score.parts()[0].measures[0]
+            .attributes
+            .as_ref()
+            .unwrap()
+            .time
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            (time.beats.as_str(), time.beat_type),
+            want,
+            "{beats}/{beat_type}"
+        );
+    }
+}
+
+#[test]
 fn test_parse_forward_as_spacer() {
     let xml = r#"<?xml version="1.0"?>
 <score-partwise>

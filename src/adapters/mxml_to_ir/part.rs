@@ -544,7 +544,7 @@ fn convert_attributes(
             .content
             .beats
             .iter()
-            .map(|b| b.beats.content.clone())
+            .map(|b| meter_text(&b.beats.content))
             .collect();
         let beats = if beats_parts.is_empty() {
             "4".to_string()
@@ -555,7 +555,7 @@ fn convert_attributes(
             .content
             .beats
             .first()
-            .map(|b| b.beat_type.content.parse().unwrap_or(4))
+            .map(|b| meter_text(&b.beat_type.content).parse().unwrap_or(4))
             .unwrap_or(4);
         let symbol = t.attributes.symbol.as_ref().map(|s| match s {
             mdt::TimeSymbol::Common => TimeSymbol::Common,
@@ -748,5 +748,26 @@ pub(super) fn convert_clef_sign(sign: &mdt::ClefSign) -> ClefSign {
         mdt::ClefSign::Percussion => ClefSign::Percussion,
         mdt::ClefSign::TAB => ClefSign::Tab,
         mdt::ClefSign::Jianpu | mdt::ClefSign::None => ClefSign::G,
+    }
+}
+
+/// The number a `<beats>` or `<beat-type>` states, read past MuseScore's
+/// dual time signatures: `(3)9` is 9 (3 shown in parentheses beside it),
+/// `(6)` is 6. Read as written, `(8)` was no number and the meter a 4.
+fn meter_text(text: &str) -> String {
+    let (mut outside, mut inside, mut depth) = (String::new(), String::new(), 0u32);
+    for c in text.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth > 0 => inside.push(c),
+            _ => outside.push(c),
+        }
+    }
+    let outside = outside.trim();
+    if outside.is_empty() {
+        inside.trim().to_string()
+    } else {
+        outside.to_string()
     }
 }
