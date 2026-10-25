@@ -7,6 +7,20 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-10-25
+
+What converting OpenScore's Lieder and String Quartets found (lilycorpus).
+
+### Fixed
+
+- A breath mark is written `\breathe`, with no direction: it is no
+  post-event, and `_\breathe` was a syntax error in LilyPond
+  (`post-event expected`; 6 of OpenScore's 1,460 songs).
+- MuseScore's dual time signatures read as their meter: `(6)` over `(8)`
+  is 6/8, and `(3)9` over `(8)8` is 9/8 with 3/8 shown in parentheses.
+  Read as written, `(8)` was no number, so the meter was 6/4, and the
+  written `\time (6)/4` stopped LilyPond (Berg's String Quartet Op. 3).
+
 ## [0.6.3] - 2026-10-25
 
 What converting PDMX's MusicXML through LilyPond 2.26 found (lilycorpus).
@@ -978,7 +992,8 @@ First public release.
   newer.
 - MIT licence.
 
-[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/CSCPadova/lytk/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/CSCPadova/lytk/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/CSCPadova/lytk/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/CSCPadova/lytk/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/CSCPadova/lytk/compare/v0.6.0...v0.6.1

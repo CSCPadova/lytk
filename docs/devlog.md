@@ -3,6 +3,30 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-10-25 — 0.6.4: what converting OpenScore found
+
+lilycorpus's OpenScore sources are MusicXML exported by MuseScore from the
+OpenScore Lieder (1,462 songs) and String Quartets (196 quartets), read
+with `from_musicxml_bytes` and written with `to_lilypond`, like PDMX's.
+lytk read every file, and LilyPond 2.26 stopped on two things it wrote.
+
+- **`_\breathe`.** `attachments_to_ly` gave a breath mark its placement
+  like any articulation, but `\breathe` is no post-event: `_\breathe` is
+  `post-event expected` (6 songs). It is written `\breathe` now. LilyPond
+  takes post-events after it (`c4\< \breathe\!` compiles), so only the
+  direction had to go.
+- **MuseScore's dual time signatures.** MuseScore writes a time signature
+  shown with an alternative as `<beats>(3)9</beats><beat-type>(8)8</beat-type>`
+  (9/8, with 3/8 in parentheses beside it) and a parenthesized one as
+  `(6)` over `(8)`. The reader kept the text, so `(8)` was no number and
+  the meter fell back to a quarter: Berg's String Quartet Op. 3 became
+  `\time (6)/4`, which LilyPond rejects. `meter_text` takes the digits
+  outside the parentheses, or those inside when there are none.
+
+The other OpenScore scores LilyPond rejected crash it (a segfault, an
+abort) or time out at lilycorpus's default 30 s: whole quartets take up to
+81 s to compile. Released as 0.6.4.
+
 ## 2026-10-25 — 0.6.3: what converting PDMX found
 
 lilycorpus's second new source, PDMX (222,856 MuseScore scores whose two

@@ -335,6 +335,18 @@ fn test_emit_attachments() {
 }
 
 #[test]
+fn breath_marks_take_no_direction() {
+    // `\breathe` is no post-event: `_\breathe` was a syntax error in
+    // LilyPond 2.26 (OpenScore's Lieder).
+    let mut note = make_note(PitchStep::C, 4, Duration::quarter());
+    note.articulations.push(Articulation {
+        name: ArticulationType::BreathMark,
+        placement: Placement::Below,
+    });
+    assert_eq!(attachments_to_ly(&note), "\\breathe");
+}
+
+#[test]
 fn test_emit_chord() {
     use crate::ir::note::Chord;
     let notes = vec![

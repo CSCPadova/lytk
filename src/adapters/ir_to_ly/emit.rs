@@ -1,6 +1,8 @@
 //! Measure, voice element, note/chord/rest emission.
 
-use crate::ir::articulation::{BeamValue, OrnamentType, StartStop, TupletDisplay};
+use crate::ir::articulation::{
+    ArticulationType, BeamValue, OrnamentType, StartStop, TupletDisplay,
+};
 use crate::ir::duration::{Duration, Frac};
 use crate::ir::language::{PitchLanguage, PitchMode};
 use crate::ir::note::{ArpeggioType, Chord, LineType, Note, Rest, StemDirection, VoiceElement};
@@ -888,10 +890,13 @@ pub(super) fn attachments_to_ly(note: &Note) -> String {
         }
     }
 
-    // Articulations
+    // Articulations; `\breathe` is no post-event, so it takes no direction
+    // (`_\breathe` was a syntax error: OpenScore's Lieder)
     for art in &note.articulations {
         let ly = articulation_to_ly(&art.name);
-        if !ly.is_empty() {
+        if art.name == ArticulationType::BreathMark {
+            parts.push(ly.to_string());
+        } else if !ly.is_empty() {
             parts.push(placed(art.placement, ly));
         }
     }
