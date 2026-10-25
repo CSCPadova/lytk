@@ -203,7 +203,16 @@ pub(super) fn emit_measures(
             if let Some(clef) = &dir.clef {
                 marks.before.entry(at).or_default().push(clef_to_ly(clef));
             }
-            // Dynamics, wedges, text, pedal, octave shifts must attach to a note
+            // `\ottava` is music, before the note the shift starts or ends
+            // at: after a note, it shifted one note late, and glued to the
+            // note's next post-event Guile read `#1\pp` as one token.
+            if let Some(oct) = &dir.octave_shift {
+                if oct.shift_type != OctaveShiftType::Continue {
+                    let cmd = format!("\\ottava #{}", oct.octaves());
+                    marks.before.entry(at).or_default().push(cmd);
+                }
+            }
+            // Dynamics, wedges, text, pedal must attach to a note
             let mut parts: Vec<String> = Vec::new();
             if let Some(dyn_mark) = &dir.dynamic {
                 parts.push(super::maps::dynamic_to_ly(&dyn_mark.sign));
@@ -231,11 +240,6 @@ pub(super) fn emit_measures(
                 let cmd = super::maps::pedal_to_ly(pedal.pedal_type);
                 if !cmd.is_empty() {
                     parts.push(cmd.to_string());
-                }
-            }
-            if let Some(oct) = &dir.octave_shift {
-                if oct.shift_type != OctaveShiftType::Continue {
-                    parts.push(format!("\\ottava #{}", oct.octaves()));
                 }
             }
             marks.after.entry(at).or_default().extend(parts);
