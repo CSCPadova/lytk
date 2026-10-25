@@ -7,6 +7,18 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+What converting OpenScore's Lieder and String Quartets found (lilycorpus).
+
+### Fixed
+
+- A breath mark is written `\breathe`, with no direction: it is no
+  post-event, and `_\breathe` was a syntax error in LilyPond
+  (`post-event expected`; 6 of OpenScore's 1,460 songs).
+- MuseScore's dual time signatures read as their meter: `(6)` over `(8)`
+  is 6/8, and `(3)9` over `(8)8` is 9/8 with 3/8 shown in parentheses.
+  Read as written, `(8)` was no number, so the meter was 6/4, and the
+  written `\time (6)/4` stopped LilyPond (Berg's String Quartet Op. 3).
+
 ## [0.6.3] - 2026-10-25
 
 What converting PDMX's MusicXML through LilyPond 2.26 found (lilycorpus).
