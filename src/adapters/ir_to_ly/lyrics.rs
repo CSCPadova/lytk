@@ -253,14 +253,15 @@ pub(super) fn syllable_to_ly(s: &LyricSyllable) -> String {
 /// something else: a duration (any digit: `a1`, `2nd`, `dominant-11th`), a
 /// hyphen or extender, a space (`_`), words on one note (`~`), a brace, a
 /// comment, Scheme, or several words; quoted too when it starts with `.`,
-/// which LilyPond 2.26 rejects (`.`, `...`), or holds a backquote, which
-/// lytk's own parser rejects (`` ` ``, ``vend` ``).
+/// which LilyPond 2.26 rejects (`.`, `...`), or holds a parenthesis or a
+/// backquote, which lytk's own parser rejects (`(Tag)` and `We(She)` right
+/// after the verse's `\set ignoreMelismata = ##t`, `` ` ``, ``vend` ``).
 pub(super) fn escape_lyric_text(text: &str) -> String {
     let plain = !text.is_empty()
         && !matches!(text, "--" | "__" | "_")
         && !text.starts_with('.')
         && !text.contains(|c: char| {
-            c.is_ascii_digit() || c.is_whitespace() || "\"\\{}#$%~_|*=<>`\u{203F}".contains(c)
+            c.is_ascii_digit() || c.is_whitespace() || "\"\\{}#$%~_|*=<>`()\u{203F}".contains(c)
         });
     if plain {
         text.to_string()

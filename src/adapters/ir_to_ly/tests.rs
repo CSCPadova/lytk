@@ -2085,9 +2085,55 @@ fn direction_text_quotes_are_escaped() {
 }
 
 #[test]
+fn fingerings_that_are_no_number_are_written_with_finger() {
+    // PDMX's fingerings: after a bare `-`, LilyPond read `+3` as `-+` and a
+    // 3, `R` as a rest, `1/2` as a fraction, `#1` as Scheme, `3 5` as a
+    // fingering and a duration; an empty one left a lone `-`.
+    use crate::adapters::mxml_to_ir::MxmlToIrAdapter;
+    let fingerings = ["3", "+3", "1/2", "R", "#1", "", "3 5", "L.H"];
+    let notes: String = fingerings
+        .iter()
+        .map(|f| {
+            format!(
+                "<note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration>\
+                 <type>quarter</type><notations><technical><fingering>{f}</fingering>\
+                 </technical></notations></note>"
+            )
+        })
+        .collect();
+    let xml = format!(
+        "<score-partwise version=\"3.1\"><part-list><score-part id=\"P1\">\
+         <part-name>P</part-name></score-part></part-list><part id=\"P1\">\
+         <measure number=\"1\"><attributes><divisions>1</divisions><time><beats>8</beats>\
+         <beat-type>4</beat-type></time></attributes>{notes}</measure></part></score-partwise>"
+    );
+    let score = MxmlToIrAdapter::new()
+        .convert_bytes(xml.as_bytes())
+        .expect("reads");
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    for written in [
+        "c'4-3 ",
+        r#"c'4-\finger "+3""#,
+        r#"c'4-\finger "1/2""#,
+        r#"c'4-\finger "R""#,
+        r##"c'4-\finger "#1""##,
+        r#"c'4-\finger "3 5""#,
+        r#"c'4-\finger "L.H""#,
+    ] {
+        assert!(ly.contains(written), "{written}: {ly}");
+    }
+    assert!(!ly.contains("c'4- "), "{ly}");
+    assert!(
+        crate::adapters::ly_to_ir::check(&ly, false).is_empty(),
+        "{ly}"
+    );
+}
+
+#[test]
 fn lyrics_starting_with_a_dot_or_holding_a_backquote_are_quoted() {
     // LilyPond 2.26 rejects a word starting with `.`; lytk's parser one with
-    // a backquote (PDMX's `` ` ter`` and ``vend` ``).
+    // a backquote (PDMX's `` ` ter`` and ``vend` ``), and one starting with
+    // `(` after the verse's `##t`.
     use super::lyrics::escape_lyric_text;
     for (text, written) in [
         (".", "\".\""),
@@ -2095,6 +2141,9 @@ fn lyrics_starting_with_a_dot_or_holding_a_backquote_are_quoted() {
         (".a", "\".a\""),
         ("`", "\"`\""),
         ("vend`", "\"vend`\""),
+        ("(Tag)", "\"(Tag)\""),
+        ("We(She)", "\"We(She)\""),
+        ("simplifiés)", "\"simplifiés)\""),
         ("a.", "a."),
         ("Sün", "Sün"),
     ] {

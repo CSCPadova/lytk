@@ -812,7 +812,7 @@ fn annotations_to_ly(annotations: &[Annotation]) -> String {
                     parts.push(format!("^\"{}\"", text.text));
                 }
             }
-            Annotation::Fingering(f) => parts.push(format!("-{f}")),
+            Annotation::Fingering(f) => parts.extend(super::maps::fingering_to_ly(f)),
             Annotation::Lyric(_) => {}       // lyrics handled separately
             Annotation::Velocity(_) => {}    // performance data, no notation
             Annotation::OctaveShift(_) => {} // \ottava, before the note
