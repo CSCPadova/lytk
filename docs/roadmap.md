@@ -18,7 +18,10 @@ on lilycorpus's Mutopia harvest), and 0.6.3 (2026-10-25) fixes what
 converting PDMX's MusicXML found: a no-break space the `musicxml` crate cut
 on, `\ottava` among post-events, fingerings and lyrics LilyPond misread;
 0.6.4 (the same day) breath marks and MuseScore's dual time signatures,
-found converting OpenScore (see the development log).
+found converting OpenScore; 0.6.5 (2026-11-25) keeps the bars PDMX's
+conversion lost (a bar of `<forward>` alone, a staff silent in a bar) and
+writes `\partial` for a bar that is not as long as its meter (see the
+development log).
 Next: the Python API as 0.7.0 (below).
 
 ## Previous status (2026-10-04, Epic M done: 0.5.0 released)

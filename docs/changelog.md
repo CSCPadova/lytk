@@ -7,6 +7,8 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-25
+
 What compiling PDMX's conversion found in the scores LilyPond 2.26 accepts
 (lilycorpus): bars lost, and bar checks that fail.
 

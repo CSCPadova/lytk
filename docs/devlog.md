@@ -3,6 +3,91 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-11-25 — 0.6.5: what PDMX's scores that compile were hiding
+
+lilycorpus converted PDMX again, on a Slurm cluster (lytk 0.6.4, LilyPond
+2.26): all 222,820 files read, 195,432 distinct texts, 195,391 compile.
+The 41 LilyPond rejects are what 0.6.3 left (28 segfaults, 4 aborts, a
+Guile error) and 8 it could not finish in 180 s or 4 GB. This time the
+scores that *compile* were counted too, and two things showed that a
+failure count cannot.
+
+- **A bar of `<forward>` alone is lost.** MuseScore writes an empty or
+  invisible bar as `<forward><duration>…</duration></forward>` and
+  nothing else. `convert_measure` makes a `<forward>` a voice's hidden
+  rest only when it names a voice or follows that voice's note; this one
+  does neither, so it only moved the cursor, `placed` stayed empty and
+  the bar had no voice, hence no length. `emit_measures` goes voice by
+  voice and wrote nothing between two bar checks (`| % 1` `| % 2`): the
+  part's later music came a bar early, against the other parts. 2,526 of
+  the scores that compile have such a bar (63,032 bars, 1.3% of scores),
+  1,705 with music after it, and 25 of the 28 that segfault LilyPond:
+  the smallest, a two-part "Tenderly", has a drum part of one bar and 23
+  forwards, and its `\alternative` blocks came out empty. Three fixes,
+  one rule (a bar lasts what its longest part says):
+  - `convert_measure` keeps how far the cursor got (`reach`); a bar left
+    without a voice is one spacer that long.
+  - `fill_short_bars`, once the parts are read, fills a part shorter
+    than the score's bar with a spacer on its longest voice: an empty
+    `<measure>`, a voice that stops early. A bar no part gives a length
+    keeps none.
+  - `emit_measures` gives a staff with no voice in a bar a skip of the
+    bar's length, through `emit_voice_elements` so that the bar's marks
+    are written, and a staff whose voices stop early a skip for the
+    rest. `lift` already held a silent staff's place this way for the
+    music tree; the measure writer did not, and a piano's hand lost a
+    bar wherever its `<forward>` named no voice. `Voice::length` is the
+    one sum of a voice's durations (`Measure::content_length` uses it).
+- **Bars that are not as long as their meter.** `\partial` was written
+  for the opening bar when MusicXML marks it `implicit`, and never else.
+  PDMX is full of tunes imported from ABC: a pickup not marked, and
+  every bar that a repeat sign splits written as two short measures (5/8
+  and 1/8 in 6/8). Each got its bar check and nothing else, and LilyPond
+  reported `bar check failed` in 276 of a 591-score sample (47%); after
+  an unmarked pickup every bar line it drew was out of place.
+  `emit_measures` now writes `\partial` and the bar's length before any
+  bar that is not as long as its meter, after the bar's `\time` (set
+  later, `\time` would change the length `\partial` counts from). The
+  opening pickup keeps its own path (`partial_duration`). The meter is
+  the score's (`bar_meters`): LilyPond's Timing belongs to the score, so
+  a `\time` in one part counts for the parts that have none (one sample
+  file writes it in the first part only, and the others got a `\partial`
+  on each of 1,400 bars until this was score-wide), and it is 4/4 until
+  the first `\time`. LilyPond 2.24.4 takes `\partial` in mid-piece for a
+  short bar, a long one (`\partial 4*5` in 4/4 is one bar by its bar
+  number) and a full-bar rest; a split bar counts as two bars, as in the
+  MusicXML.
+
+Measured on 256 PDMX files (one folder of the archive) compiled with
+LilyPond 2.24.4, 0.6.4 against this: a failed bar check in 128 scores,
+then 6 (1,123 warnings, then 140); 109 scores without any warning, then
+218; 66 bars written as nothing in 4 scores, then none; `mid-measure time
+signature without \partial` in 6 scores, then 1; no score warns more than
+before, and lytk's reader takes all 256 outputs without an error.
+
+What is left, from the 6 and from lilycorpus's counts:
+
+- Written durations that do not add up to the bar's length in the IR,
+  so that no `\partial` can be right: single-note tremolos written as
+  dotted values (twelve `ees'8.:16` in a 4/4 bar), `\tuplet 7/8`, a note
+  whose type and `<duration>` disagree.
+- A full-bar rest in an opening `\partial` bar (`\partial 4 R4`): `R`
+  must start where a bar starts, and LilyPond's check fails at `-1/4`.
+  It should be written `r` there.
+- A bar's marks that fall at its end go on its last note, so a pedal
+  pressed and lifted over one note or skip is `s1\sustainOn\sustainOff`
+  (`cannot find start of piano pedal`).
+- Garbage bars are written as they are: a dotted longa rest, a spacer
+  of thousands of whole notes (271 scores that compile, and 5 of the 8
+  LilyPond could not finish). A diagnostic for a bar many times its
+  meter would let a corpus drop them.
+- The crashes were not rechecked: the three crashing files at hand
+  compile with LilyPond 2.24.4 with or without the fix (their 190 lost
+  bars and 30 failed bar checks are gone). lilycorpus's next run on 2.26
+  will tell how many of the 28 segfaults the lost bars explain.
+
+Released as 0.6.5.
+
 ## 2026-10-25 — 0.6.4: what converting OpenScore found
 
 lilycorpus's OpenScore sources are MusicXML exported by MuseScore from the
