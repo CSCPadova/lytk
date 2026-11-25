@@ -30,6 +30,14 @@ impl Voice {
             elements: Vec::new(),
         }
     }
+
+    /// How long the voice's music is in its bar (grace notes take no time).
+    pub fn length(&self) -> super::duration::Frac {
+        self.elements
+            .iter()
+            .map(VoiceElement::metric_duration)
+            .sum()
+    }
 }
 
 impl std::fmt::Display for Voice {

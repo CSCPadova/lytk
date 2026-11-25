@@ -2229,3 +2229,128 @@ fn marks_from_a_dynamics_staff_land_on_their_notes() {
     assert!(body.contains(r"e'4\!"), "{ly}");
     assert!(!body.contains(r"\<\!"), "{ly}");
 }
+
+/// A part in 4/4 of bars, each bar its voices: (voice, staff, the notes'
+/// lengths in quarters).
+fn part_of_bars(bars: &[&[(u8, u8, &[i64])]]) -> Part {
+    let mut part = Part::new("P1");
+    for (i, voices) in bars.iter().enumerate() {
+        let mut measure = Measure::new(i as u32 + 1);
+        if i == 0 {
+            measure.attributes = Some(MeasureAttributes {
+                time: Some(TimeSignature::default()), // 4/4
+                ..Default::default()
+            });
+        }
+        for &(number, staff, lengths) in *voices {
+            let elements = lengths
+                .iter()
+                .map(|&q| {
+                    let mut note = make_note(PitchStep::C, 4, Duration::new(Frac::new(q, 4)));
+                    note.voice = number;
+                    note.staff = staff;
+                    VoiceElement::Note(Box::new(note))
+                })
+                .collect();
+            measure.voices.push(Voice { number, elements });
+        }
+        part.measures.push(measure);
+    }
+    part
+}
+
+/// The LilyPond of a part, as one line of single-spaced words.
+fn ly_words(part: Part) -> String {
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(part));
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    ly.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn a_bar_that_is_not_as_long_as_its_meter_says_how_long_it_is() {
+    // An unmarked pickup, a bar split around a repeat, MuseScore's bars of
+    // their own length: written with the bar check alone, the check failed
+    // (in 47% of a sample of PDMX's scores) and, after a pickup, every bar
+    // line came out of place. A full bar says nothing.
+    let ly = ly_words(part_of_bars(&[
+        &[(1, 1, &[1])],
+        &[(1, 1, &[4])],
+        &[(1, 1, &[2, 1])],
+        &[(1, 1, &[1])],
+        &[(1, 1, &[4, 1])],
+    ]));
+    assert!(
+        ly.contains(
+            "\\time 4/4 \\partial 4 c'4 | % 1 c'1 | % 2 \\partial 2. c'2 c'4 | % 3 \
+             \\partial 4 c'4 | % 4 \\partial 4*5 c'1 c'4 | % 5"
+        ),
+        "{ly}"
+    );
+
+    // Without a time signature the meter is LilyPond's own 4/4.
+    let mut part = part_of_bars(&[&[(1, 1, &[4])], &[(1, 1, &[2])]]);
+    part.measures[0].attributes = None;
+    let ly = ly_words(part);
+    assert!(ly.contains("c'1 | % 1 \\partial 2 c'2 | % 2"), "{ly}");
+}
+
+#[test]
+fn the_opening_pickup_is_written_once() {
+    let mut score = Score::new();
+    score.metadata.partial_duration = Some(Duration::quarter());
+    score.children.push(ScoreChild::Part(part_of_bars(&[
+        &[(1, 1, &[1])],
+        &[(1, 1, &[4])],
+    ])));
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    assert_eq!(ly.matches("\\partial").count(), 1, "{ly}");
+}
+
+#[test]
+fn a_staff_silent_in_a_bar_skips_it() {
+    // A piano's left hand with nothing in a bar (no voice of its staff), or
+    // with a voice that stops early: its next bar came that much early.
+    let mut part = part_of_bars(&[
+        &[(1, 1, &[4]), (5, 2, &[4])],
+        &[(1, 1, &[4])],
+        &[(1, 1, &[4]), (5, 2, &[2])],
+        &[(1, 1, &[4]), (5, 2, &[4])],
+    ]);
+    part.staves = 2;
+    let ly = ly_words(part);
+    let lower = &ly[ly.find("StaffII = {").expect("a second staff")..];
+    assert!(
+        lower.contains("c'1 | % 1 s1 | % 2 c'2 s2 | % 3 c'1 | % 4"),
+        "{lower}"
+    );
+}
+
+#[test]
+fn the_meter_is_the_scores() {
+    // LilyPond keeps time for the whole score: a `\time` in one part is
+    // the meter of the parts that have none (MuseScore may write it in the
+    // first part only), and their bars of that length say nothing.
+    let mut upper = part_of_bars(&[&[(1, 1, &[3])], &[(1, 1, &[3])]]);
+    let time = upper.measures[0].attributes.as_mut().unwrap();
+    time.time = Some(TimeSignature {
+        beats: "3".to_string(),
+        ..Default::default()
+    });
+    let mut lower = part_of_bars(&[&[(1, 1, &[3])], &[(1, 1, &[2])]]);
+    lower.part_id = "P2".to_string();
+    lower.measures[0].attributes = None;
+    let mut score = Score::new();
+    score.children.push(ScoreChild::Part(upper));
+    score.children.push(ScoreChild::Part(lower));
+    let ly = IrToLyAdapter::new().convert(&score).unwrap();
+    let ly = ly.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        ly.contains("\\time 3/4 c'1*3/4 | % 1 c'1*3/4 | % 2 }"),
+        "{ly}"
+    );
+    assert!(
+        ly.contains("{ c'1*3/4 | % 1 \\partial 2 c'2 | % 2 }"),
+        "{ly}"
+    );
+}
