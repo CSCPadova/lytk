@@ -3267,9 +3267,9 @@ middle = { \inner e' f' }
             "expected 1 + 3 parallel + 1 measures, got {:?}",
             part.measures.len()
         );
-        for mi in 1..4 {
+        for (mi, measure) in part.measures.iter().enumerate().take(4).skip(1) {
             assert_eq!(
-                part.measures[mi].voices.len(),
+                measure.voices.len(),
                 2,
                 "parallel measure {} should hold both voices",
                 mi + 1

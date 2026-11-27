@@ -772,13 +772,34 @@ pub(super) fn handle_escaped_word(
                     if let Some((num, denom)) = frac_text.split_once('/') {
                         // A ratio with a 0 or a term beyond the IR's `u8`
                         // (`\tuplet 0/2`, `\times 2/0`, `\tuplet 300/2`) scales
-                        // nothing: its music is read unscaled.
-                        let ratio = match (num.parse::<u64>(), denom.parse::<u64>()) {
-                            (Ok(0), _) | (_, Ok(0)) => {
+                        // nothing: its music is read unscaled. A zero divisor
+                        // is LilyPond's error; a zero factor (`\times 0/1`,
+                        // `\tuplet 2/0`) LilyPond takes: its music lasts
+                        // nothing, which lytk does not read.
+                        let (num, denom) = (num.parse::<u64>(), denom.parse::<u64>());
+                        // `\times n/d` scales by n/d, `\tuplet a/n` by n/a
+                        let zero_divisor = if text == "\\times" {
+                            denom == Ok(0)
+                        } else {
+                            num == Ok(0)
+                        };
+                        let ratio = match (num, denom) {
+                            (Ok(0), _) | (_, Ok(0)) if zero_divisor => {
                                 state.error(
                                     frac_node,
                                     "invalid-ratio",
                                     format!("`{text} {frac_text}` has a zero term: read unscaled"),
+                                );
+                                None
+                            }
+                            (Ok(0), _) | (_, Ok(0)) => {
+                                state.warn(
+                                    frac_node,
+                                    "unsupported-value",
+                                    format!(
+                                        "`{text} {frac_text}` makes its music last nothing: \
+                                         read unscaled"
+                                    ),
                                 );
                                 None
                             }

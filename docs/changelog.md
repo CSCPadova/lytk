@@ -29,6 +29,10 @@ found: repeats and transpositions read wrong.
   block's start (`\new Staff << \time 2/4 \transposition c \music >>`,
   how Mutopia writes a part): read as an unknown variable, it was lost,
   and with it the meter, the key or the instrument's transposition.
+- A tuplet that scales its music to nothing (`\times 0/1`, `\tuplet 2/0`)
+  is a warning, not an error: LilyPond takes it, and its own regression
+  tests use it. A zero divisor (`\times 2/0`, `\tuplet 0/2`) stays an
+  error.
 - A MusicXML bar of `<forward>` alone lasts its forward. MuseScore writes
   an empty or invisible bar that way; the forward is no voice's, so the
   bar was read with no voice and no length, LilyPond's writer wrote
