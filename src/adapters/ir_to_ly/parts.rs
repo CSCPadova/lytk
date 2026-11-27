@@ -141,6 +141,7 @@ pub(super) fn emit_part_variable(
     lang: PitchLanguage,
     mode: PitchMode,
     partial_dur: Option<&Duration>,
+    meters: &[Frac],
     lines: &mut Vec<String>,
 ) {
     let var = part_var_name(part);
@@ -205,6 +206,7 @@ pub(super) fn emit_part_variable(
             staff_filter,
             lead,
             partial_dur,
+            meters,
             relative_ref.as_ref(),
             2,
             lines,

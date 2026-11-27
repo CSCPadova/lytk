@@ -33,6 +33,7 @@ fn each_code_on_its_input() {
         // Semantic errors, from the walk.
         ("{ c'3 }", Error, "invalid-duration"),
         ("{ \\tuplet 0/2 { c'8 d' e' } }", Error, "invalid-ratio"),
+        ("{ \\times 2/0 { c'8 d' e' } }", Error, "invalid-ratio"),
         ("{ c'4*1/0 }", Error, "invalid-ratio"),
         ("Hello world, this is not music.", Error, "not-lilypond"),
         ("\\version \"2.x\"\n{ c'1 }", Error, "invalid-version"),
@@ -43,6 +44,10 @@ fn each_code_on_its_input() {
         ("{ \\time 3/256 c'4 }", Warning, "unsupported-value"),
         ("{ \\time 1/0 c'1 }", Warning, "unsupported-value"),
         ("{ \\tuplet 300/2 { c'8 } }", Warning, "unsupported-value"),
+        // A tuplet that scales its music to nothing: LilyPond takes it (its
+        // regression tests measure `\\times 0/1 c4.`), lytk reads it unscaled.
+        ("{ \\times 0/1 c'4. }", Warning, "unsupported-value"),
+        ("{ \\tuplet 2/0 c'4. }", Warning, "unsupported-value"),
         (
             "\\include \"notes.ily\"\n{ c'1 }",
             Warning,
@@ -167,4 +172,20 @@ fn a_file_that_is_not_utf8_is_a_parse_error() {
         read_source(&dir.path().join("missing.ly")),
         Err(AdapterError::Io(_))
     ));
+}
+
+#[test]
+fn a_tuplet_that_scales_its_music_to_nothing_is_no_error() {
+    // LilyPond takes `\times 0/1 c4.` (music that lasts nothing; its own
+    // regression tests measure it); only a zero divisor (`\times 2/0`,
+    // `\tuplet 0/2`) is one LilyPond refuses.
+    for text in ["{ \\times 0/1 c'4. }", "{ \\tuplet 2/0 c'4. }"] {
+        let found = codes(text);
+        assert!(
+            found
+                .iter()
+                .all(|(severity, _)| *severity != Severity::Error),
+            "{text:?}: {found:?}"
+        );
+    }
 }

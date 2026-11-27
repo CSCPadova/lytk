@@ -430,12 +430,7 @@ impl Measure {
     pub fn content_length(&self) -> Ratio<i64> {
         self.voices
             .iter()
-            .map(|v| {
-                v.elements
-                    .iter()
-                    .map(super::note::VoiceElement::metric_duration)
-                    .sum()
-            })
+            .map(super::voice::Voice::length)
             .max()
             .unwrap_or_else(|| Ratio::from_integer(0))
     }

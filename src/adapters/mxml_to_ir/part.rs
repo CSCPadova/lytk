@@ -136,6 +136,8 @@ fn convert_measure(
     let mut placed: HashMap<u8, Vec<(Frac, VoiceElement)>> = HashMap::new();
     let mut pending_arpeggio: HashMap<u8, ArpeggioType> = HashMap::new();
     let mut cursor = Frac::from_integer(0);
+    // How far the cursor got: the length of a bar nothing sounds in.
+    let mut reach = cursor;
     // Where the last non-chord note started: a `<chord/>` note sounds there.
     let mut last_onset = cursor;
     // The voice of the last note or rest and where it ended.
@@ -346,6 +348,7 @@ fn convert_measure(
             }
             _ => {} // Sound, Listening, Grouping, Link, Bookmark
         }
+        reach = reach.max(cursor);
     }
 
     // Lay the voices out by onset. Music that overlaps its own voice (a
@@ -361,6 +364,15 @@ fn convert_measure(
         tl.place_voice(vn, &elems);
     }
     measure.voices = voices_from_lanes(tl.lanes);
+    // A bar of `<forward>` alone (MuseScore's empty or invisible bar) is
+    // silent that long. The forward is no voice's, so the bar had no voice
+    // and no length, and a writer that goes voice by voice lost the bar.
+    if measure.voices.is_empty() && reach > Frac::from_integer(0) {
+        measure.voices.push(Voice {
+            number: 1,
+            elements: vec![VoiceElement::spacer(reach, 1, 1)],
+        });
+    }
 
     Ok((measure, divisions))
 }

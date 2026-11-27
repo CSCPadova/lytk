@@ -776,12 +776,21 @@ impl<'src> WalkState<'src> {
                 return true;
             };
             self.ensure_build();
+            let semitones = self.transpose_semitones();
             let Some(VarDef::Music { tl, .. }) = self.definitions.get(name) else {
                 unreachable!()
             };
             let tag = self.voice_tag;
             let part = self.parts.last_mut().expect("ensure_build made a part");
-            part.tl.splice(tl, at, main_lane, lane);
+            if semitones == 0 {
+                part.tl.splice(tl, at, main_lane, lane);
+            } else {
+                // `\transpose c' c \m`: the music was read at its definition,
+                // outside this `\transpose`, so it is transposed here.
+                let mut tl = tl.clone();
+                transpose_notes(&mut tl, semitones);
+                part.tl.splice(&tl, at, main_lane, lane);
+            }
             // The variable's own music is sung by the voice using it.
             for e in part.tl.lanes.values_mut().flatten() {
                 for n in e.1.notes_mut() {
@@ -806,8 +815,12 @@ impl<'src> WalkState<'src> {
                 }
                 self.flush_voice();
                 let at = self.pos;
+                let semitones = self.transpose_semitones();
                 for mut pb in parts {
                     pb.uid = self.fresh_uid();
+                    if semitones != 0 {
+                        transpose_notes(&mut pb.tl, semitones);
+                    }
                     pb.tl = std::mem::take(&mut pb.tl).shifted(at);
                     self.part_counter += 1;
                     pb.part.part_id = format!("P{}", self.part_counter);
@@ -857,12 +870,7 @@ impl<'src> WalkState<'src> {
         };
         // Apply any active \transpose intervals
         if !self.transpose_stack.is_empty() {
-            let total_semitones: i32 = self
-                .transpose_stack
-                .iter()
-                .map(|(from, to)| to.midi_number() - from.midi_number())
-                .fold(0, i32::saturating_add);
-            let p = pitch.transposed(total_semitones.clamp(-1200, 1200));
+            let p = pitch.transposed(self.transpose_semitones());
             Pitch {
                 octave: self.bounded_octave(p.octave),
                 ..p
@@ -870,6 +878,15 @@ impl<'src> WalkState<'src> {
         } else {
             pitch
         }
+    }
+
+    /// The semitones the active `\transpose`s move a pitch by (0: none).
+    pub(super) fn transpose_semitones(&self) -> i32 {
+        self.transpose_stack
+            .iter()
+            .map(|(from, to)| to.midi_number() - from.midi_number())
+            .fold(0, i32::saturating_add)
+            .clamp(-1200, 1200)
     }
 
     /// `octave` if within [`PITCH_OCTAVES`], else the nearest octave in it
@@ -906,6 +923,20 @@ fn mentions(block: Node, source: &str, name: &str) -> bool {
             if !cursor.goto_parent() || cursor.node() == block {
                 return false;
             }
+        }
+    }
+}
+
+/// Move every note of `tl` by `semitones` (a variable spliced under
+/// `\transpose`), keeping octaves in [`PITCH_OCTAVES`] as reading does.
+fn transpose_notes(tl: &mut Timeline, semitones: i32) {
+    for (_, e) in tl.lanes.values_mut().flatten() {
+        for n in e.notes_mut() {
+            let p = n.pitch.transposed(semitones);
+            n.pitch = Pitch {
+                octave: p.octave.clamp(*PITCH_OCTAVES.start(), *PITCH_OCTAVES.end()),
+                ..p
+            };
         }
     }
 }

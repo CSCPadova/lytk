@@ -7,6 +7,61 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-27
+
+What compiling PDMX's conversion found in the scores LilyPond 2.26 accepts
+(lilycorpus): bars lost, and bar checks that fail. And what comparing the
+notes lytk reads in Mutopia's scores with the MIDI LilyPond writes for them
+found: repeats and transpositions read wrong.
+
+### Fixed
+
+- A repeat whose music is a variable keeps it (`\repeat volta 2 \theme`,
+  `\repeat unfold 2 \theme`): the variable was skipped as an unknown word
+  and its music lost, a whole score's when every staff was written so.
+- `\repeat unfold` repeats one note or chord (`\repeat unfold 4 c8`),
+  `\relative` music, and the music of a `\score` block (`\score {
+  \repeat unfold 2 { … } }`); it was read once, or not at all.
+- `\transpose` applies to the music of a variable (`\transpose c' c
+  \bass`) and to the staves a variable holds: the music was read at its
+  definition, outside the `\transpose`, and kept its pitches.
+- A command among a staff's simultaneous music is the staff's, from the
+  block's start (`\new Staff << \time 2/4 \transposition c \music >>`,
+  how Mutopia writes a part): read as an unknown variable, it was lost,
+  and with it the meter, the key or the instrument's transposition.
+- A tuplet that scales its music to nothing (`\times 0/1`, `\tuplet 2/0`)
+  is a warning, not an error: LilyPond takes it, and its own regression
+  tests use it. A zero divisor (`\times 2/0`, `\tuplet 0/2`) stays an
+  error.
+- A MusicXML bar of `<forward>` alone lasts its forward. MuseScore writes
+  an empty or invisible bar that way; the forward is no voice's, so the
+  bar was read with no voice and no length, LilyPond's writer wrote
+  nothing for it, and the part's later music came a bar early. 2,526 of
+  the 195,391 PDMX scores that compile had such a bar (63,032 bars),
+  1,705 of them with music after it, and so had 25 of the 28 scores that
+  make LilyPond 2.26 segfault.
+- Reading MusicXML, a part shorter than the score's bar is filled to it
+  with a spacer: an empty `<measure>`, a voice that stops before the
+  other parts' bar ends. MusicXML's parts go together bar by bar; written
+  as one run each, the short part's later music came early.
+- In LilyPond, a staff with no voice in a bar skips the bar (`s1`), and
+  one whose voices stop early skips the rest of it. A piano's hand lost
+  the bars it had nothing in, unless their `<forward>` named a voice.
+- A bar that is not as long as its meter is written with `\partial` and
+  its length: an unmarked pickup (only a first bar marked `implicit` got
+  one), a bar split around a repeat sign, MuseScore's bars of their own
+  length. With the bar check alone the check failed, and after an
+  unmarked pickup every bar line was out of place. The meter is the
+  score's, as LilyPond's is: a `\time` in one part counts for all, and it
+  is 4/4 until the first.
+
+Measured on 256 of PDMX's scores with LilyPond 2.24.4: a bar check fails
+in 6 scores instead of 128 (140 times instead of 1,123), 218 compile
+without a warning instead of 109, no bar is written as nothing (66 were,
+in 4 scores), no score warns more than before, and lytk reads back all it
+wrote. With 0.6.4 on LilyPond 2.26, a bar check failed in 276 of a
+591-score sample.
+
 ## [0.6.4] - 2026-10-25
 
 What converting OpenScore's Lieder and String Quartets found (lilycorpus).

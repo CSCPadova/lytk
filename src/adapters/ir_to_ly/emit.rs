@@ -69,6 +69,7 @@ pub(super) fn emit_measures(
     staff_filter: Option<u8>,
     lead: Option<u8>,
     partial_dur: Option<&Duration>,
+    meters: &[Frac],
     relative_ref: Option<&Pitch>,
     indent: usize,
     lines: &mut Vec<String>,
@@ -156,6 +157,21 @@ pub(super) fn emit_measures(
                     lines.push(format!("{pad}{}", clef_to_ly(clef)));
                 }
             }
+        }
+
+        // A bar that is not as long as its meter (an unmarked pickup, a bar
+        // split around a repeat, MuseScore's bars of their own length) says
+        // how long it is, after its `\time`: its bar check failed otherwise
+        // and, after a pickup, every later bar line was out of place.
+        let bar_len = measure.content_length();
+        let opening_pickup = mi == 0 && partial_dur.is_some();
+        if bar_len > Frac::from_integer(0)
+            && meters.get(mi).is_some_and(|meter| *meter != bar_len)
+            && !measure.senza_misura
+            && !opening_pickup
+        {
+            let len = length_to_ly(&Duration::new(bar_len));
+            lines.push(format!("{pad}\\partial {len}"));
         }
 
         // Score-wide marks (tempo, rehearsal marks, D.C., breaks) go in the
@@ -286,10 +302,23 @@ pub(super) fn emit_measures(
         lines.extend(pre);
 
         // Voices
-        let voices: Vec<(&Voice, &Voice)> = super::bar_voices(measure, staff_filter, lead)
+        let mut voices: Vec<(&Voice, &Voice)> = super::bar_voices(measure, staff_filter, lead)
             .into_iter()
             .map(|i| (&measure.voices[i], &defaults.measures[mi].voices[i]))
             .collect();
+        // The staff's bar lasts what the part's does. A staff with no voice
+        // in the bar skips it (with the marks that fall there); written as
+        // nothing, the staff's later music came a bar early.
+        let silent;
+        if voices.is_empty() && bar_len > Frac::from_integer(0) {
+            let staff = staff_filter.unwrap_or(1);
+            silent = Voice {
+                number: 1,
+                elements: vec![VoiceElement::spacer(bar_len, 1, staff)],
+            };
+            voices.push((&silent, &silent));
+        }
+        let staff_len = voices.iter().map(|(v, _)| v.length()).max();
 
         if voices.len() <= 1 {
             if let Some(&(voice, default)) = voices.first() {
@@ -346,6 +375,14 @@ pub(super) fn emit_measures(
             if lead.is_some() {
                 lines.push(format!("{pad}\\oneVoice"));
             }
+        }
+        // And one whose voices stop before the bar's end skips the rest.
+        if let Some(missing) = staff_len
+            .map(|l| bar_len - l)
+            .filter(|m| *m > Frac::from_integer(0))
+        {
+            let len = length_to_ly(&Duration::new(missing));
+            lines.push(format!("{pad}s{len}"));
         }
 
         // Right barline
