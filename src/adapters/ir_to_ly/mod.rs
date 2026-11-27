@@ -15,6 +15,7 @@ mod parts;
 #[cfg(test)]
 mod tests;
 
+use crate::ir::duration::Frac;
 use crate::ir::language::{PitchLanguage, PitchMode};
 use crate::ir::music::MusicDocument;
 use crate::ir::note::VoiceElement;
@@ -99,6 +100,7 @@ impl FromIrAdapter for IrToLyAdapter {
         emit_preamble(score, &self.version, lang, &mut lines);
 
         // Part variables
+        let meters = bar_meters(score);
         for part in score.parts() {
             // Relative octave threading only round-trips reliably for a
             // single-staff, single-voice part: a multi-staff (piano) part and a
@@ -118,6 +120,7 @@ impl FromIrAdapter for IrToLyAdapter {
                 lang,
                 part_mode,
                 score.metadata.partial_duration.as_ref(),
+                &meters,
                 &mut lines,
             );
             emit_harmony_variable(part, lang, &mut lines);
@@ -357,6 +360,26 @@ fn relative_is_reliable(part: &Part) -> bool {
             .measures
             .iter()
             .all(|m| m.voices.iter().filter(|v| voice_has_content(v)).count() <= 1)
+}
+
+/// Each bar's length by the meter in force. LilyPond keeps time for the whole
+/// score: a `\time` in any part sets it for all (MuseScore may write it in
+/// the first part only), and it is 4/4 until the first.
+fn bar_meters(score: &Score) -> Vec<Frac> {
+    let parts = score.parts();
+    let bars = parts.iter().map(|p| p.measures.len()).max().unwrap_or(0);
+    let mut meter = Frac::from_integer(1);
+    (0..bars)
+        .map(|i| {
+            let time = parts
+                .iter()
+                .find_map(|p| p.measures.get(i)?.attributes.as_ref()?.time.as_ref());
+            if let Some(ts) = time {
+                meter = ts.beats_fraction();
+            }
+            meter
+        })
+        .collect()
 }
 
 /// Returns true if the voice contains any real music content (notes, rests, chords),

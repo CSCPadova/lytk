@@ -2797,3 +2797,89 @@ fn written_musicxml_always_declares_divisions() {
         }
     }
 }
+
+/// A score of parts in 4/4, a division a quarter: each part its bars' bodies.
+fn parts_of(parts: &[&[&str]]) -> crate::ir::Score {
+    let list: String = (1..=parts.len())
+        .map(|p| format!(r#"<score-part id="P{p}"><part-name>x</part-name></score-part>"#))
+        .collect();
+    let music: String = parts
+        .iter()
+        .enumerate()
+        .map(|(p, bars)| {
+            let bars: String = bars
+                .iter()
+                .enumerate()
+                .map(|(i, body)| {
+                    let attrs = if i == 0 {
+                        "<attributes><divisions>1</divisions>\
+                         <time><beats>4</beats><beat-type>4</beat-type></time></attributes>"
+                    } else {
+                        ""
+                    };
+                    format!(r#"<measure number="{}">{attrs}{body}</measure>"#, i + 1)
+                })
+                .collect();
+            format!(r#"<part id="P{}">{bars}</part>"#, p + 1)
+        })
+        .collect();
+    let xml = format!(
+        r#"<?xml version="1.0"?><score-partwise version="4.0"><part-list>{list}</part-list>{music}</score-partwise>"#
+    );
+    MxmlToIrAdapter::new().convert_str(&xml).expect("reads")
+}
+
+/// Each bar's length in quarters, part by part.
+fn bar_lengths(score: &crate::ir::Score) -> Vec<Vec<Ratio<i64>>> {
+    score
+        .parts()
+        .iter()
+        .map(|p| {
+            p.measures
+                .iter()
+                .map(|m| m.content_length() * Ratio::from_integer(4))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn a_bar_of_forward_alone_lasts_its_forward() {
+    // MuseScore writes an empty or invisible bar as one `<forward>`. It
+    // belongs to no voice, so the bar had none and no length: LilyPond's
+    // writer wrote nothing for it, and the part's later music came a bar
+    // early (2,526 of PDMX's scores, 25 of the 28 that crashed LilyPond).
+    let forward = "<forward><duration>4</duration></forward>";
+    let score = one_bar(forward, 1);
+    let q = Ratio::from_integer;
+    assert_eq!(layout(&score), vec![(1, vec![(q(0), "space".to_string())])]);
+    assert_eq!(bar_lengths(&score), vec![vec![q(4)]]);
+
+    // A short one too (an unmarked pickup that is silent in this part).
+    let score = one_bar("<forward><duration>1</duration></forward>", 1);
+    assert_eq!(bar_lengths(&score), vec![vec![q(1)]]);
+}
+
+#[test]
+fn a_part_short_of_a_bar_is_filled_to_the_scores() {
+    // MusicXML's parts go together bar by bar. A part with an empty
+    // `<measure>`, or whose voice stops early, lasts the bar all the same.
+    let c = n("C", 4, 1, "whole");
+    let half = n("E", 2, 1, "half");
+    let score = parts_of(&[&[&c, &c, &c], &[&c, "", &half]]);
+    let q = Ratio::from_integer;
+    assert_eq!(bar_lengths(&score), vec![vec![q(4); 3], vec![q(4); 3]]);
+    let second = &score.parts()[1];
+    assert!(matches!(
+        second.measures[1].voices[0].elements.as_slice(),
+        [VoiceElement::Rest(r)] if r.is_spacer
+    ));
+    assert!(matches!(
+        second.measures[2].voices[0].elements.as_slice(),
+        [VoiceElement::Note(_), VoiceElement::Rest(r)] if r.is_spacer
+    ));
+
+    // A bar no part gives a length keeps none: nothing says how long it is.
+    let score = parts_of(&[&[&c, ""], &[&c, ""]]);
+    assert_eq!(bar_lengths(&score), vec![vec![q(4), q(0)]; 2]);
+}

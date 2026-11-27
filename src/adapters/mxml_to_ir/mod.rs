@@ -21,6 +21,7 @@ use crate::ir::duration::Duration;
 use crate::ir::music::ContextType;
 use crate::ir::note::*;
 use crate::ir::score::*;
+use crate::ir::voice::Voice;
 
 use musicxml::elements as mxml;
 
@@ -367,10 +368,53 @@ fn convert_mxml_score(score: &mxml::ScorePartwise) -> Result<Score> {
         }
     }
 
+    fill_short_bars(&mut ir_score);
+
     // Detect anacrusis: check if the first measure is implicit (pickup)
     detect_anacrusis(&mut ir_score);
 
     Ok(ir_score)
+}
+
+/// MusicXML's parts go together bar by bar: a bar is as long as its longest
+/// part. A part that is shorter there (an empty `<measure>`, a voice that
+/// stops early) gets a spacer for the rest, or its later music would come
+/// that much early in a format that writes each part as one run.
+fn fill_short_bars(score: &mut Score) {
+    let mut parts = score.parts_mut();
+    let bars = parts.iter().map(|p| p.measures.len()).max().unwrap_or(0);
+    for i in 0..bars {
+        let Some(len) = parts
+            .iter()
+            .filter_map(|p| p.measures.get(i))
+            .map(|m| m.content_length())
+            .max()
+        else {
+            continue;
+        };
+        for part in &mut parts {
+            let Some(measure) = part.measures.get_mut(i) else {
+                continue;
+            };
+            let missing = len - measure.content_length();
+            if missing <= Ratio::from_integer(0) {
+                continue;
+            }
+            // The longest voice takes the spacer: the bar is then `len` long.
+            let longest = measure.voices.iter_mut().max_by_key(|v| v.length());
+            match longest {
+                Some(voice) => {
+                    let staff = voice.elements.last().map_or(1, VoiceElement::staff);
+                    let spacer = VoiceElement::spacer(missing, voice.number, staff);
+                    voice.elements.push(spacer);
+                }
+                None => measure.voices.push(Voice {
+                    number: 1,
+                    elements: vec![VoiceElement::spacer(missing, 1, 1)],
+                }),
+            }
+        }
+    }
 }
 
 /// Detect anacrusis (pickup measure) and set `score.metadata.partial_duration`.
