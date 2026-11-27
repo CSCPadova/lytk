@@ -50,11 +50,19 @@ pitches alone (0.879 before). 1,236 Rust tests pass (the one that fails,
 git-ignored PDF and MIDI fixtures), clippy is clean, and 328 Python tests
 pass.
 
-Next: repeats (0.605) and grace notes (0.687 with one, against 0.818
-without) are what still sets lytk's MIDI apart from LilyPond's. A grace note
-at the start of a piece delays LilyPond's whole performance by its length,
-and a grace note in LilyPond's MIDI lasts about a 64th where lytk's lasts a
-tick. Key signatures are not transposed by `\transpose`; the notes are.
+Most of what is left with a `\repeat` is a convention, not a misreading:
+LilyPond's MIDI plays a volta, segno or percent repeat once unless the music
+is unfolded (`\unfoldRepeats`), and lytk's plays every repeat out, its
+default (`to_midi(…, unfold_repeats=True)`). Compared like for like, lytk's
+MIDI in written order (`unfold_repeats=False`) for such scores, the same 112
+scores agree with LilyPond at a mean F1 of 0.885, every note in 63%; 0.891
+with a repeat, 0.981 on pitches alone.
+
+Next: grace notes (0.821 with one, 0.913 without): LilyPond's MIDI delays a
+piece that starts with one by its length, and its grace notes last about a
+64th where lytk's last a tick. Then transpositions (0.752), and a few scores
+whose onsets drift after a pickup or a repeat. Key signatures are not
+transposed by `\transpose`; the notes are.
 
 ## 2026-11-25 — 0.6.5: what PDMX's scores that compile were hiding
 
