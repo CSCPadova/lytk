@@ -4108,3 +4108,91 @@ mod relative_scope {
         assert_eq!(midis(r"{ c'4 \octaveCheck c'' d'4 }"), [60, 62]);
     }
 }
+
+/// What LilyCorpus's check against LilyPond's own MIDI found on Mutopia's
+/// scores (lilycorpus `render`, 2026-11-27): music that was read once, not at
+/// all, or at the wrong pitch.
+mod mutopia_reading {
+    use crate::adapters::ly_to_ir::LyToIrAdapter;
+    use crate::adapters::ToIrAdapter;
+    use crate::ir::note::VoiceElement;
+    use crate::ir::score::Score;
+
+    fn read(src: &str) -> Score {
+        LyToIrAdapter::new().convert_str(src).expect("reads")
+    }
+
+    /// The MIDI numbers of every note of every part, in reading order.
+    fn pitches(src: &str) -> Vec<i32> {
+        read(src)
+            .parts()
+            .iter()
+            .flat_map(|p| &p.measures)
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .flat_map(VoiceElement::notes)
+            .map(|n| n.pitch.midi_number())
+            .collect()
+    }
+
+    #[test]
+    fn a_repeat_of_a_variable_keeps_its_music() {
+        // \repeat volta 2 \theme: the theme was skipped as an unknown word
+        let src = "theme = { c'4 d' }\n{ \\repeat volta 2 \\theme e'2 }";
+        assert_eq!(pitches(src), [60, 62, 64]);
+        let src = "theme = { c'4 d' }\n{ \\repeat unfold 2 \\theme }";
+        assert_eq!(pitches(src), [60, 62, 60, 62]);
+    }
+
+    #[test]
+    fn unfold_repeats_a_single_note_a_chord_or_relative_music() {
+        assert_eq!(pitches(r"{ \repeat unfold 4 c'8 }"), [60, 60, 60, 60]);
+        assert_eq!(pitches(r"{ \repeat unfold 2 <c' e'>4 }"), [60, 64, 60, 64]);
+        assert_eq!(
+            pitches(r"{ \repeat unfold 2 \relative c' { c4 d } }"),
+            [60, 62, 60, 62]
+        );
+    }
+
+    #[test]
+    fn a_repeat_that_is_the_music_of_a_score_is_read() {
+        assert_eq!(
+            pitches(r"\score { \repeat unfold 2 { c'4 d' } \layout { } }"),
+            [60, 62, 60, 62]
+        );
+        assert_eq!(pitches(r"\score { \repeat volta 2 { c'4 d' } }"), [60, 62]);
+    }
+
+    #[test]
+    fn transpose_applies_to_the_music_of_a_variable() {
+        let m = "m = { c'4 d' }\n";
+        assert_eq!(pitches(&format!(r"{m}{{ \transpose c' c \m }}")), [48, 50]);
+        assert_eq!(pitches(&format!(r"{m}{{ \transpose c' f, \m }}")), [41, 43]);
+        // A variable that is a whole staff
+        let s = "s = \\new Staff { c'4 d' }\n";
+        assert_eq!(
+            pitches(&format!(r"{s}\score {{ << \transpose c' c \s >> }}")),
+            [48, 50]
+        );
+        // Not twice: the music of a variable read again under \relative
+        let r = "r = { c4 d }\n";
+        assert_eq!(
+            pitches(&format!(r"{r}\relative c' {{ \transpose c c' \r }}")),
+            [72, 74]
+        );
+    }
+
+    #[test]
+    fn a_staffs_commands_between_its_simultaneous_music_are_its_own() {
+        // Mutopia's shamisen pieces: \new Staff << \time … \transposition c \music >>
+        let src = "m = { c''4 d'' e'' f'' }\n\\score { \\new Staff << \\time 2/4 \\transposition c \\m >> }";
+        let score = read(src);
+        let measures = &score.parts()[0].measures;
+        let attributes = measures[0].attributes.as_ref().expect("attributes");
+        assert!(attributes.transpose.is_some(), "{attributes:?}");
+        let time = attributes.time.as_ref().expect("a time signature");
+        assert_eq!((time.beats.as_str(), time.beat_type), ("2", 4));
+        assert_eq!(measures.len(), 2, "2/4: four quarters are two bars");
+        assert_eq!(pitches(src), [72, 74, 76, 77]); // written pitches; MIDI sounds them an octave down
+    }
+}

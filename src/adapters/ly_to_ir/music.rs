@@ -563,7 +563,12 @@ fn handle_symbol(state: &mut WalkState, children: &[Node], i: usize, sym: &str) 
 
 /// Handle an escaped_word node (\key, \time, \clef, \grace, etc.).
 /// Returns the next index.
-fn handle_escaped_word(state: &mut WalkState, children: &[Node], i: usize, text: &str) -> usize {
+pub(super) fn handle_escaped_word(
+    state: &mut WalkState,
+    children: &[Node],
+    i: usize,
+    text: &str,
+) -> usize {
     let mut i = i + 1;
 
     match text {

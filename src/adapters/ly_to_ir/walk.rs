@@ -576,6 +576,13 @@ pub(super) fn walk_score_block(state: &mut WalkState, block: Node) {
                         i = consume_transpose(state, &children, i);
                         continue;
                     }
+                    "\\repeat" => {
+                        // `\score { \repeat unfold 2 { … } }`: read as a
+                        // variable named `repeat`, the repeat was lost and its
+                        // body walked once.
+                        i = super::modifiers::consume_repeat(state, &children, i + 1);
+                        continue;
+                    }
                     "\\layout" | "\\midi" => {
                         // Skip these blocks
                         if let Some(next) = children.get(i + 1) {
@@ -971,14 +978,16 @@ fn walk_parallel_music_staves(state: &mut WalkState, children: &[Node]) {
                         }
                     }
                 } else {
-                    // A plain music variable is a simultaneous branch.
+                    // A plain music variable is a simultaneous branch; so is a
+                    // command, whose events belong to the staff from the
+                    // block's start (`\new Staff << \time 2/4 \transposition c
+                    // \music >>`, Mutopia's way): read as unknown variables,
+                    // they were lost.
                     begin_branch(state);
-                    let var_name = text.trim_start_matches('\\');
-                    if !state.resolve_variable(var_name) {
-                        state.unread_command(child, var_name);
-                    }
+                    i = super::music::handle_escaped_word(state, children, i, &text);
                     state.flush_voice();
                     end = end.max(state.pos);
+                    continue;
                 }
             }
             _ => {}

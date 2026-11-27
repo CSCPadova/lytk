@@ -3,6 +3,59 @@
 Dated engineering notes, newest first. The release history is in
 [changelog.md](changelog.md).
 
+## 2026-11-27 — 0.6.5: what LilyPond's own MIDI of Mutopia's scores showed
+
+lilycorpus now releases every score also as MusicXML, ABC and MIDI written
+by lytk, and measures each file against the MIDI LilyPond writes for the
+score (its `render` stage: note F1 on pitch, onset and duration, for a
+one-movement score that asks LilyPond for MIDI). On 300 of Mutopia's scores
+(LilyPond 2.24.4, the 2.26 `\version` lowered), lytk 0.6.4's MIDI agreed
+with LilyPond's on every note in 46% of the 112 scores measured, mean F1
+0.712; 0.487 with a `\repeat`, 0.382 with a `\transpose` or
+`\transposition`. The causes, each a test in
+`ly_to_ir::tests::mutopia_reading`:
+
+- **The music of a repeat that is a variable was lost.**
+  `consume_repeat_body` took a block, or `\relative`, and skipped any other
+  word: `\repeat volta 2 \violin` lost the violin, and a score whose staves
+  are all `\repeat volta 2 \part` was read with no note at all.
+  `walk_repeat_body` now reads the first music after the count as the walker
+  reads music anywhere: a block, a note, a chord, or a word through
+  `handle_escaped_word` (a variable, `\relative`, `\transpose`, …).
+- **`\repeat unfold` repeated a block only**: one note (`\repeat unfold 4
+  c8`), a chord or `\relative` music was read once or not at all. The loop
+  now walks `walk_repeat_body` N times, each pass from the same reference
+  pitch as before.
+- **`\repeat` as the music of a `\score`** fell into `walk_score_block`'s
+  variable branch (`repeat` is no variable), and its block was then walked
+  once as plain music.
+- **`\transpose c' c \bass` left the variable's pitches alone.** A variable
+  is read at its definition, outside any `\transpose`, and spliced where it
+  is used; only under `\relative` was it read again, and so transposed.
+  `resolve_variable` now transposes a copy of the spliced timeline (and the
+  parts a `\new Staff` variable holds) by the active `\transpose`s, the
+  semitones `resolve_pitch` adds (`transpose_semitones`).
+- **A staff's commands among its simultaneous music were lost.** `\new Staff
+  << \time 2/4 \transposition c \music >>` is how Mutopia writes a part, and
+  `walk_parallel_music_staves` took every word that was not `\relative`,
+  `\transpose`, `\set` or `\override` for a variable: not found, the
+  command went, with its meter, key or transposition. Such a word now goes
+  through `handle_escaped_word` as a branch of its own, from the block's
+  start: its events are the staff's.
+
+The same sample with this branch: mean F1 0.778, every note in 51% of the
+scores; 0.605 with a `\repeat`, 0.666 with a transposition, 0.931 on
+pitches alone (0.879 before). 1,236 Rust tests pass (the one that fails,
+`tokens_cover_every_character_of_the_fixtures`, reads this machine's
+git-ignored PDF and MIDI fixtures), clippy is clean, and 328 Python tests
+pass.
+
+Next: repeats (0.605) and grace notes (0.687 with one, against 0.818
+without) are what still sets lytk's MIDI apart from LilyPond's. A grace note
+at the start of a piece delays LilyPond's whole performance by its length,
+and a grace note in LilyPond's MIDI lasts about a 64th where lytk's lasts a
+tick. Key signatures are not transposed by `\transpose`; the notes are.
+
 ## 2026-11-25 — 0.6.5: what PDMX's scores that compile were hiding
 
 lilycorpus converted PDMX again, on a Slurm cluster (lytk 0.6.4, LilyPond

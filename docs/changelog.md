@@ -7,13 +7,28 @@ engineering notes are in the [development log](devlog.md).
 
 ## [Unreleased]
 
-## [0.6.5] - 2026-11-25
+## [0.6.5] - 2026-11-27
 
 What compiling PDMX's conversion found in the scores LilyPond 2.26 accepts
-(lilycorpus): bars lost, and bar checks that fail.
+(lilycorpus): bars lost, and bar checks that fail. And what comparing the
+notes lytk reads in Mutopia's scores with the MIDI LilyPond writes for them
+found: repeats and transpositions read wrong.
 
 ### Fixed
 
+- A repeat whose music is a variable keeps it (`\repeat volta 2 \theme`,
+  `\repeat unfold 2 \theme`): the variable was skipped as an unknown word
+  and its music lost, a whole score's when every staff was written so.
+- `\repeat unfold` repeats one note or chord (`\repeat unfold 4 c8`),
+  `\relative` music, and the music of a `\score` block (`\score {
+  \repeat unfold 2 { … } }`); it was read once, or not at all.
+- `\transpose` applies to the music of a variable (`\transpose c' c
+  \bass`) and to the staves a variable holds: the music was read at its
+  definition, outside the `\transpose`, and kept its pitches.
+- A command among a staff's simultaneous music is the staff's, from the
+  block's start (`\new Staff << \time 2/4 \transposition c \music >>`,
+  how Mutopia writes a part): read as an unknown variable, it was lost,
+  and with it the meter, the key or the instrument's transposition.
 - A MusicXML bar of `<forward>` alone lasts its forward. MuseScore writes
   an empty or invisible bar that way; the forward is no voice's, so the
   bar was read with no voice and no length, LilyPond's writer wrote

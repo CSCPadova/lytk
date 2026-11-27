@@ -7,7 +7,7 @@ use crate::ir::note::{Note, VoiceElement};
 use crate::ir::pitch::{Pitch, PitchStep};
 
 use super::consume::consume_octave_marks;
-use super::music::{walk_music_block, walk_one};
+use super::music::{handle_escaped_word, walk_music_block, walk_one};
 use super::state::WalkState;
 use super::walk::walk_body;
 use crate::ir::direction::EndingType;
@@ -95,25 +95,21 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
     // is repeated literally (was previously walked only once, dropping N-1
     // copies).
     if repeat_type == "unfold" {
-        if i < children.len() && children[i].kind() == "expression_block" {
-            let body = children[i];
-            // LilyPond makes the written music relative once and then copies
-            // it: every pass starts from the same reference pitch, so copies
-            // are identical instead of climbing an octave step per pass.
-            // Each pass counts against the reading's budget, so an unfold of
-            // an empty body cannot spin for billions of passes either.
-            let reference = state.prev_pitch;
-            for _ in 0..count.max(1) {
-                if !state.spend(1) {
-                    break;
-                }
-                state.prev_pitch = reference;
-                walk_music_block(state, body);
+        // LilyPond makes the written music relative once and then copies
+        // it: every pass starts from the same reference pitch, so copies
+        // are identical instead of climbing an octave step per pass.
+        // Each pass counts against the reading's budget, so an unfold of
+        // an empty body cannot spin for billions of passes either.
+        let reference = state.prev_pitch;
+        let mut next = i;
+        for _ in 0..count.max(1) {
+            if !state.spend(1) {
+                break;
             }
-            return i + 1;
+            state.prev_pitch = reference;
+            next = walk_repeat_body(state, children, i);
         }
-        // `\relative`-wrapped or other body: fall back to a single pass.
-        return consume_repeat_body(state, children, i);
+        return next;
     }
 
     // Forward repeat where the body starts.
@@ -125,7 +121,7 @@ pub(super) fn consume_repeat(state: &mut WalkState, children: &[Node], mut i: us
     }));
 
     // Walk the repeat body
-    i = consume_repeat_body(state, children, i);
+    i = walk_repeat_body(state, children, i);
 
     // Check for \alternative
     if i < children.len() && children[i].kind() == "escaped_word" {
@@ -232,28 +228,19 @@ fn zero() -> Frac {
 }
 
 /// Consume the body of a \repeat (expression_block, or \relative { } etc.)
-fn consume_repeat_body(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
-    while i < children.len() {
-        let node = children[i];
+/// The music a `\repeat` applies to, the first music at or after
+/// `children[i]`: a block, one note or chord, or a command that takes music
+/// (`\relative c' { … }`, `\transpose …`, a variable). Returns the next
+/// index. A variable used to be skipped as an unknown word, its music lost.
+fn walk_repeat_body(state: &mut WalkState, children: &[Node], mut i: usize) -> usize {
+    while let Some(node) = children.get(i) {
         match node.kind() {
-            "expression_block" => {
-                walk_music_block(state, node);
-                i += 1;
-                return i;
-            }
+            "expression_block" | "symbol" | "chord" => return walk_one(state, children, i),
             "escaped_word" => {
-                let text = state.text(node).to_string();
-                i += 1;
-                if text == "\\relative" {
-                    // \repeat volta 2 \relative c' { ... }
-                    return consume_relative(state, children, i);
-                }
-                // Unknown escaped word inside repeat header — skip
-                return i;
+                let text = state.text(*node).to_string();
+                return handle_escaped_word(state, children, i, &text);
             }
-            _ => {
-                i += 1;
-            }
+            _ => i += 1,
         }
     }
     i
